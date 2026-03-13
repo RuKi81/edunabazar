@@ -1,0 +1,308 @@
+{% extends 'legacy/base.html' %}
+{% load static %}
+
+{% block title %}Еду на базар{% endblock %}
+
+{% block scripts %}
+  <script>
+    (function () {
+      var catalogEl = document.getElementById('home_catalog');
+      var categoryEl = document.getElementById('home_category');
+      if (!catalogEl || !categoryEl) return;
+
+      var hasExplicitCategory = false;
+
+      try {
+        var p0 = new URLSearchParams(window.location.search || '');
+        hasExplicitCategory = Boolean(p0.get('category'));
+        if (!p0.get('catalog') && !p0.get('category')) {
+          catalogEl.value = '';
+          categoryEl.value = '';
+        }
+      } catch (e) {}
+
+      var allOptions = Array.prototype.slice.call(categoryEl.querySelectorAll('option'));
+      function filterCategories() {
+        if (!hasExplicitCategory) {
+          categoryEl.value = '';
+        }
+        var selectedCatalog = String(catalogEl.value || '');
+        var selectedCategory = String(categoryEl.value || '');
+
+        if (!selectedCatalog && selectedCategory) {
+          allOptions.forEach(function (opt) {
+            if (!opt || !opt.getAttribute) return;
+            if (String(opt.value || '') !== selectedCategory) return;
+            var cid0 = String(opt.getAttribute('data-catalog-id') || '');
+            if (cid0) selectedCatalog = cid0;
+          });
+          if (selectedCatalog) catalogEl.value = selectedCatalog;
+        }
+
+        categoryEl.disabled = !selectedCatalog;
+        if (categoryEl.disabled) {
+          categoryEl.value = '';
+          if (categoryEl.options && categoryEl.options.length) categoryEl.selectedIndex = 0;
+        }
+
+        while (categoryEl.firstChild) categoryEl.removeChild(categoryEl.firstChild);
+        allOptions.forEach(function (opt) {
+          if (!opt || !opt.getAttribute) return;
+          if (!opt.value) {
+            categoryEl.appendChild(opt);
+            return;
+          }
+          var cid = String(opt.getAttribute('data-catalog-id') || '');
+          if (!selectedCatalog || cid === selectedCatalog) {
+            categoryEl.appendChild(opt);
+          }
+        });
+
+        if (selectedCategory) {
+          var stillExists = Array.prototype.some.call(categoryEl.options, function (opt) {
+            return String(opt.value || '') === selectedCategory;
+          });
+          if (!stillExists) categoryEl.value = '';
+        }
+
+        if (!hasExplicitCategory) {
+          categoryEl.value = '';
+          if (categoryEl.options && categoryEl.options.length) categoryEl.selectedIndex = 0;
+        }
+      }
+
+      catalogEl.addEventListener('change', function () {
+        categoryEl.value = '';
+        filterCategories();
+      });
+      filterCategories();
+    })();
+  </script>
+{% endblock %}
+
+{% block head %}
+  <style>
+    html, body { background: url('{% static "legacy/images/slide.jpg" %}') center top / cover no-repeat fixed; }
+    .content { background: transparent !important; }
+    .main-image { height: 420px; background: transparent; display: block; width: 100%; }
+    .home__wrap { margin-top: -256px !important; position: relative; top: 64px; z-index: 1; pointer-events: none; }
+    .home__topspacer { height: 0; }
+    .sidenav a { color: #9e9e9e !important; }
+    .home__below { background: transparent; padding-top: 12px; padding-bottom: 8px; position: relative; z-index: 2; }
+    .home__panel {
+      background: rgba(255,255,255,0.72);
+      border: 1px solid rgba(255,255,255,0.55);
+      padding: 18px 18px 16px 18px;
+      pointer-events: auto;
+    }
+    .home__panel .home__row { margin-bottom: 10px; }
+    .home__panel label {
+      font-size: 14px !important;
+      line-height: 1.1 !important;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 12px 6px 0;
+    }
+    .home__panel label span { font-weight: 600; letter-spacing: .15px; }
+    .home__panel .browser-default {
+      height: 32px;
+      border: 1px solid rgba(0,0,0,0.15);
+      background: rgba(255,255,255,0.85);
+      color: #757575;
+      box-sizing: border-box;
+      padding: 0 10px;
+      line-height: 32px;
+      display: block;
+    }
+    .home__panel .browser-default option { color: #424242; }
+    .home__panel input[type="text"] { height: 32px; border: 1px solid rgba(0,0,0,0.15); padding: 0 10px; box-sizing: border-box; background: rgba(255,255,255,0.85); line-height: 32px; }
+    .home__btn { background: #7fb500; border-radius: 0; box-shadow: none; }
+    .home__btn:hover { background: #8fcc00; }
+    .home__tiles { margin-top: 22px; }
+    .home__tile {
+      position: relative;
+      display: block;
+      height: 140px;
+      overflow: hidden;
+      background: rgba(255,255,255,0.68);
+      border-radius: 2px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.12);
+    }
+    .home__tile:hover { box-shadow: 0 3px 10px rgba(0,0,0,0.18); }
+    .home__tile img { width: 100%; height: 140px; object-fit: cover; display:block; }
+    .home__tile__cap {
+      position:absolute;
+      left:0; right:0; bottom:0;
+      padding: 10px 12px;
+      background: linear-gradient(to top, rgba(0,0,0,0.55), rgba(0,0,0,0.0));
+      color:#fff;
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .3px;
+      text-align: center;
+    }
+    .home__news { margin-top: 18px; }
+    .home__news-title { font-size: 18px; font-weight: 700; margin: 0 0 10px 0; color: #fff; }
+    .home__news-item {
+      background: rgba(255,255,255,0.72);
+      border: 1px solid rgba(255,255,255,0.55);
+      padding: 12px 14px;
+      min-height: 96px;
+    }
+    .home__news a { font-size: 13px; font-weight: 600; color: #0090b6; }
+    .home__news a:hover { text-decoration: underline; }
+    .home__news .home__news__date { color:#777; font-size: 11px; margin-top: 8px; }
+    .home__news .home__news__src { color:#777; font-size: 11px; }
+    @media (max-width: 992px) {
+      .main-image { height: 320px; }
+      .home__wrap { margin-top: -200px !important; top: 48px; }
+      .home__panel { padding: 14px; }
+    }
+    @media (max-width: 600px) {
+      .main-image { height: 260px; }
+      .home__wrap { margin-top: -176px !important; top: 40px; }
+      .home__tiles .col { margin-bottom: 12px; }
+    }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <div class="col m12">
+    <div class="main-image"></div>
+
+    <div class="main-search searcher__main home__wrap">
+      <div class="home__topspacer"></div>
+
+      <div class="row" style="margin-bottom:0;">
+        <div class="col s12">
+          <div class="home__panel">
+            <form method="get" action="/adverts/">
+            <div class="row home__row" style="margin-bottom: 6px;">
+              <div class="col s12 m6">
+                <label style="margin-right:14px;">
+                  <input name="type" type="radio" value="all" checked>
+                  <span>Все</span>
+                </label>
+                <label style="margin-right:14px;">
+                  <input name="type" type="radio" value="offer">
+                  <span>Предложение</span>
+                </label>
+                <label>
+                  <input name="type" type="radio" value="demand">
+                  <span>Спрос</span>
+                </label>
+              </div>
+              <div class="col s12 m6 right-align">
+                <label style="margin-right:14px;">
+                  <input name="opt" type="checkbox" value="1">
+                  <span>Опт</span>
+                </label>
+                <label>
+                  <input name="delivery" type="checkbox" value="1">
+                  <span>Доставка</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="row home__row">
+              <div class="col s12">
+                <input id="home_q" name="q" type="text" placeholder="Что вы ищете?">
+              </div>
+            </div>
+
+            <div class="row home__row" style="margin-bottom: 14px;">
+              <div class="col s12 m6">
+                <select id="home_catalog" name="catalog" class="browser-default">
+                  <option value="">Все каталоги</option>
+                  {% for cat in catalogs %}
+                    <option value="{{ cat.id }}">{{ cat.title }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="col s12 m6">
+                <select id="home_category" name="category" class="browser-default">
+                  <option value="" selected>Все категории</option>
+                  {% for c in categories %}
+                    <option value="{{ c.id }}" data-catalog-id="{{ c.catalog_id }}">{{ c.title }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+
+            <div class="row" style="margin-bottom:0;">
+              <div class="col s12">
+                <button class="btn home__btn" type="submit" formaction="/map/" style="margin-right:8px;">Показать на карте</button>
+                <button class="btn home__btn" type="submit" formaction="/adverts/" style="margin-right:8px;">Найти</button>
+                {% if legacy_user %}
+                  <a class="btn home__btn" href="{% url 'advert_create' %}">Добавить</a>
+                {% else %}
+                  <a class="btn home__btn" href="{% url 'legacy_login' %}?next={% url 'advert_create' %}">Добавить</a>
+                {% endif %}
+              </div>
+            </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="home__below">
+      <div class="row home__tiles" style="margin-bottom:0;">
+        <div class="col s12 m3">
+          <a href="{% url 'seller_list' %}" class="home__tile">
+            <img src="{% static 'legacy/images/main1.jpg' %}" alt="">
+            <div class="home__tile__cap">Агропредприятия</div>
+          </a>
+        </div>
+        <div class="col s12 m3">
+          <a href="/adverts/" class="home__tile">
+            <img src="{% static 'legacy/images/main2.jpg' %}" alt="">
+            <div class="home__tile__cap">Блоги</div>
+          </a>
+        </div>
+        <div class="col s12 m3">
+          <a href="/adverts/" class="home__tile">
+            <img src="{% static 'legacy/images/img-big.jpg' %}" alt="">
+            <div class="home__tile__cap">Цены</div>
+          </a>
+        </div>
+        <div class="col s12 m3">
+          <a href="/adverts/" class="home__tile">
+            <img src="{% static 'legacy/images/main4.jpg' %}" alt="">
+            <div class="home__tile__cap">Мероприятия</div>
+          </a>
+        </div>
+      </div>
+
+      <div class="row home__news" style="margin-bottom:0;">
+        <div class="col s12">
+          <div class="home__news-title">Новости</div>
+        </div>
+        <div class="col s12 m4">
+          <div class="home__news-item">
+            <a href="#">Умное земледелие</a>
+            <div class="home__news__date">30.08.2019</div>
+            <div class="home__news__src">Еду На Базар</div>
+          </div>
+        </div>
+        <div class="col s12 m4">
+          <div class="home__news-item">
+            <a href="#">Всемирный банк выделил финансы Украине на инвентаризацию сельхозугодий</a>
+            <div class="home__news__date">28.08.2019</div>
+            <div class="home__news__src">Еду На Базар</div>
+          </div>
+        </div>
+        <div class="col s12 m4">
+          <div class="home__news-item">
+            <a href="#">Минсельхоз России предлагает упростить раздачу брошенных земель.</a>
+            <div class="home__news__date">26.08.2019</div>
+            <div class="home__news__src">Еду На Базар</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+{% endblock %}

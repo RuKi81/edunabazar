@@ -1,0 +1,83 @@
+{% extends 'legacy/base.html' %}
+
+{% block title %}{% if mode == 'edit' %}Редактировать предприятие{% else %}Добавить предприятие{% endif %}{% endblock %}
+
+{% block content %}
+  <div class="row" style="margin-bottom:0;">
+    <div class="col s12">
+      <div style="margin: 10px 0 6px 0;">
+        <a href="{% url 'seller_list' %}" style="color:#0090b6;">← Все предприятия</a>
+      </div>
+
+      <h5 style="margin: 6px 0 14px 0; color:#7fb500; font-weight: 800;">
+        {% if mode == 'edit' %}Редактировать предприятие{% else %}Добавить предприятие{% endif %}
+      </h5>
+
+      {% if errors_all %}
+        <div class="card" style="box-shadow:none; border: 1px solid #f0b4b4; background: #fff7f7;">
+          <div class="card-content" style="padding: 12px 14px; color:#b00020;">{{ errors_all }}</div>
+        </div>
+      {% endif %}
+
+      <div class="card" style="box-shadow:none; border: 1px solid #e6e6e6;">
+        <div class="card-content" style="padding: 16px;">
+          <form method="post">
+            {% csrf_token %}
+
+            <div class="row" style="margin-bottom: 8px;">
+              <div class="col s12">
+                <label style="color:#777;">Название</label>
+                <input type="text" name="name" value="{{ initial.name }}" placeholder="Название компании" />
+                {% if errors.name %}<div style="color:#b00020; font-size: 12px; margin-top: -6px;">{{ errors.name }}</div>{% endif %}
+              </div>
+            </div>
+
+            <div class="row" style="margin-bottom: 8px;">
+              <div class="col s12">
+                <label style="color:#777;">Адрес</label>
+                <input type="text" name="location" value="{{ initial.location }}" placeholder="Адрес" />
+              </div>
+            </div>
+
+            <div class="row" style="margin-bottom: 8px;">
+              <div class="col s12">
+                <label style="color:#777;">Контакты (JSON)</label>
+                <textarea name="contacts" rows="6" style="padding: 10px; border:1px solid rgba(0,0,0,0.12);">{{ initial.contacts }}</textarea>
+                {% if errors.contacts %}<div style="color:#b00020; font-size: 12px;">{{ errors.contacts }}</div>{% endif %}
+                <div style="color:#777; font-size: 12px; margin-top: 6px;">
+                  Пример: {"phone":"+7...","email":"...","site":"https://..."}
+                </div>
+              </div>
+            </div>
+
+            <div class="row" style="margin-bottom: 8px;">
+              <div class="col s12">
+                <label style="color:#777;">Производимая продукция / ссылки</label>
+                <textarea name="links" rows="4" style="padding: 10px; border:1px solid rgba(0,0,0,0.12);">{{ initial.links }}</textarea>
+              </div>
+            </div>
+
+            <div class="row" style="margin-bottom: 12px;">
+              <div class="col s12">
+                <label style="color:#777;">Описание компании</label>
+                <textarea name="about" rows="6" style="padding: 10px; border:1px solid rgba(0,0,0,0.12);">{{ initial.about }}</textarea>
+              </div>
+            </div>
+
+            <div class="row" style="margin-bottom: 0;">
+              <div class="col s12">
+                <button class="btn" type="submit" style="background:#7fb500; box-shadow:none; border-radius:0;">
+                  {% if mode == 'edit' %}Сохранить{% else %}Создать{% endif %}
+                </button>
+                {% if mode == 'edit' and seller %}
+                  <a class="btn-flat" href="{% url 'seller_detail' seller.id %}" style="margin-left: 8px;">Отмена</a>
+                {% endif %}
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+
+    </div>
+  </div>
+{% endblock %}

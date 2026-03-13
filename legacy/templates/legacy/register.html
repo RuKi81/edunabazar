@@ -1,0 +1,44 @@
+{% extends 'legacy/base.html' %}
+
+{% block title %}Регистрация{% endblock %}
+
+{% block content %}
+  <h1>Регистрация</h1>
+
+  <div class="card">
+    <div class="card-content">
+      <form method="post" class="auth-form">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ request.GET.next|default:'' }}" />
+
+        <div class="input-field">
+          <input id="username" name="username" value="{{ form.username|default:'' }}" />
+          <label for="username" {% if form.username %}class="active"{% endif %}>Username</label>
+          {% if errors.username %}<div class="red-text" style="margin-top:6px;">{{ errors.username }}</div>{% endif %}
+        </div>
+
+        <div class="input-field">
+          <input id="email" name="email" value="{{ form.email|default:'' }}" />
+          <label for="email" {% if form.email %}class="active"{% endif %}>Email</label>
+          {% if errors.email %}<div class="red-text" style="margin-top:6px;">{{ errors.email }}</div>{% endif %}
+        </div>
+
+        <div class="input-field">
+          <input id="name" name="name" value="{{ form.name|default:'' }}" />
+          <label for="name" {% if form.name %}class="active"{% endif %}>Имя (необязательно)</label>
+        </div>
+
+        <div class="input-field">
+          <input id="phone" name="phone" value="{{ form.phone|default:'' }}" />
+          <label for="phone" {% if form.phone %}class="active"{% endif %}>Телефон (необязательно)</label>
+        </div>
+
+        <button class="btn" type="submit">Зарегистрироваться</button>
+      </form>
+    </div>
+  </div>
+
+  <p><a href="{% url 'legacy_login' %}?next={{ request.GET.next|default:''|urlencode }}">← Уже есть аккаунт? Войти</a></p>
+  <p><a href="{% url 'legacy_register_start' %}?next={{ request.GET.next|default:''|urlencode }}">← Выбрать способ регистрации</a></p>
+  <p><a href="{% url 'legacy_register_sms' %}?next={{ request.GET.next|default:''|urlencode }}">Регистрация по телефону (SMS)</a></p>
+{% endblock %}

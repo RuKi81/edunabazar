@@ -1,0 +1,212 @@
+<!doctype html>
+{% load static %}
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}Еду на базар{% endblock %}</title>
+
+  <link rel="manifest" href="{% static 'legacy/manifest.json' %}">
+  <link rel="stylesheet" href="{% static 'legacy/css/material-icons.css' %}" />
+
+  <link rel="stylesheet" href="{% static 'legacy/css/materialize.min.css' %}" />
+  <link rel="stylesheet" href="{% static 'legacy/css/font-awesome-css.min.css' %}" />
+  <link rel="stylesheet" href="{% static 'legacy/css/jquery.fancybox.css' %}" />
+  <link rel="stylesheet" href="{% static 'legacy/css/site.css' %}" />
+  <link rel="stylesheet" href="{% static 'legacy/css/app.css' %}" />
+
+  <style>
+    body { background: #fff; }
+    nav.background-none, footer.background-none { background: transparent; box-shadow: none; }
+    .navmenu-elem > a { text-transform: uppercase; }
+    nav ul a { text-transform: uppercase; }
+    .sidenav a { text-transform: uppercase; }
+    nav { position: relative; z-index: 1000; }
+    .hide-on-large-only { position: relative; z-index: 1000; }
+    .brand-logo,
+    nav .navmenu-elem > a,
+    .hide-on-large-only a,
+    .hide-on-large-only i.material-icons { color: #7fb500; }
+
+    .hide-on-med-and-down nav ul a { color: #7fb500 !important; }
+
+    .catalog__item,
+    .mapui__list-item,
+    .leaflet-popup-content,
+    .card,
+    .adverts-item {
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .catalog__item a,
+    .mapui__list-item a,
+    .leaflet-popup-content a,
+    .card a {
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .mapui__list-body,
+    .catalog__item .col,
+    .leaflet-popup-content {
+      min-width: 0;
+    }
+
+    .advert-item-text,
+    .adverts-detail__desc,
+    .mapui__list-text {
+      white-space: normal !important;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .brand-logo__img { height: 77px; width: auto; display: inline-block; vertical-align: middle; }
+    @media (max-width: 600px) {
+      .brand-logo__img { height: 63px; }
+    }
+
+    .hide-on-med-and-down nav { height: 92px; line-height: 92px; }
+    .hide-on-med-and-down nav .nav-wrapper { height: 92px; line-height: 92px; }
+    .hide-on-med-and-down nav ul a { line-height: 92px; font-size: 14px; font-weight: 600; letter-spacing: .2px; }
+    .hide-on-med-and-down .brand-logo { display: flex; align-items: center; height: 92px; line-height: 92px; }
+
+    .hide-on-large-only .container { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .hide-on-large-only .sidenav-trigger { line-height: 63px; height: 63px; }
+    .hide-on-large-only .sidenav-trigger i.material-icons { line-height: 63px; }
+
+    .input-field { position: relative; }
+    .input-field > label {
+      position: absolute;
+      top: 0.8rem;
+      left: 0;
+      cursor: text;
+      transition: transform .2s ease-out, color .2s ease-out;
+      transform-origin: 0% 100%;
+      transform: translateY(0);
+      pointer-events: none;
+    }
+    .input-field > label.active {
+      transform: translateY(-14px) scale(0.8);
+      transform-origin: 0 0;
+    }
+    .input-field input[type=text],
+    .input-field input[type=email],
+    .input-field input[type=password],
+    .input-field input[type=tel] {
+      height: 3rem;
+      line-height: 3rem;
+    }
+
+    .auth-form .input-field {
+      padding-left: 160px;
+    }
+    .auth-form .input-field > label {
+      left: -160px;
+      width: 150px;
+      max-width: 150px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    @media (max-width: 600px) {
+      .auth-form .input-field { padding-left: 0; }
+      .auth-form .input-field > label {
+        left: 0;
+        width: auto;
+        max-width: none;
+      }
+    }
+  </style>
+
+  {% block head %}{% endblock %}
+</head>
+<body>
+
+  <div class="content">
+
+  <!-- Desktop nav -->
+  <div class="hide-on-med-and-down">
+    <nav class="container background-none">
+      <div class="nav-wrapper">
+        <a href="/" class="brand-logo" aria-label="На главную">
+          <img class="brand-logo__img" src="{% static 'legacy/images/logo.png' %}" alt="Еду на базар">
+        </a>
+        <ul class="right">
+          <li class="navmenu-elem"><a href="/adverts/">объявления</a></li>
+          <li class="navmenu-elem"><a href="{% url 'seller_list' %}">предприятия</a></li>
+          <li class="navmenu-elem"><a href="#">цены</a></li>
+
+          {% if legacy_user %}
+            <li class="navmenu-elem"><a href="{% url 'messages_inbox' %}">сообщения</a></li>
+            {% if is_admin_user %}
+              <li class="navmenu-elem"><a href="{% url 'admin_users' %}">админка</a></li>
+            {% endif %}
+            <li class="navmenu-elem"><a href="{% url 'legacy_me' %}">кабинет</a></li>
+            <li class="navmenu-elem"><a href="{% url 'legacy_logout' %}">выход</a></li>
+          {% else %}
+            <li class="navmenu-elem"><a href="{% url 'legacy_register_start' %}?next={{ request.path|urlencode }}">регистрация</a></li>
+            <li class="navmenu-elem"><a href="{% url 'legacy_login' %}?next={{ request.path }}">вход</a></li>
+          {% endif %}
+        </ul>
+      </div>
+    </nav>
+  </div>
+
+  <!-- Mobile nav -->
+  <div class="hide-on-large-only">
+    <div class="container" style="padding-top: 10px;">
+      <a href="#" data-target="slide-out" class="sidenav-trigger right"><i class="material-icons">menu</i></a>
+      <a href="/" aria-label="На главную" style="font-weight: 600; display:inline-block;">
+        <img class="brand-logo__img" src="{% static 'legacy/images/logo.png' %}" alt="Еду на базар">
+      </a>
+    </div>
+
+    <ul id="slide-out" class="sidenav">
+      <li><a href="/adverts/">объявления</a></li>
+      <li><a href="{% url 'seller_list' %}">предприятия</a></li>
+      <li><a href="#">цены</a></li>
+      <li><div class="divider"></div></li>
+      {% if legacy_user %}
+        <li><a href="{% url 'messages_inbox' %}">сообщения</a></li>
+        {% if is_admin_user %}
+          <li><a href="{% url 'admin_users' %}">админка</a></li>
+        {% endif %}
+        <li><a href="{% url 'legacy_me' %}">кабинет</a></li>
+        <li><a href="{% url 'legacy_logout' %}">выход</a></li>
+      {% else %}
+        <li><a href="{% url 'legacy_register_start' %}?next={{ request.path|urlencode }}">регистрация</a></li>
+        <li><a href="{% url 'legacy_login' %}?next={{ request.path }}">вход</a></li>
+      {% endif %}
+    </ul>
+  </div>
+
+  <div class="container" style="margin-top: 20px;">
+    {% block content %}{% endblock %}
+  </div>
+
+  </div>
+
+  <script src="{% static 'legacy/js/jquery-3.7.1.min.js' %}"></script>
+  <script src="{% static 'legacy/js/a8ba507dcf.js' %}"></script>
+  <script type="text/javascript" src="{% static 'legacy/js/jquery.fancybox.pack.js' %}"></script>
+  <script src="{% static 'legacy/js/materialize.min.js' %}"></script>
+  <script>
+    $(document).ready(function(){
+      $('.sidenav').sidenav();
+
+      if (window.M && M.updateTextFields) {
+        M.updateTextFields();
+      }
+
+      if ($('.fancybox').length > 0) {
+        $('.fancybox').fancybox();
+      }
+
+      $('.button-contact').click(function() {
+        window.location.href = '/contact';
+      });
+    });
+  </script>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

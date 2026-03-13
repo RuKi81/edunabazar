@@ -1,0 +1,67 @@
+{% extends 'legacy/base.html' %}
+
+{% load legacy_extras %}
+
+{% block title %}Переписка с {% firstof other_user.name other_user.username %}{% endblock %}
+
+{% block content %}
+  <div class="row">
+    <div class="col s12">
+      <div style="margin: 10px 0 6px 0;">
+        <a href="{% url 'messages_inbox' %}" style="color:#0090b6;">← Все сообщения</a>
+      </div>
+
+      <h5 style="margin: 6px 0 16px 0; font-weight: 700; color: #444;">
+        Переписка с {% firstof other_user.name other_user.username %}
+      </h5>
+
+      <div id="messages-list" style="max-height: 500px; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 4px; padding: 14px; margin-bottom: 16px; background: #fafafa;">
+        {% if messages %}
+          {% for msg in messages %}
+            {% if msg.sender_id == legacy_user.id %}
+              <div style="margin-bottom: 10px; text-align: right;">
+                <div style="display: inline-block; max-width: 75%; text-align: left; background: #e3f2fd; border-radius: 8px 8px 0 8px; padding: 10px 14px;">
+                  {% if msg.advert %}
+                    <div style="font-size: 12px; color: #7fb500; margin-bottom: 4px;">{{ msg.advert.title|truncate_ellipsis:50 }}</div>
+                  {% endif %}
+                  <div style="color: #333; white-space: pre-wrap;">{{ msg.text }}</div>
+                  <div style="font-size: 11px; color: #999; margin-top: 4px;">{{ msg.created_at|date:"d.m.Y H:i" }}</div>
+                </div>
+              </div>
+            {% else %}
+              <div style="margin-bottom: 10px; text-align: left;">
+                <div style="display: inline-block; max-width: 75%; text-align: left; background: #fff; border: 1px solid #e0e0e0; border-radius: 8px 8px 8px 0; padding: 10px 14px;">
+                  {% if msg.advert %}
+                    <div style="font-size: 12px; color: #7fb500; margin-bottom: 4px;">{{ msg.advert.title|truncate_ellipsis:50 }}</div>
+                  {% endif %}
+                  <div style="color: #333; white-space: pre-wrap;">{{ msg.text }}</div>
+                  <div style="font-size: 11px; color: #999; margin-top: 4px;">{{ msg.created_at|date:"d.m.Y H:i" }}</div>
+                </div>
+              </div>
+            {% endif %}
+          {% endfor %}
+        {% else %}
+          <p style="color: #999; text-align: center;">Сообщений пока нет. Напишите первым!</p>
+        {% endif %}
+      </div>
+
+      <form method="post" action="{% url 'message_send' %}" style="border: 1px solid #e0e0e0; border-radius: 4px; padding: 14px; background: #fff;">
+        {% csrf_token %}
+        <input type="hidden" name="recipient_id" value="{{ other_user.id }}">
+        <div style="margin-bottom: 10px;">
+          <textarea name="text" rows="3" maxlength="5000" required
+                    style="width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #ccc; border-radius: 3px; font-size: 14px; resize: vertical;"
+                    placeholder="Напишите сообщение..."></textarea>
+        </div>
+        <button type="submit" class="btn" style="background: #7fb500; box-shadow: none; border-radius: 0;">Отправить</button>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      var el = document.getElementById('messages-list');
+      if (el) el.scrollTop = el.scrollHeight;
+    })();
+  </script>
+{% endblock %}

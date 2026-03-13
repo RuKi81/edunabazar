@@ -1,0 +1,57 @@
+{% extends 'legacy/base.html' %}
+
+{% load legacy_extras %}
+
+{% block title %}{{ seller.name }}{% endblock %}
+
+{% block content %}
+  <div class="row" style="margin-bottom:0;">
+    <div class="col s12">
+      <div style="margin: 10px 0 6px 0;">
+        <a href="{% url 'seller_list' %}" style="color:#0090b6;">← Все предприятия</a>
+      </div>
+
+      {% if is_admin_user or legacy_user and legacy_user.id == seller.user_id %}
+        <div style="margin: 0 0 10px 0;">
+          <a class="btn" href="{% url 'seller_edit' seller.id %}" style="background:#7fb500; box-shadow:none; border-radius:0;">Редактировать</a>
+        </div>
+      {% endif %}
+
+      <h5 style="margin: 6px 0 14px 0; color:#7fb500; font-weight: 800;">{{ seller.name }}</h5>
+
+      <div class="card" style="box-shadow:none; border: 1px solid #e6e6e6;">
+        <div class="card-content" style="padding: 16px;">
+          {% if seller.location %}
+            <div style="margin-bottom: 12px;">
+              <div style="font-weight:700; color:#757575; margin-bottom:4px;">Адрес</div>
+              <div style="color:#444;">{{ seller.location }}</div>
+            </div>
+          {% endif %}
+
+          {% if seller.contacts %}
+            <div style="margin-bottom: 12px;">
+              <div style="font-weight:700; color:#757575; margin-bottom:4px;">Контакты</div>
+              <pre style="white-space: pre-wrap; margin:0; font-family: inherit; color:#444;">{{ contacts_display }}</pre>
+            </div>
+          {% endif %}
+
+          {% if seller.links %}
+            <div style="margin-bottom: 12px;">
+              <div style="font-weight:700; color:#757575; margin-bottom:4px;">Производимая продукция / ссылки</div>
+              <div style="color:#444; white-space: pre-wrap;">{{ seller.links }}</div>
+            </div>
+          {% endif %}
+
+          {% if seller.about %}
+            <div style="margin-bottom: 0;">
+              <div style="font-weight:700; color:#757575; margin-bottom:4px;">Описание компании</div>
+              <div style="color:#444; white-space: pre-wrap;">{{ seller.about }}</div>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+
+      {% include 'legacy/_reviews_section.html' %}
+    </div>
+  </div>
+{% endblock %}

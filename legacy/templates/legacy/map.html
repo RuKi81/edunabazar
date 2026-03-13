@@ -1,0 +1,524 @@
+{% extends 'legacy/base.html' %}
+{% load static %}
+
+{% block title %}Карта{% endblock %}
+
+{% block head %}
+  <link rel="stylesheet" href="{% static 'legacy/css/leaflet.css' %}" />
+  <link rel="stylesheet" href="{% static 'legacy/css/MarkerCluster.css' %}" />
+  <link rel="stylesheet" href="{% static 'legacy/css/MarkerCluster.Default.css' %}" />
+  <style>
+    :root { --map-header-h: 64px; }
+    html, body { height: 100%; }
+    .content { background: transparent !important; }
+    .content > .container { width: 100% !important; min-width: 0 !important; padding: 0 !important; margin-top: 0 !important; }
+    .footer { display: none; }
+
+    .hide-on-med-and-down { position: absolute; top: 0; left: 0; right: 0; z-index: 2000; }
+    .hide-on-large-only { position: absolute; top: 0; left: 0; right: 0; z-index: 2000; }
+
+    .leaflet-control-zoom { display: none !important; }
+
+    .mapui { position: fixed; left: 0; right: 0; top: 0; bottom: 0; min-height: 650px; }
+    #map { position: absolute; left: 0; right: 0; top: 0; bottom: 0; }
+
+    .mapui__left {
+      position: fixed;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 285px;
+      padding: calc(var(--map-header-h) + 12px) 14px 14px 14px;
+      background: rgba(255,255,255,0.62);
+      border-right: 1px solid rgba(0,0,0,0.08);
+      overflow: auto;
+      z-index: 1000;
+    }
+    .mapui__right {
+      position: fixed;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      width: 330px;
+      padding-top: calc(var(--map-header-h) + 8px);
+      background: rgba(255,255,255,0.96);
+      border-left: 1px solid rgba(0,0,0,0.08);
+      overflow: auto;
+      z-index: 1000;
+    }
+
+    .mapui__field {
+      width: 100%;
+      height: 32px;
+      border: 1px solid rgba(0,0,0,0.15);
+      background: rgba(255,255,255,0.85);
+      padding: 0 10px;
+      box-sizing: border-box;
+      margin-bottom: 10px;
+    }
+    .mapui__select { width: 100%; height: 32px; margin-bottom: 10px; }
+    .mapui__btn { width: 100%; margin-bottom: 10px; background: #7fb500; border-radius: 0; box-shadow: none; }
+    .mapui__btn:hover { background: #8fcc00; }
+    .mapui__radios, .mapui__checks { font-size: 13px; margin-bottom: 10px; }
+    .mapui__radios label, .mapui__checks label { display: inline-block; margin-right: 12px; }
+
+    .mapui__list-item { padding: 10px 10px; border-bottom: 1px solid rgba(0,0,0,0.08); cursor: pointer; display:flex; gap:10px; }
+    .mapui__list-item:hover { background: #f7f7f7; }
+    .mapui__list-thumb { width: 64px; height: 64px; background: #eee; flex: 0 0 auto; }
+    .mapui__list-thumb img { width:64px; height:64px; object-fit: cover; display:block; }
+    .mapui__list-body { flex: 1 1 auto; min-width: 0; }
+    .mapui__list-top { display:flex; align-items:flex-start; justify-content: space-between; gap: 10px; }
+    .mapui__list-title { font-size: 12px; font-weight: 600; color: #0090b6; line-height: 1.25; flex: 1 1 auto; }
+    .mapui__list-price { font-size: 12px; font-weight: 700; margin-top: 0; white-space: nowrap; flex: 0 0 auto; }
+    .mapui__list-text { font-size: 11px; color: #666; margin-top: 6px; line-height: 1.25; }
+    .mapui__list-more { font-size: 11px; color: #0090b6; margin-top: 6px; display: inline-block; }
+    .mapui__list-more:hover { text-decoration: underline; }
+    .mapui__list-more .mapui__chev { font-size: 12px; margin-left: 4px; }
+    .mapui__list-meta { font-size: 10px; color: #888; margin-top: 6px; }
+
+    .marker-cluster-small, .marker-cluster-medium, .marker-cluster-large { background: transparent; }
+    .mapui-cluster {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font-weight: 700;
+      font-size: 12px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+    }
+    .mapui-cluster--g { background: #7fb500; }
+    .mapui-cluster--y { background: #f4b400; }
+    .mapui-cluster--o { background: #f57c00; }
+    .mapui-cluster--r { background: #e53935; }
+
+    @media (max-width: 992px) {
+      :root { --map-header-h: 56px; }
+      .mapui__left { width: 220px; top: 0; }
+      .mapui__right { width: 0; display: none; }
+    }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <div class="mapui">
+    <div id="map"></div>
+
+    <div class="mapui__left">
+      <div class="mapui__radios">
+        <label>
+          <input name="ad_type" type="radio" value="all" checked>
+          <span>Все</span>
+        </label>
+        <label>
+          <input name="ad_type" type="radio" value="offer">
+          <span>Предложение</span>
+        </label>
+        <label>
+          <input name="ad_type" type="radio" value="demand">
+          <span>Спрос</span>
+        </label>
+      </div>
+
+      <div class="mapui__checks">
+        <label>
+          <input id="map_opt" type="checkbox">
+          <span>Опт</span>
+        </label>
+        <label>
+          <input id="map_delivery" type="checkbox">
+          <span>Доставка</span>
+        </label>
+      </div>
+
+      <input id="map_q" class="mapui__field" type="text" placeholder="Что вы ищете?">
+
+      <select id="map_catalog" class="browser-default mapui__select">
+        <option value="">Все каталоги</option>
+        {% for cat in catalogs %}
+          <option value="{{ cat.id }}">{{ cat.title }}</option>
+        {% endfor %}
+      </select>
+
+      <select id="map_category" class="browser-default mapui__select">
+        <option value="" selected>Все категории</option>
+        {% for c in categories %}
+          <option value="{{ c.id }}" data-catalog-id="{{ c.catalog_id }}">{{ c.title }}</option>
+        {% endfor %}
+      </select>
+
+      <button id="map_add" class="btn mapui__btn" type="button">Добавить</button>
+      <button id="map_find" class="btn mapui__btn" type="button">Найти</button>
+    </div>
+
+    <div class="mapui__right">
+      <div id="map_list"></div>
+    </div>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{% static 'legacy/js/leaflet.js' %}"></script>
+  <script src="{% static 'legacy/js/leaflet.markercluster.js' %}"></script>
+  <script>
+    (function () {
+      var params = new URLSearchParams(window.location.search || '');
+      var focusLat = parseFloat(params.get('lat') || '');
+      var focusLon = parseFloat(params.get('lon') || '');
+      var focusZoom = parseInt(params.get('zoom') || '0', 10);
+      if (!isFinite(focusZoom) || focusZoom <= 0) focusZoom = null;
+      var focusAdvertId = parseInt(params.get('advert_id') || '0', 10);
+      if (!isFinite(focusAdvertId) || focusAdvertId <= 0) focusAdvertId = null;
+      var initialQ = (params.get('q') || '').toString();
+      var initialCatalog = (params.get('catalog') || '').toString();
+      var initialCategory = (params.get('category') || '').toString();
+      var initialType = (params.get('type') || '').toString();
+      var initialOpt = (params.get('opt') || '').toString();
+      var initialDelivery = (params.get('delivery') || '').toString();
+      var initialSort = (params.get('sort') || '').toString();
+
+      (function () {
+        var catalogEl = document.getElementById('map_catalog');
+        var categoryEl = document.getElementById('map_category');
+        if (!catalogEl || !categoryEl) return;
+
+        var allOptions = Array.prototype.slice.call(categoryEl.querySelectorAll('option'));
+
+        var hasExplicitCategory = Boolean(initialCategory);
+
+        if (!initialCatalog && !initialCategory) {
+          catalogEl.value = '';
+          categoryEl.value = '';
+        }
+        function filterCategories() {
+          if (!hasExplicitCategory) {
+            categoryEl.value = '';
+          }
+          var selectedCatalog = String(catalogEl.value || '');
+          var selectedCategory = String(categoryEl.value || '');
+
+          if (!selectedCatalog && selectedCategory) {
+            allOptions.forEach(function (opt) {
+              if (!opt || !opt.getAttribute) return;
+              if (String(opt.value || '') !== selectedCategory) return;
+              var cid0 = String(opt.getAttribute('data-catalog-id') || '');
+              if (cid0) selectedCatalog = cid0;
+            });
+            if (selectedCatalog) catalogEl.value = selectedCatalog;
+          }
+
+          categoryEl.disabled = !selectedCatalog;
+          if (categoryEl.disabled) {
+            categoryEl.value = '';
+            if (categoryEl.options && categoryEl.options.length) categoryEl.selectedIndex = 0;
+          }
+
+          while (categoryEl.firstChild) categoryEl.removeChild(categoryEl.firstChild);
+          allOptions.forEach(function (opt) {
+            if (!opt || !opt.getAttribute) return;
+            if (!opt.value) {
+              categoryEl.appendChild(opt);
+              return;
+            }
+            var cid = String(opt.getAttribute('data-catalog-id') || '');
+            if (!selectedCatalog || cid === selectedCatalog) {
+              categoryEl.appendChild(opt);
+            }
+          });
+
+          if (selectedCategory) {
+            var stillExists = Array.prototype.some.call(categoryEl.options, function (opt) {
+              return String(opt.value || '') === selectedCategory;
+            });
+            if (!stillExists) categoryEl.value = '';
+          }
+
+          if (!hasExplicitCategory) {
+            categoryEl.value = '';
+            if (categoryEl.options && categoryEl.options.length) categoryEl.selectedIndex = 0;
+          }
+        }
+
+        catalogEl.addEventListener('change', function () {
+          categoryEl.value = '';
+          filterCategories();
+          loadAdverts();
+        });
+
+        if (initialCatalog) {
+          catalogEl.value = initialCatalog;
+        }
+        filterCategories();
+      })();
+
+      var map = L.map('map', { scrollWheelZoom: true, zoomControl: false });
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors'
+      }).addTo(map);
+
+      var fallbackCenter = [55.7558, 37.6173];
+      if (isFinite(focusLat) && isFinite(focusLon)) {
+        map.setView([focusLat, focusLon], focusZoom || 11);
+      } else {
+        map.setView(fallbackCenter, 5);
+      }
+
+      var markerById = {};
+      var cluster = L.markerClusterGroup({
+        spiderfyOnMaxZoom: true,
+        showCoverageOnHover: false,
+        iconCreateFunction: function (c) {
+          var count = c.getChildCount();
+          var cls = 'mapui-cluster--g';
+          if (count >= 10) cls = 'mapui-cluster--y';
+          if (count >= 50) cls = 'mapui-cluster--o';
+          if (count >= 200) cls = 'mapui-cluster--r';
+          return L.divIcon({
+            html: '<div class="mapui-cluster ' + cls + '">' + count + '</div>',
+            className: '',
+            iconSize: [34, 34]
+          });
+        }
+      });
+      map.addLayer(cluster);
+
+      function esc(s) {
+        return (s || '').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      }
+
+      function renderList(adverts) {
+        var el = document.getElementById('map_list');
+        if (!el) return;
+        if (!adverts || adverts.length === 0) {
+          el.innerHTML = '<div style="padding:10px;color:#777;">Ничего не найдено</div>';
+          return;
+        }
+
+        el.innerHTML = adverts.map(function (a) {
+          var price = (a.price == null) ? '' : (a.price.toFixed ? a.price.toFixed(2) : a.price);
+          var thumb = a.thumb_url || '{% static "legacy/images/no_photo_102_109.jpg" %}';
+          var url = a.url || ('/adverts/' + a.id + '/');
+          var meta = '';
+          if (a.created_date || a.category_title) {
+            meta = '<div class="mapui__list-meta">' + esc(a.created_date || '') + (a.category_title ? (' · ' + esc(a.category_title)) : '') + '</div>';
+          }
+
+          var flags = [];
+          if (a.is_opt) flags.push('Опт');
+          if (a.is_delivery) flags.push('Доставка');
+          var flagsHtml = flags.length ? ('<div class="mapui__list-meta">' + esc(flags.join(' · ')) + '</div>') : '';
+          return (
+            '<div class="mapui__list-item" data-id="' + a.id + '">' +
+              '<a class="mapui__list-thumb" href="' + url + '"><img src="' + thumb + '" alt=""></a>' +
+              '<div class="mapui__list-body">' +
+                '<div class="mapui__list-top">' +
+                  '<a class="mapui__list-title" href="' + url + '">' + esc(a.title) + '</a>' +
+                  (price ? '<div class="mapui__list-price">' + esc(price) + '</div>' : '') +
+                '</div>' +
+                (a.text_short ? '<div class="mapui__list-text">' + esc(a.text_short) + '</div>' : '') +
+                meta +
+                flagsHtml +
+                '<a class="mapui__list-more" href="' + url + '">Подробнее<span class="mapui__chev">→</span></a>' +
+              '</div>' +
+            '</div>'
+          );
+        }).join('');
+
+        Array.prototype.forEach.call(el.querySelectorAll('.mapui__list-item'), function (item) {
+          item.addEventListener('click', function () {
+            if (window.event && window.event.target && window.event.target.closest) {
+              var link = window.event.target.closest('a');
+              if (link) {
+                return;
+              }
+            }
+            var id = parseInt(item.getAttribute('data-id') || '0', 10);
+            var m = markerById[id];
+            if (!m) return;
+            map.setView(m.getLatLng(), 12);
+            m.openPopup();
+          });
+        });
+      }
+
+      function loadAdverts() {
+        var qEl = document.getElementById('map_q');
+        var q = (qEl && qEl.value) ? qEl.value.trim() : '';
+
+        var optEl = document.getElementById('map_opt');
+        var opt = optEl && optEl.checked ? '1' : '';
+
+        var delEl = document.getElementById('map_delivery');
+        var delivery = delEl && delEl.checked ? '1' : '';
+
+        var catEl = document.getElementById('map_category');
+        var category = (catEl && catEl.value) ? catEl.value : '';
+
+        var catalogEl = document.getElementById('map_catalog');
+        var catalog = (catalogEl && catalogEl.value) ? catalogEl.value : '';
+
+        var typeEl = document.querySelector('input[name="ad_type"]:checked');
+        var type = typeEl && typeEl.value ? typeEl.value : 'all';
+
+        var url = '/api/map/adverts/?limit=1000';
+        if (q) url += '&q=' + encodeURIComponent(q);
+        if (type && type !== 'all') url += '&type=' + encodeURIComponent(type);
+        if (opt) url += '&opt=1';
+        if (delivery) url += '&delivery=1';
+        if (catalog) url += '&catalog=' + encodeURIComponent(catalog);
+        if (category) url += '&category=' + encodeURIComponent(category);
+        if (initialSort) url += '&sort=' + encodeURIComponent(initialSort);
+
+        cluster.clearLayers();
+        markerById = {};
+
+        fetch(url)
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            var adverts = (data && data.adverts) ? data.adverts : [];
+            renderList(adverts);
+
+            var bounds = [];
+            adverts.forEach(function (a) {
+              if (a.lat == null || a.lon == null) return;
+              var m = L.marker([a.lat, a.lon]);
+              markerById[a.id] = m;
+
+              var title = (a.title || '').toString();
+              var url = a.url || ('/adverts/' + a.id + '/');
+              var thumb = a.thumb_url || '{% static "legacy/images/no_photo_102_109.jpg" %}';
+              var price = (a.price == null) ? '' : ('<div style="margin-top:6px;font-weight:700;">' + esc(a.price.toFixed ? a.price.toFixed(2) : a.price) + '</div>');
+              var text = a.text_short ? ('<div style="margin-top:6px;color:#666;font-size:11px;line-height:1.25;">' + esc(a.text_short) + '</div>') : '';
+              var meta = (a.created_date || a.category_title) ? ('<div style="margin-top:6px;color:#888;font-size:10px;">' + esc(a.created_date || '') + (a.category_title ? (' · ' + esc(a.category_title)) : '') + '</div>') : '';
+              var flags = [];
+              if (a.is_opt) flags.push('Опт');
+              if (a.is_delivery) flags.push('Доставка');
+              var flagsHtml = flags.length ? ('<div style="margin-top:6px;color:#888;font-size:10px;">' + esc(flags.join(' · ')) + '</div>') : '';
+              var more = '<div style="margin-top:6px;"><a href="' + url + '" style="font-size:11px;color:#0090b6;">Подробнее</a></div>';
+              var img = '<div style="margin-top:6px;"><img src="' + thumb + '" alt="" style="width:120px;height:68px;object-fit:cover;display:block;background:#eee;"></div>';
+              m.bindPopup('<a href="' + url + '">' + esc(title) + '</a>' + img + price + text + meta + flagsHtml + more);
+              cluster.addLayer(m);
+              bounds.push([a.lat, a.lon]);
+            });
+
+            if (bounds.length > 0) {
+              if (!(isFinite(focusLat) && isFinite(focusLon))) {
+                map.fitBounds(bounds, { padding: [30, 30] });
+              }
+            }
+
+            if (focusAdvertId && markerById[focusAdvertId]) {
+              var m = markerById[focusAdvertId];
+              map.setView(m.getLatLng(), focusZoom || 12);
+              m.openPopup();
+            }
+          })
+          .catch(function () {
+            renderList([]);
+          });
+      }
+
+      function debounce(fn, waitMs) {
+        var t = null;
+        return function () {
+          var args = arguments;
+          if (t) {
+            clearTimeout(t);
+          }
+          t = setTimeout(function () {
+            t = null;
+            fn.apply(null, args);
+          }, waitMs);
+        };
+      }
+
+      var loadAdvertsDebounced = debounce(loadAdverts, 350);
+
+      var btnAdd = document.getElementById('map_add');
+      if (btnAdd) {
+        btnAdd.addEventListener('click', function () {
+          window.location.href = '{% url "advert_create" %}';
+        });
+      }
+
+      var btnFind = document.getElementById('map_find');
+      if (btnFind) {
+        btnFind.addEventListener('click', loadAdverts);
+      }
+      var qEl = document.getElementById('map_q');
+      if (qEl) {
+        qEl.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            loadAdverts();
+          }
+        });
+
+        qEl.addEventListener('input', function () {
+          loadAdvertsDebounced();
+        });
+      }
+
+      var optEl = document.getElementById('map_opt');
+      if (optEl) {
+        optEl.addEventListener('change', loadAdverts);
+      }
+
+      var delEl = document.getElementById('map_delivery');
+      if (delEl) {
+        delEl.addEventListener('change', loadAdverts);
+      }
+
+      var catEl = document.getElementById('map_category');
+      if (catEl) {
+        catEl.addEventListener('change', loadAdverts);
+      }
+
+      var catalogEl = document.getElementById('map_catalog');
+      if (catalogEl) {
+        // category filtering + load happens in the IIFE above
+      }
+
+      Array.prototype.forEach.call(document.querySelectorAll('input[name="ad_type"]'), function (r) {
+        r.addEventListener('change', loadAdverts);
+      });
+
+      (function () {
+        var sel = document.getElementById('map_category');
+        if (sel && initialCategory) {
+          sel.value = initialCategory;
+        }
+
+        var qEl = document.getElementById('map_q');
+        if (qEl && initialQ) {
+          qEl.value = initialQ;
+        }
+
+        if (initialType) {
+          var t = initialType.toLowerCase();
+          if (t === 'offer' || t === 'demand' || t === 'all') {
+            var r = document.querySelector('input[name="ad_type"][value="' + t + '"]');
+            if (r) r.checked = true;
+          }
+        }
+        if (initialOpt) {
+          var optEl = document.getElementById('map_opt');
+          if (optEl && (initialOpt === '1' || initialOpt.toLowerCase() === 'true' || initialOpt.toLowerCase() === 'yes' || initialOpt.toLowerCase() === 'on')) {
+            optEl.checked = true;
+          }
+        }
+        if (initialDelivery) {
+          var delEl = document.getElementById('map_delivery');
+          if (delEl && (initialDelivery === '1' || initialDelivery.toLowerCase() === 'true' || initialDelivery.toLowerCase() === 'yes' || initialDelivery.toLowerCase() === 'on')) {
+            delEl.checked = true;
+          }
+        }
+
+        loadAdverts();
+      })();
+    })();
+  </script>
+{% endblock %}

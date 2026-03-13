@@ -1,0 +1,62 @@
+{% extends 'legacy/base.html' %}
+
+{% block title %}Админка — каталоги{% endblock %}
+
+{% block content %}
+  <div class="row" style="margin-bottom:0;">
+    <div class="col s12">
+      <h5 style="margin: 10px 0 14px 0; color:#7fb500; font-weight: 800;">Админка: каталоги</h5>
+
+      <div style="margin: 0 0 12px 0;">
+        <a class="btn" href="{% url 'admin_users' %}" style="background:#7fb500; box-shadow:none; border-radius:0;">Пользователи</a>
+      </div>
+
+      {% if ok_message %}
+        <div class="card" style="box-shadow:none; border:1px solid #cfe8b3; background:#f6fff0;">
+          <div class="card-content" style="padding: 10px 14px; color:#2e7d32; font-weight:700;">{{ ok_message }}</div>
+        </div>
+      {% endif %}
+
+      <form method="post">
+        {% csrf_token %}
+
+        <div class="card" style="box-shadow:none; border:1px solid #e6e6e6;">
+          <div class="card-content" style="padding: 0;">
+            <table class="striped" style="margin:0;">
+              <thead>
+                <tr>
+                  <th style="width: 80px;">ID</th>
+                  <th>Каталог</th>
+                  <th style="width: 120px;">Порядок</th>
+                  <th style="width: 140px;">Активен</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for c in catalogs %}
+                  <tr>
+                    <td>{{ c.id }}</td>
+                    <td>{{ c.title }}</td>
+                    <td>
+                      <input type="number" name="sort_{{ c.id }}" value="{{ c.sort|default:0 }}" style="height: 32px; margin: 0;" />
+                    </td>
+                    <td>
+                      <label style="display:flex; align-items:center; gap:10px;">
+                        <input type="checkbox" name="active_{{ c.id }}" {% if c.active %}checked{% endif %} />
+                        <span></span>
+                      </label>
+                    </td>
+                  </tr>
+                {% empty %}
+                  <tr><td colspan="4" style="color:#777;">Нет каталогов</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <button class="btn" type="submit" style="background:#7fb500; box-shadow:none; border-radius:0;">Сохранить</button>
+      </form>
+
+    </div>
+  </div>
+{% endblock %}

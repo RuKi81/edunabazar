@@ -1,0 +1,6 @@
+{% extends 'legacy/advert_form.html' %}
+
+{% block page_title %}Редактировать объявление{% endblock %}
+{% block heading %}Редактировать объявление{% endblock %}
+{% block submit_label %}Сохранить{% endblock %}
+{% block cancel_url %}{% url 'advert_detail' advert.id %}{% endblock %}

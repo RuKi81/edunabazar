@@ -1,0 +1,640 @@
+{% extends 'legacy/base.html' %}
+
+{% load legacy_extras %}
+
+{% block title %}Объявления{% endblock %}
+
+{% block content %}
+  <style>
+    #w1 > div.summary{display:none;height:1px;}
+    #zap{height:3rem}
+
+    .hide-on-med-and-down nav.background-none {
+      background: transparent !important;
+      box-shadow: none !important;
+    }
+
+    .hide-on-med-and-down {
+      position: sticky;
+      top: 0;
+      z-index: 2000;
+    }
+    .hide-on-large-only {
+      position: sticky;
+      top: 0;
+      z-index: 2000;
+      background: #fff;
+    }
+
+    .searcher__main {
+      position: sticky;
+      top: 110px;
+      align-self: flex-start;
+    }
+    @media (max-width: 600px) {
+      .searcher__main {
+        position: sticky;
+        top: 75px;
+      }
+
+      .adverts-controls {
+        top: 75px;
+      }
+    }
+
+    .adverts-controls {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+      position: sticky;
+      top: 110px;
+      z-index: 1500;
+      background: #fff;
+      padding: 8px 10px;
+      border-radius: 10px;
+      box-shadow: 0 1px 0 rgba(0,0,0,.08);
+    }
+    .adverts-controls__group {
+      display: grid;
+      grid-template-columns: 120px minmax(140px, 1fr);
+      align-items: center;
+      column-gap: 8px;
+      min-width: 260px;
+    }
+    .adverts-controls__label {
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .adverts-controls select.browser-default {
+      height: 2.4rem;
+      line-height: 2.4rem;
+      padding: 0 8px;
+      width: 100%;
+    }
+
+    .adverts-controls__group--right {
+      grid-template-columns: 120px 90px;
+      justify-content: end;
+      min-width: 230px;
+    }
+
+    .filters-panel {
+      background: #f2f2f2;
+      border-radius: 14px;
+      padding: 12px;
+      box-shadow: 0 1px 0 rgba(0,0,0,.08);
+    }
+    .filters-panel__block {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid rgba(0,0,0,.08);
+    }
+    .filters-panel__block:first-child {
+      margin-top: 0;
+      padding-top: 0;
+      border-top: 0;
+    }
+    .filters-panel p {
+      margin: 0 0 6px 0 !important;
+    }
+    .filters-panel p:last-child {
+      margin-bottom: 0 !important;
+    }
+    .filters-panel label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      line-height: 1.2;
+    }
+    .filters-panel span {
+      font-size: 14px;
+      color: rgba(0,0,0,.75);
+      font-weight: 600;
+    }
+
+    .adverts-item {
+      border: 1px solid rgba(0,0,0,.08);
+      border-radius: 12px;
+      padding: 10px;
+      margin-bottom: 10px;
+      background: #fff;
+    }
+    .adverts-item + hr {
+      display: none;
+    }
+    .adverts-item__thumb {
+      display: block;
+      width: 100%;
+      max-width: 160px;
+    }
+    .adverts-item__thumb img {
+      width: 100%;
+      height: 110px;
+      object-fit: cover;
+      background: #eee;
+      border-radius: 10px;
+      display: block;
+    }
+    @media (max-width: 600px) {
+      .adverts-item__thumb {
+        max-width: none;
+      }
+      .adverts-item__thumb img {
+        height: 160px;
+      }
+    }
+    .adverts-item__top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 4px;
+    }
+    .adverts-item__title {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+    .adverts-item__title a {
+      color: inherit;
+    }
+    .adverts-item__price {
+      font-weight: 800;
+      font-size: 16px;
+      white-space: nowrap;
+    }
+    .adverts-item__badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 3px 0 0 0;
+    }
+    .adverts-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-size: 11px;
+      line-height: 1.2;
+      font-weight: 700;
+      border: 1px solid rgba(0,0,0,.10);
+      background: rgba(0,0,0,.04);
+      color: rgba(0,0,0,.75);
+      white-space: nowrap;
+    }
+    .adverts-badge--offer {
+      background: rgba(127,181,0,.12);
+      border-color: rgba(127,181,0,.25);
+      color: rgba(60,110,0,.95);
+    }
+    .adverts-badge--demand {
+      background: rgba(33,150,243,.12);
+      border-color: rgba(33,150,243,.25);
+      color: rgba(13,71,161,.95);
+    }
+    .adverts-item__text {
+      color: rgba(0,0,0,.8);
+      margin: 6px 0 8px 0;
+      line-height: 1.35;
+    }
+    .adverts-item__meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      color: rgba(0,0,0,.6);
+      font-size: 12px;
+    }
+    .adverts-item__meta a {
+      color: inherit;
+    }
+  </style>
+
+  <div class="col m12 height_1">&nbsp;</div>
+
+  <div class="row" style="margin-bottom:0;">
+    <div class="col m4 main-search searcher__main">
+      <form method="get" action="/adverts/">
+        <div class="row" style="margin-bottom:0;">
+          <input type="hidden" name="sort" value="{{ sort }}">
+          <input type="hidden" name="page_size" value="{{ page_size }}">
+          <input type="hidden" id="type" name="type" value="{{ request.GET.type|default:'' }}">
+          {% if category_id %}
+            <input type="hidden" name="category" value="{{ category_id }}">
+          {% endif %}
+
+          <div class="input-field col s12">
+            <input id="q" name="q" type="text" value="{{ request.GET.q|default:'' }}">
+            <label for="q">Поиск</label>
+          </div>
+
+          <div class="col s12" style="margin-top: 10px;">
+            <select id="catalog" class="browser-default" name="catalog">
+              <option value="">Все каталоги</option>
+              {% for cat in catalogs %}
+                <option value="{{ cat.id }}" {% if catalog_id == cat.id %}selected{% endif %}>{{ cat.title }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="col s12" style="margin-top: 10px;">
+            <select id="category" class="browser-default" name="category">
+              <option value="" {% if not category_id %}selected{% endif %}>Все категории</option>
+              {% for c in categories %}
+                <option value="{{ c.id }}" data-catalog-id="{{ c.catalog_id }}" {% if category_id == c.id %}selected{% endif %}>{{ c.title }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="col s12" style="margin-top: 14px;">
+            <button class="btn" type="submit">Найти</button>
+            <a class="btn" href="{% url 'advert_create' %}" style="margin-left: 8px;">Добавить</a>
+          </div>
+
+          <div class="col s12 filters-panel" style="margin-top: 18px;">
+            <div class="filters-panel__block">
+              <p style="margin: 0 0 6px 0;">
+                <label>
+                  <input type="checkbox" id="type_all" {% if not request.GET.type %}checked{% endif %} />
+                  <span>Все</span>
+                </label>
+              </p>
+
+              <p style="margin: 0 0 6px 0;">
+                <label>
+                  <input type="checkbox" id="type_offer" {% if request.GET.type == 'offer' %}checked{% endif %} />
+                  <span>Предложение</span>
+                </label>
+              </p>
+
+              <p style="margin: 0;">
+                <label>
+                  <input type="checkbox" id="type_demand" {% if request.GET.type == 'demand' %}checked{% endif %} />
+                  <span>Спрос</span>
+                </label>
+              </p>
+            </div>
+
+            <div class="filters-panel__block">
+              <p style="margin: 0 0 6px 0;">
+                <label>
+                  <input type="checkbox" id="opt" name="opt" value="1" {% if request.GET.opt %}checked{% endif %} />
+                  <span>Опт</span>
+                </label>
+              </p>
+
+              <p style="margin: 0;">
+                <label>
+                  <input type="checkbox" id="delivery" name="delivery" value="1" {% if request.GET.delivery %}checked{% endif %} />
+                  <span>Доставка</span>
+                </label>
+              </p>
+            </div>
+          </div>
+        </div>
+      </form>
+
+      <div style="margin-top: 16px;">
+        <a class="btn" href="/map/{% query_update page='' %}">Показать на карте</a>
+      </div>
+    </div>
+
+    <div class="col m8">
+      <div class="adverts-controls">
+        <div class="adverts-controls__group">
+          <div class="adverts-controls__label">Сортировать:</div>
+          <select id="sort" class="js__catalog-filter-select browser-default">
+            <option value="id" {% if sort == 'id' %}selected{% endif %}>Дата</option>
+            <option value="price" {% if sort == 'price' %}selected{% endif %}>Цена</option>
+            <option value="count" {% if sort == 'count' %}selected{% endif %}>Просмотры</option>
+          </select>
+        </div>
+
+        <div id="zap" class="adverts-controls__label" style="display:none;">Грузим...</div>
+
+        <div class="adverts-controls__group adverts-controls__group--right">
+          <div class="adverts-controls__label">Показывать:</div>
+          <select id="page_size" class="js__catalog-filter-select browser-default">
+            <option value="12" {% if page_size == 12 %}selected{% endif %}>12</option>
+            <option value="24" {% if page_size == 24 %}selected{% endif %}>24</option>
+            <option value="36" {% if page_size == 36 %}selected{% endif %}>36</option>
+            <option value="48" {% if page_size == 48 %}selected{% endif %}>48</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="col m12 catalog__list">
+      {% if adverts %}
+        {% for a in adverts %}
+          <div class="adverts-item catalog__item">
+            <div class="row" style="margin-bottom:0;">
+              <div class="col s12 m3">
+                <a class="adverts-item__thumb" href="{% url 'advert_detail' a.id %}">
+                  {% if a.thumb_url %}
+                    <img src="{{ a.thumb_url }}" alt="" style="width:100%;height:109px;object-fit:cover;display:block;background:#eee;">
+                  {% else %}
+                    <img src="{{ a.title|pick_thumb_url }}" alt="" style="width:100%;height:109px;object-fit:contain;display:block;background:#eee;">
+                  {% endif %}
+                </a>
+              </div>
+
+              <div class="col s12 m9">
+                <div class="adverts-item__top">
+                  <div>
+                    <h2 class="adverts-item__title">
+                      <a href="{% url 'advert_detail' a.id %}">{{ a.title }}</a>
+                    </h2>
+                    <div class="adverts-item__badges">
+                      {% if a.type == 0 %}
+                        <span class="adverts-badge adverts-badge--offer">Предложение</span>
+                      {% elif a.type == 1 %}
+                        <span class="adverts-badge adverts-badge--demand">Спрос</span>
+                      {% endif %}
+
+                      {% if a.wholesale_price and a.wholesale_price > 0 %}
+                        <span class="adverts-badge">Опт</span>
+                      {% endif %}
+
+                      {% if a.delivery %}
+                        <span class="adverts-badge">Доставка</span>
+                      {% endif %}
+                    </div>
+                  </div>
+                  <div class="adverts-item__price">{{ a.price|format_price }}{% if a.price_unit %} / {{ a.price_unit }}{% endif %}</div>
+                </div>
+
+                <div class="advert-item-metrics">
+                  <div class="adverts-detail__params"></div>
+                </div>
+
+                <div class="adverts-item__text">
+                  {{ a.text|truncate_ellipsis:260 }}
+                </div>
+
+                <div class="adverts-item__meta">
+                  <div class="adverts-item__author">Опубликовал(а) {% firstof a.author.name a.author.username %}</div>
+                  <div class="adverts-item__date">{{ a.created_at|date:"d.m.Y" }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        {% endfor %}
+
+        <div class="col m12 center-align" style="margin-top: 20px;">
+          <ul class="pagination" style="margin:0;">
+            {% if adverts.has_previous %}
+              <li class="waves-effect">
+                <a href="{% query_update page=adverts.previous_page_number %}">←</a>
+              </li>
+            {% else %}
+              <li class="disabled"><a href="#!">←</a></li>
+            {% endif %}
+
+            {% for p in page_range %}
+              {% if p == adverts.number %}
+                <li class="active"><a href="#!">{{ p }}</a></li>
+              {% elif p == '…' %}
+                <li class="disabled"><a href="#!">{{ p }}</a></li>
+              {% else %}
+                <li class="waves-effect">
+                  <a href="{% query_update page=p %}">{{ p }}</a>
+                </li>
+              {% endif %}
+            {% endfor %}
+
+            {% if adverts.has_next %}
+              <li class="waves-effect">
+                <a href="{% query_update page=adverts.next_page_number %}">→</a>
+              </li>
+            {% else %}
+              <li class="disabled"><a href="#!">→</a></li>
+            {% endif %}
+          </ul>
+        </div>
+      {% else %}
+        <p>Нет объявлений.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    (function () {
+      try {
+        var savedScrollY = sessionStorage.getItem('adverts_scroll_y');
+        if (savedScrollY !== null) {
+          sessionStorage.removeItem('adverts_scroll_y');
+          var y = parseInt(savedScrollY, 10);
+          if (!isNaN(y)) {
+            window.scrollTo(0, y);
+          }
+        }
+      } catch (e) {}
+
+      function updateQuery(params) {
+        try {
+          sessionStorage.setItem('adverts_scroll_y', String(window.scrollY || 0));
+        } catch (e) {}
+        var u = new URL(window.location.href);
+        var s = u.searchParams;
+        Object.keys(params).forEach(function (k) {
+          var v = params[k];
+          if (v === null || v === undefined || v === '') {
+            s.delete(k);
+          } else {
+            s.set(k, v);
+          }
+        });
+        window.location.href = u.pathname + '?' + s.toString();
+      }
+
+      var sortEl = document.getElementById('sort');
+      if (sortEl) {
+        sortEl.addEventListener('change', function () {
+          updateQuery({ sort: sortEl.value, page: '' });
+        });
+      }
+
+      var pageSizeEl = document.getElementById('page_size');
+      if (pageSizeEl) {
+        pageSizeEl.addEventListener('change', function () {
+          updateQuery({ page_size: pageSizeEl.value, page: '' });
+        });
+      }
+
+      var categoryEl = document.getElementById('category');
+      if (categoryEl) {
+        categoryEl.addEventListener('change', function () {
+          updateQuery({ category: categoryEl.value, page: '' });
+        });
+      }
+
+      (function () {
+        var catalogEl = document.getElementById('catalog');
+        var categoryEl2 = document.getElementById('category');
+        if (!catalogEl || !categoryEl2) return;
+
+        var hasExplicitCategory = false;
+
+        try {
+          var p0 = new URLSearchParams(window.location.search || '');
+          hasExplicitCategory = Boolean(p0.get('category'));
+          if (!p0.get('catalog') && !p0.get('category')) {
+            catalogEl.value = '';
+            categoryEl2.value = '';
+          }
+        } catch (e) {}
+
+        var allOptions = Array.prototype.slice.call(categoryEl2.querySelectorAll('option'));
+        function filterCategories() {
+          if (!hasExplicitCategory) {
+            categoryEl2.value = '';
+          }
+          var selectedCatalog = String(catalogEl.value || '');
+          var selectedCategory = String(categoryEl2.value || '');
+
+          if (!selectedCatalog && selectedCategory) {
+            allOptions.forEach(function (opt) {
+              if (!opt || !opt.getAttribute) return;
+              if (String(opt.value || '') !== selectedCategory) return;
+              var cid0 = String(opt.getAttribute('data-catalog-id') || '');
+              if (cid0) selectedCatalog = cid0;
+            });
+            if (selectedCatalog) catalogEl.value = selectedCatalog;
+          }
+
+          categoryEl2.disabled = !selectedCatalog;
+          if (categoryEl2.disabled) {
+            categoryEl2.value = '';
+            if (categoryEl2.options && categoryEl2.options.length) categoryEl2.selectedIndex = 0;
+          }
+
+          while (categoryEl2.firstChild) categoryEl2.removeChild(categoryEl2.firstChild);
+          allOptions.forEach(function (opt) {
+            if (!opt || !opt.getAttribute) return;
+            if (!opt.value) {
+              categoryEl2.appendChild(opt);
+              return;
+            }
+            var cid = String(opt.getAttribute('data-catalog-id') || '');
+            if (!selectedCatalog || cid === selectedCatalog) {
+              categoryEl2.appendChild(opt);
+            }
+          });
+
+          if (selectedCategory) {
+            var stillExists = Array.prototype.some.call(categoryEl2.options, function (opt) {
+              return String(opt.value || '') === selectedCategory;
+            });
+            if (!stillExists) categoryEl2.value = '';
+          }
+
+          if (!hasExplicitCategory) {
+            categoryEl2.value = '';
+            if (categoryEl2.options && categoryEl2.options.length) categoryEl2.selectedIndex = 0;
+          }
+        }
+
+        catalogEl.addEventListener('change', function () {
+          categoryEl2.value = '';
+          filterCategories();
+          updateQuery({ catalog: catalogEl.value, category: '', page: '' });
+        });
+
+        filterCategories();
+      })();
+
+      var typeHiddenEl = document.getElementById('type');
+      var allEl = document.getElementById('type_all');
+      var offerEl = document.getElementById('type_offer');
+      var demandEl = document.getElementById('type_demand');
+
+      function updateTypeParamAndReload() {
+        if (!allEl || !offerEl || !demandEl) return;
+
+        var v = '';
+        if (allEl.checked) {
+          v = '';
+        } else if (offerEl.checked && !demandEl.checked) {
+          v = 'offer';
+        } else if (!offerEl.checked && demandEl.checked) {
+          v = 'demand';
+        } else {
+          v = '';
+        }
+
+        if (typeHiddenEl) typeHiddenEl.value = v;
+        updateQuery({ type: v, page: '' });
+      }
+
+      if (allEl) {
+        allEl.addEventListener('change', function () {
+          if (!allEl || !offerEl || !demandEl) return;
+          if (allEl.checked) {
+            offerEl.checked = false;
+            demandEl.checked = false;
+          }
+          updateTypeParamAndReload();
+        });
+      }
+
+      function onOfferChanged() {
+        if (!allEl || !offerEl || !demandEl) return;
+
+        if (offerEl.checked) {
+          allEl.checked = false;
+          demandEl.checked = false;
+        } else {
+          if (!demandEl.checked) {
+            allEl.checked = true;
+          }
+        }
+
+        updateTypeParamAndReload();
+      }
+
+      function onDemandChanged() {
+        if (!allEl || !offerEl || !demandEl) return;
+
+        if (demandEl.checked) {
+          allEl.checked = false;
+          offerEl.checked = false;
+        } else {
+          if (!offerEl.checked) {
+            allEl.checked = true;
+          }
+        }
+
+        updateTypeParamAndReload();
+      }
+
+      if (offerEl) offerEl.addEventListener('change', onOfferChanged);
+      if (demandEl) demandEl.addEventListener('change', onDemandChanged);
+
+      if (allEl && offerEl && demandEl && !allEl.checked && !offerEl.checked && !demandEl.checked) {
+        allEl.checked = true;
+      }
+    
+      var optEl = document.getElementById('opt');
+      if (optEl) {
+        optEl.addEventListener('change', function () {
+          updateQuery({ opt: optEl.checked ? '1' : '', page: '' });
+        });
+      }
+
+      var deliveryEl = document.getElementById('delivery');
+      if (deliveryEl) {
+        deliveryEl.addEventListener('change', function () {
+          updateQuery({ delivery: deliveryEl.checked ? '1' : '', page: '' });
+        });
+      }
+    })();
+  </script>
+{% endblock %}

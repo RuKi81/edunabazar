@@ -1,0 +1,471 @@
+{% extends 'legacy/base.html' %}
+{% load static %}
+
+{% block title %}{% block page_title %}{% endblock %}{% endblock %}
+
+{% block head %}
+  <link rel="stylesheet" href="{% static 'legacy/css/leaflet.css' %}" />
+  <style>
+    #create_map { height: 260px; border: 1px solid rgba(0,0,0,0.12); }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <div class="col m12 height_1">&nbsp;</div>
+
+  <div class="row" style="margin-bottom:0;">
+    <div class="col s12 m10 offset-m1">
+      <h1 style="font-size: 22px; margin: 0 0 18px 0;">{% block heading %}{% endblock %}</h1>
+
+      <form method="post" action="" enctype="multipart/form-data">
+        {% csrf_token %}
+
+        <div class="row" style="margin-bottom:0;">
+          <div class="input-field col s12 m6">
+            <select class="browser-default" name="type">
+              <option value="0" {% if form.type == 0 %}selected{% endif %}>Предложение</option>
+              <option value="1" {% if form.type == 1 %}selected{% endif %}>Спрос</option>
+            </select>
+            {% if errors.type %}<div style="color:#d32f2f; font-size: 12px; margin-top: 6px;">{{ errors.type }}</div>{% endif %}
+          </div>
+
+          <div class="input-field col s12 m6">
+            <select id="catalog" class="browser-default" name="catalog">
+              <option value="">Каталог</option>
+              {% for cat in catalogs %}
+                <option value="{{ cat.id }}" {% if form.catalog == cat.id %}selected{% endif %}>{{ cat.title }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="input-field col s12">
+            <select id="category" class="browser-default" name="category">
+              <option value="" {% if not form.category %}selected{% endif %}>Категория</option>
+              {% for c in categories %}
+                <option value="{{ c.id }}" data-catalog-id="{{ c.catalog_id }}" {% if form.category == c.id %}selected{% endif %}>{{ c.title }}</option>
+              {% endfor %}
+            </select>
+            {% if errors.category %}<div style="color:#d32f2f; font-size: 12px; margin-top: 6px;">{{ errors.category }}</div>{% endif %}
+          </div>
+
+          <div class="input-field col s12">
+            <input id="title" name="title" type="text" value="{{ form.title|default:'' }}">
+            <label for="title" class="active">Заголовок</label>
+            {% if errors.title %}<div style="color:#d32f2f; font-size: 12px; margin-top: 6px;">{{ errors.title }}</div>{% endif %}
+          </div>
+
+          <div class="input-field col s12">
+            <textarea id="text" name="text" class="materialize-textarea">{{ form.text|default:'' }}</textarea>
+            <label for="text" class="active">Описание</label>
+            {% if errors.text %}<div style="color:#d32f2f; font-size: 12px; margin-top: 6px;">{{ errors.text }}</div>{% endif %}
+          </div>
+
+          <div class="input-field col s12">
+            <input id="contacts" name="contacts" type="tel" value="{{ form.contacts|default:'' }}" inputmode="tel" autocomplete="tel" placeholder="+7 900 000-00-00">
+            <label for="contacts" class="active">Контактный телефон</label>
+            {% if errors.contacts %}<div style="color:#d32f2f; font-size: 12px; margin-top: 6px;">{{ errors.contacts }}</div>{% endif %}
+          </div>
+
+          {% if existing_photos %}
+          <div class="col s12" style="margin-top: 12px;">
+            <div style="font-size: 13px; color: #555; margin-bottom: 6px;">Текущие фотографии:</div>
+            <div style="display:flex; flex-wrap:wrap; gap:10px;">
+              {% for p in existing_photos %}
+                <div style="position:relative; width:90px;">
+                  <img src="{{ p.image.url }}" alt="" style="width:90px; height:70px; object-fit:cover; border-radius:2px; border:1px solid #ddd;">
+                  <label style="display:flex; align-items:center; gap:4px; font-size:11px; color:#d32f2f; margin-top:3px; cursor:pointer;">
+                    <input type="checkbox" name="delete_photo" value="{{ p.id }}">
+                    Удалить
+                  </label>
+                </div>
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
+
+          <div class="file-field input-field col s12" style="margin-top: 12px;">
+            <div class="btn">
+              <span>{% if existing_photos %}Добавить фото{% else %}Фото{% endif %}</span>
+              <input type="file" name="photos" multiple accept="image/*">
+            </div>
+            <div class="file-path-wrapper">
+              <input class="file-path validate" type="text" placeholder="Можно выбрать несколько фотографий">
+            </div>
+            {% if errors.photos %}<div style="color:#d32f2f; font-size: 12px; margin-top: 6px;">{{ errors.photos }}</div>{% endif %}
+          </div>
+
+          <div class="input-field col s12 m4">
+            <input id="price" name="price" type="text" value="{{ form.price|default:'' }}">
+            <label for="price" class="active">Цена</label>
+            {% if errors.price %}<div style="color:#d32f2f; font-size: 12px; margin-top: 6px;">{{ errors.price }}</div>{% endif %}
+          </div>
+
+          <div class="input-field col s12 m3">
+            <select class="browser-default" name="price_unit">
+              <option value="кг" {% if form.price_unit == 'кг' or not form.price_unit %}selected{% endif %}>кг</option>
+              <option value="л" {% if form.price_unit == 'л' %}selected{% endif %}>литр</option>
+              <option value="ц" {% if form.price_unit == 'ц' %}selected{% endif %}>центнер</option>
+              <option value="т" {% if form.price_unit == 'т' %}selected{% endif %}>т.</option>
+              <option value="шт" {% if form.price_unit == 'шт' %}selected{% endif %}>шт.</option>
+            </select>
+            <div style="font-size: 12px; color:#777; margin-top: 6px;">Ед. объёма</div>
+          </div>
+
+          <div class="input-field col s12 m5">
+            <input id="volume" name="volume" type="text" value="{{ form.volume|default:'' }}">
+            <label for="volume" class="active">Объем (необязательно)</label>
+          </div>
+
+          <div class="input-field col s12 m6">
+            <input id="min_volume" name="min_volume" type="text" value="{{ form.min_volume|default:'' }}">
+            <label for="min_volume" class="active">Мин. объем (необязательно)</label>
+          </div>
+
+          <div class="input-field col s12 m6">
+            <input id="wholesale_volume" name="wholesale_volume" type="text" value="{{ form.wholesale_volume|default:'' }}">
+            <label for="wholesale_volume" class="active">Опт. объем (необязательно)</label>
+          </div>
+
+          <div class="col s12" style="margin-top: 14px;">
+            <div style="display:flex; flex-wrap:wrap; gap:16px; align-items:center;">
+              <label style="margin:0;">
+                <input name="opt" type="checkbox" value="1" {% if form.opt %}checked{% endif %}>
+                <span>Опт</span>
+              </label>
+              <label style="margin:0;">
+                <input name="delivery" type="checkbox" value="1" {% if form.delivery %}checked{% endif %}>
+                <span>Доставка</span>
+              </label>
+            </div>
+          </div>
+
+          <input id="lat" name="lat" type="hidden" value="{{ form.lat|default:'' }}">
+          <input id="lon" name="lon" type="hidden" value="{{ form.lon|default:'' }}">
+
+          <div class="col s12" style="margin-top: 6px;">
+            <div class="row" style="margin-bottom: 6px;">
+              <div class="input-field col s12 m8" style="margin-top:0;">
+                <input id="address" name="address" type="text" value="{{ form.address|default:'' }}" placeholder="Например: Краснодар, ул. Красная 10" required>
+                <label for="address" class="active">Адрес размещения товара</label>
+                {% if errors.address %}<div style="color:#d32f2f; font-size: 12px; margin-top: 6px;">{{ errors.address }}</div>{% endif %}
+              </div>
+              <div class="col s12 m4" style="margin-top: 6px;">
+                <a id="address_find" class="btn" href="#">Найти на карте</a>
+                <span id="address_status" style="margin-left:10px; font-size:12px; color:#777;"></span>
+                {% if errors.lat %}<div style="color:#d32f2f; font-size: 12px; margin-top: 6px;">{{ errors.lat }}</div>{% endif %}
+                {% if errors.lon %}<div style="color:#d32f2f; font-size: 12px; margin-top: 6px;">{{ errors.lon }}</div>{% endif %}
+              </div>
+            </div>
+            <div id="create_map"></div>
+            <div style="font-size: 12px; color:#777; margin-top: 6px;">
+              Укажи точку на карте кликом или перетащи маркер — координаты заполнятся автоматически.
+            </div>
+          </div>
+
+          <div class="col s12" style="margin-top: 10px;">
+            <button class="btn" type="submit">{% block submit_label %}{% endblock %}</button>
+            <a class="btn" href="{% block cancel_url %}{% endblock %}" style="margin-left: 8px;">Отмена</a>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{% static 'legacy/js/leaflet.js' %}"></script>
+  <script>
+    (function () {
+      (function () {
+        var catalogEl = document.getElementById('catalog');
+        var categoryEl = document.getElementById('category');
+        if (!catalogEl || !categoryEl) return;
+
+        var hasExplicitCategory = Boolean(String(categoryEl.value || ''));
+
+        var allOptions = Array.prototype.slice.call(categoryEl.querySelectorAll('option'));
+        function filterCategories() {
+          var selectedCatalog = String(catalogEl.value || '');
+          var selectedCategory = String(categoryEl.value || '');
+
+          if (!selectedCatalog && selectedCategory) {
+            allOptions.forEach(function (opt) {
+              if (!opt || !opt.getAttribute) return;
+              if (String(opt.value || '') !== selectedCategory) return;
+              var cid0 = String(opt.getAttribute('data-catalog-id') || '');
+              if (cid0) selectedCatalog = cid0;
+            });
+            if (selectedCatalog) catalogEl.value = selectedCatalog;
+          }
+
+          categoryEl.disabled = !selectedCatalog && !selectedCategory;
+
+          while (categoryEl.firstChild) categoryEl.removeChild(categoryEl.firstChild);
+          allOptions.forEach(function (opt) {
+            if (!opt || !opt.getAttribute) return;
+            if (!opt.value) {
+              categoryEl.appendChild(opt);
+              return;
+            }
+            var cid = String(opt.getAttribute('data-catalog-id') || '');
+            if (!selectedCatalog || cid === selectedCatalog) {
+              categoryEl.appendChild(opt);
+            }
+          });
+
+          if (selectedCategory) {
+            var stillExists = Array.prototype.some.call(categoryEl.options, function (opt) {
+              return String(opt.value || '') === selectedCategory;
+            });
+            if (stillExists) {
+              categoryEl.value = selectedCategory;
+            } else {
+              categoryEl.value = '';
+            }
+          }
+        }
+
+        catalogEl.addEventListener('change', function () {
+          hasExplicitCategory = false;
+          categoryEl.value = '';
+          filterCategories();
+        });
+
+        categoryEl.addEventListener('change', function () {
+          hasExplicitCategory = Boolean(String(categoryEl.value || ''));
+        });
+
+        filterCategories();
+      })();
+
+      var mapEl = document.getElementById('create_map');
+      if (!mapEl) return;
+
+      var latEl = document.getElementById('lat');
+      var lonEl = document.getElementById('lon');
+      var addressEl = document.getElementById('address');
+      var addressFindEl = document.getElementById('address_find');
+      var addressStatusEl = document.getElementById('address_status');
+      var formEl = addressEl ? addressEl.closest('form') : null;
+
+      function setStatus(t) {
+        if (addressStatusEl) addressStatusEl.textContent = t || '';
+      }
+
+      function parseNum(el) {
+        if (!el || !el.value) return null;
+        var s = String(el.value).trim().replace(',', '.');
+        var v = parseFloat(s);
+        return Number.isFinite(v) ? v : null;
+      }
+
+      var lat = parseNum(latEl);
+      var lon = parseNum(lonEl);
+      if (lat === null || lon === null) {
+        lat = 55.751244;
+        lon = 37.618423;
+      }
+
+      var map = L.map('create_map', { zoomControl: true }).setView([lat, lon], 9);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap'
+      }).addTo(map);
+
+      var marker = L.marker([lat, lon], { draggable: true }).addTo(map);
+
+      var lastGeocodedAddress = (addressEl && addressEl.value ? String(addressEl.value).trim() : '');
+      var isGeocoding = false;
+
+      function setInputs(ll) {
+        if (latEl) latEl.value = (Math.round(ll.lat * 1000000) / 1000000).toFixed(6);
+        if (lonEl) lonEl.value = (Math.round(ll.lng * 1000000) / 1000000).toFixed(6);
+      }
+
+      var reverseTimer = null;
+      function reverseFillAddress(ll) {
+        if (!addressEl) return;
+        if (reverseTimer) clearTimeout(reverseTimer);
+        reverseTimer = setTimeout(function () {
+          fetch('/api/reverse/?lat=' + encodeURIComponent(ll.lat) + '&lon=' + encodeURIComponent(ll.lng))
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+              if (data && data.ok && data.address) {
+                addressEl.value = data.address;
+              }
+            })
+            .catch(function () {
+              // ignore
+            });
+        }, 250);
+      }
+
+      marker.on('dragend', function (e) {
+        var ll = e.target.getLatLng();
+        setInputs(ll);
+        reverseFillAddress(ll);
+      });
+
+      map.on('click', function (e) {
+        marker.setLatLng(e.latlng);
+        setInputs(e.latlng);
+        reverseFillAddress(e.latlng);
+      });
+
+      function syncFromInputs() {
+        var lat2 = parseNum(latEl);
+        var lon2 = parseNum(lonEl);
+        if (lat2 === null || lon2 === null) return;
+        if (lat2 < -90 || lat2 > 90 || lon2 < -180 || lon2 > 180) return;
+        var ll = L.latLng(lat2, lon2);
+        marker.setLatLng(ll);
+        map.panTo(ll, { animate: false });
+      }
+
+      if (latEl) latEl.addEventListener('change', syncFromInputs);
+      if (lonEl) lonEl.addEventListener('change', syncFromInputs);
+
+      if (addressFindEl) {
+        addressFindEl.addEventListener('click', function (e) {
+          e.preventDefault();
+          if (!addressEl || !addressEl.value || !addressEl.value.trim()) return;
+          var q0 = String(addressEl.value || '').trim();
+          if (!q0) return;
+          if (isGeocoding) return;
+          isGeocoding = true;
+          setStatus('Ищем адрес...');
+          fetch('/api/geocode/?q=' + encodeURIComponent(q0))
+            .then(function (r) {
+              return r.json().catch(function () {
+                return { ok: false, error: 'bad_json' };
+              });
+            })
+            .then(function (data) {
+              if (!data || !data.ok) {
+                setStatus('Ошибка геокодера' + (data && data.error ? (': ' + data.error) : ''));
+                return false;
+              }
+              if (!data.found) {
+                setStatus('Адрес не найден');
+                return false;
+              }
+              setStatus('');
+              var ll = L.latLng(parseFloat(data.lat), parseFloat(data.lon));
+              marker.setLatLng(ll);
+              map.setView(ll, Math.max(map.getZoom(), 12), { animate: false });
+              setInputs(ll);
+              if (data.display_name) {
+                addressEl.value = data.display_name;
+              }
+              lastGeocodedAddress = String(addressEl.value || '').trim();
+              return true;
+            })
+            .catch(function () {
+              setStatus('Ошибка геокодера');
+              return false;
+            })
+            .finally(function () {
+              isGeocoding = false;
+            });
+        });
+      }
+
+      function isValidLatLon(latVal, lonVal) {
+        if (latVal === null || latVal === undefined) return false;
+        if (lonVal === null || lonVal === undefined) return false;
+        if (!Number.isFinite(latVal) || !Number.isFinite(lonVal)) return false;
+        if (latVal < -90 || latVal > 90) return false;
+        if (lonVal < -180 || lonVal > 180) return false;
+        return true;
+      }
+
+      if (formEl) {
+        formEl.addEventListener('submit', function (e) {
+          if (!addressEl) return;
+          var q = String(addressEl.value || '').trim();
+          if (!q) return;
+
+          var curLat = parseNum(latEl);
+          var curLon = parseNum(lonEl);
+          var needGeocode = !isValidLatLon(curLat, curLon) || (lastGeocodedAddress && lastGeocodedAddress !== q);
+          if (!needGeocode) return;
+
+          e.preventDefault();
+          if (isGeocoding) return;
+
+          isGeocoding = true;
+          setStatus('Ищем адрес...');
+          fetch('/api/geocode/?q=' + encodeURIComponent(q))
+            .then(function (r) {
+              return r.json().catch(function () {
+                return { ok: false, error: 'bad_json' };
+              });
+            })
+            .then(function (data) {
+              if (!data || !data.ok) {
+                setStatus('Ошибка геокодера' + (data && data.error ? (': ' + data.error) : ''));
+                return;
+              }
+              if (!data.found) {
+                setStatus('Адрес не найден');
+                return;
+              }
+              setStatus('');
+              var ll = L.latLng(parseFloat(data.lat), parseFloat(data.lon));
+              if (!isValidLatLon(ll.lat, ll.lng)) {
+                setStatus('Адрес не найден');
+                return;
+              }
+              marker.setLatLng(ll);
+              map.setView(ll, Math.max(map.getZoom(), 12), { animate: false });
+              setInputs(ll);
+              if (data.display_name) {
+                addressEl.value = data.display_name;
+              }
+              lastGeocodedAddress = String(addressEl.value || '').trim();
+              formEl.submit();
+            })
+            .catch(function () {
+              setStatus('Ошибка геокодера');
+            })
+            .finally(function () {
+              isGeocoding = false;
+            });
+        });
+      }
+
+      if (addressEl && addressEl.value && addressEl.value.trim() && (parseNum(latEl) === null || parseNum(lonEl) === null)) {
+        fetch('/api/geocode/?q=' + encodeURIComponent(addressEl.value.trim()))
+          .then(function (r) {
+            return r.json().catch(function () {
+              return { ok: false, error: 'bad_json' };
+            });
+          })
+          .then(function (data) {
+            if (!data || !data.ok || !data.found) return;
+            var ll = L.latLng(parseFloat(data.lat), parseFloat(data.lon));
+            marker.setLatLng(ll);
+            map.setView(ll, Math.max(map.getZoom(), 12), { animate: false });
+            setInputs(ll);
+          })
+          .catch(function () {
+            // ignore
+          });
+      }
+
+      setStatus('');
+
+      if (formEl) {
+        formEl.addEventListener('submit', function (e) {
+          var latV = parseNum(latEl);
+          var lonV = parseNum(lonEl);
+          if (latV === null || lonV === null) {
+            e.preventDefault();
+            setStatus('Укажите адрес на карте (кликните на карте или воспользуйтесь поиском)');
+            if (mapEl) mapEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        });
+      }
+    })();
+  </script>
+{% endblock %}

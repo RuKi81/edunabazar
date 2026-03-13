@@ -1,0 +1,129 @@
+{% load legacy_extras %}
+
+{# Reusable reviews section. Expected context: reviews, avg_rating, review_type, review_object_id, legacy_user, is_admin_user, review_error, review_success #}
+
+<div style="margin-top: 30px; border-top: 1px solid #e0e0e0; padding-top: 20px;">
+  <h5 style="margin: 0 0 6px 0; font-weight: 700; color: #444;">
+    Отзывы
+    {% if avg_rating %}
+      <span style="font-size: 16px; color: #f5a623; margin-left: 8px;">
+        ★ {{ avg_rating }}
+      </span>
+      <span style="font-size: 14px; color: #999; margin-left: 4px;">({{ reviews|length }})</span>
+    {% endif %}
+  </h5>
+
+  {% if review_success %}
+    <div style="background: #e8f5e9; color: #2e7d32; padding: 10px 14px; border-radius: 3px; margin-bottom: 14px;">
+      {{ review_success }}
+    </div>
+  {% endif %}
+  {% if review_error %}
+    <div style="background: #ffebee; color: #c62828; padding: 10px 14px; border-radius: 3px; margin-bottom: 14px;">
+      {{ review_error }}
+    </div>
+  {% endif %}
+
+  {% if reviews %}
+    {% for r in reviews %}
+      <div style="border: 1px solid #eee; border-radius: 4px; padding: 14px; margin-bottom: 10px; {% if r.status == 5 %}background: #fffde7;{% endif %}">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+          <div>
+            <strong style="color: #444;">{% firstof r.author.name r.author.username "Аноним" %}</strong>
+            <span style="color: #f5a623; margin-left: 8px;">
+              {% for i in "12345" %}{% if forloop.counter <= r.points %}★{% else %}☆{% endif %}{% endfor %}
+            </span>
+            {% if r.status == 5 %}
+              <span style="font-size: 12px; background: #fff3cd; color: #856404; padding: 2px 6px; border-radius: 3px; margin-left: 8px;">На модерации</span>
+            {% endif %}
+          </div>
+          <span style="font-size: 13px; color: #999;">{{ r.created_at|date:"d.m.Y" }}</span>
+        </div>
+        <div style="color: #555; white-space: pre-wrap;">{{ r.text }}</div>
+
+        {% if is_admin_user or legacy_user and legacy_user.id == r.author_id %}
+          <div style="margin-top: 8px; display: flex; gap: 6px;">
+            {% if is_admin_user and r.status == 5 %}
+              <form method="post" action="{% url 'review_publish' r.id %}" style="display:inline;">
+                {% csrf_token %}
+                <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                <button type="submit" style="background: #4caf50; color: #fff; border: none; padding: 4px 10px; border-radius: 3px; cursor: pointer; font-size: 13px;">Опубликовать</button>
+              </form>
+            {% endif %}
+            {% if is_admin_user and r.status == 10 %}
+              <form method="post" action="{% url 'review_hide' r.id %}" style="display:inline;">
+                {% csrf_token %}
+                <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                <button type="submit" style="background: #ff9800; color: #fff; border: none; padding: 4px 10px; border-radius: 3px; cursor: pointer; font-size: 13px;">Скрыть</button>
+              </form>
+            {% endif %}
+            <form method="post" action="{% url 'review_delete' r.id %}" style="display:inline;" onsubmit="return confirm('Удалить отзыв?');">
+              {% csrf_token %}
+              <input type="hidden" name="next" value="{{ request.get_full_path }}">
+              <button type="submit" style="background: #f44336; color: #fff; border: none; padding: 4px 10px; border-radius: 3px; cursor: pointer; font-size: 13px;">Удалить</button>
+            </form>
+          </div>
+        {% endif %}
+      </div>
+    {% endfor %}
+  {% else %}
+    <p style="color: #999;">Отзывов пока нет</p>
+  {% endif %}
+
+  {% if legacy_user %}
+    <div style="margin-top: 18px; border: 1px solid #e0e0e0; border-radius: 4px; padding: 16px;">
+      <h6 style="margin: 0 0 10px 0; font-weight: 700; color: #444;">Оставить отзыв</h6>
+      <form method="post" action="{% url 'review_create' %}">
+        {% csrf_token %}
+        <input type="hidden" name="review_type" value="{{ review_type }}">
+        <input type="hidden" name="object_id" value="{{ review_object_id }}">
+
+        <div style="margin-bottom: 10px;">
+          <label style="display: block; font-weight: 600; margin-bottom: 4px; color: #555;">Оценка</label>
+          <div class="review-stars" style="font-size: 28px; cursor: pointer; color: #ccc; user-select: none;">
+            {% for i in "12345" %}<span data-value="{{ forloop.counter }}" class="review-star">☆</span>{% endfor %}
+          </div>
+          <input type="hidden" name="points" id="review_points" value="5">
+        </div>
+
+        <div style="margin-bottom: 10px;">
+          <label style="display: block; font-weight: 600; margin-bottom: 4px; color: #555;">Текст отзыва</label>
+          <textarea name="text" rows="3" maxlength="2000" required
+                    style="width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #ccc; border-radius: 3px; font-size: 14px; resize: vertical;"
+                    placeholder="Напишите ваш отзыв..."></textarea>
+        </div>
+
+        <button type="submit" class="btn" style="background: #7fb500; box-shadow: none; border-radius: 0;">Отправить отзыв</button>
+      </form>
+    </div>
+
+    <script>
+    (function() {
+      var stars = document.querySelectorAll('.review-star');
+      var input = document.getElementById('review_points');
+      function setRating(val) {
+        input.value = val;
+        stars.forEach(function(s) {
+          s.textContent = parseInt(s.getAttribute('data-value')) <= val ? '★' : '☆';
+          s.style.color = parseInt(s.getAttribute('data-value')) <= val ? '#f5a623' : '#ccc';
+        });
+      }
+      stars.forEach(function(s) {
+        s.addEventListener('click', function() { setRating(parseInt(s.getAttribute('data-value'))); });
+        s.addEventListener('mouseenter', function() {
+          var v = parseInt(s.getAttribute('data-value'));
+          stars.forEach(function(ss) {
+            ss.style.color = parseInt(ss.getAttribute('data-value')) <= v ? '#f5a623' : '#ccc';
+          });
+        });
+      });
+      document.querySelector('.review-stars').addEventListener('mouseleave', function() {
+        setRating(parseInt(input.value));
+      });
+      setRating(5);
+    })();
+    </script>
+  {% else %}
+    <p style="margin-top: 14px;"><a href="/login/?next={{ request.get_full_path|urlencode }}">Войдите</a>, чтобы оставить отзыв</p>
+  {% endif %}
+</div>

@@ -1,0 +1,38 @@
+{% extends 'legacy/base.html' %}
+
+{% block title %}Вход{% endblock %}
+
+{% block content %}
+  <h1>Вход</h1>
+
+  <div style="margin: 10px 0 16px;">
+    <a class="btn" href="{% url 'legacy_register_start' %}?next={{ next|urlencode }}">Регистрация</a>
+  </div>
+
+  {% if error %}
+    <p class="red-text">{{ error }}</p>
+  {% endif %}
+
+  <div class="card">
+    <div class="card-content">
+      <form method="post" class="auth-form">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ next }}" />
+
+        <div class="input-field">
+          <input id="username" name="username" value="{{ username|default:'' }}" />
+          <label for="username">Username</label>
+        </div>
+
+        <div class="input-field">
+          <input id="password" name="password" type="password" />
+          <label for="password">Пароль</label>
+        </div>
+
+        <button class="btn" type="submit">Войти</button>
+      </form>
+    </div>
+  </div>
+
+  <p><a href="/adverts/">← К объявлениям</a></p>
+{% endblock %}

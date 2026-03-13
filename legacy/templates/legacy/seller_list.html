@@ -1,0 +1,80 @@
+{% extends 'legacy/base.html' %}
+
+{% block title %}Предприятия{% endblock %}
+
+{% block content %}
+  <div class="row" style="margin-bottom: 0;">
+    <div class="col s12">
+      <h5 style="margin: 10px 0 14px 0; color: #7fb500; font-weight: 700;">Предприятия</h5>
+
+      {% if legacy_user %}
+        <div style="margin: 0 0 10px 0;">
+          <a class="btn" href="{% url 'seller_create' %}" style="background:#7fb500; box-shadow:none; border-radius:0;">Добавить предприятие</a>
+        </div>
+      {% endif %}
+
+      <form method="get" action="{% url 'seller_list' %}" class="row" style="margin-bottom: 10px;">
+        <div class="col s12 m8">
+          <input type="text" name="q" value="{{ q }}" placeholder="Поиск по предприятиям" style="height: 36px;" />
+        </div>
+        <div class="col s12 m4" style="margin-top: 6px;">
+          <button class="btn" type="submit" style="background:#7fb500; box-shadow:none; border-radius:0;">Найти</button>
+        </div>
+      </form>
+
+      {% if sellers and sellers.object_list %}
+        {% for s in sellers.object_list %}
+          <div class="card" style="box-shadow:none; border: 1px solid #e6e6e6;">
+            <div class="card-content" style="padding: 14px 16px;">
+              <div style="font-size: 16px; font-weight: 700; margin-bottom: 6px;">
+                <a href="{% url 'seller_detail' s.id %}" style="color:#0090b6;">{{ s.name }}</a>
+              </div>
+
+              {% if s.location %}
+                <div style="color:#777; font-size: 13px; margin-bottom: 6px;">{{ s.location }}</div>
+              {% endif %}
+
+              {% if s.about %}
+                <div style="color:#444; font-size: 13px; line-height: 1.35;">{{ s.about|truncatechars:220 }}</div>
+              {% endif %}
+
+              <div style="margin-top: 10px;">
+                <a class="btn-flat" href="{% url 'seller_detail' s.id %}" style="padding: 0; color:#7fb500; font-weight: 700;">Подробнее</a>
+              </div>
+            </div>
+          </div>
+        {% endfor %}
+
+        <div class="row" style="margin-top: 10px; margin-bottom: 0;">
+          <div class="col s12">
+            <ul class="pagination" style="margin: 0;">
+              {% if sellers.has_previous %}
+                <li class="waves-effect"><a href="?q={{ q|urlencode }}&page={{ sellers.previous_page_number }}&page_size={{ page_size }}"><i class="material-icons">chevron_left</i></a></li>
+              {% else %}
+                <li class="disabled"><a href="#!"><i class="material-icons">chevron_left</i></a></li>
+              {% endif %}
+
+              {% for p in page_range %}
+                {% if p == sellers.number %}
+                  <li class="active" style="background:#7fb500;"><a href="#!">{{ p }}</a></li>
+                {% elif p == '…' %}
+                  <li class="disabled"><a href="#!">…</a></li>
+                {% else %}
+                  <li class="waves-effect"><a href="?q={{ q|urlencode }}&page={{ p }}&page_size={{ page_size }}">{{ p }}</a></li>
+                {% endif %}
+              {% endfor %}
+
+              {% if sellers.has_next %}
+                <li class="waves-effect"><a href="?q={{ q|urlencode }}&page={{ sellers.next_page_number }}&page_size={{ page_size }}"><i class="material-icons">chevron_right</i></a></li>
+              {% else %}
+                <li class="disabled"><a href="#!"><i class="material-icons">chevron_right</i></a></li>
+              {% endif %}
+            </ul>
+          </div>
+        </div>
+      {% else %}
+        <div style="color:#777;">Нет предприятий</div>
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}

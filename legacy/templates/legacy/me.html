@@ -1,0 +1,504 @@
+{% extends 'legacy/base.html' %}
+{% load static %}
+
+{% block title %}Профиль{% endblock %}
+
+{% block head %}
+  <link rel="stylesheet" href="{% static 'legacy/css/leaflet.css' %}" />
+  <style>
+    #me_map { height: 240px; border: 1px solid rgba(0,0,0,0.12); }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <h1>Профиль</h1>
+
+  <style>
+    .enb-actions { display:flex; flex-wrap:wrap; align-items:center; gap:4px; }
+    .enb-btn-xs { height: 20px; line-height: 20px; padding: 0 6px; font-size: 10px; }
+    .enb-btn-xs.btn-small { height: 20px; line-height: 20px; }
+    .enb-filter-inline { display:flex; align-items:center; gap:8px; }
+    .enb-filter-label { font-size: 11px; color:#616161; min-width: 86px; }
+    .enb-filter-inline .input-field { margin:0; flex:1; }
+    .enb-filter-inline .select-wrapper input.select-dropdown { height: 28px; line-height: 28px; font-size: 12px; }
+    .enb-filter-inline .select-wrapper .caret { height: 28px; line-height: 28px; }
+  </style>
+
+  <div class="row">
+    <div class="col s12 m3 l3">
+      <div class="card" style="margin-top:0;">
+        <div class="card-content">
+          <h5 style="margin-top:0;">Учетные данные</h5>
+
+          {% if saved %}
+            <div class="card-panel" style="background:#e8f5e9;color:#2e7d32; padding: 10px;">Сохранено</div>
+          {% endif %}
+
+          <ul class="collection" style="margin:0 0 12px 0;">
+            <li class="collection-item" style="padding: 8px 12px;"><strong>id:</strong> {{ legacy_user.id }}</li>
+            <li class="collection-item" style="padding: 8px 12px;"><strong>username:</strong> {{ legacy_user.username }}</li>
+          </ul>
+
+          <a href="{% url 'change_password' %}" class="btn-flat enb-btn-xs" style="margin-bottom:8px; display:inline-block;">🔑 Сменить пароль</a>
+
+          <form method="post" action="">
+            {% csrf_token %}
+
+            <div class="row" style="margin-bottom:0;">
+              <div class="input-field col s12">
+                <input id="name" name="name" type="text" value="{{ legacy_user.name|default:'' }}">
+                <label for="name" class="active">Имя</label>
+              </div>
+
+              <div class="input-field col s12">
+                <input id="email" name="email" type="email" value="{{ legacy_user.email|default:'' }}">
+                <label for="email" class="active">Email</label>
+                {% if errors.email %}
+                  <div style="color:#d32f2f;font-size:12px;margin-top:4px;">{{ errors.email }}</div>
+                {% endif %}
+              </div>
+
+              <div class="input-field col s12">
+                <input id="phone" name="phone" type="text" value="{{ legacy_user.phone|default:'' }}">
+                <label for="phone" class="active">Телефон</label>
+              </div>
+
+              <div class="input-field col s12">
+                <input id="address" name="address" type="text" value="{{ legacy_user.address|default:'' }}">
+                <label for="address" class="active">Адрес</label>
+              </div>
+
+              <input id="lat" name="lat" type="hidden" value="{% if legacy_user.location %}{{ legacy_user.location.y|floatformat:6 }}{% endif %}">
+              <input id="lon" name="lon" type="hidden" value="{% if legacy_user.location %}{{ legacy_user.location.x|floatformat:6 }}{% endif %}">
+
+              <div class="col s12" style="margin-top: 6px;">
+                <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom: 6px;">
+                  <a id="address_find" class="btn btn-small enb-btn-xs" href="#" style="flex: 0 0 auto;">Найти на карте</a>
+                  <span id="address_status" style="font-size:12px; color:#777;"></span>
+                </div>
+                <div id="me_map"></div>
+                <div style="font-size: 12px; color:#777; margin-top: 6px;">
+                  Укажи точку на карте кликом или перетащи маркер.
+                </div>
+              </div>
+
+              <div class="col s12" style="margin-top: 6px;">
+                <label style="margin:0;">
+                  <input name="show_address" type="checkbox" value="1" {% if show_address_enabled %}checked{% endif %}>
+                  <span>указывать в объявлениях</span>
+                </label>
+              </div>
+
+              <div class="col s12" style="margin-top: 6px;">
+                <button class="btn btn-small enb-btn-xs" type="submit" style="width:100%;">Сохранить</button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div class="col s12 m9 l9">
+      {% if not is_admin_cabinet %}
+        <div class="card" style="margin-top:0;">
+          <div class="card-content">
+            <h5 style="margin-top:0;">Мои объявления</h5>
+
+        {% if not my_adverts %}
+          <p>У вас пока нет объявлений.</p>
+        {% else %}
+          <form id="bulk_my_form" method="post" action="{% url 'legacy_me_bulk_adverts' %}" style="margin-bottom: 10px;">
+            {% csrf_token %}
+            <input type="hidden" name="next" value="{{ request.get_full_path }}" />
+            <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+              <div style="min-width: 220px; flex: 0 1 260px;">
+                <select name="action" class="browser-default" style="height: 32px;">
+                  <option value="">Выберите действие</option>
+                  <option value="hide">Скрыть</option>
+                  <option value="delete">Удалить</option>
+                  <option value="bump">Поднять</option>
+                </select>
+              </div>
+              <button class="btn btn-small enb-btn-xs" type="submit">Применить</button>
+            </div>
+          </form>
+
+          <table class="striped" style="font-size:13px;">
+            <thead>
+            <tr>
+              <th style="width: 34px;">
+                <label style="margin:0;">
+                  <input id="my_select_all" type="checkbox" />
+                  <span></span>
+                </label>
+              </th>
+              <th>Заголовок</th>
+              <th>Категория</th>
+              <th>Статус</th>
+              <th>Действия</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for a in my_adverts %}
+              <tr>
+                <td>
+                  <label style="margin:0;">
+                    <input class="my_advert_cb" form="bulk_my_form" name="advert_id" type="checkbox" value="{{ a.id }}" />
+                    <span></span>
+                  </label>
+                </td>
+                <td>
+                  <a href="{% url 'advert_detail' a.id %}">{{ a.title }}</a>
+                </td>
+                <td>{{ a.category.title }}</td>
+                <td><b>{{ a.status_label }}</b></td>
+                <td>
+                  <div class="enb-actions">
+                    {% if a.can_edit %}
+                      <a class="btn-small enb-btn-xs" href="{% url 'advert_edit' a.id %}">Редактировать</a>
+                    {% endif %}
+
+                    {% if a.can_manage and a.status != 0 %}
+                      {% if a.status == 10 %}
+                        <form method="post" action="{% url 'advert_bump' a.id %}" style="display:inline-block; margin:0;">
+                          {% csrf_token %}
+                          <button class="btn-small blue enb-btn-xs" type="submit">Поднять</button>
+                        </form>
+                        <form method="post" action="{% url 'advert_hide' a.id %}" style="display:inline-block; margin:0;">
+                          {% csrf_token %}
+                          <button class="btn-small orange enb-btn-xs" type="submit">Скрыть</button>
+                        </form>
+                      {% elif a.status == 3 %}
+                        <form method="post" action="{% url 'advert_publish' a.id %}" style="display:inline-block; margin:0;">
+                          {% csrf_token %}
+                          <button class="btn-small green enb-btn-xs" type="submit">Опубликовать</button>
+                        </form>
+                      {% endif %}
+
+                      <form method="post" action="{% url 'advert_delete' a.id %}" style="display:inline-block; margin:0;" onsubmit="return confirm('Удалить объявление?');">
+                        {% csrf_token %}
+                        <button class="btn-small red enb-btn-xs" type="submit">Удалить</button>
+                      </form>
+                    {% endif %}
+                  </div>
+                </td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        {% endif %}
+          </div>
+        </div>
+      {% endif %}
+
+      {% if is_admin_cabinet %}
+        <div class="card" style="margin-top: 16px;">
+          <div class="card-content">
+            <h5 style="margin-top:0;">Все объявления (админ)</h5>
+
+            <form method="get" action="" style="margin-bottom: 12px;">
+              <div class="row" style="margin-bottom:0;">
+                <div class="col s12 m6">
+                  <div class="enb-filter-inline">
+                    <span class="enb-filter-label">Сортировка</span>
+                    <div class="input-field">
+                      <select name="sort">
+                        <option value="created" {% if admin_filter_sort == 'created' %}selected{% endif %}>По дате создания</option>
+                        <option value="hidden" {% if admin_filter_sort == 'hidden' %}selected{% endif %}>По дате скрытия</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+                <div class="col s12 m6">
+                  <div class="enb-filter-inline">
+                    <span class="enb-filter-label">Статус</span>
+                    <div class="input-field">
+                      <select name="status">
+                        <option value="all" {% if admin_filter_status == 'all' %}selected{% endif %}>Все</option>
+                        <option value="published" {% if admin_filter_status == 'published' %}selected{% endif %}>Опубликованы</option>
+                        <option value="moderation" {% if admin_filter_status == 'moderation' %}selected{% endif %}>На модерации</option>
+                        <option value="hidden" {% if admin_filter_status == 'hidden' %}selected{% endif %}>Скрыты</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+                <div class="col s12" style="margin-top: 6px;">
+                  <button class="btn btn-small enb-btn-xs" type="submit">Показать</button>
+                </div>
+              </div>
+            </form>
+
+            {% if not admin_adverts %}
+              <p>Ничего не найдено.</p>
+            {% else %}
+              <form id="bulk_admin_form" method="post" action="{% url 'legacy_me_bulk_adverts' %}" style="margin-bottom: 10px;">
+                {% csrf_token %}
+                <input type="hidden" name="next" value="{{ request.get_full_path }}" />
+                <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+                  <div style="min-width: 220px; flex: 0 1 260px;">
+                    <select name="action" class="browser-default" style="height: 32px;">
+                      <option value="">Выберите действие</option>
+                      <option value="hide">Скрыть</option>
+                      <option value="delete">Удалить</option>
+                      <option value="bump">Поднять</option>
+                      <option value="publish">Опубликовать</option>
+                    </select>
+                  </div>
+                  <button class="btn btn-small enb-btn-xs" type="submit">Применить</button>
+                </div>
+              </form>
+
+              <table class="striped" style="font-size:13px;">
+                <thead>
+                <tr>
+                  <th style="width: 34px;">
+                    <label style="margin:0;">
+                      <input id="admin_select_all" type="checkbox" />
+                      <span></span>
+                    </label>
+                  </th>
+                  <th>Автор</th>
+                  <th>Заголовок</th>
+                  <th>Статус</th>
+                  <th>Создано</th>
+                  <th>Скрыто</th>
+                  <th>Обновлено</th>
+                  <th>Действия</th>
+                </tr>
+                </thead>
+                <tbody>
+                {% for a in admin_adverts %}
+                  <tr>
+                    <td>
+                      <label style="margin:0;">
+                        <input class="admin_advert_cb" form="bulk_admin_form" name="advert_id" type="checkbox" value="{{ a.id }}" />
+                        <span></span>
+                      </label>
+                    </td>
+                    <td>{{ a.author_label }}</td>
+                    <td><a href="{% url 'advert_detail' a.id %}">{{ a.title }}</a></td>
+                    <td><b>{{ a.status_label }}</b></td>
+                    <td>{{ a.created_at|date:"d.m.Y" }}</td>
+                    <td>{% if a.hidden_at %}{{ a.hidden_at|date:"d.m.Y" }}{% endif %}</td>
+                    <td>{{ a.updated_at|date:"d.m.Y" }}</td>
+                    <td>
+                      <div class="enb-actions">
+                        <a class="btn-small enb-btn-xs" href="{% url 'advert_edit' a.id %}">Редактировать</a>
+
+                        {% if a.status != 0 %}
+                          {% if a.status == 10 %}
+                            <form method="post" action="{% url 'advert_bump' a.id %}" style="display:inline-block; margin:0;">
+                              {% csrf_token %}
+                              <button class="btn-small blue enb-btn-xs" type="submit">Поднять</button>
+                            </form>
+                            <form method="post" action="{% url 'advert_hide' a.id %}" style="display:inline-block; margin:0;">
+                              {% csrf_token %}
+                              <button class="btn-small orange enb-btn-xs" type="submit">Скрыть</button>
+                            </form>
+                          {% elif a.status == 5 %}
+                            <form method="post" action="{% url 'advert_publish' a.id %}" style="display:inline-block; margin:0;">
+                              {% csrf_token %}
+                              <button class="btn-small green enb-btn-xs" type="submit">Опубликовать</button>
+                            </form>
+                          {% elif a.status == 3 %}
+                            <form method="post" action="{% url 'advert_publish' a.id %}" style="display:inline-block; margin:0;">
+                              {% csrf_token %}
+                              <button class="btn-small green enb-btn-xs" type="submit">Опубликовать</button>
+                            </form>
+                          {% endif %}
+
+                          <form method="post" action="{% url 'advert_delete' a.id %}" style="display:inline-block; margin:0;" onsubmit="return confirm('Удалить объявление?');">
+                            {% csrf_token %}
+                            <button class="btn-small red enb-btn-xs" type="submit">Удалить</button>
+                          </form>
+                        {% endif %}
+                      </div>
+                    </td>
+                  </tr>
+                {% endfor %}
+                </tbody>
+              </table>
+            {% endif %}
+          </div>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{% static 'legacy/js/leaflet.js' %}"></script>
+  <script>
+    (function () {
+      var mapEl = document.getElementById('me_map');
+      if (!mapEl) return;
+
+      var latEl = document.getElementById('lat');
+      var lonEl = document.getElementById('lon');
+      var addressEl = document.getElementById('address');
+      var addressFindEl = document.getElementById('address_find');
+      var addressStatusEl = document.getElementById('address_status');
+
+      function setStatus(t) {
+        if (addressStatusEl) addressStatusEl.textContent = t || '';
+      }
+
+      function parseNum(el) {
+        if (!el || !el.value) return null;
+        var s = String(el.value).trim().replace(',', '.');
+        var v = parseFloat(s);
+        return Number.isFinite(v) ? v : null;
+      }
+
+      var lat = parseNum(latEl);
+      var lon = parseNum(lonEl);
+      if (lat === null || lon === null) {
+        lat = 55.751244;
+        lon = 37.618423;
+      }
+
+      var map = L.map('me_map', { zoomControl: true }).setView([lat, lon], 9);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap'
+      }).addTo(map);
+
+      var marker = L.marker([lat, lon], { draggable: true }).addTo(map);
+
+      function setInputs(ll) {
+        if (latEl) latEl.value = (Math.round(ll.lat * 1000000) / 1000000).toFixed(6);
+        if (lonEl) lonEl.value = (Math.round(ll.lng * 1000000) / 1000000).toFixed(6);
+      }
+
+      var reverseTimer = null;
+      function reverseFillAddress(ll) {
+        if (!addressEl) return;
+        if (reverseTimer) clearTimeout(reverseTimer);
+        reverseTimer = setTimeout(function () {
+          fetch('/api/reverse/?lat=' + encodeURIComponent(ll.lat) + '&lon=' + encodeURIComponent(ll.lng))
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+              if (data && data.ok && data.address) {
+                addressEl.value = data.address;
+              }
+            })
+            .catch(function () {
+              // ignore
+            });
+        }, 250);
+      }
+
+      marker.on('dragend', function (e) {
+        var ll = e.target.getLatLng();
+        setInputs(ll);
+        reverseFillAddress(ll);
+      });
+
+      map.on('click', function (e) {
+        marker.setLatLng(e.latlng);
+        setInputs(e.latlng);
+        reverseFillAddress(e.latlng);
+      });
+
+      function syncFromInputs() {
+        var lat2 = parseNum(latEl);
+        var lon2 = parseNum(lonEl);
+        if (lat2 === null || lon2 === null) return;
+        if (lat2 < -90 || lat2 > 90 || lon2 < -180 || lon2 > 180) return;
+        var ll = L.latLng(lat2, lon2);
+        marker.setLatLng(ll);
+        map.panTo(ll, { animate: false });
+      }
+
+      if (latEl) latEl.addEventListener('change', syncFromInputs);
+      if (lonEl) lonEl.addEventListener('change', syncFromInputs);
+
+      if (addressFindEl) {
+        addressFindEl.addEventListener('click', function (e) {
+          e.preventDefault();
+          if (!addressEl || !addressEl.value || !addressEl.value.trim()) return;
+          setStatus('Ищем адрес...');
+          fetch('/api/geocode/?q=' + encodeURIComponent(addressEl.value.trim()))
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+              if (!data || !data.ok) {
+                setStatus('Ошибка геокодера');
+                return;
+              }
+              if (!data.found) {
+                setStatus('Адрес не найден');
+                return;
+              }
+              setStatus('');
+              var ll = L.latLng(parseFloat(data.lat), parseFloat(data.lon));
+              marker.setLatLng(ll);
+              map.setView(ll, Math.max(map.getZoom(), 12), { animate: false });
+              setInputs(ll);
+              if (data.display_name) {
+                addressEl.value = data.display_name;
+              }
+            })
+            .catch(function () {
+              setStatus('Ошибка геокодера');
+            });
+        });
+      }
+
+      if (addressEl && addressEl.value && addressEl.value.trim() && (parseNum(latEl) === null || parseNum(lonEl) === null)) {
+        fetch('/api/geocode/?q=' + encodeURIComponent(addressEl.value.trim()))
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (!data || !data.ok || !data.found) return;
+            var ll = L.latLng(parseFloat(data.lat), parseFloat(data.lon));
+            marker.setLatLng(ll);
+            map.setView(ll, Math.max(map.getZoom(), 12), { animate: false });
+            setInputs(ll);
+          })
+          .catch(function () {
+            // ignore
+          });
+      }
+    })();
+  </script>
+  <script>
+    $(document).ready(function(){
+      if (window.M && M.FormSelect) {
+        $('select').formSelect();
+      }
+    });
+  </script>
+  <script>
+    (function () {
+      function syncHeader(headerEl, rowSelector) {
+        if (!headerEl) return;
+        var rows = Array.prototype.slice.call(document.querySelectorAll(rowSelector) || []);
+        if (!rows.length) {
+          headerEl.checked = false;
+          headerEl.indeterminate = false;
+          return;
+        }
+        var checked = rows.filter(function (x) { return !!x.checked; }).length;
+        headerEl.checked = checked === rows.length;
+        headerEl.indeterminate = checked > 0 && checked < rows.length;
+      }
+
+      function bindGroup(headerId, rowSelector) {
+        var header = document.getElementById(headerId);
+        var rows = Array.prototype.slice.call(document.querySelectorAll(rowSelector) || []);
+        if (!header || !rows.length) return;
+
+        header.addEventListener('change', function () {
+          rows.forEach(function (cb) { cb.checked = !!header.checked; });
+          syncHeader(header, rowSelector);
+        });
+        rows.forEach(function (cb) {
+          cb.addEventListener('change', function () { syncHeader(header, rowSelector); });
+        });
+        syncHeader(header, rowSelector);
+      }
+
+      bindGroup('my_select_all', '.my_advert_cb');
+      bindGroup('admin_select_all', '.admin_advert_cb');
+    })();
+  </script>
+{% endblock %}

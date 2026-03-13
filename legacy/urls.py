@@ -1,0 +1,49 @@
+from django.urls import path
+
+from . import views
+
+urlpatterns = [
+    path('', views.home, name='home'),
+    path('adverts/', views.advert_list, name='advert_list'),
+    path('adverts/add/', views.advert_create, name='advert_create'),
+    path('adverts/<int:advert_id>/', views.advert_detail, name='advert_detail'),
+    path('adverts/<int:advert_id>/edit/', views.advert_edit, name='advert_edit'),
+    path('adverts/<int:advert_id>/hide/', views.advert_hide, name='advert_hide'),
+    path('adverts/<int:advert_id>/publish/', views.advert_publish, name='advert_publish'),
+    path('adverts/<int:advert_id>/bump/', views.advert_bump, name='advert_bump'),
+    path('adverts/<int:advert_id>/delete/', views.advert_delete, name='advert_delete'),
+    path('sellers/', views.seller_list, name='seller_list'),
+    path('sellers/add/', views.seller_create, name='seller_create'),
+    path('sellers/<int:seller_id>/', views.seller_detail, name='seller_detail'),
+    path('sellers/<int:seller_id>/edit/', views.seller_edit, name='seller_edit'),
+    path('map/', views.map_view, name='map_view'),
+    path('api/map/adverts/', views.map_adverts_api, name='map_adverts_api'),
+    path('api/map/categories/', views.map_categories_api, name='map_categories_api'),
+    path('api/geocode/', views.geocode_api, name='geocode_api'),
+    path('api/reverse/', views.reverse_geocode_api, name='reverse_geocode_api'),
+    path('login/', views.legacy_login, name='legacy_login'),
+    path('register/', views.legacy_register_start, name='legacy_register_start'),
+    path('register/email/', views.legacy_register_email, name='legacy_register_email'),
+    path('register/sms/', views.legacy_register_sms, name='legacy_register_sms'),
+    path('register/sms/confirm/', views.legacy_register_sms_confirm, name='legacy_register_sms_confirm'),
+    path('set-password/<str:token>/', views.legacy_set_password, name='legacy_set_password'),
+    path('logout/', views.legacy_logout, name='legacy_logout'),
+    path('me/', views.legacy_me, name='legacy_me'),
+    path('me/adverts/bulk/', views.legacy_me_bulk_adverts, name='legacy_me_bulk_adverts'),
+    path('change-password/', views.change_password, name='change_password'),
+
+    path('messages/', views.messages_inbox, name='messages_inbox'),
+    path('messages/send/', views.message_send, name='message_send'),
+    path('messages/<int:user_id>/', views.messages_thread, name='messages_thread'),
+    path('api/messages/unread/', views.messages_unread_count_api, name='messages_unread_count_api'),
+
+    path('reviews/add/', views.review_create, name='review_create'),
+    path('reviews/<int:review_id>/delete/', views.review_delete, name='review_delete'),
+    path('reviews/<int:review_id>/publish/', views.review_publish, name='review_publish'),
+    path('reviews/<int:review_id>/hide/', views.review_hide, name='review_hide'),
+
+    path('legacy-admin/', views.admin_users, name='admin_users'),
+    path('legacy-admin/users/bulk-delete/', views.admin_users_bulk_delete, name='admin_users_bulk_delete'),
+    path('legacy-admin/catalogs/', views.admin_catalogs, name='admin_catalogs'),
+    path('legacy-admin/users/<int:user_id>/', views.admin_user_detail, name='admin_user_detail'),
+]

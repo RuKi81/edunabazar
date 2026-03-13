@@ -1,0 +1,223 @@
+{% extends 'legacy/base.html' %}
+
+{% load legacy_extras static %}
+
+{% block title %}{{ advert.title }}{% endblock %}
+
+{% block head %}
+  <link rel="stylesheet" href="{% static 'legacy/css/leaflet.css' %}" />
+{% endblock %}
+
+{% block content %}
+  <div class="row">
+    {% if advert.status <= 5 %}
+      <div class="col m12">
+        {% if advert.status == 0 %}
+          <div class="alert alert-danger">Это объявление удалено</div>
+        {% elif advert.status == 3 %}
+          <div class="alert alert-warning">Это объявление скрыто</div>
+        {% elif advert.status == 5 %}
+          <div class="alert alert-info">Объявление отправлено на проверку модератору</div>
+        {% endif %}
+      </div>
+    {% endif %}
+
+    <div class="col m12 s12 height-1"></div>
+
+    {% if can_manage_advert or can_edit_advert %}
+      <div class="col m12" style="margin-bottom: 12px;">
+        {% if can_edit_advert %}
+          <a class="btn" href="{% url 'advert_edit' advert.id %}">Редактировать</a>
+        {% endif %}
+
+        {% if can_manage_advert %}
+          {% if advert.status == 10 %}
+            <form method="post" action="{% url 'advert_hide' advert.id %}" style="display:inline-block; margin-left:8px;">
+              {% csrf_token %}
+              <button class="btn" type="submit">Скрыть</button>
+            </form>
+          {% elif advert.status == 3 %}
+            <form method="post" action="{% url 'advert_publish' advert.id %}" style="display:inline-block; margin-left:8px;">
+              {% csrf_token %}
+              <button class="btn" type="submit">Опубликовать</button>
+            </form>
+          {% endif %}
+
+          <form method="post" action="{% url 'advert_delete' advert.id %}" style="display:inline-block; margin-left:8px;" onsubmit="return confirm('Удалить объявление?');">
+            {% csrf_token %}
+            <button class="btn red" type="submit">Удалить</button>
+          </form>
+        {% endif %}
+      </div>
+    {% endif %}
+
+    <!-- Left column: photo + profile -->
+    <div class="col m4 s12">
+      <div class="ad-summary__photo">
+        {% if photos and photos.0.image %}
+          <a class="fancybox" href="{{ photos.0.image.url }}?v={{ photos.0.id }}" title="{{ advert.title }}">
+            <img class="ad-image" src="{{ photos.0.image.url }}?v={{ photos.0.id }}" alt="Фото объявления">
+          </a>
+        {% else %}
+          <a class="fancybox" href="{% static 'legacy/images/no_photo_350_263.jpg' %}" title="{{ advert.title }}">
+            <img class="ad-image" src="{% static 'legacy/images/no_photo_350_263.jpg' %}" alt="Фото объявления">
+          </a>
+        {% endif %}
+      </div>
+
+      {% if photos|length > 1 %}
+        <div class="row" style="margin-top: 10px; margin-bottom: 0;">
+          {% for p in photos %}
+            {% if not forloop.first %}
+              <div class="col s4" style="margin-bottom: 8px;">
+                <a class="fancybox" href="{{ p.image.url }}?v={{ p.id }}" title="{{ advert.title }}">
+                  <img src="{{ p.image.url }}?v={{ p.id }}" alt="Фото" style="width:100%; height: 70px; object-fit: cover; border-radius: 2px;">
+                </a>
+              </div>
+            {% endif %}
+          {% endfor %}
+        </div>
+      {% endif %}
+
+      <div class="ad-profile">
+        <div class="ad-profile__item">
+          <i class="material-icons" style="font-size:20px;vertical-align:middle;">person</i>
+          <div class="ad-profile__item__text" style="display:inline-block;vertical-align:middle;margin-left:8px;">
+            <div class="ad-profile__item__prop">Контактное лицо:</div>
+            <div class="ad-profile__item__value">{% firstof advert.author.name advert.author.username %}</div>
+          </div>
+        </div>
+
+        {% if show_address %}
+          <div class="ad-profile__item">
+            <i class="material-icons" style="font-size:20px;vertical-align:middle;">place</i>
+            <div class="ad-profile__item__text" style="display:inline-block;vertical-align:middle;margin-left:8px;">
+              <div class="ad-profile__item__prop">Адрес:</div>
+              <div class="ad-profile__item__value">
+                {% if advert_address %}
+                  {{ advert_address }}
+                {% elif advert_lat and advert_lon %}
+                  {{ advert_lat }}, {{ advert_lon }}
+                {% else %}
+                  {{ advert.location }}
+                {% endif %}
+              </div>
+            </div>
+          </div>
+        {% endif %}
+
+        <div class="ad-profile__item">
+          <i class="material-icons" style="font-size:20px;vertical-align:middle;">contact_phone</i>
+          <div class="ad-profile__item__text" style="display:inline-block;vertical-align:middle;margin-left:8px;">
+            <div class="ad-profile__item__prop">Контакты:</div>
+            <div class="ad-profile__item__value">{{ advert.contacts }}</div>
+          </div>
+        </div>
+      </div>
+
+      {% if legacy_user and legacy_user.id != advert.author_id %}
+        <div style="margin-top: 12px;">
+          <a class="btn" href="{% url 'messages_thread' advert.author_id %}?advert_id={{ advert.id }}" style="background:#0090b6; box-shadow:none; border-radius:0; width:100%; text-align:center;">
+            <i class="material-icons left" style="margin-right:6px;">mail</i>Написать продавцу
+          </a>
+        </div>
+      {% elif not legacy_user %}
+        <div style="margin-top: 12px;">
+          <a class="btn" href="{% url 'legacy_login' %}?next={{ request.get_full_path|urlencode }}" style="background:#0090b6; box-shadow:none; border-radius:0; width:100%; text-align:center;">
+            <i class="material-icons left" style="margin-right:6px;">mail</i>Написать продавцу
+          </a>
+        </div>
+      {% endif %}
+
+      {% if show_address and advert_lat and advert_lon %}
+        <div
+          id="ad_minimap"
+          style="height: 200px; border-radius: 2px; overflow: hidden; margin-top: 12px; cursor: pointer; background: #eee;"
+          data-lat="{{ advert_lat }}"
+          data-lon="{{ advert_lon }}"
+          data-advert-id="{{ advert.id }}"
+          title="Открыть на карте"
+        ></div>
+      {% endif %}
+
+      <p style="margin-top: 12px;"><a href="{% url 'advert_list' %}">← К списку</a></p>
+    </div>
+
+    <!-- Right column: title + params + description -->
+    <div class="col m8 s12">
+      <div class="row margin_bottom_0">
+        <h1 class="page-title col m12 s12 left-align">{{ advert.title }}</h1>
+      </div>
+
+      <section class="adverts-detail">
+        <div class="adverts-detail__params">
+          <div class="adverts-detail__params-item">
+            <b>Категория:</b> {{ advert.category.title }}
+          </div>
+          <div class="adverts-detail__params-item">
+            <b>Стоимость:</b> {{ advert.price|format_price }}{% if advert.price_unit %} / {{ advert.price_unit }}{% endif %}
+          </div>
+          <div class="adverts-detail__params-item">
+            <b>Объем от:</b> {{ advert.min_volume }}
+          </div>
+          <div class="adverts-detail__params-item">
+            <b>Объем всего:</b> {{ advert.volume }}
+          </div>
+          <div class="adverts-detail__params-item">
+            <b>Стоимость опт:</b> {{ advert.wholesale_price }}
+          </div>
+          <div class="adverts-detail__params-item">
+            <b>Доставка:</b> {% if advert.delivery %}Да{% else %}Нет{% endif %}
+          </div>
+          <div class="adverts-detail__params-item">
+            <b>Опт от:</b> {{ advert.wholesale_volume }}
+          </div>
+          <div class="adverts-detail__params-item">
+            <b>Обновлено:</b> {{ advert.updated_at|date:"d.m.Y" }}
+          </div>
+        </div>
+
+        <div class="adverts-detail__desc">
+          {{ advert.text|linebreaksbr }}
+        </div>
+      </section>
+
+      {% include 'legacy/_reviews_section.html' %}
+    </div>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{% static 'legacy/js/leaflet.js' %}"></script>
+  <script>
+    (function () {
+      var el = document.getElementById('ad_minimap');
+      if (!el) return;
+
+      var lat = parseFloat(el.getAttribute('data-lat') || '');
+      var lon = parseFloat(el.getAttribute('data-lon') || '');
+      var advertId = parseInt(el.getAttribute('data-advert-id') || '0', 10);
+      if (!isFinite(lat) || !isFinite(lon)) return;
+
+      var m = L.map('ad_minimap', {
+        zoomControl: false,
+        attributionControl: false,
+        scrollWheelZoom: false,
+        dragging: false,
+        doubleClickZoom: false,
+        boxZoom: false,
+        keyboard: false,
+        tap: false,
+      });
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(m);
+      m.setView([lat, lon], 11);
+      L.marker([lat, lon]).addTo(m);
+
+      el.addEventListener('click', function () {
+        var url = '/map/?lat=' + encodeURIComponent(lat) + '&lon=' + encodeURIComponent(lon) + '&zoom=12';
+        if (advertId) url += '&advert_id=' + encodeURIComponent(advertId);
+        window.location.href = url;
+      });
+    })();
+  </script>
+{% endblock %}

@@ -1,0 +1,62 @@
+{% extends 'legacy/base.html' %}
+
+{% block title %}Админка — пользователь {{ u.username }}{% endblock %}
+
+{% block content %}
+  <div class="row" style="margin-bottom:0;">
+    <div class="col s12">
+      <div style="margin: 10px 0 6px 0;">
+        <a href="{% url 'admin_users' %}" style="color:#0090b6;">← Все пользователи</a>
+      </div>
+
+      <h5 style="margin: 6px 0 14px 0; color:#7fb500; font-weight: 800;">Пользователь: {{ u.username }}</h5>
+
+      <div class="card" style="box-shadow:none; border:1px solid #e6e6e6;">
+        <div class="card-content" style="padding: 16px;">
+          <div style="color:#777; font-weight:700;">Дата регистрации</div>
+          <div style="margin-bottom: 10px;">{{ u.created_at|date:"d.m.Y H:i" }}</div>
+
+          <div style="color:#777; font-weight:700;">Password hash</div>
+          <div style="word-break: break-word; margin-bottom: 14px;">{{ u.password_hash }}</div>
+
+          <div style="font-weight:800; margin-bottom: 8px;">Сменить пароль</div>
+
+          {% if ok_message %}
+            <div style="color:#2e7d32; font-weight:700; margin-bottom: 8px;">{{ ok_message }}</div>
+          {% endif %}
+
+          <form method="post" style="margin-bottom: 0;">
+            {% csrf_token %}
+            <div class="row" style="margin-bottom: 0;">
+              <div class="col s12 m6">
+                <input type="password" name="new_password" placeholder="Новый пароль" />
+                {% if errors.new_password %}
+                  <div style="color:#b00020; font-size: 12px; margin-top: -6px;">{{ errors.new_password }}</div>
+                {% endif %}
+              </div>
+              <div class="col s12 m6" style="margin-top: 6px;">
+                <button class="btn" type="submit" style="background:#7fb500; box-shadow:none; border-radius:0;">Сохранить</button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <h6 style="margin: 16px 0 10px 0; font-weight: 800;">Объявления пользователя</h6>
+
+      {% for a in adverts %}
+        <div class="card" style="box-shadow:none; border:1px solid #e6e6e6;">
+          <div class="card-content" style="padding: 14px 16px;">
+            <div style="font-weight: 800; margin-bottom: 4px;">
+              <a href="{% url 'advert_detail' a.id %}" style="color:#0090b6;">{{ a.title }}</a>
+            </div>
+            <div style="color:#777; font-size: 12px;">{{ a.created_at|date:"d.m.Y H:i" }}{% if a.category %} · {{ a.category.title }}{% endif %}</div>
+          </div>
+        </div>
+      {% empty %}
+        <div style="color:#777;">Нет объявлений</div>
+      {% endfor %}
+
+    </div>
+  </div>
+{% endblock %}

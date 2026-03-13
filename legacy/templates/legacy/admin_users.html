@@ -1,0 +1,125 @@
+{% extends 'legacy/base.html' %}
+
+{% block title %}Админка — пользователи{% endblock %}
+
+{% block content %}
+  <div class="row" style="margin-bottom:0;">
+    <div class="col s12">
+      <h5 style="margin: 10px 0 14px 0; color:#7fb500; font-weight: 800;">Админка: пользователи</h5>
+
+      <div style="margin: 0 0 12px 0;">
+        <a class="btn" href="{% url 'admin_catalogs' %}" style="background:#7fb500; box-shadow:none; border-radius:0;">Каталоги</a>
+      </div>
+
+      <form method="get" class="row" style="margin-bottom: 10px;">
+        <div class="col s12 m8">
+          <input type="text" name="q" value="{{ q }}" placeholder="Поиск (логин/email/имя)" style="height: 36px;" />
+        </div>
+        <div class="col s12 m4" style="margin-top: 6px;">
+          <button class="btn" type="submit" style="background:#7fb500; box-shadow:none; border-radius:0;">Найти</button>
+        </div>
+      </form>
+
+      <form id="bulk_delete_users_form" method="post" action="{% url 'admin_users_bulk_delete' %}" style="margin: 0 0 10px 0;" onsubmit="return confirm('Удалить выбранных пользователей и все их объявления?');">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ request.get_full_path }}" />
+        <button class="btn red" type="submit" style="box-shadow:none; border-radius:0;">Удалить выбранных</button>
+      </form>
+
+      <div class="card" style="box-shadow:none; border:1px solid #e6e6e6;">
+        <div class="card-content" style="padding: 0;">
+          <table class="striped" style="margin:0;">
+            <thead>
+              <tr>
+                <th style="width: 48px;">
+                  <label style="margin:0;">
+                    <input id="cb_all_users" type="checkbox" />
+                    <span></span>
+                  </label>
+                </th>
+                <th style="width: 80px;">ID</th>
+                <th>Логин</th>
+                <th>Дата регистрации</th>
+                <th>Password hash</th>
+                <th style="width: 140px;"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for u in users.object_list %}
+                <tr>
+                  <td>
+                    <label style="margin:0;">
+                      <input class="cb_user" form="bulk_delete_users_form" name="user_id" type="checkbox" value="{{ u.id }}" />
+                      <span></span>
+                    </label>
+                  </td>
+                  <td>{{ u.id }}</td>
+                  <td>{{ u.username }}</td>
+                  <td>{{ u.created_at|date:"d.m.Y H:i" }}</td>
+                  <td style="max-width: 420px; overflow:hidden; text-overflow: ellipsis; white-space: nowrap;">{{ u.password_hash }}</td>
+                  <td>
+                    <a href="{% url 'admin_user_detail' u.id %}" style="color:#0090b6; font-weight:700;">Открыть</a>
+                  </td>
+                </tr>
+              {% empty %}
+                <tr><td colspan="6" style="color:#777;">Нет пользователей</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <script>
+        (function () {
+          var all = document.getElementById('cb_all_users');
+          var items = Array.prototype.slice.call(document.querySelectorAll('.cb_user'));
+          if (!all || !items.length) return;
+
+          function syncAll() {
+            var checked = items.filter(function (x) { return x && x.checked; }).length;
+            all.checked = checked > 0 && checked === items.length;
+            all.indeterminate = checked > 0 && checked < items.length;
+          }
+
+          all.addEventListener('change', function () {
+            var v = Boolean(all.checked);
+            items.forEach(function (x) { if (x) x.checked = v; });
+            syncAll();
+          });
+
+          items.forEach(function (x) { x.addEventListener('change', syncAll); });
+          syncAll();
+        })();
+      </script>
+
+      <div class="row" style="margin-top: 10px; margin-bottom: 0;">
+        <div class="col s12">
+          <ul class="pagination" style="margin: 0;">
+            {% if users.has_previous %}
+              <li class="waves-effect"><a href="?q={{ q|urlencode }}&page={{ users.previous_page_number }}&page_size={{ page_size }}"><i class="material-icons">chevron_left</i></a></li>
+            {% else %}
+              <li class="disabled"><a href="#!"><i class="material-icons">chevron_left</i></a></li>
+            {% endif %}
+
+            {% for p in page_range %}
+              {% if p == users.number %}
+                <li class="active" style="background:#7fb500;"><a href="#!">{{ p }}</a></li>
+              {% elif p == '…' %}
+                <li class="disabled"><a href="#!">…</a></li>
+              {% else %}
+                <li class="waves-effect"><a href="?q={{ q|urlencode }}&page={{ p }}&page_size={{ page_size }}">{{ p }}</a></li>
+              {% endif %}
+            {% endfor %}
+
+            {% if users.has_next %}
+              <li class="waves-effect"><a href="?q={{ q|urlencode }}&page={{ users.next_page_number }}&page_size={{ page_size }}"><i class="material-icons">chevron_right</i></a></li>
+            {% else %}
+              <li class="disabled"><a href="#!"><i class="material-icons">chevron_right</i></a></li>
+            {% endif %}
+          </ul>
+        </div>
+      </div>
+
+    </div>
+  </div>
+{% endblock %}

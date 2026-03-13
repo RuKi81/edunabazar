@@ -1,0 +1,25 @@
+{% extends 'legacy/base.html' %}
+
+{% block title %}Регистрация по телефону{% endblock %}
+
+{% block content %}
+  <h1>Регистрация по телефону</h1>
+
+  <div class="card">
+    <div class="card-content">
+      <form method="post" class="auth-form">
+        {% csrf_token %}
+
+        <div class="input-field">
+          <input id="phone" name="phone" value="{{ form.phone|default:'' }}" />
+          <label for="phone" {% if form.phone %}class="active"{% endif %}>Телефон</label>
+          {% if errors.phone %}<div class="red-text" style="margin-top:6px;">{{ errors.phone }}</div>{% endif %}
+        </div>
+
+        <button class="btn" type="submit">Получить код</button>
+      </form>
+    </div>
+  </div>
+
+  <p><a href="{% url 'legacy_register_start' %}?next={{ request.GET.next|default:''|urlencode }}">← Выбрать способ регистрации</a></p>
+{% endblock %}
