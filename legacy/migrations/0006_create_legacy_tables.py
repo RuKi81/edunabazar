@@ -4,7 +4,7 @@ from django.db import migrations
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('legacy', '0001_initial'),
+        ('legacy', '0005_message_model'),
     ]
 
     operations = [
