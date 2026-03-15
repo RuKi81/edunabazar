@@ -205,10 +205,23 @@ SESSION_COOKIE_HTTPONLY = True
 CSRF_COOKIE_HTTPONLY = True
 SECURE_BROWSER_XSS_FILTER = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
+
+# CSRF trusted origins (required when behind reverse proxy)
+_csrf_origins = os.getenv('CSRF_TRUSTED_ORIGINS', '')
+if _csrf_origins:
+    CSRF_TRUSTED_ORIGINS = [o.strip() for o in _csrf_origins.split(',') if o.strip()]
+else:
+    CSRF_TRUSTED_ORIGINS = [
+        f'http://{h}' for h in ALLOWED_HOSTS if h != '*'
+    ] + [
+        f'https://{h}' for h in ALLOWED_HOSTS if h != '*'
+    ]
+
 if _is_production:
-    SESSION_COOKIE_SECURE = True
-    CSRF_COOKIE_SECURE = True
-    SECURE_SSL_REDIRECT = os.getenv('SECURE_SSL_REDIRECT', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
+    _use_ssl = os.getenv('SECURE_SSL_REDIRECT', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
+    SESSION_COOKIE_SECURE = _use_ssl
+    CSRF_COOKIE_SECURE = _use_ssl
+    SECURE_SSL_REDIRECT = _use_ssl
     SECURE_HSTS_SECONDS = int(os.getenv('SECURE_HSTS_SECONDS', '0'))
     SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
 
