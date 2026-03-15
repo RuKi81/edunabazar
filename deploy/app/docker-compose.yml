@@ -14,7 +14,7 @@ services:
       - ../../.env
     environment:
       # DB on VM2
-      DB_HOST: ${DB_HOST:-93.95.98.209}
+      DB_HOST: ${DB_HOST:-10.0.0.11}
       DB_PORT: ${DB_PORT:-5432}
       DJANGO_DEBUG: "0"
     volumes:
