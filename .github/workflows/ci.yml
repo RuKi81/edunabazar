@@ -118,7 +118,7 @@ jobs:
           host: ${{ secrets.APP_SERVER_HOST }}
           username: ${{ secrets.APP_SERVER_USER }}
           key: ${{ secrets.APP_SERVER_SSH_KEY }}
-          port: ${{ secrets.APP_SERVER_PORT || 22 }}
+          port: ${{ secrets.APP_SERVER_PORT }}
           script: |
             cd /opt/edunabazar
             git fetch origin
