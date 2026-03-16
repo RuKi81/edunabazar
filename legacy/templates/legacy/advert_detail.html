@@ -209,7 +209,7 @@
         keyboard: false,
         tap: false,
       });
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(m);
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', { maxZoom: 19 }).addTo(m);
       m.setView([lat, lon], 11);
       L.marker([lat, lon]).addTo(m);
 
