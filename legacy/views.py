@@ -21,6 +21,7 @@ from django.core.validators import validate_email
 from django.core.exceptions import ValidationError
 from django.core import signing
 from django.utils.http import url_has_allowed_host_and_scheme
+from django.contrib.auth import authenticate, login as django_login
 from PIL import Image as PILImage
 
 from .models import Advert, LegacyUser, Catalog, Categories, AdvertPhoto, Seller, Review, Message
@@ -1035,6 +1036,9 @@ def legacy_login(request: HttpRequest) -> HttpResponse:
                 request.session.pop(fails_key, None)
                 request.session.pop(locked_until_key, None)
                 request.session['legacy_user_id'] = int(user.id)
+                django_user = authenticate(request, username=username, password=password)
+                if django_user is not None:
+                    django_login(request, django_user)
                 if next_param and url_has_allowed_host_and_scheme(
                     url=next_param,
                     allowed_hosts={request.get_host()},

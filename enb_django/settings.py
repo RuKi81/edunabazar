@@ -225,6 +225,11 @@ if _is_production:
     SECURE_HSTS_SECONDS = int(os.getenv('SECURE_HSTS_SECONDS', '0'))
     SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
 
+AUTHENTICATION_BACKENDS = [
+    'legacy.auth_backend.LegacyUserBackend',
+    'django.contrib.auth.backends.ModelBackend',
+]
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 LOGGING = {
