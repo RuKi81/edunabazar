@@ -1,7 +1,11 @@
 {% extends 'legacy/base.html' %}
 {% load static %}
 
-{% block title %}Карта{% endblock %}
+{% block title %}Карта объявлений — Еду на базар{% endblock %}
+
+{% block meta_description %}Карта сельскохозяйственных объявлений. Найдите предложения рядом с вами на интерактивной карте edunabazar.ru{% endblock %}
+{% block og_title %}Карта объявлений — Еду на базар{% endblock %}
+{% block og_description %}Интерактивная карта сельскохозяйственных объявлений. Найдите предложения рядом с вами.{% endblock %}
 
 {% block head %}
   <link rel="stylesheet" href="{% static 'legacy/css/leaflet.css' %}" />

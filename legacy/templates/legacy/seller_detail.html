@@ -2,7 +2,11 @@
 
 {% load legacy_extras %}
 
-{% block title %}{{ seller.name }}{% endblock %}
+{% block title %}{{ seller.name }} — Еду на базар{% endblock %}
+
+{% block meta_description %}{{ seller.name }} — предприятие на edunabazar.ru. {{ seller.description|default:""|truncatewords:20 }}{% endblock %}
+{% block og_title %}{{ seller.name }} — Еду на базар{% endblock %}
+{% block og_description %}{{ seller.name }} — предприятие на edunabazar.ru{% endblock %}
 
 {% block content %}
   <div class="row" style="margin-bottom:0;">

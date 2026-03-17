@@ -5,6 +5,17 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}Еду на базар{% endblock %}</title>
+  <meta name="description" content="{% block meta_description %}Еду на базар — доска объявлений сельскохозяйственной продукции, техники и услуг. Покупайте и продавайте напрямую.{% endblock %}" />
+  <link rel="canonical" href="{% block canonical %}https://edunabazar.ru{{ request.path }}{% endblock %}" />
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="{% block og_type %}website{% endblock %}" />
+  <meta property="og:site_name" content="Еду на базар" />
+  <meta property="og:title" content="{% block og_title %}Еду на базар — сельхоз доска объявлений{% endblock %}" />
+  <meta property="og:description" content="{% block og_description %}Доска объявлений сельскохозяйственной продукции, техники и услуг.{% endblock %}" />
+  <meta property="og:url" content="{% block og_url %}https://edunabazar.ru{{ request.path }}{% endblock %}" />
+  <meta property="og:image" content="{% block og_image %}https://edunabazar.ru{% static 'legacy/images/og-default.jpg' %}{% endblock %}" />
+  <meta property="og:locale" content="ru_RU" />
 
   <link rel="manifest" href="{% static 'legacy/manifest.json' %}">
   <link rel="stylesheet" href="{% static 'legacy/css/material-icons.css' %}" />

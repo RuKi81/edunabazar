@@ -2,7 +2,15 @@
 
 {% load legacy_extras static %}
 
-{% block title %}{{ advert.title }}{% endblock %}
+{% block title %}{{ advert.title }} — Еду на базар{% endblock %}
+
+{% block meta_description %}{{ advert.title }}. {{ advert.text|truncatewords:25 }}{% endblock %}
+{% block canonical %}https://edunabazar.ru/adverts/{{ advert.id }}/{% endblock %}
+{% block og_type %}product{% endblock %}
+{% block og_title %}{{ advert.title }} — Еду на базар{% endblock %}
+{% block og_description %}{{ advert.text|truncatewords:25 }}{% endblock %}
+{% block og_url %}https://edunabazar.ru/adverts/{{ advert.id }}/{% endblock %}
+{% if photos and photos.0.image %}{% block og_image %}https://edunabazar.ru{{ photos.0.image.url }}{% endblock %}{% endif %}
 
 {% block head %}
   <link rel="stylesheet" href="{% static 'legacy/css/leaflet.css' %}" />
@@ -219,5 +227,24 @@
         window.location.href = url;
       });
     })();
+  </script>
+
+  <!-- JSON-LD structured data for Yandex/Google -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    "name": "{{ advert.title|escapejs }}",
+    "description": "{{ advert.text|truncatewords:50|escapejs }}",
+    "url": "https://edunabazar.ru/adverts/{{ advert.id }}/",
+    {% if photos and photos.0.image %}"image": "https://edunabazar.ru{{ photos.0.image.url }}",{% endif %}
+    {% if advert.price %}"offers": {
+      "@type": "Offer",
+      "price": "{{ advert.price }}",
+      "priceCurrency": "RUB",
+      "availability": "https://schema.org/InStock"
+    },{% endif %}
+    "category": "{{ advert.category.title|default:""|escapejs }}"
+  }
   </script>
 {% endblock %}
