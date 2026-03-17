@@ -133,28 +133,25 @@ CATALOG_ORDER = [
 
 
 def populate_catalog(apps, schema_editor):
-    Catalog = apps.get_model('legacy', 'Catalog')
-    Categories = apps.get_model('legacy', 'Categories')
+    cursor = schema_editor.connection.cursor()
 
     for sort_idx, catalog_name in enumerate(CATALOG_ORDER, start=1):
-        cat_obj = Catalog.objects.create(
-            title=catalog_name,
-            sort=sort_idx,
-            active=1,
+        cursor.execute(
+            "INSERT INTO catalog (title, sort, active) VALUES (%s, %s, 1) RETURNING id",
+            [catalog_name, sort_idx],
         )
+        catalog_id = cursor.fetchone()[0]
         for cat_title in CATALOG_DATA[catalog_name]:
-            Categories.objects.create(
-                catalog=cat_obj,
-                title=cat_title,
-                active=1,
+            cursor.execute(
+                "INSERT INTO categories (catalog, title, active) VALUES (%s, %s, 1)",
+                [catalog_id, cat_title],
             )
 
 
 def depopulate_catalog(apps, schema_editor):
-    Catalog = apps.get_model('legacy', 'Catalog')
-    Categories = apps.get_model('legacy', 'Categories')
-    Categories.objects.all().delete()
-    Catalog.objects.all().delete()
+    cursor = schema_editor.connection.cursor()
+    cursor.execute("DELETE FROM categories")
+    cursor.execute("DELETE FROM catalog")
 
 
 class Migration(migrations.Migration):
