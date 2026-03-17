@@ -1115,6 +1115,11 @@ def legacy_register_sms(request: HttpRequest) -> HttpResponse:
             return _no_store(resp)
 
         otp_code = f"{random.randint(0, 999999):06d}"
+
+        from .sms import send_otp
+        if not send_otp(phone, otp_code):
+            logger.warning('SMS not delivered to %s', phone)
+
         request.session['sms_register'] = {
             'phone': phone,
             'code': otp_code,
