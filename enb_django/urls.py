@@ -19,11 +19,12 @@ from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView, SpectacularRedocView
-from legacy.seo import robots_txt, sitemap_xml
+from legacy.seo import robots_txt, sitemap_xml, yandex_verification
 
 urlpatterns = [
     path('robots.txt', robots_txt, name='robots_txt'),
     path('sitemap.xml', sitemap_xml, name='sitemap_xml'),
+    path('yandex_3d52c6e8c3e0f2e0.html', yandex_verification, name='yandex_verification'),
     path('admin/', admin.site.urls),
     path('api/v1/', include('legacy.api_urls')),
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),

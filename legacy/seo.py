@@ -11,6 +11,20 @@ from .models import Advert, Catalog, Categories
 SITE_URL = 'https://edunabazar.ru'
 
 
+YANDEX_VERIFICATION = (
+    '<html>\n'
+    '    <head>\n'
+    '        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">\n'
+    '    </head>\n'
+    '    <body>Verification: 3d52c6e8c3e0f2e0</body>\n'
+    '</html>'
+)
+
+
+def yandex_verification(request: HttpRequest) -> HttpResponse:
+    return HttpResponse(YANDEX_VERIFICATION, content_type='text/html; charset=utf-8')
+
+
 def robots_txt(request: HttpRequest) -> HttpResponse:
     lines = [
         'User-agent: *',
