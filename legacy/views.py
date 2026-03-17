@@ -30,6 +30,15 @@ from .models import Advert, LegacyUser, Catalog, Categories, AdvertPhoto, Seller
 logger = logging.getLogger(__name__)
 
 
+def _safe_localtime(dt):
+    """Convert a possibly-naive datetime to local time safely."""
+    if dt is None:
+        return timezone.now()
+    if timezone.is_naive(dt):
+        dt = timezone.make_aware(dt)
+    return timezone.localtime(dt)
+
+
 def _no_store(resp: HttpResponse) -> HttpResponse:
     try:
         resp['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
@@ -939,7 +948,7 @@ def map_adverts_api(request: HttpRequest) -> JsonResponse:
                 'text_short': text_short,
                 'url': f"/adverts/{int(a.id)}/",
                 'thumb_url': thumb_url,
-                'created_date': timezone.localtime(getattr(a, 'created_at', timezone.now())).strftime('%d.%m.%Y'),
+                'created_date': _safe_localtime(getattr(a, 'created_at', None)).strftime('%d.%m.%Y'),
                 'is_opt': bool((getattr(a, 'wholesale_price', 0) or 0) > 0),
                 'is_delivery': bool(getattr(a, 'delivery', False)),
             }
