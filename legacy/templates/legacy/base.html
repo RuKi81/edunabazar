@@ -197,38 +197,7 @@
 
   </div>
 
-  <!-- Footer -->
-  <footer style="background:#f5f5f5; border-top:1px solid #e0e0e0; margin-top:40px; padding:25px 0 15px;">
-    <div class="container">
-      <div class="row" style="margin-bottom:0;">
-        <div class="col s12 m4" style="margin-bottom:10px;">
-          <h6 style="font-weight:600; color:#7fb500; margin-bottom:10px;">Еду на базар</h6>
-          <p style="font-size:0.9rem; color:#777; line-height:1.5;">
-            Доска объявлений сельскохозяйственной продукции, техники и услуг
-          </p>
-        </div>
-        <div class="col s6 m4" style="margin-bottom:10px;">
-          <h6 style="font-weight:600; color:#555; margin-bottom:10px;">Разделы</h6>
-          <div style="font-size:0.9rem; line-height:2;">
-            <a href="/adverts/" style="color:#555; display:block;">Объявления</a>
-            <a href="{% url 'seller_list' %}" style="color:#555; display:block;">Предприятия</a>
-            <a href="{% url 'map_view' %}" style="color:#555; display:block;">Карта</a>
-          </div>
-        </div>
-        <div class="col s6 m4" style="margin-bottom:10px;">
-          <h6 style="font-weight:600; color:#555; margin-bottom:10px;">Информация</h6>
-          <div style="font-size:0.9rem; line-height:2;">
-            <a href="{% url 'about' %}" style="color:#555; display:block;">О сервисе</a>
-            <a href="{% url 'howto' %}" style="color:#555; display:block;">Как разместить</a>
-            <a href="{% url 'contacts' %}" style="color:#555; display:block;">Контакты</a>
-          </div>
-        </div>
-      </div>
-      <div style="border-top:1px solid #e0e0e0; padding-top:10px; margin-top:5px; text-align:center;">
-        <span style="font-size:0.85rem; color:#999;">© {{ year }} edunabazar.ru</span>
-      </div>
-    </div>
-  </footer>
+  {% block footer %}{% endblock %}
 
   <script src="{% static 'legacy/js/jquery-3.7.1.min.js' %}"></script>
   <script src="{% static 'legacy/js/a8ba507dcf.js' %}"></script>
