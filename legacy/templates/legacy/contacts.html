@@ -1,0 +1,54 @@
+{% extends 'legacy/base.html' %}
+
+{% load static %}
+
+{% block title %}Контакты — Еду на базар{% endblock %}
+
+{% block meta_description %}Контакты сервиса «Еду на базар». Свяжитесь с нами по email или через форму обратной связи.{% endblock %}
+{% block og_title %}Контакты — Еду на базар{% endblock %}
+{% block og_description %}Свяжитесь с нами по email или через форму обратной связи.{% endblock %}
+
+{% block content %}
+  <div class="row">
+    <div class="col s12 m10 offset-m1">
+      <h4 style="color:#7fb500; font-weight:700; margin-top:10px;">Контакты</h4>
+
+      <div style="font-size:1.05rem; line-height:1.7; color:#333;">
+        <p>Если у вас есть вопросы, предложения или вы столкнулись с проблемой — свяжитесь с нами.</p>
+
+        <div class="row" style="margin-top:25px;">
+          <div class="col s12 m6" style="margin-bottom:20px;">
+            <div style="background:#f5f9ee; border-radius:6px; padding:25px;">
+              <i class="material-icons" style="color:#7fb500; font-size:2rem;">email</i>
+              <h6 style="font-weight:600; margin:8px 0;">Email</h6>
+              <a href="mailto:edunabazar2017@yandex.ru" style="color:#0090b6; font-size:1.1rem;">edunabazar2017@yandex.ru</a>
+            </div>
+          </div>
+          <div class="col s12 m6" style="margin-bottom:20px;">
+            <div style="background:#f5f9ee; border-radius:6px; padding:25px;">
+              <i class="material-icons" style="color:#7fb500; font-size:2rem;">language</i>
+              <h6 style="font-weight:600; margin:8px 0;">Сайт</h6>
+              <a href="https://edunabazar.ru" style="color:#0090b6; font-size:1.1rem;">edunabazar.ru</a>
+            </div>
+          </div>
+        </div>
+
+        <h5 style="color:#7fb500; margin-top:20px;">Часто задаваемые вопросы</h5>
+
+        <div style="margin-top:15px;">
+          <p><strong>Как разместить объявление?</strong><br>
+          Подробная инструкция на странице <a href="{% url 'howto' %}" style="color:#0090b6;">Как разместить объявление</a>.</p>
+
+          <p><strong>Размещение платное?</strong><br>
+          Нет, размещение объявлений полностью бесплатно.</p>
+
+          <p><strong>Как удалить объявление?</strong><br>
+          Войдите в личный кабинет, откройте объявление и нажмите «Удалить».</p>
+
+          <p><strong>Не приходит SMS-код?</strong><br>
+          Убедитесь, что номер введён верно. Если проблема сохраняется — зарегистрируйтесь по email или напишите нам.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}

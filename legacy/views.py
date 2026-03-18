@@ -169,6 +169,18 @@ def _normalize_phone(phone: str) -> str:
     return '+' + s
 
 
+def about(request: HttpRequest) -> HttpResponse:
+    return render(request, 'legacy/about.html')
+
+
+def contacts(request: HttpRequest) -> HttpResponse:
+    return render(request, 'legacy/contacts.html')
+
+
+def howto(request: HttpRequest) -> HttpResponse:
+    return render(request, 'legacy/howto.html')
+
+
 def home(request: HttpRequest) -> HttpResponse:
     return render(
         request,

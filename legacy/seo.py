@@ -57,6 +57,9 @@ def sitemap_xml(request: HttpRequest) -> HttpResponse:
     urls.append(_url(SITE_URL + '/adverts/', now, 'hourly', '0.9'))
     urls.append(_url(SITE_URL + '/map/', now, 'daily', '0.8'))
     urls.append(_url(SITE_URL + '/sellers/', now, 'daily', '0.6'))
+    urls.append(_url(SITE_URL + '/about/', now, 'monthly', '0.5'))
+    urls.append(_url(SITE_URL + '/contacts/', now, 'monthly', '0.5'))
+    urls.append(_url(SITE_URL + '/howto/', now, 'monthly', '0.5'))
 
     # Adverts (published only)
     for a in Advert.objects.filter(status=10).order_by('-updated_at')[:5000]:

@@ -1,0 +1,73 @@
+{% extends 'legacy/base.html' %}
+
+{% load static %}
+
+{% block title %}О сервисе — Еду на базар{% endblock %}
+
+{% block meta_description %}Еду на базар — онлайн-площадка для покупки и продажи сельскохозяйственной продукции, техники и услуг напрямую от производителей.{% endblock %}
+{% block og_title %}О сервисе — Еду на базар{% endblock %}
+{% block og_description %}Онлайн-площадка для покупки и продажи сельскохозяйственной продукции напрямую от производителей.{% endblock %}
+
+{% block content %}
+  <div class="row">
+    <div class="col s12 m10 offset-m1">
+      <h4 style="color:#7fb500; font-weight:700; margin-top:10px;">О сервисе</h4>
+
+      <div style="font-size:1.05rem; line-height:1.7; color:#333;">
+        <p>
+          <strong>«Еду на базар»</strong> — это онлайн-площадка, объединяющая производителей
+          и покупателей сельскохозяйственной продукции. Мы помогаем фермерам, агропредприятиям
+          и частным хозяйствам находить покупателей, а потребителям — свежие и качественные продукты
+          напрямую от производителя.
+        </p>
+
+        <h5 style="color:#7fb500; margin-top:30px;">Что можно найти на площадке</h5>
+        <ul class="browser-default">
+          <li>Свежие овощи, фрукты, зелень и ягоды</li>
+          <li>Мясо, молочные продукты, яйца</li>
+          <li>Зерно, крупы, мука и комбикорма</li>
+          <li>Саженцы, семена, рассаду</li>
+          <li>Сельскохозяйственную технику и оборудование</li>
+          <li>Удобрения, средства защиты растений</li>
+          <li>Услуги: перевозка, обработка земли, ветеринария</li>
+        </ul>
+
+        <h5 style="color:#7fb500; margin-top:30px;">Преимущества</h5>
+        <div class="row" style="margin-top:15px;">
+          <div class="col s12 m4" style="margin-bottom:15px;">
+            <div style="background:#f5f9ee; border-radius:6px; padding:20px; min-height:140px;">
+              <i class="material-icons" style="color:#7fb500; font-size:2rem;">location_on</i>
+              <h6 style="font-weight:600; margin:8px 0;">Карта объявлений</h6>
+              <p style="font-size:0.95rem; color:#555;">Находите товары рядом с вами на интерактивной карте</p>
+            </div>
+          </div>
+          <div class="col s12 m4" style="margin-bottom:15px;">
+            <div style="background:#f5f9ee; border-radius:6px; padding:20px; min-height:140px;">
+              <i class="material-icons" style="color:#7fb500; font-size:2rem;">people</i>
+              <h6 style="font-weight:600; margin:8px 0;">Напрямую</h6>
+              <p style="font-size:0.95rem; color:#555;">Покупайте у производителей без посредников и наценок</p>
+            </div>
+          </div>
+          <div class="col s12 m4" style="margin-bottom:15px;">
+            <div style="background:#f5f9ee; border-radius:6px; padding:20px; min-height:140px;">
+              <i class="material-icons" style="color:#7fb500; font-size:2rem;">verified_user</i>
+              <h6 style="font-weight:600; margin:8px 0;">Бесплатно</h6>
+              <p style="font-size:0.95rem; color:#555;">Размещение объявлений бесплатно для всех пользователей</p>
+            </div>
+          </div>
+        </div>
+
+        <h5 style="color:#7fb500; margin-top:30px;">Как начать</h5>
+        <ol class="browser-default">
+          <li><a href="{% url 'legacy_register_start' %}" style="color:#0090b6;">Зарегистрируйтесь</a> по email или телефону</li>
+          <li>Разместите объявление с фотографиями и указанием местоположения</li>
+          <li>Получайте сообщения от заинтересованных покупателей</li>
+        </ol>
+
+        <p style="margin-top:30px;">
+          Есть вопросы? Напишите нам на странице <a href="{% url 'contacts' %}" style="color:#0090b6;">Контакты</a>.
+        </p>
+      </div>
+    </div>
+  </div>
+{% endblock %}

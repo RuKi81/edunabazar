@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from django.conf import settings
 
 from .models import LegacyUser
@@ -22,11 +24,11 @@ def _is_admin(user) -> bool:
 def legacy_user(request):
     if getattr(request, _CACHE_LOADED, False):
         user = getattr(request, _CACHE_ATTR, None)
-        return {'legacy_user': user, 'is_admin_user': _is_admin(user)}
+        return {'legacy_user': user, 'is_admin_user': _is_admin(user), 'year': datetime.now().year}
 
     legacy_user_id = request.session.get('legacy_user_id')
     user = LegacyUser.objects.filter(pk=legacy_user_id).first() if legacy_user_id else None
 
     setattr(request, _CACHE_ATTR, user)
     setattr(request, _CACHE_LOADED, True)
-    return {'legacy_user': user, 'is_admin_user': _is_admin(user)}
+    return {'legacy_user': user, 'is_admin_user': _is_admin(user), 'year': datetime.now().year}
