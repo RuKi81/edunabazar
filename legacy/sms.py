@@ -26,6 +26,8 @@ def send_sms(phone: str, message: str) -> bool:
         logger.warning('SMSC credentials not configured, SMS not sent to %s', phone)
         return False
 
+    sender = getattr(settings, 'SMSC_SENDER', '')
+
     params = {
         'login': login,
         'psw': password,
@@ -34,6 +36,8 @@ def send_sms(phone: str, message: str) -> bool:
         'fmt': 3,        # JSON response
         'charset': 'utf-8',
     }
+    if sender:
+        params['sender'] = sender
 
     try:
         resp = requests.post(SMSC_SEND_URL, data=params, timeout=10)

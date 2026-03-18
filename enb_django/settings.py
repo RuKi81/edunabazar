@@ -192,6 +192,7 @@ EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', '1').strip().lower() in {'1', 'true',
 # SMSC.ru SMS gateway
 SMSC_LOGIN = os.getenv('SMSC_LOGIN', '')
 SMSC_PASSWORD = os.getenv('SMSC_PASSWORD', '')
+SMSC_SENDER = os.getenv('SMSC_SENDER', '')
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
