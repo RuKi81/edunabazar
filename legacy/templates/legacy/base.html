@@ -127,6 +127,19 @@
         max-width: none;
       }
     }
+
+    /* Global mobile fixes */
+    html { overflow-x: hidden; }
+    body { overflow-x: hidden; min-width: 0; }
+    .container { max-width: 100%; box-sizing: border-box; }
+    img { max-width: 100%; height: auto; }
+    @media (max-width: 600px) {
+      .container { width: 95% !important; padding: 0 4px; }
+      .page-title { font-size: 1.4rem !important; }
+      h1 { font-size: 1.5rem; }
+      h4 { font-size: 1.3rem; }
+      .btn, .btn-large, .btn-small { font-size: 13px; padding: 0 12px; }
+    }
   </style>
 
   {% block head %}{% endblock %}

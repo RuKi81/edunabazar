@@ -37,13 +37,42 @@
     }
     @media (max-width: 600px) {
       .searcher__main {
-        position: sticky;
-        top: 75px;
+        position: static;
+        display: none;
+      }
+      .searcher__main.open {
+        display: block;
       }
 
       .adverts-controls {
         top: 75px;
       }
+      .adverts-controls__group {
+        min-width: 0;
+        grid-template-columns: auto minmax(0, 1fr);
+      }
+      .adverts-controls__group--right {
+        min-width: 0;
+        grid-template-columns: auto 80px;
+      }
+    }
+
+    .adverts-filter-toggle {
+      display: none;
+      background: #7fb500;
+      color: #fff;
+      border: none;
+      border-radius: 0;
+      padding: 8px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-bottom: 10px;
+      width: 100%;
+      text-align: center;
+    }
+    @media (max-width: 600px) {
+      .adverts-filter-toggle { display: block; }
     }
 
     .adverts-controls {
@@ -220,8 +249,12 @@
 
   <div class="col m12 height_1">&nbsp;</div>
 
+  <button class="adverts-filter-toggle" id="adverts_filter_toggle">
+    <i class="material-icons" style="vertical-align:middle; font-size:18px; margin-right:4px;">tune</i> Фильтры
+  </button>
+
   <div class="row" style="margin-bottom:0;">
-    <div class="col m4 main-search searcher__main">
+    <div class="col s12 m4 main-search searcher__main" id="adverts_sidebar">
       <form method="get" action="/adverts/">
         <div class="row" style="margin-bottom:0;">
           <input type="hidden" name="sort" value="{{ sort }}">
@@ -307,7 +340,7 @@
       </div>
     </div>
 
-    <div class="col m8">
+    <div class="col s12 m8">
       <div class="adverts-controls">
         <div class="adverts-controls__group">
           <div class="adverts-controls__label">Сортировать:</div>
@@ -637,6 +670,21 @@
       if (deliveryEl) {
         deliveryEl.addEventListener('change', function () {
           updateQuery({ delivery: deliveryEl.checked ? '1' : '', page: '' });
+        });
+      }
+    })();
+
+    // Mobile filter toggle
+    (function () {
+      var btn = document.getElementById('adverts_filter_toggle');
+      var sidebar = document.getElementById('adverts_sidebar');
+      if (btn && sidebar) {
+        btn.addEventListener('click', function () {
+          sidebar.classList.toggle('open');
+          btn.textContent = sidebar.classList.contains('open') ? '✕ Скрыть фильтры' : '';
+          if (!sidebar.classList.contains('open')) {
+            btn.innerHTML = '<i class="material-icons" style="vertical-align:middle;font-size:18px;margin-right:4px;">tune</i> Фильтры';
+          }
         });
       }
     })();

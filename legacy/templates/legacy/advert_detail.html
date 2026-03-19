@@ -14,6 +14,26 @@
 
 {% block head %}
   <link rel="stylesheet" href="{% static 'legacy/css/leaflet.css' %}" />
+  <style>
+    .ad-image { width: 100%; height: auto; display: block; border-radius: 4px; }
+    .ad-profile { margin-top: 14px; }
+    .ad-profile__item { margin-bottom: 10px; }
+    .adverts-detail__params {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px 16px;
+    }
+    .adverts-detail__desc {
+      margin-top: 16px;
+      line-height: 1.6;
+    }
+    @media (max-width: 600px) {
+      .adverts-detail__params {
+        grid-template-columns: 1fr;
+      }
+      .ad-profile__item__text { font-size: 0.9rem; }
+    }
+  </style>
 {% endblock %}
 
 {% block content %}

@@ -98,10 +98,43 @@
     .mapui-cluster--o { background: #f57c00; }
     .mapui-cluster--r { background: #e53935; }
 
+    .mapui__toggle {
+      display: none;
+      position: fixed;
+      top: calc(var(--map-header-h) + 8px);
+      left: 8px;
+      z-index: 1100;
+      background: #fff;
+      border: none;
+      border-radius: 4px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+      width: 40px;
+      height: 40px;
+      cursor: pointer;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      color: #333;
+    }
+
     @media (max-width: 992px) {
       :root { --map-header-h: 56px; }
       .mapui__left { width: 220px; top: 0; }
       .mapui__right { width: 0; display: none; }
+    }
+
+    @media (max-width: 600px) {
+      .mapui__toggle { display: flex; }
+      .mapui__left {
+        width: 260px;
+        transform: translateX(-110%);
+        transition: transform 0.25s ease;
+        box-shadow: 2px 0 8px rgba(0,0,0,0.15);
+        background: rgba(255,255,255,0.95);
+      }
+      .mapui__left.open {
+        transform: translateX(0);
+      }
     }
   </style>
 {% endblock %}
@@ -110,7 +143,9 @@
   <div class="mapui">
     <div id="map"></div>
 
-    <div class="mapui__left">
+    <button class="mapui__toggle" id="mapui_toggle" aria-label="Фильтры"><i class="material-icons">tune</i></button>
+
+    <div class="mapui__left" id="mapui_left">
       <div class="mapui__radios">
         <label>
           <input name="ad_type" type="radio" value="all" checked>
@@ -523,6 +558,21 @@
 
         loadAdverts();
       })();
+    })();
+
+    // Mobile sidebar toggle
+    (function () {
+      var toggleBtn = document.getElementById('mapui_toggle');
+      var leftPanel = document.getElementById('mapui_left');
+      if (toggleBtn && leftPanel) {
+        toggleBtn.addEventListener('click', function () {
+          leftPanel.classList.toggle('open');
+        });
+        // Close panel when clicking on map
+        document.getElementById('map').addEventListener('click', function () {
+          leftPanel.classList.remove('open');
+        });
+      }
     })();
   </script>
 {% endblock %}
