@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.utils.html import format_html
 
-from .models import Advert, AdvertPhoto, Catalog, Categories, LegacyUser, Message, Review, Seller
+from .models import Advert, AdvertPhoto, Catalog, Categories, LegacyUser, Message, News, Review, Seller
 
 # Register your models here.
 
@@ -91,3 +91,13 @@ class MessageAdmin(admin.ModelAdmin):
     readonly_fields = ('created_at',)
     raw_id_fields = ('sender', 'recipient', 'advert')
     ordering = ('-created_at',)
+
+
+@admin.register(News)
+class NewsAdmin(admin.ModelAdmin):
+    list_display = ('id', 'title', 'source_name', 'published_at', 'is_active', 'created_at')
+    list_filter = ('is_active', 'source_name')
+    search_fields = ('title', 'text', 'source_title')
+    list_editable = ('is_active',)
+    readonly_fields = ('created_at',)
+    ordering = ('-published_at', '-created_at')

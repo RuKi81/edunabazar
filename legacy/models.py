@@ -147,6 +147,26 @@ class Message(models.Model):
         ]
 
 
+class News(models.Model):
+    title = models.CharField(max_length=500)
+    text = models.TextField(blank=True, default='')
+    source_url = models.URLField(max_length=1000)
+    source_name = models.CharField(max_length=200, blank=True, default='')
+    source_title = models.CharField(max_length=500, blank=True, default='')
+    published_at = models.DateField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f'{self.published_at}: {self.title[:80]}'
+
+    class Meta:
+        db_table = 'news'
+        ordering = ['-published_at', '-created_at']
+        verbose_name = 'Новость'
+        verbose_name_plural = 'Новости'
+
+
 class LegacyUser(models.Model):
     type = models.PositiveSmallIntegerField(db_comment='0- ЇшчышЎю, 1-■ЁышЎю')
     username = models.CharField(unique=True, max_length=255, db_comment='╚ь  яюы№чютрЄхы ')

@@ -6,6 +6,7 @@ djangorestframework>=3.15.0
 drf-spectacular>=0.27.0
 tzdata>=2025.1
 requests>=2.31.0
+feedparser>=6.0.0
 
 # GDAL / GEOS are installed at OS level.
 # On Ubuntu: apt-get install -y gdal-bin libgdal-dev libgeos-dev

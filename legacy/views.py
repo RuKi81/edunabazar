@@ -24,7 +24,7 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from django.contrib.auth import authenticate, login as django_login
 from PIL import Image as PILImage
 
-from .models import Advert, LegacyUser, Catalog, Categories, AdvertPhoto, Seller, Review, Message
+from .models import Advert, LegacyUser, Catalog, Categories, AdvertPhoto, News, Seller, Review, Message
 
 
 logger = logging.getLogger(__name__)
@@ -188,6 +188,7 @@ def home(request: HttpRequest) -> HttpResponse:
         {
             'catalogs': Catalog.objects.filter(active=1).order_by('sort', 'title', 'id'),
             'categories': Categories.objects.filter(active=1).select_related('catalog').order_by('title'),
+            'news_list': News.objects.filter(is_active=True)[:3],
         },
     )
 

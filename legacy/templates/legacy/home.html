@@ -292,27 +292,25 @@
         <div class="col s12">
           <div class="home__news-title">Новости</div>
         </div>
-        <div class="col s12 m4">
-          <div class="home__news-item">
-            <a href="#">Умное земледелие</a>
-            <div class="home__news__date">30.08.2019</div>
-            <div class="home__news__src">Еду На Базар</div>
+        {% if news_list %}
+          {% for news in news_list %}
+            <div class="col s12 m4">
+              <div class="home__news-item">
+                <a href="{{ news.source_url }}" target="_blank" rel="noopener">{{ news.title }}</a>
+                {% if news.text %}<p style="font-size:12px; color:#555; margin:6px 0 0;">{{ news.text|truncatechars:160 }}</p>{% endif %}
+                <div class="home__news__date">{{ news.published_at|date:"d.m.Y" }}</div>
+                <div class="home__news__src">{{ news.source_name|default:"Еду На Базар" }}</div>
+              </div>
+            </div>
+          {% endfor %}
+        {% else %}
+          <div class="col s12 m4">
+            <div class="home__news-item">
+              <a href="#">Новости скоро появятся</a>
+              <div class="home__news__src">Еду На Базар</div>
+            </div>
           </div>
-        </div>
-        <div class="col s12 m4">
-          <div class="home__news-item">
-            <a href="#">Всемирный банк выделил финансы Украине на инвентаризацию сельхозугодий</a>
-            <div class="home__news__date">28.08.2019</div>
-            <div class="home__news__src">Еду На Базар</div>
-          </div>
-        </div>
-        <div class="col s12 m4">
-          <div class="home__news-item">
-            <a href="#">Минсельхоз России предлагает упростить раздачу брошенных земель.</a>
-            <div class="home__news__date">26.08.2019</div>
-            <div class="home__news__src">Еду На Базар</div>
-          </div>
-        </div>
+        {% endif %}
       </div>
     </div>
   </div>

@@ -194,6 +194,10 @@ SMSC_LOGIN = os.getenv('SMSC_LOGIN', '')
 SMSC_PASSWORD = os.getenv('SMSC_PASSWORD', '')
 SMSC_SENDER = os.getenv('SMSC_SENDER', '')
 
+# GigaChat (Sber) — free LLM for news rewriting
+# Get key at https://developers.sber.ru/studio/workspaces
+GIGACHAT_AUTH_KEY = os.getenv('GIGACHAT_AUTH_KEY', '')
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 
