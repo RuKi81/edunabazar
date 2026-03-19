@@ -181,6 +181,11 @@ def howto(request: HttpRequest) -> HttpResponse:
     return render(request, 'legacy/howto.html')
 
 
+def news_detail(request: HttpRequest, news_id: int) -> HttpResponse:
+    item = get_object_or_404(News, pk=news_id, is_active=True)
+    return render(request, 'legacy/news_detail.html', {'news': item})
+
+
 def home(request: HttpRequest) -> HttpResponse:
     return render(
         request,
@@ -188,7 +193,7 @@ def home(request: HttpRequest) -> HttpResponse:
         {
             'catalogs': Catalog.objects.filter(active=1).order_by('sort', 'title', 'id'),
             'categories': Categories.objects.filter(active=1).select_related('catalog').order_by('title'),
-            'news_list': News.objects.filter(is_active=True)[:3],
+            'news_list': News.objects.filter(is_active=True)[:6],
         },
     )
 

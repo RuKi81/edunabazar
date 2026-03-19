@@ -1,0 +1,40 @@
+{% extends 'legacy/base.html' %}
+
+{% block title %}{{ news.title }} — Еду на базар{% endblock %}
+
+{% block meta_description %}{{ news.text|truncatewords:25 }}{% endblock %}
+{% block og_title %}{{ news.title }} — Еду на базар{% endblock %}
+{% block og_description %}{{ news.text|truncatewords:25 }}{% endblock %}
+
+{% block content %}
+  <div class="row">
+    <div class="col s12 m8 offset-m2">
+      <div style="margin-top: 16px;">
+        <a href="{% url 'home' %}" style="color:#0090b6; font-size:13px;">← На главную</a>
+      </div>
+
+      <h1 style="font-size: 1.6rem; font-weight: 700; margin: 16px 0 10px;">{{ news.title }}</h1>
+
+      <div style="color:#777; font-size: 12px; margin-bottom: 16px;">
+        {{ news.published_at|date:"d.m.Y" }}
+        {% if news.source_name %} · {{ news.source_name }}{% endif %}
+      </div>
+
+      <div style="font-size: 15px; line-height: 1.7; color: #333;">
+        {{ news.text|linebreaksbr }}
+      </div>
+
+      {% if news.source_url %}
+        <div style="margin-top: 20px; padding-top: 12px; border-top: 1px solid #eee;">
+          <a href="{{ news.source_url }}" target="_blank" rel="noopener" style="font-size: 13px; color: #999;">
+            Источник: {{ news.source_name|default:"ссылка" }}
+          </a>
+        </div>
+      {% endif %}
+
+      <div style="margin-top: 20px;">
+        <a href="{% url 'home' %}" style="color:#0090b6;">← На главную</a>
+      </div>
+    </div>
+  </div>
+{% endblock %}

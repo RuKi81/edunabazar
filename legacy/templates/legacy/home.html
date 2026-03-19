@@ -86,18 +86,14 @@
 
 {% block head %}
   <style>
-    html, body { background: url('{% static "legacy/images/slide.jpg" %}') center top / cover no-repeat fixed; }
-    .content { background: transparent !important; }
-    .main-image { height: 420px; background: transparent; display: block; width: 100%; }
-    .home__wrap { margin-top: -256px !important; position: relative; top: 64px; z-index: 1; pointer-events: none; }
-    .home__topspacer { height: 0; }
-    .sidenav a { color: #9e9e9e !important; }
-    .home__below { background: transparent; padding-top: 12px; padding-bottom: 8px; position: relative; z-index: 2; }
+    html, body { background: #fff; }
+    .home__wrap { position: relative; z-index: 1; margin-top: 16px; }
+    .home__below { padding-top: 12px; padding-bottom: 8px; position: relative; z-index: 2; }
     .home__panel {
-      background: rgba(255,255,255,0.72);
-      border: 1px solid rgba(255,255,255,0.55);
+      background: #f5f5f5;
+      border: 1px solid #e0e0e0;
       padding: 18px 18px 16px 18px;
-      pointer-events: auto;
+      border-radius: 4px;
     }
     .home__panel .home__row { margin-bottom: 10px; }
     .home__panel label {
@@ -111,8 +107,8 @@
     .home__panel label span { font-weight: 600; letter-spacing: .15px; }
     .home__panel .browser-default {
       height: 32px;
-      border: 1px solid rgba(0,0,0,0.15);
-      background: rgba(255,255,255,0.85);
+      border: 1px solid #ccc;
+      background: #fff;
       color: #757575;
       box-sizing: border-box;
       padding: 0 10px;
@@ -120,70 +116,40 @@
       display: block;
     }
     .home__panel .browser-default option { color: #424242; }
-    .home__panel input[type="text"] { height: 32px; border: 1px solid rgba(0,0,0,0.15); padding: 0 10px; box-sizing: border-box; background: rgba(255,255,255,0.85); line-height: 32px; }
+    .home__panel input[type="text"] { height: 32px; border: 1px solid #ccc; padding: 0 10px; box-sizing: border-box; background: #fff; line-height: 32px; }
     .home__btn { background: #7fb500; border-radius: 0; box-shadow: none; }
     .home__btn:hover { background: #8fcc00; }
-    .home__tiles { margin-top: 22px; }
-    .home__tile {
-      position: relative;
-      display: block;
-      height: 140px;
-      overflow: hidden;
-      background: rgba(255,255,255,0.68);
-      border-radius: 2px;
-      box-shadow: 0 1px 2px rgba(0,0,0,0.12);
-    }
-    .home__tile:hover { box-shadow: 0 3px 10px rgba(0,0,0,0.18); }
-    .home__tile img { width: 100%; height: 140px; object-fit: cover; display:block; }
-    .home__tile__cap {
-      position:absolute;
-      left:0; right:0; bottom:0;
-      padding: 10px 12px;
-      background: linear-gradient(to top, rgba(0,0,0,0.55), rgba(0,0,0,0.0));
-      color:#fff;
-      font-size: 13px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: .3px;
-      text-align: center;
-    }
-    .home__news { margin-top: 18px; }
-    .home__news-title { font-size: 18px; font-weight: 700; margin: 0 0 10px 0; color: #fff; }
+    .home__news { margin-top: 20px; }
+    .home__news-title { font-size: 18px; font-weight: 700; margin: 0 0 12px 0; color: #333; }
     .home__news-item {
-      background: rgba(255,255,255,0.72);
-      border: 1px solid rgba(255,255,255,0.55);
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 4px;
       padding: 12px 14px;
-      min-height: 96px;
+      min-height: 80px;
+      margin-bottom: 12px;
     }
+    .home__news-item:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
     .home__news a { font-size: 13px; font-weight: 600; color: #0090b6; }
     .home__news a:hover { text-decoration: underline; }
-    .home__news .home__news__date { color:#777; font-size: 11px; margin-top: 8px; }
-    .home__news .home__news__src { color:#777; font-size: 11px; }
+    .home__news .home__news__date { color:#999; font-size: 11px; margin-top: 8px; }
+    .home__news .home__news__src { color:#999; font-size: 11px; }
     @media (max-width: 992px) {
-      .main-image { height: 320px; }
-      .home__wrap { margin-top: -200px !important; top: 48px; }
       .home__panel { padding: 14px; }
     }
     @media (max-width: 600px) {
-      .main-image { height: 180px; }
-      .home__wrap { margin-top: -120px !important; top: 20px; }
-      .home__tiles .col { margin-bottom: 12px; }
       .home__panel { padding: 10px; }
       .home__panel label { margin: 0 6px 4px 0; font-size: 12px !important; }
       .home__panel .browser-default { font-size: 13px; }
       .home__btn { font-size: 12px; padding: 0 10px; height: 32px; line-height: 32px; }
       .home__panel input[type="text"] { font-size: 14px; }
       .home__news-item { min-height: auto; padding: 10px; }
-      .home__tile { height: 110px; }
-      .home__tile img { height: 110px; }
     }
   </style>
 {% endblock %}
 
 {% block content %}
   <div class="col m12">
-    <div class="main-image"></div>
-
     <div class="main-search searcher__main home__wrap">
       <div class="home__topspacer"></div>
 
@@ -261,33 +227,6 @@
     </div>
 
     <div class="home__below">
-      <div class="row home__tiles" style="margin-bottom:0;">
-        <div class="col s12 m3">
-          <a href="{% url 'seller_list' %}" class="home__tile">
-            <img src="{% static 'legacy/images/main1.jpg' %}" alt="">
-            <div class="home__tile__cap">Агропредприятия</div>
-          </a>
-        </div>
-        <div class="col s12 m3">
-          <a href="/adverts/" class="home__tile">
-            <img src="{% static 'legacy/images/main2.jpg' %}" alt="">
-            <div class="home__tile__cap">Блоги</div>
-          </a>
-        </div>
-        <div class="col s12 m3">
-          <a href="/adverts/" class="home__tile">
-            <img src="{% static 'legacy/images/img-big.jpg' %}" alt="">
-            <div class="home__tile__cap">Цены</div>
-          </a>
-        </div>
-        <div class="col s12 m3">
-          <a href="/adverts/" class="home__tile">
-            <img src="{% static 'legacy/images/main4.jpg' %}" alt="">
-            <div class="home__tile__cap">Мероприятия</div>
-          </a>
-        </div>
-      </div>
-
       <div class="row home__news" style="margin-bottom:0;">
         <div class="col s12">
           <div class="home__news-title">Новости</div>
@@ -296,7 +235,7 @@
           {% for news in news_list %}
             <div class="col s12 m4">
               <div class="home__news-item">
-                <a href="{{ news.source_url }}" target="_blank" rel="noopener">{{ news.title }}</a>
+                <a href="{% url 'news_detail' news.id %}">{{ news.title }}</a>
                 {% if news.text %}<p style="font-size:12px; color:#555; margin:6px 0 0;">{{ news.text|truncatechars:160 }}</p>{% endif %}
                 <div class="home__news__date">{{ news.published_at|date:"d.m.Y" }}</div>
                 <div class="home__news__src">{{ news.source_name|default:"Еду На Базар" }}</div>
@@ -318,12 +257,12 @@
 {% endblock %}
 
 {% block footer %}
-  <footer style="background:rgba(0,0,0,0.3); border-top:1px solid rgba(255,255,255,0.15); margin-top:20px; padding:12px 0;">
+  <footer style="background:#f5f5f5; border-top:1px solid #e0e0e0; margin-top:20px; padding:12px 0;">
     <div class="container" style="display:flex; flex-wrap:wrap; justify-content:center; align-items:center; gap:6px 18px;">
-      <span style="font-size:0.82rem; color:rgba(255,255,255,0.6);">© {{ year }} edunabazar.ru</span>
-      <a href="{% url 'about' %}" style="font-size:0.82rem; color:rgba(255,255,255,0.6);">О сервисе</a>
-      <a href="{% url 'howto' %}" style="font-size:0.82rem; color:rgba(255,255,255,0.6);">Как разместить</a>
-      <a href="{% url 'contacts' %}" style="font-size:0.82rem; color:rgba(255,255,255,0.6);">Контакты</a>
+      <span style="font-size:0.82rem; color:#999;">© {{ year }} edunabazar.ru</span>
+      <a href="{% url 'about' %}" style="font-size:0.82rem; color:#777;">О сервисе</a>
+      <a href="{% url 'howto' %}" style="font-size:0.82rem; color:#777;">Как разместить</a>
+      <a href="{% url 'contacts' %}" style="font-size:0.82rem; color:#777;">Контакты</a>
     </div>
   </footer>
 {% endblock %}
