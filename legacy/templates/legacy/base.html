@@ -23,6 +23,20 @@
 
   <link rel="stylesheet" href="{% static 'legacy/css/materialize.min.css' %}" />
   <link rel="stylesheet" href="{% static 'legacy/css/font-awesome-css.min.css' %}" />
+  <style>
+    @font-face {
+      font-family: 'FontAwesome';
+      src: url('{% static "legacy/fonts/fontawesome-webfont.eot" %}');
+      src: url('{% static "legacy/fonts/fontawesome-webfont.eot" %}?#iefix') format('embedded-opentype'),
+           url('{% static "legacy/fonts/fontawesome-webfont.woff2" %}') format('woff2'),
+           url('{% static "legacy/fonts/fontawesome-webfont.woff" %}') format('woff'),
+           url('{% static "legacy/fonts/fontawesome-webfont.ttf" %}') format('truetype'),
+           url('{% static "legacy/fonts/fontawesome-webfont.svg" %}#fontawesomeregular') format('svg');
+      font-weight: normal;
+      font-style: normal;
+      font-display: swap;
+    }
+  </style>
   <link rel="stylesheet" href="{% static 'legacy/css/jquery.fancybox.css' %}" />
   <link rel="stylesheet" href="{% static 'legacy/css/site.css' %}" />
   <link rel="stylesheet" href="{% static 'legacy/css/app.css' %}" />
@@ -213,7 +227,6 @@
   {% block footer %}{% endblock %}
 
   <script src="{% static 'legacy/js/jquery-3.7.1.min.js' %}"></script>
-  <script src="{% static 'legacy/js/a8ba507dcf.js' %}"></script>
   <script type="text/javascript" src="{% static 'legacy/js/jquery.fancybox.pack.js' %}"></script>
   <script src="{% static 'legacy/js/materialize.min.js' %}"></script>
   <script>
