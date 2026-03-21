@@ -167,6 +167,41 @@ class News(models.Model):
         verbose_name_plural = 'Новости'
 
 
+class NewsKeyword(models.Model):
+    KEYWORD_TYPE_CHOICES = [
+        ('include', 'Включать (тема с/х и продуктов)'),
+        ('exclude', 'Исключать (нерелевантное)'),
+    ]
+    keyword = models.CharField('Ключевое слово', max_length=100)
+    keyword_type = models.CharField('Тип', max_length=7, choices=KEYWORD_TYPE_CHOICES, default='include')
+    is_active = models.BooleanField('Активно', default=True)
+
+    def __str__(self):
+        prefix = '+' if self.keyword_type == 'include' else '−'
+        return f'{prefix} {self.keyword}'
+
+    class Meta:
+        db_table = 'news_keyword'
+        ordering = ['keyword_type', 'keyword']
+        verbose_name = 'Ключевое слово (новости)'
+        verbose_name_plural = 'Ключевые слова (новости)'
+
+
+class NewsFeedSource(models.Model):
+    name = models.CharField('Название', max_length=200)
+    url = models.URLField('RSS URL', max_length=500)
+    is_active = models.BooleanField('Активен', default=True)
+
+    def __str__(self):
+        return self.name
+
+    class Meta:
+        db_table = 'news_feed_source'
+        ordering = ['name']
+        verbose_name = 'RSS-источник новостей'
+        verbose_name_plural = 'RSS-источники новостей'
+
+
 class LegacyUser(models.Model):
     type = models.PositiveSmallIntegerField(db_comment='0- ЇшчышЎю, 1-■ЁышЎю')
     username = models.CharField(unique=True, max_length=255, db_comment='╚ь  яюы№чютрЄхы ')

@@ -27,77 +27,25 @@ from django.utils import timezone
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-from legacy.models import News
+from legacy.models import News, NewsFeedSource, NewsKeyword
 
 logger = logging.getLogger('legacy.fetch_news')
 
-# ── RSS sources: agriculture & food, Russia + CIS ──────────────────────
+def _get_feed_sources() -> list[dict]:
+    """Load RSS sources from DB (NewsFeedSource model)."""
+    sources = list(
+        NewsFeedSource.objects.filter(is_active=True).values('name', 'url')
+    )
+    return sources
 
-RSS_FEEDS = [
-    {
-        'url': 'https://www.agroinvestor.ru/rss/',
-        'name': 'Агроинвестор',
-    },
-    {
-        'url': 'https://milknews.ru/rss.xml',
-        'name': 'Milknews',
-    },
-    {
-        'url': 'https://agrovesti.net/rss',
-        'name': 'Агровести',
-    },
-    {
-        'url': 'https://tass.ru/rss/v2.xml',
-        'name': 'ТАСС',
-    },
-    {
-        'url': 'https://rssexport.rbc.ru/rbcnews/news/30/full.rss',
-        'name': 'РБК',
-    },
-    {
-        'url': 'https://kazakh-zerno.net/rss/',
-        'name': 'Казах-Зерно',
-    },
-]
 
-# Keywords to filter for agriculture/food topics
-AGRO_KEYWORDS = [
-    'сельск', 'аграрн', 'фермер', 'урожай', 'зерн', 'пшениц',
-    'кукуруз', 'подсолнеч', 'рапс', 'соя', 'ячмень', 'овёс', 'овес',
-    'рожь', 'сахар', 'свёкл', 'свекл', 'картофел', 'овощ', 'фрукт',
-    'молок', 'молоч', 'мяс', 'птиц', 'свин', 'говяд', 'баран',
-    'рыб', 'аквакультур', 'удобрен', 'пестицид', 'гербицид',
-    'комбайн', 'трактор', 'посев', 'уборк', 'уборочн',
-    'агро', 'минсельхоз', 'россельхознадзор', 'продовольств',
-    'экспорт зерн', 'импорт продовольств', 'животновод',
-    'растениевод', 'садовод', 'тепличн', 'парник',
-    'хлеб', 'мука', 'корм', 'комбикорм', 'элеватор', 'силос',
-    'дойк', 'надо', 'стадо', 'поголовь', 'племен',
-    'масло подсолн', 'масло растит', 'маргарин',
-    'консерв', 'крупа', 'рис ', 'гречк', 'макарон',
-    'колбас', 'сосиск', 'полуфабрикат', 'замороз',
-    'кондитер', 'шоколад', 'конфет', 'печень',
-    'напиток', 'сок', 'вод', 'пиво', 'вин',
-    'чай ', 'кофе', 'какао',
-    'орех', 'мёд', 'мед ', 'ягод', 'гриб',
-    'специ', 'прянос', 'соус', 'кетчуп', 'майонез',
-    'детское питан', 'продукт питан', 'пищев',
-    'роспотребнадзор', 'качество продук',
-]
-
-# Negative keywords to exclude irrelevant topics
-EXCLUDE_KEYWORDS = [
-    'медицин', 'лекарств', 'вакцин', 'здоровь', 'больниц', 'клиник',
-    'врач', 'пациент', 'диагноз', 'хирург', 'терапевт', 'онколог',
-    'коронавирус', 'ковид', 'covid', 'грипп', 'эпидеми', 'пандеми',
-    'госпитал', 'стоматолог', 'аптек', 'фармацевт', 'антибиотик',
-    'криптовалют', 'биткоин', 'блокчейн',
-    'футбол', 'хоккей', 'баскетбол', 'теннис', 'олимпи',
-    'кинотеатр', 'сериал', 'актёр', 'актер', 'режиссёр', 'режиссер',
-    'смартфон', 'iphone', 'android', 'гаджет',
-    'космос', 'nasa', 'роскосмос', 'астроном',
-    'военн', 'вооружен', 'артиллер', 'ракетн',
-]
+def _get_keywords(keyword_type: str) -> list[str]:
+    """Load keywords from DB (NewsKeyword model)."""
+    return list(
+        NewsKeyword.objects.filter(
+            keyword_type=keyword_type, is_active=True
+        ).values_list('keyword', flat=True)
+    )
 
 # ── GigaChat (Sber) — free for individuals ─────────────────────────
 GIGACHAT_OAUTH_URL = 'https://ngw.devices.sberbank.ru:9443/api/v2/oauth'
@@ -119,12 +67,12 @@ def _url_hash(url: str) -> str:
     return hashlib.md5(url.encode()).hexdigest()
 
 
-def _is_agro(title: str, summary: str) -> bool:
+def _is_agro(title: str, summary: str, include_kw: list[str], exclude_kw: list[str]) -> bool:
     """Check if the article is about agriculture/food and not about excluded topics."""
     combined = (title + ' ' + summary).lower()
-    if any(kw in combined for kw in EXCLUDE_KEYWORDS):
+    if any(kw in combined for kw in exclude_kw):
         return False
-    return any(kw in combined for kw in AGRO_KEYWORDS)
+    return any(kw in combined for kw in include_kw)
 
 
 def _fetch_rss_entries(max_age_days: int = 3) -> list[dict]:
@@ -132,7 +80,18 @@ def _fetch_rss_entries(max_age_days: int = 3) -> list[dict]:
     cutoff = datetime.now() - timedelta(days=max_age_days)
     entries = []
 
-    for feed_info in RSS_FEEDS:
+    feed_sources = _get_feed_sources()
+    include_kw = _get_keywords('include')
+    exclude_kw = _get_keywords('exclude')
+
+    if not feed_sources:
+        logger.warning('No active RSS sources in DB')
+        return []
+    if not include_kw:
+        logger.warning('No active include keywords in DB')
+        return []
+
+    for feed_info in feed_sources:
         try:
             feed = feedparser.parse(feed_info['url'])
             for entry in feed.entries[:30]:
@@ -153,7 +112,7 @@ def _fetch_rss_entries(max_age_days: int = 3) -> list[dict]:
                 if pub_dt < cutoff:
                     continue
 
-                if not _is_agro(title, summary):
+                if not _is_agro(title, summary, include_kw, exclude_kw):
                     continue
 
                 entries.append({

@@ -1,7 +1,10 @@
 from django.contrib import admin
 from django.utils.html import format_html
 
-from .models import Advert, AdvertPhoto, Catalog, Categories, LegacyUser, Message, News, Review, Seller
+from .models import (
+    Advert, AdvertPhoto, Catalog, Categories, LegacyUser, Message,
+    News, NewsFeedSource, NewsKeyword, Review, Seller,
+)
 
 # Register your models here.
 
@@ -101,3 +104,19 @@ class NewsAdmin(admin.ModelAdmin):
     list_editable = ('is_active',)
     readonly_fields = ('created_at',)
     ordering = ('-published_at', '-created_at')
+
+
+@admin.register(NewsKeyword)
+class NewsKeywordAdmin(admin.ModelAdmin):
+    list_display = ('keyword', 'keyword_type', 'is_active')
+    list_filter = ('keyword_type', 'is_active')
+    list_editable = ('keyword_type', 'is_active')
+    search_fields = ('keyword',)
+    ordering = ('keyword_type', 'keyword')
+
+
+@admin.register(NewsFeedSource)
+class NewsFeedSourceAdmin(admin.ModelAdmin):
+    list_display = ('name', 'url', 'is_active')
+    list_editable = ('is_active',)
+    search_fields = ('name', 'url')
