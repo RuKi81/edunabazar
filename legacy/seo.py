@@ -5,7 +5,7 @@ SEO helpers: robots.txt, sitemap.xml, and context processors for meta tags.
 from django.http import HttpRequest, HttpResponse
 from django.utils import timezone
 
-from .models import Advert, Catalog, Categories
+from .models import Advert, News, Seller
 
 
 SITE_URL = 'https://edunabazar.ru'
@@ -65,6 +65,16 @@ def sitemap_xml(request: HttpRequest) -> HttpResponse:
     for a in Advert.objects.filter(status=10).order_by('-updated_at')[:5000]:
         lastmod = a.updated_at.strftime('%Y-%m-%d') if a.updated_at else now
         urls.append(_url(f'{SITE_URL}/adverts/{a.id}/', lastmod, 'weekly', '0.7'))
+
+    # Sellers (published only)
+    for s in Seller.objects.filter(status=10).order_by('-updated_at')[:2000]:
+        lastmod = s.updated_at.strftime('%Y-%m-%d') if s.updated_at else now
+        urls.append(_url(f'{SITE_URL}/sellers/{s.id}/', lastmod, 'weekly', '0.6'))
+
+    # News
+    for n in News.objects.filter(is_active=True).order_by('-published_at')[:1000]:
+        lastmod = n.published_at.strftime('%Y-%m-%d') if n.published_at else now
+        urls.append(_url(f'{SITE_URL}/news/{n.id}/', lastmod, 'monthly', '0.5'))
 
     xml = '<?xml version="1.0" encoding="UTF-8"?>\n'
     xml += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'

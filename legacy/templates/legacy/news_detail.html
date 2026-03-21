@@ -37,4 +37,25 @@
       </div>
     </div>
   </div>
+
+  <!-- JSON-LD: NewsArticle -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "NewsArticle",
+    "headline": "{{ news.title|escapejs }}",
+    "description": "{{ news.text|truncatewords:25|escapejs }}",
+    "datePublished": "{{ news.published_at|date:'Y-m-d' }}",
+    "url": "https://edunabazar.ru/news/{{ news.id }}/",
+    "publisher": {
+      "@type": "Organization",
+      "name": "Еду на базар",
+      "url": "https://edunabazar.ru"
+    }{% if news.source_name %},
+    "author": {
+      "@type": "Organization",
+      "name": "{{ news.source_name|escapejs }}"
+    }{% endif %}
+  }
+  </script>
 {% endblock %}

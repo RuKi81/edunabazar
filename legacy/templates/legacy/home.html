@@ -82,6 +82,31 @@
       filterCategories();
     })();
   </script>
+  <!-- JSON-LD: Organization + WebSite -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    "name": "Еду на базар",
+    "url": "https://edunabazar.ru",
+    "logo": "https://edunabazar.ru{% static 'legacy/images/logo.png' %}",
+    "description": "Доска объявлений сельскохозяйственной продукции, техники, оборудования и услуг.",
+    "sameAs": []
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    "name": "Еду на базар",
+    "url": "https://edunabazar.ru",
+    "potentialAction": {
+      "@type": "SearchAction",
+      "target": "https://edunabazar.ru/adverts/?q={search_term_string}",
+      "query-input": "required name=search_term_string"
+    }
+  }
+  </script>
 {% endblock %}
 
 {% block head %}

@@ -58,4 +58,24 @@
       {% include 'legacy/_reviews_section.html' %}
     </div>
   </div>
+
+  <!-- JSON-LD: LocalBusiness -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "LocalBusiness",
+    "name": "{{ seller.name|escapejs }}",
+    "url": "https://edunabazar.ru/sellers/{{ seller.id }}/",
+    {% if seller.about %}"description": "{{ seller.about|truncatewords:50|escapejs }}",{% endif %}
+    {% if seller.location %}"address": {
+      "@type": "PostalAddress",
+      "addressLocality": "{{ seller.location|escapejs }}"
+    },{% endif %}
+    "isPartOf": {
+      "@type": "Organization",
+      "name": "Еду на базар",
+      "url": "https://edunabazar.ru"
+    }
+  }
+  </script>
 {% endblock %}

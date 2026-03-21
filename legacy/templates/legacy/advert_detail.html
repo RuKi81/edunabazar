@@ -88,11 +88,11 @@
       <div class="ad-summary__photo">
         {% if photos and photos.0.image %}
           <a class="fancybox" href="{{ photos.0.image.url }}?v={{ photos.0.id }}" title="{{ advert.title }}">
-            <img class="ad-image" src="{{ photos.0.image.url }}?v={{ photos.0.id }}" alt="Фото объявления">
+            <img class="ad-image" src="{{ photos.0.image.url }}?v={{ photos.0.id }}" alt="{{ advert.title }}">
           </a>
         {% else %}
           <a class="fancybox" href="{% static 'legacy/images/no_photo_350_263.jpg' %}" title="{{ advert.title }}">
-            <img class="ad-image" src="{% static 'legacy/images/no_photo_350_263.jpg' %}" alt="Фото объявления">
+            <img class="ad-image" src="{% static 'legacy/images/no_photo_350_263.jpg' %}" alt="{{ advert.title }} — нет фото">
           </a>
         {% endif %}
       </div>
@@ -103,7 +103,7 @@
             {% if not forloop.first %}
               <div class="col s4" style="margin-bottom: 8px;">
                 <a class="fancybox" href="{{ p.image.url }}?v={{ p.id }}" title="{{ advert.title }}">
-                  <img src="{{ p.image.url }}?v={{ p.id }}" alt="Фото" style="width:100%; height: 70px; object-fit: cover; border-radius: 2px;">
+                  <img src="{{ p.image.url }}?v={{ p.id }}" alt="{{ advert.title }} — фото {{ forloop.counter }}" style="width:100%; height: 70px; object-fit: cover; border-radius: 2px;">
                 </a>
               </div>
             {% endif %}
