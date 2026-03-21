@@ -95,9 +95,15 @@
     .hide-on-med-and-down nav ul a { line-height: 92px; font-size: 14px; font-weight: 600; letter-spacing: .2px; }
     .hide-on-med-and-down .brand-logo { display: flex; align-items: center; height: 92px; line-height: 92px; }
 
-    .hide-on-large-only .container { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-    .hide-on-large-only .sidenav-trigger { line-height: 63px; height: 63px; }
-    .hide-on-large-only .sidenav-trigger i.material-icons { line-height: 63px; }
+    .hide-on-large-only .container { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 12px; }
+    .hide-on-large-only .sidenav-trigger { line-height: 56px; height: 56px; }
+    .hide-on-large-only .sidenav-trigger i.material-icons { line-height: 56px; font-size: 28px; }
+
+    /* Sidenav mobile styling */
+    .sidenav .sidenav-logo { padding: 16px 20px 8px; border-bottom: 1px solid #eee; margin-bottom: 4px; }
+    .sidenav .sidenav-logo img { height: 48px; width: auto; }
+    .sidenav li > a { font-size: 14px !important; height: 48px; line-height: 48px; padding: 0 20px !important; }
+    .sidenav li > a > i.material-icons { margin-right: 16px; line-height: 48px; height: 48px; width: 24px; color: #7fb500; }
 
     .input-field { position: relative; }
     .input-field > label {
@@ -148,11 +154,16 @@
     .container { max-width: 100%; box-sizing: border-box; }
     img { max-width: 100%; height: auto; }
     @media (max-width: 600px) {
-      .container { width: 95% !important; padding: 0 4px; }
+      .container { width: 100% !important; padding: 0 12px; box-sizing: border-box; }
       .page-title { font-size: 1.4rem !important; }
       h1 { font-size: 1.5rem; }
       h4 { font-size: 1.3rem; }
-      .btn, .btn-large, .btn-small { font-size: 13px; padding: 0 12px; }
+      .btn, .btn-large, .btn-small { font-size: 13px; padding: 0 14px; height: 40px; line-height: 40px; }
+      .row { margin-left: 0; margin-right: 0; }
+      .row .col { padding: 0 8px; }
+    }
+    @media (max-width: 992px) and (min-width: 601px) {
+      .container { width: 95% !important; padding: 0 12px; box-sizing: border-box; }
     }
   </style>
 
@@ -192,33 +203,38 @@
 
   <!-- Mobile nav -->
   <div class="hide-on-large-only">
-    <div class="container" style="padding-top: 10px;">
+    <div class="container" style="padding-top: 8px; padding-bottom: 8px;">
       <a href="#" data-target="slide-out" class="sidenav-trigger right"><i class="material-icons">menu</i></a>
-      <a href="/" aria-label="На главную" style="font-weight: 600; display:inline-block;">
+      <a href="/" aria-label="На главную" style="display:inline-block;">
         <img class="brand-logo__img" src="{% static 'legacy/images/logo.png' %}" alt="Еду на базар">
       </a>
     </div>
 
     <ul id="slide-out" class="sidenav">
-      <li><a href="/adverts/">объявления</a></li>
-      <li><a href="{% url 'seller_list' %}">предприятия</a></li>
-      <li><a href="#">цены</a></li>
+      <li class="sidenav-logo">
+        <a href="/" style="padding:0 !important; height:auto; line-height:normal;">
+          <img src="{% static 'legacy/images/logo.png' %}" alt="Еду на базар" style="height:48px; width:auto;">
+        </a>
+      </li>
+      <li><a href="/adverts/"><i class="material-icons">list</i>объявления</a></li>
+      <li><a href="{% url 'seller_list' %}"><i class="material-icons">business</i>предприятия</a></li>
+      <li><a href="#"><i class="material-icons">trending_up</i>цены</a></li>
       <li><div class="divider"></div></li>
       {% if legacy_user %}
-        <li><a href="{% url 'messages_inbox' %}">сообщения</a></li>
+        <li><a href="{% url 'messages_inbox' %}"><i class="material-icons">mail</i>сообщения</a></li>
         {% if is_admin_user %}
-          <li><a href="{% url 'admin_users' %}">админка</a></li>
+          <li><a href="{% url 'admin_users' %}"><i class="material-icons">settings</i>админка</a></li>
         {% endif %}
-        <li><a href="{% url 'legacy_me' %}">кабинет</a></li>
-        <li><a href="{% url 'legacy_logout' %}">выход</a></li>
+        <li><a href="{% url 'legacy_me' %}"><i class="material-icons">person</i>кабинет</a></li>
+        <li><a href="{% url 'legacy_logout' %}"><i class="material-icons">exit_to_app</i>выход</a></li>
       {% else %}
-        <li><a href="{% url 'legacy_register_start' %}?next={{ request.path|urlencode }}">регистрация</a></li>
-        <li><a href="{% url 'legacy_login' %}?next={{ request.path }}">вход</a></li>
+        <li><a href="{% url 'legacy_register_start' %}?next={{ request.path|urlencode }}"><i class="material-icons">person_add</i>регистрация</a></li>
+        <li><a href="{% url 'legacy_login' %}?next={{ request.path }}"><i class="material-icons">login</i>вход</a></li>
       {% endif %}
     </ul>
   </div>
 
-  <div class="container" style="margin-top: 20px;">
+  <div class="container" style="margin-top: 16px;">
     {% block content %}{% endblock %}
   </div>
 

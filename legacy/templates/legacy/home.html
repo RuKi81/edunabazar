@@ -87,7 +87,7 @@
 {% block head %}
   <style>
     html, body { background: #fff; }
-    .home__wrap { position: relative; z-index: 1; margin-top: 16px; }
+    .home__wrap { position: relative; z-index: 1; margin-top: 8px; }
     .home__below { padding-top: 12px; padding-bottom: 8px; position: relative; z-index: 2; }
     .home__panel {
       background: #f5f5f5;
@@ -116,8 +116,9 @@
       display: block;
     }
     .home__panel .browser-default option { color: #424242; }
-    .home__panel input[type="text"] { height: 32px; border: 1px solid #ccc; padding: 0 10px; box-sizing: border-box; background: #fff; line-height: 32px; }
-    .home__btn { background: #7fb500; border-radius: 0; box-shadow: none; }
+    .home__panel input[type="text"] { height: 36px; border: 1px solid #ccc; padding: 0 10px; box-sizing: border-box; background: #fff; line-height: 36px; border-radius: 4px; font-size: 15px; width: 100%; }
+    .home__panel .browser-default { height: 36px; line-height: 36px; border-radius: 4px; width: 100%; font-size: 14px; }
+    .home__btn { background: #7fb500; border-radius: 4px; box-shadow: none; height: 40px; line-height: 40px; font-weight: 600; }
     .home__btn:hover { background: #8fcc00; }
     .home__news { margin-top: 20px; }
     .home__news-header {
@@ -160,13 +161,18 @@
       .home__panel { padding: 14px; }
     }
     @media (max-width: 600px) {
-      .home__panel { padding: 10px; }
-      .home__panel label { margin: 0 6px 4px 0; font-size: 12px !important; }
-      .home__panel .browser-default { font-size: 13px; }
-      .home__btn { font-size: 12px; padding: 0 10px; height: 32px; line-height: 32px; }
-      .home__panel input[type="text"] { font-size: 14px; }
+      .home__wrap { margin-top: 4px; }
+      .home__panel { padding: 12px; }
+      .home__panel label { margin: 0 8px 6px 0; font-size: 13px !important; }
+      .home__panel label span { font-size: 13px; }
+      .home__panel .browser-default { font-size: 14px; height: 40px; line-height: 40px; }
+      .home__panel input[type="text"] { font-size: 15px; height: 40px; line-height: 40px; }
+      .home__btn { font-size: 13px; padding: 0 14px; height: 40px; line-height: 40px; margin-bottom: 6px; }
+      .home__news { margin-top: 16px; }
       .home__news-cards { flex-direction: column; gap: 10px; }
-      .home__news-card { padding: 10px 12px; }
+      .home__news-card { padding: 12px 14px; }
+      .home__news-card a.home__news-link { font-size: 14px; }
+      .home__news-card .home__news-text { font-size: 13px; }
     }
   </style>
 {% endblock %}
