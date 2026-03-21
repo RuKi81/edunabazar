@@ -187,13 +187,18 @@ def news_detail(request: HttpRequest, news_id: int) -> HttpResponse:
 
 
 def home(request: HttpRequest) -> HttpResponse:
+    news_qs = News.objects.filter(is_active=True)
+    news_page_num = request.GET.get('news_page', 1)
+    from django.core.paginator import Paginator
+    news_paginator = Paginator(news_qs, 3)
+    news_page = news_paginator.get_page(news_page_num)
     return render(
         request,
         'legacy/home.html',
         {
             'catalogs': Catalog.objects.filter(active=1).order_by('sort', 'title', 'id'),
             'categories': Categories.objects.filter(active=1).select_related('catalog').order_by('title'),
-            'news_list': News.objects.filter(is_active=True)[:6],
+            'news_page': news_page,
         },
     )
 

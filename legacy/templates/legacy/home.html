@@ -120,20 +120,42 @@
     .home__btn { background: #7fb500; border-radius: 0; box-shadow: none; }
     .home__btn:hover { background: #8fcc00; }
     .home__news { margin-top: 20px; }
-    .home__news-title { font-size: 18px; font-weight: 700; margin: 0 0 12px 0; color: #333; }
-    .home__news-item {
+    .home__news-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .home__news-title { font-size: 18px; font-weight: 700; margin: 0; color: #333; }
+    .home__news-pager { display: flex; gap: 8px; }
+    .home__news-pager a {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 32px; height: 32px;
+      border: 1px solid #ccc; border-radius: 4px;
+      color: #555; text-decoration: none; font-size: 18px;
+      background: #fff; transition: all .15s;
+    }
+    .home__news-pager a:hover { background: #f0f0f0; border-color: #999; }
+    .home__news-pager a.disabled {
+      pointer-events: none; opacity: 0.35;
+    }
+    .home__news-cards {
+      display: flex; gap: 16px;
+    }
+    .home__news-card {
+      flex: 1 1 0;
+      min-width: 0;
       background: #fff;
       border: 1px solid #e0e0e0;
       border-radius: 4px;
-      padding: 12px 14px;
-      min-height: 80px;
-      margin-bottom: 12px;
+      padding: 14px 16px;
+      display: flex; flex-direction: column;
     }
-    .home__news-item:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
-    .home__news a { font-size: 13px; font-weight: 600; color: #0090b6; }
-    .home__news a:hover { text-decoration: underline; }
-    .home__news .home__news__date { color:#999; font-size: 11px; margin-top: 8px; }
-    .home__news .home__news__src { color:#999; font-size: 11px; }
+    .home__news-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+    .home__news-card a.home__news-link { font-size: 13px; font-weight: 600; color: #0090b6; }
+    .home__news-card a.home__news-link:hover { text-decoration: underline; }
+    .home__news-card .home__news-text { font-size: 12px; color: #555; margin: 8px 0 0; flex: 1; }
+    .home__news-card .home__news-meta { color: #999; font-size: 11px; margin-top: 10px; }
     @media (max-width: 992px) {
       .home__panel { padding: 14px; }
     }
@@ -143,7 +165,8 @@
       .home__panel .browser-default { font-size: 13px; }
       .home__btn { font-size: 12px; padding: 0 10px; height: 32px; line-height: 32px; }
       .home__panel input[type="text"] { font-size: 14px; }
-      .home__news-item { min-height: auto; padding: 10px; }
+      .home__news-cards { flex-direction: column; gap: 10px; }
+      .home__news-card { padding: 10px 12px; }
     }
   </style>
 {% endblock %}
@@ -227,26 +250,32 @@
     </div>
 
     <div class="home__below">
-      <div class="row home__news" style="margin-bottom:0;">
-        <div class="col s12">
+      <div class="home__news">
+        <div class="home__news-header">
           <div class="home__news-title">Новости</div>
-        </div>
-        {% if news_list %}
-          {% for news in news_list %}
-            <div class="col s12 m4">
-              <div class="home__news-item">
-                <a href="{% url 'news_detail' news.id %}">{{ news.title }}</a>
-                {% if news.text %}<p style="font-size:12px; color:#555; margin:6px 0 0;">{{ news.text|truncatechars:160 }}</p>{% endif %}
-                <div class="home__news__date">{{ news.published_at|date:"d.m.Y" }}</div>
-                <div class="home__news__src">{{ news.source_name|default:"Еду На Базар" }}</div>
-              </div>
+          {% if news_page.paginator.num_pages > 1 %}
+            <div class="home__news-pager">
+              <a href="{% if news_page.has_previous %}?news_page={{ news_page.previous_page_number }}{% else %}#{% endif %}"
+                 class="{% if not news_page.has_previous %}disabled{% endif %}">‹</a>
+              <a href="{% if news_page.has_next %}?news_page={{ news_page.next_page_number }}{% else %}#{% endif %}"
+                 class="{% if not news_page.has_next %}disabled{% endif %}">›</a>
             </div>
-          {% endfor %}
+          {% endif %}
+        </div>
+        {% if news_page %}
+          <div class="home__news-cards">
+            {% for news in news_page %}
+              <div class="home__news-card">
+                <a class="home__news-link" href="{% url 'news_detail' news.id %}">{{ news.title }}</a>
+                {% if news.text %}<p class="home__news-text">{{ news.text|truncatechars:160 }}</p>{% endif %}
+                <div class="home__news-meta">{{ news.published_at|date:"d.m.Y" }} · {{ news.source_name|default:"Еду На Базар" }}</div>
+              </div>
+            {% endfor %}
+          </div>
         {% else %}
-          <div class="col s12 m4">
-            <div class="home__news-item">
-              <a href="#">Новости скоро появятся</a>
-              <div class="home__news__src">Еду На Базар</div>
+          <div class="home__news-cards">
+            <div class="home__news-card">
+              <a class="home__news-link" href="#">Новости скоро появятся</a>
             </div>
           </div>
         {% endif %}
