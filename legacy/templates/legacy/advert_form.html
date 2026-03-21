@@ -7,6 +7,12 @@
   <link rel="stylesheet" href="{% static 'legacy/css/leaflet.css' %}" />
   <style>
     #create_map { height: 260px; border: 1px solid rgba(0,0,0,0.12); }
+    @media (max-width: 600px) {
+      #create_map { height: 200px; }
+      .file-field .btn { font-size: 12px; padding: 0 10px; height: 36px; line-height: 36px; }
+      .file-field .file-path-wrapper { overflow: hidden; }
+      .file-field .file-path-wrapper input.file-path { font-size: 13px; }
+    }
   </style>
 {% endblock %}
 

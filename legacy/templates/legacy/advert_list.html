@@ -92,10 +92,10 @@
     }
     .adverts-controls__group {
       display: grid;
-      grid-template-columns: 120px minmax(140px, 1fr);
+      grid-template-columns: auto minmax(100px, 1fr);
       align-items: center;
       column-gap: 8px;
-      min-width: 260px;
+      min-width: 0;
     }
     .adverts-controls__label {
       font-weight: 600;
@@ -109,9 +109,9 @@
     }
 
     .adverts-controls__group--right {
-      grid-template-columns: 120px 90px;
+      grid-template-columns: auto 80px;
       justify-content: end;
-      min-width: 230px;
+      min-width: 0;
     }
 
     .filters-panel {
@@ -172,12 +172,36 @@
       display: block;
     }
     @media (max-width: 600px) {
+      .adverts-item {
+        padding: 8px;
+      }
       .adverts-item__thumb {
-        max-width: none;
+        max-width: 100px;
+        float: left;
+        margin-right: 10px;
+        margin-bottom: 6px;
       }
       .adverts-item__thumb img {
-        height: 160px;
+        height: 75px;
+        width: 100px;
+        border-radius: 6px;
       }
+      .adverts-item__top {
+        flex-direction: column;
+        gap: 4px;
+      }
+      .adverts-item__title { font-size: 14px; }
+      .adverts-item__price { font-size: 14px; }
+      .adverts-item__text { font-size: 13px; clear: both; }
+      .adverts-item__meta { font-size: 11px; clear: both; }
+      .adverts-controls {
+        padding: 6px 8px;
+        gap: 8px;
+        top: 68px;
+      }
+      .adverts-controls__label { font-size: 13px; }
+      .adverts-controls select.browser-default { height: 2rem; line-height: 2rem; font-size: 13px; }
+      .filters-panel span { font-size: 13px; }
     }
     .adverts-item__top {
       display: flex;

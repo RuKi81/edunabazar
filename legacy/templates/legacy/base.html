@@ -149,10 +149,13 @@
     }
 
     /* Global mobile fixes */
+    *, *::before, *::after { box-sizing: border-box; }
     html { overflow-x: hidden; }
     body { overflow-x: hidden; min-width: 0; }
     .container { max-width: 100%; box-sizing: border-box; }
     img { max-width: 100%; height: auto; }
+    .row { margin-left: -0.5rem; margin-right: -0.5rem; }
+    .row .col { padding: 0 0.5rem; }
     @media (max-width: 600px) {
       .container { width: 100% !important; padding: 0 12px; box-sizing: border-box; }
       .page-title { font-size: 1.4rem !important; }
@@ -160,10 +163,15 @@
       h4 { font-size: 1.3rem; }
       .btn, .btn-large, .btn-small { font-size: 13px; padding: 0 14px; height: 40px; line-height: 40px; }
       .row { margin-left: 0; margin-right: 0; }
-      .row .col { padding: 0 8px; }
+      .row .col { padding: 0 6px; }
+      .row .row { margin-left: 0; margin-right: 0; }
+      .input-field { margin-top: 8px; margin-bottom: 8px; }
+      table { width: 100%; overflow-x: auto; display: block; }
     }
     @media (max-width: 992px) and (min-width: 601px) {
       .container { width: 95% !important; padding: 0 12px; box-sizing: border-box; }
+      .row { margin-left: -0.5rem; margin-right: -0.5rem; }
+      .row .col { padding: 0 0.5rem; }
     }
   </style>
 
