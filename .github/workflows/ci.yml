@@ -7,7 +7,7 @@ on:
     branches: [main, master]
 
 env:
-  PYTHON_VERSION: "3.14"
+  PYTHON_VERSION: "3.13"
   DJANGO_SETTINGS_MODULE: enb_django.settings
   DJANGO_DEBUG: "1"
   DJANGO_SECRET_KEY: ci-test-secret-key-not-for-production
