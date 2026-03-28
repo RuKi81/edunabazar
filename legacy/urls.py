@@ -1,4 +1,5 @@
 from django.urls import path
+from django.views.generic import RedirectView
 
 from . import views
 
@@ -50,4 +51,7 @@ urlpatterns = [
     path('legacy-admin/users/bulk-delete/', views.admin_users_bulk_delete, name='admin_users_bulk_delete'),
     path('legacy-admin/catalogs/', views.admin_catalogs, name='admin_catalogs'),
     path('legacy-admin/users/<int:user_id>/', views.admin_user_detail, name='admin_user_detail'),
+
+    # 301 redirects for old/dead URLs found in search engines
+    path('cart', RedirectView.as_view(url='/adverts/', permanent=True)),
 ]
