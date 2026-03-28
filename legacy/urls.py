@@ -54,4 +54,7 @@ urlpatterns = [
 
     # 301 redirects for old/dead URLs found in search engines
     path('cart', RedirectView.as_view(url='/adverts/', permanent=True)),
+    path('site/login', RedirectView.as_view(url='/login/', permanent=True)),
+    path('site/signup', RedirectView.as_view(url='/register/', permanent=True)),
+    path('catalog', RedirectView.as_view(url='/adverts/', permanent=True)),
 ]

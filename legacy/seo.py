@@ -43,6 +43,7 @@ def robots_txt(request: HttpRequest) -> HttpResponse:
         '',
         f'Host: edunabazar.ru',
         f'Sitemap: {SITE_URL}/sitemap.xml',
+        f'Sitemap: {SITE_URL}/turbo-rss.xml',
     ]
     return HttpResponse('\n'.join(lines), content_type='text/plain; charset=utf-8')
 
@@ -82,6 +83,108 @@ def sitemap_xml(request: HttpRequest) -> HttpResponse:
     xml += '\n</urlset>\n'
 
     return HttpResponse(xml, content_type='application/xml; charset=utf-8')
+
+
+def turbo_rss(request: HttpRequest) -> HttpResponse:
+    """
+    Yandex Turbo Pages RSS feed.
+    https://yandex.ru/dev/turbo/doc/rss/markup.html
+    """
+    from html import escape
+
+    items = []
+
+    # Published adverts (latest 1000)
+    for a in (Advert.objects
+              .filter(status=10)
+              .select_related('category__catalog', 'author')
+              .order_by('-updated_at')[:1000]):
+        title = escape(a.title or '')
+        link = f'{SITE_URL}/adverts/{a.id}/'
+        pub_date = a.updated_at.strftime('%a, %d %b %Y %H:%M:%S +0300') if a.updated_at else ''
+        author = escape(getattr(a.author, 'name', '') or getattr(a.author, 'username', '') or '')
+        text = escape((a.text or '')[:5000])
+        price_html = ''
+        if a.price:
+            price_html = f'<p><strong>Цена:</strong> {escape(str(a.price))} ₽</p>'
+        category = ''
+        cat = getattr(a, 'category', None)
+        if cat:
+            catalog = getattr(cat, 'catalog', None)
+            parts = []
+            if catalog:
+                parts.append(escape(catalog.title or ''))
+            parts.append(escape(cat.title or ''))
+            category = ' / '.join(parts)
+
+        breadcrumbs = (
+            f'<div data-block="breadcrumblist">'
+            f'<a href="{SITE_URL}/">Главная</a>'
+            f'<a href="{SITE_URL}/adverts/">Объявления</a>'
+        )
+        if category:
+            breadcrumbs += f'<a>{escape(category)}</a>'
+        breadcrumbs += f'<a href="{link}">{title}</a></div>'
+
+        content = (
+            f'<header><h1>{title}</h1></header>'
+            f'{breadcrumbs}'
+            f'{price_html}'
+            f'<p>{text}</p>'
+        )
+        if author:
+            content += f'<p><strong>Контакт:</strong> {author}</p>'
+
+        items.append(
+            f'    <item turbo="true">\n'
+            f'      <title>{title}</title>\n'
+            f'      <link>{link}</link>\n'
+            f'      <pubDate>{pub_date}</pubDate>\n'
+            f'      <turbo:content><![CDATA[{content}]]></turbo:content>\n'
+            f'    </item>'
+        )
+
+    # News (latest 200)
+    for n in News.objects.filter(is_active=True).order_by('-published_at')[:200]:
+        title = escape(n.title or '')
+        link = f'{SITE_URL}/news/{n.id}/'
+        pub_date = n.published_at.strftime('%a, %d %b %Y 00:00:00 +0300') if n.published_at else ''
+        text = escape((n.text or '')[:5000])
+        source = escape(n.source_name or '')
+
+        content = (
+            f'<header><h1>{title}</h1></header>'
+            f'<div data-block="breadcrumblist">'
+            f'<a href="{SITE_URL}/">Главная</a>'
+            f'<a href="{link}">{title}</a></div>'
+            f'<p>{text}</p>'
+        )
+        if source:
+            content += f'<p><em>Источник: {source}</em></p>'
+
+        items.append(
+            f'    <item turbo="true">\n'
+            f'      <title>{title}</title>\n'
+            f'      <link>{link}</link>\n'
+            f'      <pubDate>{pub_date}</pubDate>\n'
+            f'      <turbo:content><![CDATA[{content}]]></turbo:content>\n'
+            f'    </item>'
+        )
+
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<rss xmlns:yandex="http://news.yandex.ru" xmlns:media="http://search.yahoo.com/mrss/" '
+        'xmlns:turbo="http://turbo.yandex.ru" version="2.0">\n'
+        '  <channel>\n'
+        f'    <title>Еду на базар</title>\n'
+        f'    <link>{SITE_URL}</link>\n'
+        '    <description>Доска объявлений сельскохозяйственной продукции, техники и услуг</description>\n'
+        '    <language>ru</language>\n'
+    )
+    xml += '\n'.join(items)
+    xml += '\n  </channel>\n</rss>\n'
+
+    return HttpResponse(xml, content_type='application/rss+xml; charset=utf-8')
 
 
 def _url(loc: str, lastmod: str, changefreq: str, priority: str) -> str:
