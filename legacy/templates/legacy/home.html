@@ -316,13 +316,3 @@
 
 {% endblock %}
 
-{% block footer %}
-  <footer style="background:#f5f5f5; border-top:1px solid #e0e0e0; margin-top:20px; padding:12px 0;">
-    <div class="container" style="display:flex; flex-wrap:wrap; justify-content:center; align-items:center; gap:6px 18px;">
-      <span style="font-size:0.82rem; color:#999;">© {{ year }} edunabazar.ru</span>
-      <a href="{% url 'about' %}" style="font-size:0.82rem; color:#777;">О сервисе</a>
-      <a href="{% url 'howto' %}" style="font-size:0.82rem; color:#777;">Как разместить</a>
-      <a href="{% url 'contacts' %}" style="font-size:0.82rem; color:#777;">Контакты</a>
-    </div>
-  </footer>
-{% endblock %}
