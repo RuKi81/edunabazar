@@ -241,6 +241,8 @@ AUTHENTICATION_BACKENDS = [
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+TEST_RUNNER = 'legacy.test_runner.UnmanagedModelTestRunner'
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,

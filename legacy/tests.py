@@ -148,7 +148,7 @@ class PhotoValidationTests(SimpleTestCase):
         self.assertIn('photos', errors)
 
 
-class SmokeTests(SimpleTestCase):
+class SmokeTests(TestCase):
     """Smoke tests: public pages return 200 and contain expected content."""
 
     def setUp(self):
