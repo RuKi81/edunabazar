@@ -1,8 +1,11 @@
 """
-SEO helpers: robots.txt, sitemap.xml, and context processors for meta tags.
+SEO helpers: robots.txt, sitemap.xml, healthcheck, and context processors for meta tags.
 """
 
-from django.http import HttpRequest, HttpResponse
+import json
+
+from django.db import connection
+from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.utils import timezone
 
 from .models import Advert, News, Seller
@@ -185,6 +188,24 @@ def turbo_rss(request: HttpRequest) -> HttpResponse:
     xml += '\n  </channel>\n</rss>\n'
 
     return HttpResponse(xml, content_type='application/rss+xml; charset=utf-8')
+
+
+def healthcheck(request: HttpRequest) -> JsonResponse:
+    """Lightweight health endpoint for uptime monitoring."""
+    checks = {'app': 'ok'}
+    status_code = 200
+    try:
+        with connection.cursor() as cur:
+            cur.execute('SELECT 1')
+        checks['db'] = 'ok'
+    except Exception as e:
+        checks['db'] = str(e)
+        status_code = 503
+    try:
+        checks['adverts_count'] = Advert.objects.filter(status=10).count()
+    except Exception:
+        checks['adverts_count'] = None
+    return JsonResponse(checks, status=status_code)
 
 
 def _url(loc: str, lastmod: str, changefreq: str, priority: str) -> str:

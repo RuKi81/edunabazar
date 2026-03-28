@@ -1,6 +1,6 @@
 import io
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase, Client
 from django.core.files.uploadedfile import SimpleUploadedFile
 from unittest.mock import MagicMock
 from PIL import Image as PILImage
@@ -146,3 +146,81 @@ class PhotoValidationTests(SimpleTestCase):
         files.getlist.return_value = photos
         _, errors, _ = _parse_advert_form(self._VALID_POST, files)
         self.assertIn('photos', errors)
+
+
+class SmokeTests(SimpleTestCase):
+    """Smoke tests: public pages return 200 and contain expected content."""
+
+    def setUp(self):
+        self.client = Client()
+
+    def test_home_page(self):
+        resp = self.client.get('/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Еду на базар')
+
+    def test_about_page(self):
+        resp = self.client.get('/about/')
+        self.assertEqual(resp.status_code, 200)
+
+    def test_contacts_page(self):
+        resp = self.client.get('/contacts/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Контакты')
+
+    def test_howto_page(self):
+        resp = self.client.get('/howto/')
+        self.assertEqual(resp.status_code, 200)
+
+    def test_adverts_list(self):
+        resp = self.client.get('/adverts/')
+        self.assertEqual(resp.status_code, 200)
+
+    def test_sellers_list(self):
+        resp = self.client.get('/sellers/')
+        self.assertEqual(resp.status_code, 200)
+
+    def test_map_page(self):
+        resp = self.client.get('/map/')
+        self.assertEqual(resp.status_code, 200)
+
+    def test_login_page(self):
+        resp = self.client.get('/login/')
+        self.assertEqual(resp.status_code, 200)
+
+    def test_register_page(self):
+        resp = self.client.get('/register/')
+        self.assertEqual(resp.status_code, 200)
+
+    def test_robots_txt(self):
+        resp = self.client.get('/robots.txt')
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Sitemap')
+
+    def test_sitemap_xml(self):
+        resp = self.client.get('/sitemap.xml')
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('xml', resp['Content-Type'])
+
+    def test_footer_contains_ok_link(self):
+        resp = self.client.get('/')
+        self.assertContains(resp, 'ok.ru/profile/586187375362')
+
+    def test_redirect_cart(self):
+        resp = self.client.get('/cart')
+        self.assertEqual(resp.status_code, 301)
+        self.assertEqual(resp['Location'], '/adverts/')
+
+    def test_redirect_login_old(self):
+        resp = self.client.get('/site/login')
+        self.assertEqual(resp.status_code, 301)
+
+    def test_unauthenticated_me_redirects(self):
+        resp = self.client.get('/me/')
+        self.assertEqual(resp.status_code, 302)
+
+    def test_healthcheck(self):
+        resp = self.client.get('/healthz')
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data['app'], 'ok')
