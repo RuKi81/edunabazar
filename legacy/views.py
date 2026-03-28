@@ -153,6 +153,55 @@ def _update_advert_status(advert_id: int, status: int) -> None:
     Advert.objects.filter(pk=int(advert_id)).update(**fields)
 
 
+import hashlib
+import time as _time
+
+
+_ANTISPAM_MIN_SECONDS = 3
+_ANTISPAM_SECRET = 'eduna-antispam-2026'
+
+
+def _antispam_token() -> tuple[str, str]:
+    """Return (timestamp_str, hash) for embedding in a form."""
+    ts = str(int(_time.time()))
+    h = hashlib.sha256(f'{ts}:{_ANTISPAM_SECRET}'.encode()).hexdigest()[:16]
+    return ts, h
+
+
+def _antispam_check(request) -> str | None:
+    """
+    Validate honeypot + time trap on POST.
+    Returns error string if bot detected, else None.
+    """
+    # Honeypot: field "website" must be empty (hidden from humans via CSS)
+    if (request.POST.get('website') or '').strip():
+        logger.warning('Antispam: honeypot filled from %s', request.META.get('REMOTE_ADDR'))
+        return 'bot'
+
+    # Time trap: form must be open for at least N seconds
+    ts_str = (request.POST.get('_ts') or '').strip()
+    ts_hash = (request.POST.get('_th') or '').strip()
+    if not ts_str or not ts_hash:
+        logger.warning('Antispam: missing timestamp from %s', request.META.get('REMOTE_ADDR'))
+        return 'bot'
+
+    expected_hash = hashlib.sha256(f'{ts_str}:{_ANTISPAM_SECRET}'.encode()).hexdigest()[:16]
+    if ts_hash != expected_hash:
+        logger.warning('Antispam: invalid hash from %s', request.META.get('REMOTE_ADDR'))
+        return 'bot'
+
+    try:
+        elapsed = int(_time.time()) - int(ts_str)
+    except (ValueError, TypeError):
+        return 'bot'
+
+    if elapsed < _ANTISPAM_MIN_SECONDS:
+        logger.warning('Antispam: too fast (%ds) from %s', elapsed, request.META.get('REMOTE_ADDR'))
+        return 'bot'
+
+    return None
+
+
 def _normalize_phone(phone: str) -> str:
     s = ''.join(ch for ch in (phone or '') if ch.isdigit() or ch == '+')
     s = s.strip()
@@ -1117,7 +1166,12 @@ def legacy_register_start(request: HttpRequest) -> HttpResponse:
 
 
 def legacy_register_sms(request: HttpRequest) -> HttpResponse:
+    ts, th = _antispam_token()
     if request.method == 'POST':
+        spam = _antispam_check(request)
+        if spam:
+            return redirect('/register/sms/')
+
         phone_raw = (request.POST.get('phone') or '').strip()
         phone = _normalize_phone(phone_raw)
         errors: dict[str, str] = {}
@@ -1133,6 +1187,7 @@ def legacy_register_sms(request: HttpRequest) -> HttpResponse:
                     'errors': errors,
                     'form': {'phone': phone_raw},
                     'legacy_user': _get_current_legacy_user(request),
+                    'antispam_ts': ts, 'antispam_th': th,
                 },
             )
             return _no_store(resp)
@@ -1160,6 +1215,7 @@ def legacy_register_sms(request: HttpRequest) -> HttpResponse:
             'errors': {},
             'form': {'phone': ''},
             'legacy_user': _get_current_legacy_user(request),
+            'antispam_ts': ts, 'antispam_th': th,
         },
     )
     return _no_store(resp)
@@ -1447,7 +1503,12 @@ def legacy_set_password(request: HttpRequest, token: str) -> HttpResponse:
 
 
 def legacy_register_email(request: HttpRequest) -> HttpResponse:
+    ts, th = _antispam_token()
     if request.method == 'POST':
+        spam = _antispam_check(request)
+        if spam:
+            return redirect('/register/email/')
+
         username = (request.POST.get('username') or '').strip()
         email = (request.POST.get('email') or '').strip()
         name = (request.POST.get('name') or '').strip()
@@ -1477,6 +1538,7 @@ def legacy_register_email(request: HttpRequest) -> HttpResponse:
                         'phone': phone,
                     },
                     'legacy_user': _get_current_legacy_user(request),
+                    'antispam_ts': ts, 'antispam_th': th,
                 },
             )
             return _no_store(resp)
@@ -1536,6 +1598,7 @@ def legacy_register_email(request: HttpRequest) -> HttpResponse:
                 'phone': '',
             },
             'legacy_user': _get_current_legacy_user(request),
+            'antispam_ts': ts, 'antispam_th': th,
         },
     )
     return _no_store(resp)

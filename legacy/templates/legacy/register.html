@@ -10,6 +10,11 @@
       <form method="post" class="auth-form">
         {% csrf_token %}
         <input type="hidden" name="next" value="{{ request.GET.next|default:'' }}" />
+        <input type="hidden" name="_ts" value="{{ antispam_ts }}" />
+        <input type="hidden" name="_th" value="{{ antispam_th }}" />
+        <div style="position:absolute;left:-9999px;top:-9999px;" aria-hidden="true">
+          <input type="text" name="website" value="" tabindex="-1" autocomplete="off" />
+        </div>
 
         <div class="input-field">
           <input id="username" name="username" value="{{ form.username|default:'' }}" />
