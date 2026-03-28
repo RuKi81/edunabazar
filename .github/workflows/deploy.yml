@@ -1,3 +1,4 @@
+# Auto-deploy on push to main
 name: Deploy to production
 
 on:
