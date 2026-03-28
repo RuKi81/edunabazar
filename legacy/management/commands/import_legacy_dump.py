@@ -240,6 +240,7 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument('dump_file', help='Path to the .gz MySQL dump file')
         parser.add_argument('--dry-run', action='store_true', help='Parse and report counts without inserting')
+        parser.add_argument('--reset', action='store_true', help='Clear all imported data before importing')
 
     def handle(self, *args, **options):
         dump_file = options['dump_file']
@@ -268,6 +269,16 @@ class Command(BaseCommand):
         if dry_run:
             self.stdout.write(self.style.SUCCESS('Dry run — no data inserted.'))
             return
+
+        if options.get('reset'):
+            self.stdout.write('Resetting database...')
+            with connection.cursor() as cur:
+                cur.execute('DELETE FROM advert')
+                cur.execute('DELETE FROM seller')
+                cur.execute('DELETE FROM categories')
+                cur.execute('DELETE FROM catalog')
+                cur.execute('DELETE FROM legacy_user')
+                self.stdout.write(self.style.WARNING('All imported data cleared.'))
 
         with connection.cursor() as cur:
             self._import_users(cur, data['up_users'])
@@ -402,10 +413,18 @@ class Command(BaseCommand):
                 return cat_id  # is top-level
             return find_root(parent, visited)
 
+        # Build catalog_name lookup for disambiguation
+        catalog_names = {}  # new_catalog_id → catalog title
+        for old_id, new_id in catalog_map.items():
+            info = all_cats.get(old_id)
+            if info:
+                catalog_names[new_id] = info[0]
+
         # Insert subcategories — assign each to its root catalog
         cat_map = {}  # old_cat_id → new_categories_id
         cat_count = 0
         orphan_count = 0
+        used_titles = set()  # track used titles for uniqueness
         for old_id, (name, pid, active) in all_cats.items():
             if pid is None:
                 continue  # skip top-level (already inserted as catalog)
@@ -414,18 +433,27 @@ class Command(BaseCommand):
             if catalog_id is None:
                 orphan_count += 1
                 continue
+
+            # Handle unique title constraint: append catalog name if duplicate
+            title = name[:255]
+            if title.lower() in used_titles:
+                cat_label = catalog_names.get(catalog_id, '')
+                if cat_label:
+                    title = f'{name} ({cat_label})'[:255]
+
             try:
                 with transaction.atomic():
                     cur.execute("""
                         INSERT INTO categories (catalog, title, active)
                         VALUES (%s, %s, %s)
                         RETURNING id
-                    """, [catalog_id, name[:255], active])
+                    """, [catalog_id, title, active])
                     new_id = cur.fetchone()[0]
                     cat_map[old_id] = new_id
                     cat_count += 1
+                    used_titles.add(title.lower())
             except Exception as e:
-                self.stderr.write(f'  Category "{name}": {e}')
+                self.stderr.write(f'  Category "{title}": {e}')
 
         if orphan_count:
             self.stdout.write(f'  WARNING: {orphan_count} orphan categories skipped (no root catalog found)')
