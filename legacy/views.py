@@ -339,7 +339,7 @@ def advert_list(request: HttpRequest) -> HttpResponse:
 
 
 def advert_detail(request: HttpRequest, advert_id: int) -> HttpResponse:
-    advert = get_object_or_404(Advert.objects.select_related('category', 'author'), pk=advert_id)
+    advert = get_object_or_404(Advert.objects.select_related('category__catalog', 'author'), pk=advert_id)
     photos = list(AdvertPhoto.objects.filter(advert_id=int(advert_id)).order_by('sort', 'id'))
     admin_identity = _get_admin_identity(request)
     can_manage = _can_manage_advert(admin_identity, advert)

@@ -59,6 +59,19 @@
     </div>
   </div>
 
+  <!-- JSON-LD: BreadcrumbList -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "Главная", "item": "https://edunabazar.ru/"},
+      {"@type": "ListItem", "position": 2, "name": "Продавцы", "item": "https://edunabazar.ru/sellers/"},
+      {"@type": "ListItem", "position": 3, "name": "{{ seller.name|escapejs }}"}
+    ]
+  }
+  </script>
+
   <!-- JSON-LD: LocalBusiness -->
   <script type="application/ld+json">
   {

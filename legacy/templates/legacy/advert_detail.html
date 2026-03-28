@@ -253,7 +253,22 @@
     })();
   </script>
 
-  <!-- JSON-LD structured data for Yandex/Google -->
+  <!-- JSON-LD: BreadcrumbList -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "Главная", "item": "https://edunabazar.ru/"},
+      {"@type": "ListItem", "position": 2, "name": "Объявления", "item": "https://edunabazar.ru/adverts/"}{% if advert.category and advert.category.catalog %},
+      {"@type": "ListItem", "position": 3, "name": "{{ advert.category.catalog.title|escapejs }}", "item": "https://edunabazar.ru/adverts/?catalog={{ advert.category.catalog.id }}"},
+      {"@type": "ListItem", "position": 4, "name": "{{ advert.category.title|escapejs }}", "item": "https://edunabazar.ru/adverts/?category={{ advert.category.id }}"}{% endif %},
+      {"@type": "ListItem", "position": {% if advert.category and advert.category.catalog %}5{% else %}3{% endif %}, "name": "{{ advert.title|escapejs }}"}
+    ]
+  }
+  </script>
+
+  <!-- JSON-LD: Product -->
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -267,6 +282,11 @@
       "price": "{{ advert.price }}",
       "priceCurrency": "RUB",
       "availability": "https://schema.org/InStock"
+    },{% endif %}
+    {% if avg_rating and reviews %}"aggregateRating": {
+      "@type": "AggregateRating",
+      "ratingValue": "{{ avg_rating }}",
+      "reviewCount": "{{ reviews|length }}"
     },{% endif %}
     "category": "{{ advert.category.title|default:""|escapejs }}"
   }
