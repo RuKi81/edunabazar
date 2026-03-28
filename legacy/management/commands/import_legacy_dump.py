@@ -555,6 +555,16 @@ class Command(BaseCommand):
                 desc_clean = re.sub(r'<br\s*/?>', '\n', desc_text)
                 desc_clean = re.sub(r'<[^>]+>', '', desc_clean)
 
+                # Contacts fallback: grab from legacy_user if available
+                advert_contacts = ''
+                cur.execute("""
+                    SELECT COALESCE(NULLIF(TRIM(phone),''), NULLIF(TRIM(email),''), NULLIF(TRIM(username),''), '')
+                    FROM legacy_user WHERE id = %s
+                """, [userid])
+                row_u = cur.fetchone()
+                if row_u:
+                    advert_contacts = row_u[0] or ''
+
                 with transaction.atomic():
                     cur.execute("""
                         INSERT INTO advert
@@ -569,7 +579,7 @@ class Command(BaseCommand):
                     """, [
                         advert_id, mapped_type, category_id, userid,
                         address[:255], location.wkt if location else None, False,
-                        '', name[:255], desc_clean, price, batch_price,
+                        advert_contacts, name[:255], desc_clean, price, batch_price,
                         batch_min, capacity_min, capacity_max,
                         0, created_at or datetime.now(), updated_at or datetime.now(),
                         'кг', status,

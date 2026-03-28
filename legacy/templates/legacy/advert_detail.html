@@ -156,7 +156,7 @@
           <i class="material-icons" style="font-size:20px;vertical-align:middle;">contact_phone</i>
           <div class="ad-profile__item__text" style="display:inline-block;vertical-align:middle;margin-left:8px;">
             <div class="ad-profile__item__prop">Контакты:</div>
-            <div class="ad-profile__item__value">{{ advert.contacts }}</div>
+            <div class="ad-profile__item__value">{% firstof advert.contacts advert.author.phone advert.author.email advert.author.username %}</div>
           </div>
         </div>
       </div>
