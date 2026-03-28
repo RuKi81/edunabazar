@@ -17,7 +17,7 @@ from datetime import datetime
 
 from django.contrib.gis.geos import Point
 from django.core.management.base import BaseCommand
-from django.db import connection
+from django.db import connection, transaction
 
 
 # ---------------------------------------------------------------------------
@@ -269,19 +269,13 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS('Dry run — no data inserted.'))
             return
 
-        from django.db import transaction
-        try:
-            with transaction.atomic():
-                with connection.cursor() as cur:
-                    self._import_users(cur, data['up_users'])
-                    cat_map, catalog_map = self._import_categories(cur, data['categories'])
-                    self._import_adverts(cur, data['adverts'], data['adverts_category_links'],
-                                         data['adverts_type_links'], cat_map)
-                    self._import_sellers(cur, data['companies'], data['companies_type_links'])
-            self.stdout.write(self.style.SUCCESS('Import complete!'))
-        except Exception as e:
-            self.stderr.write(self.style.ERROR(f'Import FAILED — transaction rolled back: {e}'))
-            raise
+        with connection.cursor() as cur:
+            self._import_users(cur, data['up_users'])
+            cat_map, catalog_map = self._import_categories(cur, data['categories'])
+            self._import_adverts(cur, data['adverts'], data['adverts_category_links'],
+                                 data['adverts_type_links'], cat_map)
+            self._import_sellers(cur, data['companies'], data['companies_type_links'])
+        self.stdout.write(self.style.SUCCESS('Import complete!'))
 
     # ------------------------------------------------------------------
     #  Users: up_users → legacy_user
@@ -295,6 +289,7 @@ class Command(BaseCommand):
         """
         self.stdout.write(f'Importing {len(rows)} users...')
         count = 0
+        errors = 0
         for row in rows:
             try:
                 uid = row[0]
@@ -305,7 +300,6 @@ class Command(BaseCommand):
                 blocked = row[8]
                 created_at = parse_dt(row[9])
                 updated_at = parse_dt(row[10])
-                strapi_uid = row[13] if len(row) > 13 else None
 
                 # Map status: confirmed=1 & not blocked → 10 (active)
                 if blocked:
@@ -315,21 +309,26 @@ class Command(BaseCommand):
                 else:
                     status = 5
 
-                cur.execute("""
-                    INSERT INTO legacy_user
-                        (id, type, username, auth_key, password_hash, email,
-                         currency, name, address, phone, inn, status,
-                         created_at, updated_at, contacts)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (id) DO NOTHING
-                """, [
-                    uid, 0, username[:255], '', password_hash[:255], email[:255],
-                    'RUB', username[:255], '', '', '', status,
-                    created_at or datetime.now(), updated_at or datetime.now(), '',
-                ])
+                with transaction.atomic():
+                    cur.execute("""
+                        INSERT INTO legacy_user
+                            (id, type, username, auth_key, password_hash, email,
+                             currency, name, address, phone, inn, status,
+                             created_at, updated_at, contacts)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO NOTHING
+                    """, [
+                        uid, 0, username[:255], '', password_hash[:255], email[:255],
+                        'RUB', username[:255], '', '', '', status,
+                        created_at or datetime.now(), updated_at or datetime.now(), '',
+                    ])
                 count += 1
             except Exception as e:
-                self.stderr.write(f'  User #{row[0]}: {e}')
+                errors += 1
+                if errors <= 5:
+                    self.stderr.write(f'  User #{row[0]}: {e}')
+        if errors > 5:
+            self.stderr.write(f'  ... and {errors - 5} more user errors')
         self.stdout.write(f'  Users inserted: {count}')
         # Reset sequence
         cur.execute("SELECT setval('legacy_user_id_seq', COALESCE((SELECT MAX(id) FROM legacy_user), 1))")
@@ -366,13 +365,17 @@ class Command(BaseCommand):
         sort_idx = 0
         for old_id, name, active in top_level:
             sort_idx += 1
-            cur.execute("""
-                INSERT INTO catalog (title, sort, active)
-                VALUES (%s, %s, %s)
-                RETURNING id
-            """, [name[:255], sort_idx, active])
-            new_id = cur.fetchone()[0]
-            catalog_map[old_id] = new_id
+            try:
+                with transaction.atomic():
+                    cur.execute("""
+                        INSERT INTO catalog (title, sort, active)
+                        VALUES (%s, %s, %s)
+                        RETURNING id
+                    """, [name[:255], sort_idx, active])
+                    new_id = cur.fetchone()[0]
+                    catalog_map[old_id] = new_id
+            except Exception as e:
+                self.stderr.write(f'  Catalog "{name}": {e}')
 
         self.stdout.write(f'  Catalogs inserted: {len(catalog_map)}')
 
@@ -412,14 +415,15 @@ class Command(BaseCommand):
                 orphan_count += 1
                 continue
             try:
-                cur.execute("""
-                    INSERT INTO categories (catalog, title, active)
-                    VALUES (%s, %s, %s)
-                    RETURNING id
-                """, [catalog_id, name[:255], active])
-                new_id = cur.fetchone()[0]
-                cat_map[old_id] = new_id
-                cat_count += 1
+                with transaction.atomic():
+                    cur.execute("""
+                        INSERT INTO categories (catalog, title, active)
+                        VALUES (%s, %s, %s)
+                        RETURNING id
+                    """, [catalog_id, name[:255], active])
+                    new_id = cur.fetchone()[0]
+                    cat_map[old_id] = new_id
+                    cat_count += 1
             except Exception as e:
                 self.stderr.write(f'  Category "{name}": {e}')
 
@@ -521,24 +525,25 @@ class Command(BaseCommand):
                 desc_clean = re.sub(r'<br\s*/?>', '\n', desc_text)
                 desc_clean = re.sub(r'<[^>]+>', '', desc_clean)
 
-                cur.execute("""
-                    INSERT INTO advert
-                        (id, type, category, author, address, location, delivery,
-                         contacts, title, text, price, wholesale_price,
-                         min_volume, wholesale_volume, volume,
-                         priority, created_at, updated_at, price_unit, status)
-                    VALUES (%s, %s, %s, %s, %s, ST_GeomFromText(%s, 4326), %s,
-                            %s, %s, %s, %s, %s, %s, %s, %s,
-                            %s, %s, %s, %s, %s)
-                    ON CONFLICT (id) DO NOTHING
-                """, [
-                    advert_id, mapped_type, category_id, userid,
-                    address[:255], location.wkt if location else None, False,
-                    '', name[:255], desc_clean, price, batch_price,
-                    batch_min, capacity_min, capacity_max,
-                    0, created_at or datetime.now(), updated_at or datetime.now(),
-                    'кг', status,
-                ])
+                with transaction.atomic():
+                    cur.execute("""
+                        INSERT INTO advert
+                            (id, type, category, author, address, location, delivery,
+                             contacts, title, text, price, wholesale_price,
+                             min_volume, wholesale_volume, volume,
+                             priority, created_at, updated_at, price_unit, status)
+                        VALUES (%s, %s, %s, %s, %s, ST_GeomFromText(%s, 4326), %s,
+                                %s, %s, %s, %s, %s, %s, %s, %s,
+                                %s, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO NOTHING
+                    """, [
+                        advert_id, mapped_type, category_id, userid,
+                        address[:255], location.wkt if location else None, False,
+                        '', name[:255], desc_clean, price, batch_price,
+                        batch_min, capacity_min, capacity_max,
+                        0, created_at or datetime.now(), updated_at or datetime.now(),
+                        'кг', status,
+                    ])
                 count += 1
             except Exception as e:
                 self.stderr.write(f'  Advert #{row[0]}: {e}')
@@ -586,18 +591,19 @@ class Command(BaseCommand):
                 # User check — sellers need a valid user
                 if userid and userid not in existing_users:
                     # Create a placeholder user
-                    cur.execute("""
-                        INSERT INTO legacy_user
-                            (id, type, username, auth_key, password_hash, email,
-                             currency, name, address, phone, inn, status,
-                             created_at, updated_at, contacts)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (id) DO NOTHING
-                    """, [
-                        userid, 1, f'company_user_{userid}', '', '', '',
-                        'RUB', name[:255], '', '', inn[:20], 10,
-                        created_at or datetime.now(), updated_at or datetime.now(), '',
-                    ])
+                    with transaction.atomic():
+                        cur.execute("""
+                            INSERT INTO legacy_user
+                                (id, type, username, auth_key, password_hash, email,
+                                 currency, name, address, phone, inn, status,
+                                 created_at, updated_at, contacts)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (id) DO NOTHING
+                        """, [
+                            userid, 1, f'company_user_{userid}', '', '', '',
+                            'RUB', name[:255], '', '', inn[:20], 10,
+                            created_at or datetime.now(), updated_at or datetime.now(), '',
+                        ])
                     existing_users.add(userid)
 
                 if not userid:
@@ -610,18 +616,19 @@ class Command(BaseCommand):
                 products_clean = re.sub(r'<br\s*/?>', '\n', products)
                 products_clean = re.sub(r'<[^>]+>', '', products_clean)
 
-                cur.execute("""
-                    INSERT INTO seller
-                        (id, "user", name, logo, location, contacts,
-                         price_list, links, about,
-                         created_at, updated_at, status)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (id) DO NOTHING
-                """, [
-                    company_id, userid, name[:255], 0, address,
-                    '{}', 0, products_clean, desc_clean,
-                    created_at or datetime.now(), updated_at or datetime.now(), status,
-                ])
+                with transaction.atomic():
+                    cur.execute("""
+                        INSERT INTO seller
+                            (id, "user", name, logo, location, contacts,
+                             price_list, links, about,
+                             created_at, updated_at, status)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO NOTHING
+                    """, [
+                        company_id, userid, name[:255], 0, address,
+                        '{}', 0, products_clean, desc_clean,
+                        created_at or datetime.now(), updated_at or datetime.now(), status,
+                    ])
                 count += 1
             except Exception as e:
                 self.stderr.write(f'  Seller #{row[0]}: {e}')
