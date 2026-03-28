@@ -257,6 +257,32 @@
 
   </div>
 
+  <footer style="background:#333; color:#ccc; padding:24px 0; margin-top:40px; font-size:14px;">
+    <div class="container">
+      <div class="row" style="margin-bottom:0;">
+        <div class="col s12 m4" style="margin-bottom:12px;">
+          <strong style="color:#fff;">Еду на базар</strong><br>
+          Доска объявлений сельскохозяйственной продукции
+        </div>
+        <div class="col s12 m4" style="margin-bottom:12px;">
+          <a href="{% url 'about' %}" style="color:#ccc;">О проекте</a><br>
+          <a href="{% url 'contacts' %}" style="color:#ccc;">Контакты</a><br>
+          <a href="{% url 'howto' %}" style="color:#ccc;">Как разместить</a>
+        </div>
+        <div class="col s12 m4" style="margin-bottom:12px;">
+          <span style="color:#fff;">Мы в соцсетях</span><br>
+          <a href="https://ok.ru/profile/586187375362" target="_blank" rel="noopener"
+             style="display:inline-flex;align-items:center;gap:6px;color:#EE8208;margin-top:6px;text-decoration:none;">
+            <svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:#EE8208;"><path d="M12 2a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9zm0 2.5a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm4.44 8.52a7.2 7.2 0 0 1-4.44 1.48 7.2 7.2 0 0 1-4.44-1.48 1.25 1.25 0 0 0-1.56 1.96A9.7 9.7 0 0 0 10.75 17l-3.47 3.47a1.25 1.25 0 0 0 1.77 1.77L12 19.27l2.95 2.97a1.25 1.25 0 0 0 1.77-1.77L13.25 17a9.7 9.7 0 0 0 4.75-2.02 1.25 1.25 0 0 0-1.56-1.96z"/></svg>
+            Одноклассники
+          </a>
+        </div>
+      </div>
+      <div style="border-top:1px solid #555; padding-top:12px; margin-top:8px; text-align:center; color:#888;">
+        © {{ year }} edunabazar.ru
+      </div>
+    </div>
+  </footer>
   {% block footer %}{% endblock %}
 
   <script src="{% static 'legacy/js/jquery-3.7.1.min.js' %}"></script>
