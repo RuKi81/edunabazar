@@ -273,6 +273,8 @@ class Command(BaseCommand):
         if options.get('reset'):
             self.stdout.write('Resetting database...')
             with connection.cursor() as cur:
+                cur.execute('DELETE FROM advert_photo')
+                cur.execute('DELETE FROM review')
                 cur.execute('DELETE FROM advert')
                 cur.execute('DELETE FROM seller')
                 cur.execute('DELETE FROM categories')
