@@ -39,6 +39,8 @@ class Command(BaseCommand):
                             help='Resume a paused campaign')
         parser.add_argument('--dry-run', action='store_true',
                             help='Populate logs but do not actually send emails')
+        parser.add_argument('--limit', type=int, default=0,
+                            help='Max emails to send in this run (0 = unlimited)')
 
     def handle(self, *args, **options):
         campaign_id = options['campaign_id']
@@ -46,6 +48,7 @@ class Command(BaseCommand):
         batch_size = options['batch']
         resume = options['resume']
         dry_run = options['dry_run']
+        limit = options['limit']
 
         try:
             campaign = EmailCampaign.objects.get(pk=campaign_id)
@@ -79,7 +82,7 @@ class Command(BaseCommand):
         old_handler = signal.signal(signal.SIGINT, _signal_handler)
 
         try:
-            self._send_campaign(campaign, rate, batch_size, dry_run)
+            self._send_campaign(campaign, rate, batch_size, dry_run, limit)
         finally:
             signal.signal(signal.SIGINT, old_handler)
 
@@ -125,7 +128,7 @@ class Command(BaseCommand):
 
         return list(qs.values_list('email', flat=True))
 
-    def _send_campaign(self, campaign, rate, batch_size, dry_run):
+    def _send_campaign(self, campaign, rate, batch_size, dry_run, limit=0):
         """Send pending emails with throttling."""
         campaign.status = EmailCampaign.STATUS_SENDING
         campaign.save(update_fields=['status'])
@@ -139,10 +142,13 @@ class Command(BaseCommand):
         ).order_by('id')
 
         total_pending = pending_logs.count()
+        run_limit = min(limit, total_pending) if limit > 0 else total_pending
         self.stdout.write(
             f'Sending campaign #{campaign.pk}: '
             f'{total_pending} pending of {campaign.total_recipients} total'
         )
+        if limit > 0:
+            self.stdout.write(f'  Limit this run: {run_limit} emails')
         if dry_run:
             self.stdout.write(self.style.WARNING('  DRY RUN — no emails will be sent'))
 
@@ -153,6 +159,10 @@ class Command(BaseCommand):
 
         for log in pending_logs.iterator():
             if self._stop_requested:
+                break
+
+            if limit > 0 and (sent + failed) >= limit:
+                self.stdout.write(f'  Reached limit of {limit} emails for this run')
                 break
 
             # Open/reopen SMTP connection every batch_size emails
