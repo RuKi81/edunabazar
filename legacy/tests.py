@@ -195,9 +195,14 @@ class BulkDeleteUsersTests(TestCase):
             text='Hello', is_read=False, created_at=now,
         )
 
+        # Make a dummy request to initialize the session
+        self.client.get('/')
         session = self.client.session
         session['legacy_user_id'] = self.admin.pk
         session.save()
+        # Ensure cookie is set on the client
+        from django.conf import settings as _s
+        self.client.cookies[_s.SESSION_COOKIE_NAME] = session.session_key
 
     def test_bulk_delete_removes_user_and_related(self):
         from .models import Advert, AdvertPhoto, LegacyUser, Review, Seller, Message
