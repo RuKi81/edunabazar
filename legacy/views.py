@@ -21,6 +21,7 @@ from django.core.validators import validate_email
 from django.core.exceptions import ValidationError
 from django.core import signing
 from django.utils.http import url_has_allowed_host_and_scheme
+from django.db import transaction
 from django.contrib.auth import authenticate, login as django_login
 from PIL import Image as PILImage
 
@@ -1277,8 +1278,20 @@ def admin_users_bulk_delete(request: HttpRequest) -> HttpResponse:
     if not delete_ids:
         return redirect(safe_next)
 
-    Advert.objects.filter(author_id__in=delete_ids).update(status=0, deleted_at=timezone.now(), updated_at=timezone.now())
-    LegacyUser.objects.filter(id__in=delete_ids).delete()
+    try:
+        with transaction.atomic():
+            advert_qs = Advert.objects.filter(author_id__in=delete_ids)
+            advert_ids = list(advert_qs.values_list('id', flat=True))
+            if advert_ids:
+                AdvertPhoto.objects.filter(advert_id__in=advert_ids).delete()
+            advert_qs.delete()
+            Review.objects.filter(author_id__in=delete_ids).delete()
+            Seller.objects.filter(user_id__in=delete_ids).delete()
+            Message.objects.filter(Q(sender_id__in=delete_ids) | Q(recipient_id__in=delete_ids)).delete()
+            LegacyUser.objects.filter(id__in=delete_ids).delete()
+    except Exception:
+        logger.exception('admin_users_bulk_delete failed for ids=%s', delete_ids)
+        raise
     return redirect(safe_next)
 
 

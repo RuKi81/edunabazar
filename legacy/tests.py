@@ -148,6 +148,83 @@ class PhotoValidationTests(SimpleTestCase):
         self.assertIn('photos', errors)
 
 
+class BulkDeleteUsersTests(TestCase):
+    """Verify that bulk-deleting a user also removes related FK rows."""
+
+    def setUp(self):
+        from django.utils import timezone
+        from django.contrib.gis.geos import Point
+        from .models import Advert, AdvertPhoto, LegacyUser, Catalog, Categories, Review, Seller, Message
+
+        self.client = Client()
+        now = timezone.now()
+
+        self.admin = LegacyUser.objects.create(
+            type=0, username='admin', auth_key='', password_hash='',
+            email='admin@test.com', currency='RUB', name='Admin',
+            address='', phone='', inn='', status=10,
+            created_at=now, updated_at=now, contacts='',
+        )
+        self.victim = LegacyUser.objects.create(
+            type=0, username='victim', auth_key='', password_hash='',
+            email='victim@test.com', currency='RUB', name='Victim',
+            address='', phone='', inn='', status=10,
+            created_at=now, updated_at=now, contacts='',
+        )
+        catalog = Catalog.objects.create(title='Cat', sort=0, active=1)
+        category = Categories.objects.create(catalog=catalog, title='Grains', active=1)
+        self.advert = Advert.objects.create(
+            type=0, category=category, author=self.victim,
+            location=Point(37.6, 55.7, srid=4326), contacts='', title='Test',
+            text='', price=0, wholesale_price=0, min_volume=0,
+            wholesale_volume=0, volume=0, priority=0,
+            created_at=now, updated_at=now, status=10,
+        )
+        AdvertPhoto.objects.create(advert=self.advert, image='test.jpg', sort=0)
+        Review.objects.create(
+            type=0, object_id=self.advert.id, points=5, author=self.victim,
+            text='Great', created_at=now, updated_at=now, status=10,
+        )
+        Seller.objects.create(
+            user=self.victim, name='VictimShop', logo=0,
+            location='', contacts={}, price_list=0, links='', about='',
+            created_at=now, updated_at=now, status=10,
+        )
+        Message.objects.create(
+            sender=self.victim, recipient=self.admin,
+            text='Hello', is_read=False, created_at=now,
+        )
+
+        session = self.client.session
+        session['legacy_user_id'] = self.admin.pk
+        session.save()
+
+    def test_bulk_delete_removes_user_and_related(self):
+        from .models import Advert, AdvertPhoto, LegacyUser, Review, Seller, Message
+
+        resp = self.client.post(
+            '/legacy-admin/users/bulk-delete/',
+            {'user_id': [str(self.victim.pk)]},
+        )
+        self.assertIn(resp.status_code, (302, 301))
+        self.assertFalse(LegacyUser.objects.filter(pk=self.victim.pk).exists())
+        self.assertFalse(Advert.objects.filter(pk=self.advert.pk).exists())
+        self.assertFalse(AdvertPhoto.objects.filter(advert_id=self.advert.pk).exists())
+        self.assertFalse(Review.objects.filter(author_id=self.victim.pk).exists())
+        self.assertFalse(Seller.objects.filter(user_id=self.victim.pk).exists())
+        self.assertFalse(Message.objects.filter(sender_id=self.victim.pk).exists())
+
+    def test_bulk_delete_protects_admin(self):
+        from .models import LegacyUser
+
+        resp = self.client.post(
+            '/legacy-admin/users/bulk-delete/',
+            {'user_id': [str(self.admin.pk)]},
+        )
+        self.assertIn(resp.status_code, (302, 301))
+        self.assertTrue(LegacyUser.objects.filter(pk=self.admin.pk).exists())
+
+
 class SmokeTests(TestCase):
     """Smoke tests: public pages return 200 and contain expected content."""
 
