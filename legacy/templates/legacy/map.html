@@ -328,60 +328,103 @@
         return (s || '').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
       }
 
+      var _listAdverts = [];
+      var _listRendered = 0;
+      var LIST_PAGE = 50;
+
+      function _renderCard(a) {
+        var price = (a.price == null) ? '' : (a.price.toFixed ? a.price.toFixed(2) : a.price);
+        var thumb = a.thumb_url || '{% static "legacy/images/no_photo_102_109.jpg" %}';
+        var url = a.url || ('/adverts/' + a.id + '/');
+        var meta = '';
+        if (a.created_date || a.category_title) {
+          meta = '<div class="mapui__list-meta">' + esc(a.created_date || '') + (a.category_title ? (' · ' + esc(a.category_title)) : '') + '</div>';
+        }
+        var flags = [];
+        if (a.is_opt) flags.push('Опт');
+        if (a.is_delivery) flags.push('Доставка');
+        var flagsHtml = flags.length ? ('<div class="mapui__list-meta">' + esc(flags.join(' · ')) + '</div>') : '';
+        return (
+          '<div class="mapui__list-item" data-id="' + a.id + '">' +
+            '<a class="mapui__list-thumb" href="' + url + '"><img src="' + thumb + '" alt="" loading="lazy"></a>' +
+            '<div class="mapui__list-body">' +
+              '<div class="mapui__list-top">' +
+                '<a class="mapui__list-title" href="' + url + '">' + esc(a.title) + '</a>' +
+                (price ? '<div class="mapui__list-price">' + esc(price) + '</div>' : '') +
+              '</div>' +
+              (a.text_short ? '<div class="mapui__list-text">' + esc(a.text_short) + '</div>' : '') +
+              meta +
+              flagsHtml +
+              '<a class="mapui__list-more" href="' + url + '">Подробнее<span class="mapui__chev">→</span></a>' +
+            '</div>' +
+          '</div>'
+        );
+      }
+
+      function _appendChunk() {
+        var el = document.getElementById('map_list');
+        if (!el) return;
+        var end = Math.min(_listRendered + LIST_PAGE, _listAdverts.length);
+        if (_listRendered >= end) return;
+        var html = '';
+        for (var i = _listRendered; i < end; i++) {
+          html += _renderCard(_listAdverts[i]);
+        }
+        el.insertAdjacentHTML('beforeend', html);
+        _bindCardClicks(el, _listRendered, end);
+        _listRendered = end;
+      }
+
+      function _bindCardClicks(el, from, to) {
+        var items = el.querySelectorAll('.mapui__list-item');
+        for (var i = from; i < to && i < items.length; i++) {
+          (function (item) {
+            item.addEventListener('click', function (e) {
+              if (e.target && e.target.closest && e.target.closest('a')) return;
+              var id = parseInt(item.getAttribute('data-id') || '0', 10);
+              var m = markerById[id];
+              if (!m) return;
+              map.setView(m.getLatLng(), 12);
+              m.openPopup();
+            });
+          })(items[i]);
+        }
+      }
+
       function renderList(adverts) {
         var el = document.getElementById('map_list');
         if (!el) return;
-        if (!adverts || adverts.length === 0) {
+        _listAdverts = adverts || [];
+        _listRendered = 0;
+        el.innerHTML = '';
+        if (_listAdverts.length === 0) {
           el.innerHTML = '<div style="padding:10px;color:#777;">Ничего не найдено</div>';
           return;
         }
+        _appendChunk();
+        if (_listAdverts.length > _listRendered) {
+          el.innerHTML += '<div style="padding:8px 10px;color:#999;font-size:11px;">Показано ' + _listRendered + ' из ' + _listAdverts.length + '</div>';
+        }
+      }
 
-        el.innerHTML = adverts.map(function (a) {
-          var price = (a.price == null) ? '' : (a.price.toFixed ? a.price.toFixed(2) : a.price);
-          var thumb = a.thumb_url || '{% static "legacy/images/no_photo_102_109.jpg" %}';
-          var url = a.url || ('/adverts/' + a.id + '/');
-          var meta = '';
-          if (a.created_date || a.category_title) {
-            meta = '<div class="mapui__list-meta">' + esc(a.created_date || '') + (a.category_title ? (' · ' + esc(a.category_title)) : '') + '</div>';
-          }
-
-          var flags = [];
-          if (a.is_opt) flags.push('Опт');
-          if (a.is_delivery) flags.push('Доставка');
-          var flagsHtml = flags.length ? ('<div class="mapui__list-meta">' + esc(flags.join(' · ')) + '</div>') : '';
-          return (
-            '<div class="mapui__list-item" data-id="' + a.id + '">' +
-              '<a class="mapui__list-thumb" href="' + url + '"><img src="' + thumb + '" alt=""></a>' +
-              '<div class="mapui__list-body">' +
-                '<div class="mapui__list-top">' +
-                  '<a class="mapui__list-title" href="' + url + '">' + esc(a.title) + '</a>' +
-                  (price ? '<div class="mapui__list-price">' + esc(price) + '</div>' : '') +
-                '</div>' +
-                (a.text_short ? '<div class="mapui__list-text">' + esc(a.text_short) + '</div>' : '') +
-                meta +
-                flagsHtml +
-                '<a class="mapui__list-more" href="' + url + '">Подробнее<span class="mapui__chev">→</span></a>' +
-              '</div>' +
-            '</div>'
-          );
-        }).join('');
-
-        Array.prototype.forEach.call(el.querySelectorAll('.mapui__list-item'), function (item) {
-          item.addEventListener('click', function () {
-            if (window.event && window.event.target && window.event.target.closest) {
-              var link = window.event.target.closest('a');
-              if (link) {
-                return;
+      (function () {
+        var panel = document.querySelector('.mapui__right');
+        if (!panel) return;
+        panel.addEventListener('scroll', function () {
+          if (_listRendered >= _listAdverts.length) return;
+          if (panel.scrollTop + panel.clientHeight >= panel.scrollHeight - 200) {
+            _appendChunk();
+            var el = document.getElementById('map_list');
+            if (el) {
+              var counter = el.querySelector('.mapui__list-counter');
+              if (counter) counter.remove();
+              if (_listRendered < _listAdverts.length) {
+                el.insertAdjacentHTML('beforeend', '<div class="mapui__list-counter" style="padding:8px 10px;color:#999;font-size:11px;">Показано ' + _listRendered + ' из ' + _listAdverts.length + '</div>');
               }
             }
-            var id = parseInt(item.getAttribute('data-id') || '0', 10);
-            var m = markerById[id];
-            if (!m) return;
-            map.setView(m.getLatLng(), 12);
-            m.openPopup();
-          });
+          }
         });
-      }
+      })();
 
       var _lastFilterKey = '';
       var _isInitialLoad = true;
