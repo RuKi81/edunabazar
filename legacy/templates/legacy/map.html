@@ -383,7 +383,10 @@
         });
       }
 
-      function loadAdverts() {
+      var _lastFilterKey = '';
+      var _isInitialLoad = true;
+
+      function _buildFilterUrl() {
         var qEl = document.getElementById('map_q');
         var q = (qEl && qEl.value) ? qEl.value.trim() : '';
 
@@ -402,7 +405,7 @@
         var typeEl = document.querySelector('input[name="ad_type"]:checked');
         var type = typeEl && typeEl.value ? typeEl.value : 'all';
 
-        var url = '/api/map/adverts/?limit=1000';
+        var url = '/api/map/adverts/?limit=5000';
         if (q) url += '&q=' + encodeURIComponent(q);
         if (type && type !== 'all') url += '&type=' + encodeURIComponent(type);
         if (opt) url += '&opt=1';
@@ -411,53 +414,93 @@
         if (category) url += '&category=' + encodeURIComponent(category);
         if (initialSort) url += '&sort=' + encodeURIComponent(initialSort);
 
-        cluster.clearLayers();
-        markerById = {};
+        return { url: url, key: q + '|' + type + '|' + opt + '|' + delivery + '|' + catalog + '|' + category };
+      }
+
+      function _addBbox(url) {
+        var b = map.getBounds();
+        if (b) {
+          var sw = b.getSouthWest();
+          var ne = b.getNorthEast();
+          url += '&bbox=' + [sw.lat, sw.lng, ne.lat, ne.lng].join(',');
+        }
+        return url;
+      }
+
+      function _makeMarker(a) {
+        if (a.lat == null || a.lon == null) return null;
+        var m = L.marker([a.lat, a.lon]);
+        var title = (a.title || '').toString();
+        var url = a.url || ('/adverts/' + a.id + '/');
+        var thumb = a.thumb_url || '{% static "legacy/images/no_photo_102_109.jpg" %}';
+        var price = (a.price == null) ? '' : ('<div style="margin-top:6px;font-weight:700;">' + esc(a.price.toFixed ? a.price.toFixed(2) : a.price) + '</div>');
+        var text = a.text_short ? ('<div style="margin-top:6px;color:#666;font-size:11px;line-height:1.25;">' + esc(a.text_short) + '</div>') : '';
+        var meta = (a.created_date || a.category_title) ? ('<div style="margin-top:6px;color:#888;font-size:10px;">' + esc(a.created_date || '') + (a.category_title ? (' · ' + esc(a.category_title)) : '') + '</div>') : '';
+        var flags = [];
+        if (a.is_opt) flags.push('Опт');
+        if (a.is_delivery) flags.push('Доставка');
+        var flagsHtml = flags.length ? ('<div style="margin-top:6px;color:#888;font-size:10px;">' + esc(flags.join(' · ')) + '</div>') : '';
+        var more = '<div style="margin-top:6px;"><a href="' + url + '" style="font-size:11px;color:#0090b6;">Подробнее</a></div>';
+        var img = '<div style="margin-top:6px;"><img src="' + thumb + '" alt="" style="width:120px;height:68px;object-fit:cover;display:block;background:#eee;"></div>';
+        m.bindPopup('<a href="' + url + '">' + esc(title) + '</a>' + img + price + text + meta + flagsHtml + more);
+        return m;
+      }
+
+      function loadAdverts() {
+        var f = _buildFilterUrl();
+        var filtersChanged = (f.key !== _lastFilterKey);
+        _lastFilterKey = f.key;
+
+        if (filtersChanged) {
+          cluster.clearLayers();
+          markerById = {};
+        }
+
+        var url = _addBbox(f.url);
 
         fetch(url)
           .then(function (r) { return r.json(); })
           .then(function (data) {
             var adverts = (data && data.adverts) ? data.adverts : [];
-            renderList(adverts);
-
-            var bounds = [];
+            var newMarkers = [];
             adverts.forEach(function (a) {
-              if (a.lat == null || a.lon == null) return;
-              var m = L.marker([a.lat, a.lon]);
+              if (markerById[a.id]) return;
+              var m = _makeMarker(a);
+              if (!m) return;
               markerById[a.id] = m;
-
-              var title = (a.title || '').toString();
-              var url = a.url || ('/adverts/' + a.id + '/');
-              var thumb = a.thumb_url || '{% static "legacy/images/no_photo_102_109.jpg" %}';
-              var price = (a.price == null) ? '' : ('<div style="margin-top:6px;font-weight:700;">' + esc(a.price.toFixed ? a.price.toFixed(2) : a.price) + '</div>');
-              var text = a.text_short ? ('<div style="margin-top:6px;color:#666;font-size:11px;line-height:1.25;">' + esc(a.text_short) + '</div>') : '';
-              var meta = (a.created_date || a.category_title) ? ('<div style="margin-top:6px;color:#888;font-size:10px;">' + esc(a.created_date || '') + (a.category_title ? (' · ' + esc(a.category_title)) : '') + '</div>') : '';
-              var flags = [];
-              if (a.is_opt) flags.push('Опт');
-              if (a.is_delivery) flags.push('Доставка');
-              var flagsHtml = flags.length ? ('<div style="margin-top:6px;color:#888;font-size:10px;">' + esc(flags.join(' · ')) + '</div>') : '';
-              var more = '<div style="margin-top:6px;"><a href="' + url + '" style="font-size:11px;color:#0090b6;">Подробнее</a></div>';
-              var img = '<div style="margin-top:6px;"><img src="' + thumb + '" alt="" style="width:120px;height:68px;object-fit:cover;display:block;background:#eee;"></div>';
-              m.bindPopup('<a href="' + url + '">' + esc(title) + '</a>' + img + price + text + meta + flagsHtml + more);
               cluster.addLayer(m);
-              bounds.push([a.lat, a.lon]);
+              newMarkers.push(a);
             });
 
-            if (bounds.length > 0) {
-              if (!(isFinite(focusLat) && isFinite(focusLon))) {
+            renderList(adverts);
+
+            if (_isInitialLoad) {
+              _isInitialLoad = false;
+              var bounds = [];
+              adverts.forEach(function (a) {
+                if (a.lat != null && a.lon != null) bounds.push([a.lat, a.lon]);
+              });
+              if (bounds.length > 0 && !(isFinite(focusLat) && isFinite(focusLon))) {
                 map.fitBounds(bounds, { padding: [30, 30] });
               }
-            }
-
-            if (focusAdvertId && markerById[focusAdvertId]) {
-              var m = markerById[focusAdvertId];
-              map.setView(m.getLatLng(), focusZoom || 12);
-              m.openPopup();
+              if (focusAdvertId && markerById[focusAdvertId]) {
+                var m = markerById[focusAdvertId];
+                map.setView(m.getLatLng(), focusZoom || 12);
+                m.openPopup();
+              }
             }
           })
           .catch(function () {
             renderList([]);
           });
+      }
+
+      function loadAdvertsFull() {
+        _lastFilterKey = '';
+        cluster.clearLayers();
+        markerById = {};
+        _isInitialLoad = true;
+        loadAdverts();
       }
 
       function debounce(fn, waitMs) {
@@ -476,6 +519,8 @@
 
       var loadAdvertsDebounced = debounce(loadAdverts, 350);
 
+      map.on('moveend', loadAdvertsDebounced);
+
       var btnAdd = document.getElementById('map_add');
       if (btnAdd) {
         btnAdd.addEventListener('click', function () {
@@ -485,7 +530,7 @@
 
       var btnFind = document.getElementById('map_find');
       if (btnFind) {
-        btnFind.addEventListener('click', loadAdverts);
+        btnFind.addEventListener('click', loadAdvertsFull);
       }
       var qEl = document.getElementById('map_q');
       if (qEl) {

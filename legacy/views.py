@@ -15,7 +15,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.db.models import Q, F, Prefetch
 from django.contrib.auth.hashers import check_password, make_password
 from django.utils import timezone
-from django.contrib.gis.geos import Point
+from django.contrib.gis.geos import Point, Polygon
 from django.core.mail import EmailMultiAlternatives
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError
@@ -920,12 +920,12 @@ def map_view(request: HttpRequest) -> HttpResponse:
 
 
 def map_adverts_api(request: HttpRequest) -> JsonResponse:
-    limit_raw = (request.GET.get('limit') or '500').strip()
+    limit_raw = (request.GET.get('limit') or '5000').strip()
     try:
         limit = int(limit_raw)
     except Exception:
-        limit = 500
-    limit = max(1, min(limit, 2000))
+        limit = 5000
+    limit = max(1, min(limit, 10000))
 
     q = (request.GET.get('q') or '').strip()
     type_raw = (request.GET.get('type') or '').strip().lower()
@@ -934,6 +934,7 @@ def map_adverts_api(request: HttpRequest) -> JsonResponse:
     catalog_raw = (request.GET.get('catalog') or '').strip()
     category_raw = (request.GET.get('category') or '').strip()
     sort_raw = (request.GET.get('sort') or '').strip().lower()
+    bbox_raw = (request.GET.get('bbox') or '').strip()
 
     user = _get_current_legacy_user(request)
     is_admin = _is_admin_user(user)
@@ -970,6 +971,17 @@ def map_adverts_api(request: HttpRequest) -> JsonResponse:
             qs = qs.filter(category__catalog_id=int(catalog_raw))
     except Exception:
         pass
+
+    if bbox_raw:
+        try:
+            parts = bbox_raw.split(',')
+            if len(parts) == 4:
+                sw_lat, sw_lon, ne_lat, ne_lon = (float(p) for p in parts)
+                bbox_poly = Polygon.from_bbox((sw_lon, sw_lat, ne_lon, ne_lat))
+                bbox_poly.srid = 4326
+                qs = qs.filter(location__within=bbox_poly)
+        except (ValueError, TypeError):
+            pass
 
     if sort_raw == 'price':
         qs = qs.order_by('price', '-created_at', '-id')
