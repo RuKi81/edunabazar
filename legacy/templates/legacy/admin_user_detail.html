@@ -13,6 +13,18 @@
 
       <div class="card" style="box-shadow:none; border:1px solid #e6e6e6;">
         <div class="card-content" style="padding: 16px;">
+          <div style="color:#777; font-weight:700;">ID</div>
+          <div style="margin-bottom: 10px;">{{ u.id }}</div>
+
+          <div style="color:#777; font-weight:700;">Email</div>
+          <div style="margin-bottom: 10px;">{{ u.email|default:"—" }}</div>
+
+          <div style="color:#777; font-weight:700;">Имя</div>
+          <div style="margin-bottom: 10px;">{{ u.name|default:"—" }}</div>
+
+          <div style="color:#777; font-weight:700;">Телефон</div>
+          <div style="margin-bottom: 10px;">{{ u.phone|default:"—" }}</div>
+
           <div style="color:#777; font-weight:700;">Дата регистрации</div>
           <div style="margin-bottom: 10px;">{{ u.created_at|date:"d.m.Y H:i" }}</div>
 
@@ -42,7 +54,7 @@
         </div>
       </div>
 
-      <h6 style="margin: 16px 0 10px 0; font-weight: 800;">Объявления пользователя</h6>
+      <h6 style="margin: 16px 0 10px 0; font-weight: 800;">Объявления пользователя ({{ adverts|length }})</h6>
 
       {% for a in adverts %}
         <div class="card" style="box-shadow:none; border:1px solid #e6e6e6;">
