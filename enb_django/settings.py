@@ -172,7 +172,15 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
-# Email
+# Email — Yandex Cloud Postbox (or any SMTP)
+# For Yandex Cloud Postbox set these env vars:
+#   EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
+#   EMAIL_HOST=postbox.cloud.yandex.net
+#   EMAIL_PORT=587
+#   EMAIL_HOST_USER=<API key ID>
+#   EMAIL_HOST_PASSWORD=<API key secret>
+#   EMAIL_USE_TLS=1
+#   DEFAULT_FROM_EMAIL=noreply@edunabazar.ru
 EMAIL_BACKEND = os.getenv(
     'EMAIL_BACKEND',
     'django.core.mail.backends.console.EmailBackend',

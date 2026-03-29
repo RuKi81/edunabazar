@@ -202,6 +202,83 @@ class NewsFeedSource(models.Model):
         verbose_name_plural = 'RSS-источники новостей'
 
 
+class EmailCampaign(models.Model):
+    STATUS_DRAFT = 'draft'
+    STATUS_SENDING = 'sending'
+    STATUS_PAUSED = 'paused'
+    STATUS_DONE = 'done'
+    STATUS_CHOICES = [
+        (STATUS_DRAFT, 'Черновик'),
+        (STATUS_SENDING, 'Отправляется'),
+        (STATUS_PAUSED, 'Приостановлена'),
+        (STATUS_DONE, 'Завершена'),
+    ]
+
+    AUDIENCE_ALL = 'all'
+    AUDIENCE_IMPORTED = 'imported'
+    AUDIENCE_REGISTERED = 'registered'
+    AUDIENCE_CHOICES = [
+        (AUDIENCE_ALL, 'Все пользователи'),
+        (AUDIENCE_IMPORTED, 'Импортированные'),
+        (AUDIENCE_REGISTERED, 'Зарегистрированные на сайте'),
+    ]
+
+    name = models.CharField('Название кампании', max_length=255)
+    subject = models.CharField('Тема письма', max_length=255)
+    body_html = models.TextField('HTML-тело письма')
+    body_text = models.TextField('Текстовое тело письма', blank=True, default='')
+    from_email = models.CharField('Адрес отправителя', max_length=255, blank=True, default='')
+    audience = models.CharField('Аудитория', max_length=20, choices=AUDIENCE_CHOICES, default=AUDIENCE_ALL)
+    status = models.CharField('Статус', max_length=10, choices=STATUS_CHOICES, default=STATUS_DRAFT)
+    total_recipients = models.PositiveIntegerField('Всего получателей', default=0)
+    sent_count = models.PositiveIntegerField('Отправлено', default=0)
+    failed_count = models.PositiveIntegerField('Ошибок', default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    started_at = models.DateTimeField('Начало отправки', blank=True, null=True)
+    finished_at = models.DateTimeField('Завершение', blank=True, null=True)
+
+    def __str__(self):
+        return f'{self.name} ({self.get_status_display()})'
+
+    class Meta:
+        db_table = 'email_campaign'
+        ordering = ['-created_at']
+        verbose_name = 'Email-кампания'
+        verbose_name_plural = 'Email-кампании'
+
+
+class EmailLog(models.Model):
+    STATUS_PENDING = 'pending'
+    STATUS_SENT = 'sent'
+    STATUS_FAILED = 'failed'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Ожидает'),
+        (STATUS_SENT, 'Отправлено'),
+        (STATUS_FAILED, 'Ошибка'),
+    ]
+
+    campaign = models.ForeignKey(EmailCampaign, models.CASCADE, related_name='logs')
+    recipient_email = models.EmailField('Email получателя')
+    status = models.CharField('Статус', max_length=10, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    error_message = models.TextField('Сообщение об ошибке', blank=True, default='')
+    sent_at = models.DateTimeField('Время отправки', blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f'{self.recipient_email} — {self.get_status_display()}'
+
+    class Meta:
+        db_table = 'email_log'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['campaign', 'status']),
+            models.Index(fields=['recipient_email']),
+        ]
+        verbose_name = 'Email-лог'
+        verbose_name_plural = 'Email-логи'
+
+
 class LegacyUser(models.Model):
     type = models.PositiveSmallIntegerField(db_comment='0- ЇшчышЎю, 1-■ЁышЎю')
     username = models.CharField(unique=True, max_length=255, db_comment='╚ь  яюы№чютрЄхы ')

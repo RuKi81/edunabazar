@@ -25,7 +25,10 @@ from django.db import transaction
 from django.contrib.auth import authenticate, login as django_login
 from PIL import Image as PILImage
 
-from .models import Advert, LegacyUser, Catalog, Categories, AdvertPhoto, News, Seller, Review, Message
+from .models import (
+    Advert, LegacyUser, Catalog, Categories, AdvertPhoto, News, Seller,
+    Review, Message, EmailCampaign, EmailLog,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -2283,3 +2286,134 @@ def messages_unread_count_api(request: HttpRequest) -> JsonResponse:
         return JsonResponse({'ok': False, 'count': 0})
     count = Message.objects.filter(recipient_id=user.id, is_read=False).count()
     return JsonResponse({'ok': True, 'count': count})
+
+
+# ---------------------------------------------------------------------------
+#  Email Campaign admin views
+# ---------------------------------------------------------------------------
+
+def admin_campaigns(request: HttpRequest) -> HttpResponse:
+    admin_user = _require_admin(request)
+    if isinstance(admin_user, HttpResponse):
+        return admin_user
+
+    campaigns = EmailCampaign.objects.all()
+    return _no_store(render(request, 'legacy/admin_campaigns.html', {
+        'legacy_user': admin_user,
+        'campaigns': campaigns,
+    }))
+
+
+def admin_campaign_create(request: HttpRequest) -> HttpResponse:
+    admin_user = _require_admin(request)
+    if isinstance(admin_user, HttpResponse):
+        return admin_user
+
+    errors: dict[str, str] = {}
+
+    if request.method == 'POST':
+        name = (request.POST.get('name') or '').strip()
+        subject = (request.POST.get('subject') or '').strip()
+        body_html = (request.POST.get('body_html') or '').strip()
+        body_text = (request.POST.get('body_text') or '').strip()
+        from_email = (request.POST.get('from_email') or '').strip()
+        audience = (request.POST.get('audience') or 'all').strip()
+
+        if not name:
+            errors['name'] = 'Введите название кампании'
+        if not subject:
+            errors['subject'] = 'Введите тему письма'
+        if not body_html:
+            errors['body_html'] = 'Введите HTML-тело письма'
+
+        if not errors:
+            campaign = EmailCampaign.objects.create(
+                name=name,
+                subject=subject,
+                body_html=body_html,
+                body_text=body_text,
+                from_email=from_email or settings.DEFAULT_FROM_EMAIL,
+                audience=audience,
+            )
+            return redirect(f'/legacy-admin/campaigns/{campaign.pk}/')
+
+    return _no_store(render(request, 'legacy/admin_campaign_form.html', {
+        'legacy_user': admin_user,
+        'errors': errors,
+        'form_data': request.POST if request.method == 'POST' else {},
+        'audience_choices': EmailCampaign.AUDIENCE_CHOICES,
+        'default_from': settings.DEFAULT_FROM_EMAIL,
+    }))
+
+
+def admin_campaign_detail(request: HttpRequest, campaign_id: int) -> HttpResponse:
+    admin_user = _require_admin(request)
+    if isinstance(admin_user, HttpResponse):
+        return admin_user
+
+    campaign = get_object_or_404(EmailCampaign, pk=campaign_id)
+
+    # Stats
+    sent = EmailLog.objects.filter(campaign=campaign, status=EmailLog.STATUS_SENT).count()
+    failed = EmailLog.objects.filter(campaign=campaign, status=EmailLog.STATUS_FAILED).count()
+    pending = EmailLog.objects.filter(campaign=campaign, status=EmailLog.STATUS_PENDING).count()
+    recent_errors = EmailLog.objects.filter(
+        campaign=campaign, status=EmailLog.STATUS_FAILED,
+    ).order_by('-created_at')[:20]
+
+    # Estimated audience size (for draft campaigns)
+    audience_count = 0
+    if campaign.status == EmailCampaign.STATUS_DRAFT:
+        qs = LegacyUser.objects.exclude(email='').exclude(email__isnull=True)
+        if campaign.audience == EmailCampaign.AUDIENCE_REGISTERED:
+            qs = qs.filter(status=10)
+        elif campaign.audience == EmailCampaign.AUDIENCE_IMPORTED:
+            qs = qs.exclude(status=10)
+        audience_count = qs.count()
+
+    return _no_store(render(request, 'legacy/admin_campaign_detail.html', {
+        'legacy_user': admin_user,
+        'campaign': campaign,
+        'sent': sent,
+        'failed': failed,
+        'pending': pending,
+        'recent_errors': recent_errors,
+        'audience_count': audience_count,
+    }))
+
+
+def admin_campaign_delete(request: HttpRequest, campaign_id: int) -> HttpResponse:
+    admin_user = _require_admin(request)
+    if isinstance(admin_user, HttpResponse):
+        return admin_user
+
+    campaign = get_object_or_404(EmailCampaign, pk=campaign_id)
+    if request.method == 'POST':
+        campaign.delete()
+    return redirect('/legacy-admin/campaigns/')
+
+
+def admin_campaign_send_test(request: HttpRequest, campaign_id: int) -> JsonResponse:
+    admin_user = _require_admin(request)
+    if isinstance(admin_user, HttpResponse):
+        return JsonResponse({'ok': False, 'error': 'Forbidden'}, status=403)
+
+    campaign = get_object_or_404(EmailCampaign, pk=campaign_id)
+    test_email = (request.POST.get('test_email') or '').strip()
+    if not test_email:
+        return JsonResponse({'ok': False, 'error': 'Укажите email'})
+
+    from_email = campaign.from_email or settings.DEFAULT_FROM_EMAIL
+    try:
+        msg = EmailMultiAlternatives(
+            subject=f'[ТЕСТ] {campaign.subject}',
+            body=campaign.body_text or campaign.subject,
+            from_email=from_email,
+            to=[test_email],
+        )
+        if campaign.body_html:
+            msg.attach_alternative(campaign.body_html, 'text/html')
+        msg.send(fail_silently=False)
+        return JsonResponse({'ok': True})
+    except Exception as e:
+        return JsonResponse({'ok': False, 'error': str(e)[:500]})

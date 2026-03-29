@@ -1,0 +1,202 @@
+{% extends 'legacy/base.html' %}
+
+{% block title %}Админка — {{ campaign.name }}{% endblock %}
+
+{% block content %}
+  <div class="row" style="margin-bottom:0;">
+    <div class="col s12">
+      <div style="margin: 10px 0 6px 0;">
+        <a href="{% url 'admin_campaigns' %}" style="color:#0090b6;">← Все кампании</a>
+      </div>
+
+      <h5 style="margin: 6px 0 14px 0; color:#7fb500; font-weight: 800;">{{ campaign.name }}</h5>
+
+      {# Status badge #}
+      <div style="margin-bottom: 16px;">
+        {% if campaign.status == 'draft' %}
+          <span style="background:#ffc107; color:#333; padding:4px 14px; border-radius:10px; font-size:13px; font-weight:700;">Черновик</span>
+        {% elif campaign.status == 'sending' %}
+          <span style="background:#2196f3; color:#fff; padding:4px 14px; border-radius:10px; font-size:13px; font-weight:700;">Отправляется</span>
+        {% elif campaign.status == 'paused' %}
+          <span style="background:#ff9800; color:#fff; padding:4px 14px; border-radius:10px; font-size:13px; font-weight:700;">Пауза</span>
+        {% elif campaign.status == 'done' %}
+          <span style="background:#4caf50; color:#fff; padding:4px 14px; border-radius:10px; font-size:13px; font-weight:700;">Завершена</span>
+        {% endif %}
+      </div>
+
+      {# Info card #}
+      <div class="card" style="box-shadow:none; border:1px solid #e6e6e6;">
+        <div class="card-content" style="padding: 16px;">
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px 30px; margin-bottom:14px;">
+            <div>
+              <div style="color:#777; font-weight:700; font-size:12px;">Тема письма</div>
+              <div>{{ campaign.subject }}</div>
+            </div>
+            <div>
+              <div style="color:#777; font-weight:700; font-size:12px;">Отправитель</div>
+              <div>{{ campaign.from_email|default:"(по умолчанию)" }}</div>
+            </div>
+            <div>
+              <div style="color:#777; font-weight:700; font-size:12px;">Аудитория</div>
+              <div>{{ campaign.get_audience_display }}{% if audience_count %} (~{{ audience_count }} адресов){% endif %}</div>
+            </div>
+            <div>
+              <div style="color:#777; font-weight:700; font-size:12px;">Создана</div>
+              <div>{{ campaign.created_at|date:"d.m.Y H:i" }}</div>
+            </div>
+          </div>
+
+          {# Progress #}
+          {% if campaign.total_recipients > 0 %}
+          <div style="margin-bottom:14px;">
+            <div style="color:#777; font-weight:700; font-size:12px; margin-bottom:6px;">Прогресс отправки</div>
+            {% with pct=campaign.sent_count|floatformat:0 %}
+            <div style="background:#e0e0e0; border-radius:4px; height:24px; position:relative; overflow:hidden;">
+              {% widthratio sent campaign.total_recipients 100 as sent_pct %}
+              <div style="background:#4caf50; height:100%; width:{% widthratio sent campaign.total_recipients 100 %}%; min-width:1px;"></div>
+              {% if failed > 0 %}
+              <div style="background:#f44336; height:100%; width:{% widthratio failed campaign.total_recipients 100 %}%; min-width:1px; position:absolute; top:0; left:{% widthratio sent campaign.total_recipients 100 %}%;"></div>
+              {% endif %}
+            </div>
+            {% endwith %}
+            <div style="font-size:13px; margin-top:4px;">
+              <span style="color:#4caf50; font-weight:700;">✓ {{ sent }}</span> отправлено
+              {% if failed %} · <span style="color:#f44336; font-weight:700;">✗ {{ failed }}</span> ошибок{% endif %}
+              {% if pending %} · <span style="color:#999;">⏳ {{ pending }}</span> ожидает{% endif %}
+              · всего {{ campaign.total_recipients }}
+            </div>
+          </div>
+          {% endif %}
+
+          {% if campaign.started_at %}
+            <div style="color:#777; font-size:12px;">Начало: {{ campaign.started_at|date:"d.m.Y H:i" }}</div>
+          {% endif %}
+          {% if campaign.finished_at %}
+            <div style="color:#777; font-size:12px;">Завершение: {{ campaign.finished_at|date:"d.m.Y H:i" }}</div>
+          {% endif %}
+        </div>
+      </div>
+
+      {# Actions #}
+      <div class="card" style="box-shadow:none; border:1px solid #e6e6e6;">
+        <div class="card-content" style="padding: 16px;">
+          <div style="font-weight:800; margin-bottom:10px;">Действия</div>
+
+          {# Send test email #}
+          <div style="margin-bottom:14px;">
+            <div style="color:#777; font-weight:700; font-size:12px; margin-bottom:4px;">Тестовое письмо</div>
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+              <input type="email" id="test_email" placeholder="your@email.com" style="max-width:300px; margin:0;">
+              <button class="btn" id="btn_send_test" style="background:#2196f3; box-shadow:none; border-radius:0;" onclick="sendTest()">
+                Отправить тест
+              </button>
+              <span id="test_result" style="font-size:13px;"></span>
+            </div>
+          </div>
+
+          {# Launch instructions #}
+          {% if campaign.status == 'draft' %}
+          <div style="margin-bottom:14px;">
+            <div style="color:#777; font-weight:700; font-size:12px; margin-bottom:4px;">Запуск рассылки</div>
+            <div style="background:#f5f5f5; padding:12px; border-radius:4px; font-family:monospace; font-size:13px;">
+              python manage.py send_campaign {{ campaign.pk }}
+            </div>
+            <div style="color:#999; font-size:11px; margin-top:4px;">
+              Запустите эту команду на сервере. Параметры: --rate=1 (писем/сек), --dry-run (тест без отправки)
+            </div>
+          </div>
+          {% elif campaign.status == 'paused' %}
+          <div style="margin-bottom:14px;">
+            <div style="color:#777; font-weight:700; font-size:12px; margin-bottom:4px;">Продолжить рассылку</div>
+            <div style="background:#f5f5f5; padding:12px; border-radius:4px; font-family:monospace; font-size:13px;">
+              python manage.py send_campaign {{ campaign.pk }} --resume
+            </div>
+          </div>
+          {% endif %}
+
+          {# Delete #}
+          {% if campaign.status == 'draft' or campaign.status == 'done' %}
+          <div style="margin-top:20px; padding-top:14px; border-top:1px solid #eee;">
+            <form method="post" action="{% url 'admin_campaign_delete' campaign.pk %}" onsubmit="return confirm('Удалить кампанию «{{ campaign.name }}»?');">
+              {% csrf_token %}
+              <button class="btn" type="submit" style="background:#b00020; box-shadow:none; border-radius:0;">
+                Удалить кампанию
+              </button>
+            </form>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+
+      {# Email preview #}
+      <div class="card" style="box-shadow:none; border:1px solid #e6e6e6;">
+        <div class="card-content" style="padding: 16px;">
+          <div style="font-weight:800; margin-bottom:10px;">Предпросмотр письма</div>
+          <div style="border:1px solid #ddd; padding:16px; background:#fafafa; max-height:500px; overflow:auto;">
+            {{ campaign.body_html|safe }}
+          </div>
+        </div>
+      </div>
+
+      {# Recent errors #}
+      {% if recent_errors %}
+      <div class="card" style="box-shadow:none; border:1px solid #e6e6e6;">
+        <div class="card-content" style="padding: 16px;">
+          <div style="font-weight:800; margin-bottom:10px; color:#b00020;">Последние ошибки ({{ failed }})</div>
+          <table style="font-size:13px; width:100%;">
+            <thead>
+              <tr style="border-bottom:1px solid #ddd;">
+                <th style="text-align:left; padding:4px 8px;">Email</th>
+                <th style="text-align:left; padding:4px 8px;">Ошибка</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for log in recent_errors %}
+              <tr style="border-bottom:1px solid #f0f0f0;">
+                <td style="padding:4px 8px;">{{ log.recipient_email }}</td>
+                <td style="padding:4px 8px; color:#b00020; word-break:break-all;">{{ log.error_message|truncatechars:200 }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+
+    </div>
+  </div>
+
+  <script>
+  function sendTest() {
+    var email = document.getElementById('test_email').value.trim();
+    var resultEl = document.getElementById('test_result');
+    var btn = document.getElementById('btn_send_test');
+    if (!email) { resultEl.textContent = 'Введите email'; resultEl.style.color = '#b00020'; return; }
+    btn.disabled = true;
+    resultEl.textContent = 'Отправка...';
+    resultEl.style.color = '#777';
+    var csrf = document.querySelector('[name=csrfmiddlewaretoken]').value;
+    fetch('{% url "admin_campaign_send_test" campaign.pk %}', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRFToken': csrf},
+      body: 'test_email=' + encodeURIComponent(email)
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      btn.disabled = false;
+      if (data.ok) {
+        resultEl.textContent = '✓ Отправлено!';
+        resultEl.style.color = '#4caf50';
+      } else {
+        resultEl.textContent = '✗ ' + (data.error || 'Ошибка');
+        resultEl.style.color = '#b00020';
+      }
+    })
+    .catch(function() {
+      btn.disabled = false;
+      resultEl.textContent = '✗ Ошибка сети';
+      resultEl.style.color = '#b00020';
+    });
+  }
+  </script>
+{% endblock %}

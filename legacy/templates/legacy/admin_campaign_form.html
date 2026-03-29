@@ -1,0 +1,68 @@
+{% extends 'legacy/base.html' %}
+
+{% block title %}Админка — Новая кампания{% endblock %}
+
+{% block content %}
+  <div class="row" style="margin-bottom:0;">
+    <div class="col s12">
+      <div style="margin: 10px 0 6px 0;">
+        <a href="{% url 'admin_campaigns' %}" style="color:#0090b6;">← Все кампании</a>
+      </div>
+
+      <h5 style="margin: 6px 0 14px 0; color:#7fb500; font-weight: 800;">Новая email-кампания</h5>
+
+      <div class="card" style="box-shadow:none; border:1px solid #e6e6e6;">
+        <div class="card-content" style="padding: 16px;">
+          <form method="post">
+            {% csrf_token %}
+
+            <div style="margin-bottom: 14px;">
+              <label style="color:#777; font-weight:700;">Название кампании *</label>
+              <input type="text" name="name" value="{{ form_data.name|default:'' }}" placeholder="Например: Весенняя рассылка 2026" style="margin-top:4px;">
+              {% if errors.name %}<div style="color:#b00020; font-size:12px;">{{ errors.name }}</div>{% endif %}
+            </div>
+
+            <div style="margin-bottom: 14px;">
+              <label style="color:#777; font-weight:700;">Тема письма *</label>
+              <input type="text" name="subject" value="{{ form_data.subject|default:'' }}" placeholder="Тема, которую увидит получатель" style="margin-top:4px;">
+              {% if errors.subject %}<div style="color:#b00020; font-size:12px;">{{ errors.subject }}</div>{% endif %}
+            </div>
+
+            <div style="margin-bottom: 14px;">
+              <label style="color:#777; font-weight:700;">Адрес отправителя</label>
+              <input type="email" name="from_email" value="{{ form_data.from_email|default:default_from }}" style="margin-top:4px;">
+              <div style="color:#999; font-size:11px;">По умолчанию: {{ default_from }}</div>
+            </div>
+
+            <div style="margin-bottom: 14px;">
+              <label style="color:#777; font-weight:700;">Аудитория</label>
+              <select name="audience" style="margin-top:4px; display:block;">
+                {% for val, label in audience_choices %}
+                  <option value="{{ val }}" {% if form_data.audience == val %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div style="margin-bottom: 14px;">
+              <label style="color:#777; font-weight:700;">HTML-тело письма *</label>
+              <textarea name="body_html" rows="16" style="margin-top:4px; font-family:monospace; font-size:13px; width:100%; border:1px solid #ccc; padding:10px;">{{ form_data.body_html|default:'' }}</textarea>
+              {% if errors.body_html %}<div style="color:#b00020; font-size:12px;">{{ errors.body_html }}</div>{% endif %}
+              <div style="color:#999; font-size:11px;">Поддерживается HTML. Можно вставить готовый шаблон письма.</div>
+            </div>
+
+            <div style="margin-bottom: 14px;">
+              <label style="color:#777; font-weight:700;">Текстовая версия (необязательно)</label>
+              <textarea name="body_text" rows="6" style="margin-top:4px; font-family:monospace; font-size:13px; width:100%; border:1px solid #ccc; padding:10px;">{{ form_data.body_text|default:'' }}</textarea>
+              <div style="color:#999; font-size:11px;">Для почтовых клиентов без HTML. Если пусто — будет использована тема письма.</div>
+            </div>
+
+            <button class="btn" type="submit" style="background:#7fb500; box-shadow:none; border-radius:0;">
+              Создать кампанию
+            </button>
+          </form>
+        </div>
+      </div>
+
+    </div>
+  </div>
+{% endblock %}

@@ -1,0 +1,56 @@
+{% extends 'legacy/base.html' %}
+
+{% block title %}Админка — Email-рассылки{% endblock %}
+
+{% block content %}
+  <div class="row" style="margin-bottom:0;">
+    <div class="col s12">
+      <div style="margin: 10px 0 6px 0;">
+        <a href="{% url 'admin_users' %}" style="color:#0090b6;">← Админка</a>
+      </div>
+
+      <h5 style="margin: 6px 0 14px 0; color:#7fb500; font-weight: 800;">Email-рассылки</h5>
+
+      <div style="margin-bottom: 16px;">
+        <a href="{% url 'admin_campaign_create' %}" class="btn" style="background:#7fb500; box-shadow:none; border-radius:0;">
+          + Создать кампанию
+        </a>
+      </div>
+
+      {% for c in campaigns %}
+        <div class="card" style="box-shadow:none; border:1px solid #e6e6e6;">
+          <div class="card-content" style="padding: 14px 16px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <div>
+                <a href="{% url 'admin_campaign_detail' c.pk %}" style="font-weight:800; color:#0090b6; font-size:15px;">
+                  {{ c.name }}
+                </a>
+                <div style="color:#777; font-size:12px; margin-top:2px;">
+                  {{ c.created_at|date:"d.m.Y H:i" }} · {{ c.get_audience_display }}
+                </div>
+              </div>
+              <div style="text-align:right;">
+                {% if c.status == 'draft' %}
+                  <span style="background:#ffc107; color:#333; padding:2px 10px; border-radius:10px; font-size:12px; font-weight:700;">Черновик</span>
+                {% elif c.status == 'sending' %}
+                  <span style="background:#2196f3; color:#fff; padding:2px 10px; border-radius:10px; font-size:12px; font-weight:700;">Отправляется</span>
+                {% elif c.status == 'paused' %}
+                  <span style="background:#ff9800; color:#fff; padding:2px 10px; border-radius:10px; font-size:12px; font-weight:700;">Пауза</span>
+                {% elif c.status == 'done' %}
+                  <span style="background:#4caf50; color:#fff; padding:2px 10px; border-radius:10px; font-size:12px; font-weight:700;">Завершена</span>
+                {% endif %}
+                <div style="color:#777; font-size:12px; margin-top:4px;">
+                  {{ c.sent_count }} / {{ c.total_recipients }}
+                  {% if c.failed_count %}<span style="color:#b00020;"> ({{ c.failed_count }} ошиб.)</span>{% endif %}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      {% empty %}
+        <div style="color:#777; padding:20px 0;">Нет кампаний. Создайте первую.</div>
+      {% endfor %}
+
+    </div>
+  </div>
+{% endblock %}
