@@ -25,9 +25,17 @@ from django.db import transaction
 from django.contrib.auth import authenticate, login as django_login
 from PIL import Image as PILImage
 
+from django.core.cache import cache
+
 from .models import (
     Advert, LegacyUser, Catalog, Categories, AdvertPhoto, News, Seller,
     Review, Message, EmailCampaign, EmailLog,
+)
+from .cache_utils import (
+    invalidate_advert_caches, get_generation,
+    MAP_ADVERTS_PREFIX, MAP_ADVERTS_TIMEOUT,
+    MAP_CATEGORIES_KEY, MAP_CATEGORIES_TIMEOUT,
+    HOME_PREFIX, HOME_TIMEOUT,
 )
 
 
@@ -155,6 +163,7 @@ def _update_advert_status(advert_id: int, status: int) -> None:
         fields['hidden_at'] = None
         fields['deleted_at'] = None
     Advert.objects.filter(pk=int(advert_id)).update(**fields)
+    invalidate_advert_caches()
 
 
 import hashlib
@@ -240,12 +249,18 @@ def news_detail(request: HttpRequest, news_id: int) -> HttpResponse:
 
 
 def home(request: HttpRequest) -> HttpResponse:
-    news_qs = News.objects.filter(is_active=True)
     news_page_num = request.GET.get('news_page', 1)
+    gen = get_generation('home')
+    cache_key = f'{HOME_PREFIX}{gen}:p{news_page_num}'
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return HttpResponse(cached, content_type='text/html; charset=utf-8')
+
+    news_qs = News.objects.filter(is_active=True)
     from django.core.paginator import Paginator
     news_paginator = Paginator(news_qs, 3)
     news_page = news_paginator.get_page(news_page_num)
-    return render(
+    resp = render(
         request,
         'legacy/home.html',
         {
@@ -254,6 +269,8 @@ def home(request: HttpRequest) -> HttpResponse:
             'news_page': news_page,
         },
     )
+    cache.set(cache_key, resp.content.decode('utf-8'), HOME_TIMEOUT)
+    return resp
 
 
 def advert_list(request: HttpRequest) -> HttpResponse:
@@ -582,6 +599,7 @@ def advert_create(request: HttpRequest) -> HttpResponse:
             )
             for i, photo_file in enumerate(cleaned['photos']):
                 AdvertPhoto.objects.create(advert=advert, image=photo_file, sort=i)
+            invalidate_advert_caches()
             return redirect(f"/adverts/{int(advert.id)}/")
 
     resp = render(
@@ -641,6 +659,7 @@ def advert_edit(request: HttpRequest, advert_id: int) -> HttpResponse:
             next_sort = AdvertPhoto.objects.filter(advert_id=int(advert_id)).count()
             for i, photo_file in enumerate(cleaned['photos']):
                 AdvertPhoto.objects.create(advert=advert, image=photo_file, sort=next_sort + i)
+            invalidate_advert_caches()
             return redirect(f"/adverts/{int(advert_id)}/")
     else:
         try:
@@ -942,6 +961,17 @@ def map_adverts_api(request: HttpRequest) -> JsonResponse:
     user = _get_current_legacy_user(request)
     is_admin = _is_admin_user(user)
 
+    # Cache for non-admin, non-search requests
+    _use_cache = not is_admin and not q
+    if _use_cache:
+        import hashlib as _hl
+        gen = get_generation('adverts')
+        raw = f'{gen}:{limit}:{type_raw}:{opt_raw}:{delivery_raw}:{catalog_raw}:{category_raw}:{sort_raw}:{bbox_raw}'
+        ck = MAP_ADVERTS_PREFIX + _hl.md5(raw.encode()).hexdigest()
+        cached = cache.get(ck)
+        if cached is not None:
+            return JsonResponse(cached, safe=False)
+
     _photos_prefetch = Prefetch(
         'photos',
         queryset=AdvertPhoto.objects.order_by('sort', 'id'),
@@ -1042,10 +1072,17 @@ def map_adverts_api(request: HttpRequest) -> JsonResponse:
             }
         )
 
-    return JsonResponse({'ok': True, 'adverts': adverts})
+    result = {'ok': True, 'adverts': adverts}
+    if _use_cache:
+        cache.set(ck, result, MAP_ADVERTS_TIMEOUT)
+    return JsonResponse(result)
 
 
 def map_categories_api(request: HttpRequest) -> JsonResponse:
+    cached = cache.get(MAP_CATEGORIES_KEY)
+    if cached is not None:
+        return JsonResponse(cached, safe=False)
+
     limit_raw = (request.GET.get('limit') or '500').strip()
     try:
         limit = int(limit_raw)
@@ -1053,7 +1090,9 @@ def map_categories_api(request: HttpRequest) -> JsonResponse:
         limit = 500
     limit = max(1, min(limit, 2000))
     qs = Categories.objects.filter(active=1).order_by('title')[:limit]
-    return JsonResponse({'ok': True, 'items': [{'id': int(c.id), 'title': c.title} for c in qs]})
+    result = {'ok': True, 'items': [{'id': int(c.id), 'title': c.title} for c in qs]}
+    cache.set(MAP_CATEGORIES_KEY, result, MAP_CATEGORIES_TIMEOUT)
+    return JsonResponse(result)
 
 
 @lru_cache(maxsize=256)

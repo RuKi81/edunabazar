@@ -4,11 +4,13 @@ SEO helpers: robots.txt, sitemap.xml, healthcheck, and context processors for me
 
 import json
 
+from django.core.cache import cache
 from django.db import connection
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.utils import timezone
 
 from .models import Advert, News, Seller
+from .cache_utils import SITEMAP_KEY, SITEMAP_TIMEOUT, TURBO_RSS_KEY, TURBO_RSS_TIMEOUT
 
 
 SITE_URL = 'https://edunabazar.ru'
@@ -52,6 +54,10 @@ def robots_txt(request: HttpRequest) -> HttpResponse:
 
 
 def sitemap_xml(request: HttpRequest) -> HttpResponse:
+    cached = cache.get(SITEMAP_KEY)
+    if cached is not None:
+        return HttpResponse(cached, content_type='application/xml; charset=utf-8')
+
     now = timezone.now().strftime('%Y-%m-%d')
 
     urls = []
@@ -85,6 +91,7 @@ def sitemap_xml(request: HttpRequest) -> HttpResponse:
     xml += '\n'.join(urls)
     xml += '\n</urlset>\n'
 
+    cache.set(SITEMAP_KEY, xml, SITEMAP_TIMEOUT)
     return HttpResponse(xml, content_type='application/xml; charset=utf-8')
 
 
@@ -93,6 +100,10 @@ def turbo_rss(request: HttpRequest) -> HttpResponse:
     Yandex Turbo Pages RSS feed.
     https://yandex.ru/dev/turbo/doc/rss/markup.html
     """
+    cached = cache.get(TURBO_RSS_KEY)
+    if cached is not None:
+        return HttpResponse(cached, content_type='application/rss+xml; charset=utf-8')
+
     from html import escape
 
     items = []
@@ -187,6 +198,7 @@ def turbo_rss(request: HttpRequest) -> HttpResponse:
     xml += '\n'.join(items)
     xml += '\n  </channel>\n</rss>\n'
 
+    cache.set(TURBO_RSS_KEY, xml, TURBO_RSS_TIMEOUT)
     return HttpResponse(xml, content_type='application/rss+xml; charset=utf-8')
 
 

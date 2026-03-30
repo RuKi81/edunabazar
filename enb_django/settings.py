@@ -172,6 +172,29 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+# Cache — Redis (falls back to local memory if REDIS_URL not set)
+_redis_url = os.getenv('REDIS_URL', '')
+if _redis_url:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django_redis.cache.RedisCache',
+            'LOCATION': _redis_url,
+            'OPTIONS': {
+                'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+            },
+            'TIMEOUT': 300,
+        }
+    }
+    SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
+    SESSION_CACHE_ALIAS = 'default'
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'TIMEOUT': 300,
+        }
+    }
+
 # Email — Yandex Cloud Postbox (or any SMTP)
 # For Yandex Cloud Postbox set these env vars:
 #   EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
