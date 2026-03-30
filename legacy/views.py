@@ -435,10 +435,24 @@ def advert_detail(request: HttpRequest, advert_id: int) -> HttpResponse:
             'is_admin_user': is_admin,
             'view_count': view_count,
             'is_favorited': is_favorited,
-            'extra_contacts': getattr(advert, 'extra_contacts', None) or [],
+            'extra_contacts': _normalize_extra_contacts(getattr(advert, 'extra_contacts', None) or []),
         },
     )
     return _no_store(resp)
+
+
+def _normalize_extra_contacts(contacts):
+    """Ensure website/social values have an absolute URL for href."""
+    out = []
+    for ec in contacts:
+        ec = dict(ec)
+        val = ec.get('value', '')
+        if ec.get('type') in ('website', 'social') and val and not val.startswith(('http://', 'https://')):
+            ec['href'] = 'https://' + val
+        else:
+            ec['href'] = val
+        out.append(ec)
+    return out
 
 
 _EXTRA_CONTACT_LABELS = {
