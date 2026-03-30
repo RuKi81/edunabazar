@@ -203,6 +203,7 @@
           <li class="navmenu-elem"><a href="#">цены</a></li>
 
           {% if legacy_user %}
+            <li class="navmenu-elem"><a href="{% url 'favorites_list' %}">избранное</a></li>
             <li class="navmenu-elem"><a href="{% url 'messages_inbox' %}">сообщения</a></li>
             {% if is_admin_user %}
               <li class="navmenu-elem"><a href="{% url 'admin_users' %}">админка</a></li>
@@ -238,6 +239,7 @@
       <li><a href="#"><i class="material-icons">trending_up</i>цены</a></li>
       <li><div class="divider"></div></li>
       {% if legacy_user %}
+        <li><a href="{% url 'favorites_list' %}"><i class="material-icons">favorite</i>избранное</a></li>
         <li><a href="{% url 'messages_inbox' %}"><i class="material-icons">mail</i>сообщения</a></li>
         {% if is_admin_user %}
           <li><a href="{% url 'admin_users' %}"><i class="material-icons">settings</i>админка</a></li>

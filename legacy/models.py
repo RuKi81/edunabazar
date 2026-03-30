@@ -292,6 +292,33 @@ class EmailLog(models.Model):
         verbose_name_plural = 'Email-логи'
 
 
+class Favorite(models.Model):
+    user = models.ForeignKey('LegacyUser', on_delete=models.CASCADE, related_name='favorites')
+    advert = models.ForeignKey(Advert, on_delete=models.CASCADE, related_name='favorites')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'favorite'
+        unique_together = [('user', 'advert')]
+        indexes = [
+            models.Index(fields=['user', '-created_at']),
+        ]
+
+
+class AdvertView(models.Model):
+    advert = models.ForeignKey(Advert, on_delete=models.CASCADE, related_name='views')
+    ip_address = models.GenericIPAddressField()
+    user = models.ForeignKey('LegacyUser', on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'advert_view'
+        indexes = [
+            models.Index(fields=['advert', '-created_at']),
+            models.Index(fields=['advert', 'ip_address']),
+        ]
+
+
 class LegacyUser(models.Model):
     type = models.PositiveSmallIntegerField(db_comment='0- ЇшчышЎю, 1-■ЁышЎю')
     username = models.CharField(unique=True, max_length=255, db_comment='╚ь  яюы№чютрЄхы ')

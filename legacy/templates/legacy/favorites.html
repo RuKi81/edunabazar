@@ -1,0 +1,117 @@
+{% extends 'legacy/base.html' %}
+
+{% load legacy_extras static %}
+
+{% block title %}Избранное — Еду на базар{% endblock %}
+
+{% block head %}
+<style>
+  .fav-item {
+    display: flex;
+    gap: 16px;
+    padding: 12px 0;
+    border-bottom: 1px solid #eee;
+    align-items: flex-start;
+  }
+  .fav-item__thumb {
+    width: 120px;
+    min-width: 120px;
+    height: 90px;
+    object-fit: cover;
+    border-radius: 6px;
+    background: #f5f5f5;
+    display: block;
+  }
+  .fav-item__info { flex: 1; }
+  .fav-item__title {
+    font-size: 16px;
+    font-weight: 600;
+    color: #333;
+    text-decoration: none;
+    display: block;
+    margin-bottom: 4px;
+  }
+  .fav-item__title:hover { color: #0090b6; }
+  .fav-item__meta { font-size: 13px; color: #888; }
+  .fav-item__price { font-weight: 600; color: #333; margin-top: 4px; }
+  .fav-item__remove {
+    background: none; border: none; cursor: pointer;
+    color: #e53935; font-size: 13px; padding: 4px 0;
+    display: inline-flex; align-items: center; gap: 4px;
+  }
+  .fav-item__remove:hover { text-decoration: underline; }
+  .fav-empty {
+    text-align: center; padding: 60px 20px; color: #999;
+  }
+  .fav-empty i { font-size: 48px; display: block; margin-bottom: 12px; }
+  @media (max-width: 600px) {
+    .fav-item { gap: 10px; }
+    .fav-item__thumb { width: 80px; min-width: 80px; height: 60px; }
+    .fav-item__title { font-size: 14px; }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+  <div class="col m12">
+    <h1 class="page-title">Избранное</h1>
+
+    {% if adverts %}
+      <div class="fav-list">
+        {% for a in adverts %}
+          <div class="fav-item" id="fav-{{ a.id }}">
+            <a href="{% url 'advert_detail' a.id %}">
+              {% if a.thumb_url %}
+                <img class="fav-item__thumb" src="{{ a.thumb_url }}" alt="{{ a.title }}">
+              {% else %}
+                <img class="fav-item__thumb" src="{% static 'legacy/images/no_photo_102_109.jpg' %}" alt="{{ a.title }}">
+              {% endif %}
+            </a>
+            <div class="fav-item__info">
+              <a class="fav-item__title" href="{% url 'advert_detail' a.id %}">{{ a.title }}</a>
+              <div class="fav-item__meta">
+                {% if a.category %}{{ a.category.title }}{% endif %}
+                {% if a.author %} · {{ a.author.name|default:a.author.username }}{% endif %}
+              </div>
+              {% if a.price %}
+                <div class="fav-item__price">{{ a.price|format_price }} ₽{% if a.price_unit %} / {{ a.price_unit }}{% endif %}</div>
+              {% endif %}
+              <button class="fav-item__remove" onclick="removeFav({{ a.id }})">
+                <i class="material-icons" style="font-size:16px;">delete</i> Удалить
+              </button>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="fav-empty">
+        <i class="material-icons">favorite_border</i>
+        <p>У вас пока нет избранных объявлений</p>
+        <a class="btn" href="{% url 'advert_list' %}" style="margin-top:12px;">Перейти к объявлениям</a>
+      </div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+function removeFav(advertId) {
+  fetch('/api/favorites/' + advertId + '/toggle/', {
+    method: 'POST',
+    headers: {'X-CSRFToken': '{{ csrf_token }}'},
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.ok && !data.is_favorited) {
+      var el = document.getElementById('fav-' + advertId);
+      if (el) el.remove();
+      // Check if list is now empty
+      var items = document.querySelectorAll('.fav-item');
+      if (items.length === 0) {
+        location.reload();
+      }
+    }
+  });
+}
+</script>
+{% endblock %}

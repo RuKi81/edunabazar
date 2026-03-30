@@ -195,6 +195,21 @@
         <h1 class="page-title col m12 s12 left-align">{{ advert.title }}</h1>
       </div>
 
+      <div style="display:flex; align-items:center; gap:16px; margin-bottom:12px; color:#888; font-size:14px;">
+        <span><i class="material-icons" style="font-size:16px;vertical-align:middle;">visibility</i> {{ view_count }} просмотр{{ view_count|pluralize:",,ов" }}</span>
+        {% if legacy_user %}
+          <button id="fav-btn" onclick="toggleFav({{ advert.id }})"
+                  style="background:none;border:none;cursor:pointer;padding:0;display:inline-flex;align-items:center;gap:4px;color:{% if is_favorited %}#e53935{% else %}#888{% endif %};font-size:14px;">
+            <i class="material-icons" style="font-size:20px;">{% if is_favorited %}favorite{% else %}favorite_border{% endif %}</i>
+            <span id="fav-text">{% if is_favorited %}В избранном{% else %}В избранное{% endif %}</span>
+          </button>
+        {% else %}
+          <a href="{% url 'legacy_login' %}?next={{ request.get_full_path|urlencode }}" style="color:#888;text-decoration:none;display:inline-flex;align-items:center;gap:4px;font-size:14px;">
+            <i class="material-icons" style="font-size:20px;">favorite_border</i> В избранное
+          </a>
+        {% endif %}
+      </div>
+
       <section class="adverts-detail">
         <div class="adverts-detail__params">
           <div class="adverts-detail__params-item">
@@ -291,6 +306,33 @@
       });
     })();
   </script>
+
+  {% if legacy_user %}
+  <script>
+  function toggleFav(advertId) {
+    fetch('/api/favorites/' + advertId + '/toggle/', {
+      method: 'POST',
+      headers: {'X-CSRFToken': '{{ csrf_token }}'},
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (!data.ok) return;
+      var btn = document.getElementById('fav-btn');
+      var txt = document.getElementById('fav-text');
+      var icon = btn.querySelector('i');
+      if (data.is_favorited) {
+        btn.style.color = '#e53935';
+        icon.textContent = 'favorite';
+        txt.textContent = 'В избранном';
+      } else {
+        btn.style.color = '#888';
+        icon.textContent = 'favorite_border';
+        txt.textContent = 'В избранное';
+      }
+    });
+  }
+  </script>
+  {% endif %}
 
   <!-- JSON-LD: BreadcrumbList -->
   <script type="application/ld+json">

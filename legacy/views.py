@@ -29,7 +29,7 @@ from django.core.cache import cache
 
 from .models import (
     Advert, LegacyUser, Catalog, Categories, AdvertPhoto, News, Seller,
-    Review, Message, EmailCampaign, EmailLog,
+    Review, Message, EmailCampaign, EmailLog, Favorite, AdvertView,
 )
 from .cache_utils import (
     invalidate_advert_caches, get_generation,
@@ -395,6 +395,24 @@ def advert_detail(request: HttpRequest, advert_id: int) -> HttpResponse:
     review_error = request.session.pop('review_error', '')
     review_success = request.session.pop('review_success', '')
 
+    # Track view (once per IP per day)
+    ip = request.META.get('HTTP_X_REAL_IP') or request.META.get('REMOTE_ADDR') or ''
+    today = timezone.now().date()
+    already_viewed = AdvertView.objects.filter(
+        advert_id=advert_id, ip_address=ip, created_at__date=today,
+    ).exists()
+    if not already_viewed:
+        AdvertView.objects.create(
+            advert_id=advert_id, ip_address=ip,
+            user=legacy_user if legacy_user else None,
+        )
+    view_count = AdvertView.objects.filter(advert_id=advert_id).count()
+
+    # Favorite status
+    is_favorited = False
+    if legacy_user:
+        is_favorited = Favorite.objects.filter(user=legacy_user, advert_id=advert_id).exists()
+
     resp = render(
         request,
         'legacy/advert_detail.html',
@@ -415,6 +433,8 @@ def advert_detail(request: HttpRequest, advert_id: int) -> HttpResponse:
             'review_type': Review.REVIEW_TYPE_ADVERT,
             'review_object_id': advert_id,
             'is_admin_user': is_admin,
+            'view_count': view_count,
+            'is_favorited': is_favorited,
         },
     )
     return _no_store(resp)
@@ -2476,3 +2496,47 @@ def admin_campaign_send_test(request: HttpRequest, campaign_id: int) -> JsonResp
         return JsonResponse({'ok': True})
     except Exception as e:
         return JsonResponse({'ok': False, 'error': str(e)[:500]})
+
+
+def favorite_toggle(request: HttpRequest, advert_id: int) -> JsonResponse:
+    """Toggle favorite status for an advert. Returns JSON."""
+    user = _get_current_legacy_user(request)
+    if not user:
+        return JsonResponse({'ok': False, 'error': 'auth'}, status=401)
+
+    advert = Advert.objects.filter(pk=advert_id).first()
+    if not advert:
+        return JsonResponse({'ok': False, 'error': 'not_found'}, status=404)
+
+    fav, created = Favorite.objects.get_or_create(user=user, advert_id=advert_id)
+    if not created:
+        fav.delete()
+
+    return JsonResponse({'ok': True, 'is_favorited': created})
+
+
+def favorites_list(request: HttpRequest) -> HttpResponse:
+    """Show user's favorited adverts."""
+    user = _get_current_legacy_user(request)
+    if not user:
+        return redirect(f"/login/?next={urllib.parse.quote(request.get_full_path())}")
+
+    _thumb_prefetch = Prefetch(
+        'photos',
+        queryset=AdvertPhoto.objects.order_by('sort', 'id'),
+        to_attr='prefetched_photos',
+    )
+    fav_ids = Favorite.objects.filter(user=user).order_by('-created_at').values_list('advert_id', flat=True)
+    adverts = list(
+        Advert.objects.filter(pk__in=fav_ids, status=10)
+        .select_related('category', 'author')
+        .prefetch_related(_thumb_prefetch)
+    )
+    # Preserve favorites order
+    order_map = {aid: i for i, aid in enumerate(fav_ids)}
+    adverts.sort(key=lambda a: order_map.get(a.id, 0))
+
+    return _no_store(render(request, 'legacy/favorites.html', {
+        'adverts': adverts,
+        'legacy_user': user,
+    }))

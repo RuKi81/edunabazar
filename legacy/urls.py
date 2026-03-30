@@ -42,6 +42,9 @@ urlpatterns = [
     path('messages/<int:user_id>/', views.messages_thread, name='messages_thread'),
     path('api/messages/unread/', views.messages_unread_count_api, name='messages_unread_count_api'),
 
+    path('favorites/', views.favorites_list, name='favorites_list'),
+    path('api/favorites/<int:advert_id>/toggle/', views.favorite_toggle, name='favorite_toggle'),
+
     path('reviews/add/', views.review_create, name='review_create'),
     path('reviews/<int:review_id>/delete/', views.review_delete, name='review_delete'),
     path('reviews/<int:review_id>/publish/', views.review_publish, name='review_publish'),
