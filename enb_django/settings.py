@@ -38,6 +38,8 @@ DEBUG = os.getenv('DJANGO_DEBUG', '1').strip().lower() in {'1', 'true', 'yes', '
 
 _allowed_raw = os.getenv('DJANGO_ALLOWED_HOSTS', '127.0.0.1 localhost')
 ALLOWED_HOSTS = [h.strip() for h in _allowed_raw.replace(',', ' ').split() if h.strip()]
+if 'localhost' not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append('localhost')
 
 _admins_raw = os.getenv('DJANGO_ADMIN_USERS', 'admin')
 ADMIN_USERNAMES = {u.strip() for u in _admins_raw.replace(',', ' ').split() if u.strip()}
