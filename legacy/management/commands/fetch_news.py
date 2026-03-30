@@ -67,12 +67,37 @@ def _url_hash(url: str) -> str:
     return hashlib.md5(url.encode()).hexdigest()
 
 
+# Default keywords when DB has none — agriculture, food industry, agro machinery
+_DEFAULT_INCLUDE_KW = [
+    'сельское хозяйство', 'сельскохозяйствен', 'сельхоз', 'агропром',
+    'агрокомплекс', 'агрохолдинг', 'агросектор', 'агробизнес', 'агротех',
+    'растениеводство', 'животноводство', 'птицеводство', 'свиноводство',
+    'молочн', 'зерно', 'зернов', 'пшениц', 'ячмень', 'кукуруз', 'подсолнечник',
+    'соя', 'рапс', 'сахарн', 'свёкл', 'свекл', 'картофел', 'овощ', 'фрукт',
+    'урожай', 'посев', 'уборк', 'жатв', 'удобрени', 'пестицид', 'гербицид',
+    'комбайн', 'трактор', 'сеялк', 'плуг', 'борон', 'опрыскивател',
+    'пищев', 'продовольств', 'мясопереработ', 'молокозавод', 'элеватор',
+    'мукомольн', 'хлебозавод', 'маслозавод', 'сахарный завод',
+    'минсельхоз', 'россельхоз', 'россельхознадзор',
+    'фермер', 'аграри', 'аграрн', 'посевн', 'кормов',
+    'теплиц', 'садоводств', 'виноградарств', 'рыбоводств', 'аквакультур',
+]
+_DEFAULT_EXCLUDE_KW = [
+    'криптовалют', 'биткоин', 'блокчейн', 'нфт', 'nft',
+    'футбол', 'хоккей', 'баскетбол', 'олимпи',
+    'шоу-бизнес', 'знаменитост', 'селебрити', 'сериал',
+    'гороскоп', 'астролог',
+]
+
+
 def _is_agro(title: str, summary: str, include_kw: list[str], exclude_kw: list[str]) -> bool:
     """Check if the article is about agriculture/food and not about excluded topics."""
     combined = (title + ' ' + summary).lower()
     if any(kw in combined for kw in exclude_kw):
         return False
-    return any(kw in combined for kw in include_kw)
+    # Require at least 1 include keyword hit
+    hits = sum(1 for kw in include_kw if kw in combined)
+    return hits >= 1
 
 
 def _fetch_rss_entries(max_age_days: int = 3) -> list[dict]:
@@ -88,8 +113,10 @@ def _fetch_rss_entries(max_age_days: int = 3) -> list[dict]:
         logger.warning('No active RSS sources in DB')
         return []
     if not include_kw:
-        logger.warning('No active include keywords in DB')
-        return []
+        logger.info('No active include keywords in DB, using defaults')
+        include_kw = _DEFAULT_INCLUDE_KW
+    if not exclude_kw:
+        exclude_kw = _DEFAULT_EXCLUDE_KW
 
     for feed_info in feed_sources:
         try:
@@ -236,6 +263,50 @@ def _rewrite_with_gigachat(title: str, summary: str) -> dict | None:
         return None
 
 
+def _check_relevance_gigachat(title: str, summary: str) -> bool:
+    """Ask GigaChat whether the article is relevant to agriculture/food/agro-machinery."""
+    token = _get_gigachat_token()
+    if not token:
+        return True  # Can't verify — let keyword filter decide
+
+    prompt = f"""Определи, относится ли следующая новость к тематике:
+- сельское хозяйство
+- пищевая промышленность
+- сельхозтехника и оборудование
+- агропромышленный комплекс
+- продовольствие и продукты питания
+
+Заголовок: {title}
+Текст: {summary[:500]}
+
+Ответь ОДНИМ словом: ДА или НЕТ."""
+
+    try:
+        resp = requests.post(
+            GIGACHAT_API_URL,
+            headers={
+                'Authorization': f'Bearer {token}',
+                'Content-Type': 'application/json',
+            },
+            json={
+                'model': GIGACHAT_MODEL,
+                'messages': [
+                    {'role': 'user', 'content': prompt},
+                ],
+                'temperature': 0.1,
+                'max_tokens': 10,
+            },
+            verify=False,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        answer = resp.json()['choices'][0]['message']['content'].strip().lower()
+        return answer.startswith('да')
+    except Exception as exc:
+        logger.warning('GigaChat relevance check error: %s', exc)
+        return True  # On error, trust keyword filter
+
+
 class Command(BaseCommand):
     help = 'Fetch and rewrite one agricultural news article per day'
 
@@ -280,6 +351,11 @@ class Command(BaseCommand):
 
             self.stdout.write(f"\n--- Source: {entry['source']} ---")
             self.stdout.write(f"Original: {entry['title']}")
+
+            # LLM relevance check
+            if not _check_relevance_gigachat(entry['title'], entry['summary']):
+                self.stdout.write(self.style.WARNING('  SKIP: not relevant (GigaChat)'))
+                continue
 
             # Try to rewrite via LLM
             rewritten = _rewrite_with_gigachat(entry['title'], entry['summary'])
