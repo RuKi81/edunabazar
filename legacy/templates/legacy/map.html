@@ -403,7 +403,7 @@
         }
         _appendChunk();
         if (_listAdverts.length > _listRendered) {
-          el.innerHTML += '<div style="padding:8px 10px;color:#999;font-size:11px;">Показано ' + _listRendered + ' из ' + _listAdverts.length + '</div>';
+          el.insertAdjacentHTML('beforeend', '<div style="padding:8px 10px;color:#999;font-size:11px;">Показано ' + _listRendered + ' из ' + _listAdverts.length + '</div>');
         }
       }
 
