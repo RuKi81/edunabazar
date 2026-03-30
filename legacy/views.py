@@ -299,8 +299,12 @@ def advert_list(request: HttpRequest) -> HttpResponse:
         qs = qs.exclude(status=0)
     else:
         qs = qs.filter(status=10)
+    search_query = None
     if q:
-        qs = qs.filter(Q(title__icontains=q) | Q(text__icontains=q))
+        from django.contrib.postgres.search import SearchQuery, SearchRank
+        search_query = SearchQuery(q, config='russian')
+        qs = qs.extra(where=["search_vector @@ plainto_tsquery('russian', %s)"], params=[q])
+        qs = qs.extra(select={'_rank': "ts_rank(search_vector, plainto_tsquery('russian', %s))"}, select_params=[q])
 
     type_raw = (request.GET.get('type') or '').strip().lower()
     if type_raw == 'offer':
@@ -331,7 +335,9 @@ def advert_list(request: HttpRequest) -> HttpResponse:
     if catalog_id is not None:
         qs = qs.filter(category__catalog_id=catalog_id)
 
-    if sort == 'price':
+    if q and sort == 'id':
+        qs = qs.order_by('-_rank', '-created_at', '-id')
+    elif sort == 'price':
         qs = qs.order_by('-price', '-created_at', '-id')
     elif sort == 'count':
         qs = qs.order_by('-priority', '-created_at', '-id')
@@ -993,7 +999,7 @@ def map_adverts_api(request: HttpRequest) -> JsonResponse:
         qs = qs.filter(status=10)
 
     if q:
-        qs = qs.filter(Q(title__icontains=q) | Q(text__icontains=q))
+        qs = qs.extra(where=["search_vector @@ plainto_tsquery('russian', %s)"], params=[q])
 
     if type_raw in {'offer', 'demand'}:
         qs = qs.filter(type=0 if type_raw == 'offer' else 1)
