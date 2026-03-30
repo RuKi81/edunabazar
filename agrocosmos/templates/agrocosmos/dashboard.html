@@ -4,118 +4,167 @@
 {% block title %}Агрокосмос — мониторинг с/х угодий{% endblock %}
 
 {% block head %}
-<link rel="stylesheet" href="{% static 'legacy/css/leaflet.css' %}" />
-<style>
-  #agro-map {
-    width: 100%;
-    height: calc(100vh - 160px);
-    min-height: 500px;
-    border: 1px solid rgba(0,0,0,.12);
-    border-radius: 4px;
-  }
-  .agro-sidebar {
-    background: #fff;
-    border-radius: 4px;
-    box-shadow: 0 1px 3px rgba(0,0,0,.12);
-    padding: 16px;
-    margin-bottom: 16px;
-  }
-  .agro-sidebar h2 {
-    font-size: 16px;
-    font-weight: 700;
-    margin: 0 0 12px 0;
-  }
-  .agro-sidebar select {
-    margin-bottom: 10px;
-  }
-  .agro-stat {
-    display: flex;
-    justify-content: space-between;
-    padding: 4px 0;
-    font-size: 13px;
-    border-bottom: 1px solid #f0f0f0;
-  }
-  .agro-stat:last-child { border-bottom: none; }
-  .agro-stat .val { font-weight: 700; }
-  .agro-legend {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-    margin-top: 10px;
-    font-size: 11px;
-  }
-  .agro-legend span {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-  }
-  .agro-legend i {
-    width: 12px;
-    height: 12px;
-    border-radius: 2px;
-    display: inline-block;
-  }
-  .ndvi-chart-wrap {
-    margin-top: 12px;
-    display: none;
-  }
-  .ndvi-chart-wrap h3 {
-    font-size: 14px;
-    font-weight: 700;
-    margin: 0 0 6px 0;
-  }
-  #ndvi-chart { max-height: 200px; }
-  @media (max-width: 992px) {
-    #agro-map { height: 60vh; min-height: 350px; }
-  }
-</style>
+  <link rel="stylesheet" href="{% static 'legacy/css/leaflet.css' %}" />
+  <style>
+    :root { --map-header-h: 64px; }
+    html, body { height: 100%; }
+    .content { background: transparent !important; }
+    .content > .container { width: 100% !important; min-width: 0 !important; padding: 0 !important; margin-top: 0 !important; }
+    .hide-on-med-and-down { position: absolute; top: 0; left: 0; right: 0; z-index: 2000; }
+    .hide-on-large-only { position: absolute; top: 0; left: 0; right: 0; z-index: 2000; }
+
+    .leaflet-control-zoom { display: none !important; }
+
+    .agro-ui { position: fixed; left: 0; right: 0; top: 0; bottom: 0; min-height: 650px; }
+    #agro-map { position: absolute; left: 0; right: 0; top: 0; bottom: 0; }
+
+    /* ── Left sidebar ── */
+    .agro-ui__left {
+      position: fixed;
+      left: 0; top: 0; bottom: 0;
+      width: 285px;
+      padding: calc(var(--map-header-h) + 12px) 14px 14px 14px;
+      background: rgba(255,255,255,0.62);
+      border-right: 1px solid rgba(0,0,0,0.08);
+      overflow-y: auto;
+      z-index: 1000;
+    }
+    .agro-ui__left h2 {
+      font-size: 15px; font-weight: 700; margin: 0 0 12px 0;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .agro-ui__select { width: 100%; height: 32px; margin-bottom: 10px; }
+    .agro-ui__btn { width: 100%; margin-bottom: 10px; background: #2e7d32; border-radius: 0; box-shadow: none; }
+    .agro-ui__btn:hover { background: #388e3c; }
+
+    .agro-stat { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; border-bottom: 1px solid rgba(0,0,0,.06); }
+    .agro-stat:last-child { border-bottom: none; }
+    .agro-stat .val { font-weight: 700; }
+
+    .agro-legend {
+      display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; font-size: 11px;
+    }
+    .agro-legend span { display: inline-flex; align-items: center; gap: 3px; }
+    .agro-legend i { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+
+    .ndvi-chart-wrap { margin-top: 12px; display: none; }
+    .ndvi-chart-wrap h3 { font-size: 13px; font-weight: 700; margin: 0 0 6px 0; }
+    #ndvi-chart { max-height: 180px; }
+
+    /* ── Right sidebar ── */
+    .agro-ui__right {
+      position: fixed;
+      right: 0; top: 0; bottom: 0;
+      width: 330px;
+      padding-top: calc(var(--map-header-h) + 8px);
+      background: rgba(255,255,255,0.96);
+      border-left: 1px solid rgba(0,0,0,0.08);
+      overflow-y: auto;
+      z-index: 1000;
+    }
+
+    .agro-card {
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(0,0,0,0.08);
+      cursor: pointer;
+      display: flex;
+      gap: 10px;
+    }
+    .agro-card:hover { background: #f5f9f5; }
+    .agro-card__icon {
+      width: 48px; height: 48px; flex: 0 0 auto;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 4px; font-size: 22px; color: #fff;
+    }
+    .agro-card__icon--arable { background: #8BC34A; }
+    .agro-card__icon--hayfield { background: #FFC107; }
+    .agro-card__icon--pasture { background: #FF9800; }
+    .agro-card__icon--perennial { background: #4CAF50; }
+    .agro-card__icon--other { background: #9E9E9E; }
+    .agro-card__icon--district { background: #1565C0; }
+    .agro-card__icon--region { background: #6A1B9A; }
+    .agro-card__body { flex: 1 1 auto; min-width: 0; }
+    .agro-card__title { font-size: 12px; font-weight: 600; color: #2e7d32; line-height: 1.3; }
+    .agro-card__meta { font-size: 11px; color: #666; margin-top: 3px; line-height: 1.3; }
+    .agro-card__ndvi { font-size: 11px; font-weight: 700; margin-top: 3px; }
+
+    .agro-list-header {
+      padding: 8px 12px;
+      font-size: 12px; font-weight: 700; color: #555;
+      background: rgba(0,0,0,0.03);
+      border-bottom: 1px solid rgba(0,0,0,0.08);
+    }
+
+    /* ── Mobile toggle ── */
+    .agro-ui__toggle {
+      display: none;
+      position: fixed;
+      top: calc(var(--map-header-h) + 8px);
+      left: 8px;
+      z-index: 1100;
+      background: #fff; border: none; border-radius: 4px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+      width: 40px; height: 40px;
+      cursor: pointer; align-items: center; justify-content: center;
+      font-size: 24px; color: #333;
+    }
+
+    @media (max-width: 992px) {
+      :root { --map-header-h: 56px; }
+      .agro-ui__left { width: 220px; }
+      .agro-ui__right { width: 0; display: none; }
+    }
+
+    @media (max-width: 600px) {
+      .agro-ui__toggle { display: flex; }
+      .agro-ui__left {
+        width: 260px;
+        transform: translateX(-110%);
+        transition: transform 0.25s ease;
+        box-shadow: 2px 0 8px rgba(0,0,0,0.15);
+        background: rgba(255,255,255,0.95);
+      }
+      .agro-ui__left.open { transform: translateX(0); }
+    }
+  </style>
 {% endblock %}
 
 {% block content %}
-<div class="col m12 height_1">&nbsp;</div>
+  <div class="agro-ui">
+    <div id="agro-map"></div>
 
-<div class="row" style="margin-bottom: 0;">
-  <!-- Sidebar -->
-  <div class="col s12 m4 l3">
-    <div class="agro-sidebar">
-      <h2><i class="material-icons" style="font-size:20px; vertical-align:middle;">satellite_alt</i> Агрокосмос</h2>
+    <button class="agro-ui__toggle" id="agro_toggle" aria-label="Фильтры"><i class="material-icons">tune</i></button>
 
-      <label style="font-size:12px; color:#777;">Регион</label>
-      <select id="agro-region" class="browser-default">
-        <option value="">— Выберите регион —</option>
+    <!-- ── Left sidebar: controls ── -->
+    <div class="agro-ui__left" id="agro_left">
+      <h2><i class="material-icons" style="font-size:20px;">satellite_alt</i> Агрокосмос</h2>
+
+      <select id="agro-region" class="browser-default agro-ui__select">
+        <option value="">— Регион —</option>
         {% for r in regions %}
           <option value="{{ r.id }}" data-code="{{ r.code }}" {% if region_id|stringformat:'s' == r.id|stringformat:'s' %}selected{% endif %}>{{ r.name }}</option>
         {% endfor %}
       </select>
 
-      <label style="font-size:12px; color:#777;">Район</label>
-      <select id="agro-district" class="browser-default">
+      <select id="agro-district" class="browser-default agro-ui__select">
         <option value="">— Все районы —</option>
         {% for d in districts %}
           <option value="{{ d.id }}" {% if district_id|stringformat:'s' == d.id|stringformat:'s' %}selected{% endif %}>{{ d.name }}</option>
         {% endfor %}
       </select>
 
-      <button id="agro-load" class="btn" style="width:100%; margin-top:6px; background:#2e7d32;">
-        <i class="material-icons left">layers</i>Загрузить угодья
+      <button id="agro-load" class="btn agro-ui__btn" type="button">
+        <i class="material-icons left">layers</i>Загрузить
       </button>
 
-      <div style="margin-top: 14px;">
-        <div style="font-size: 13px; font-weight: 700; margin-bottom: 6px;">Сводка</div>
-        <div class="agro-stat">
-          <span>Угодий</span>
-          <span class="val" id="stat-count">{{ summary.total_count|default:'—' }}</span>
-        </div>
-        <div class="agro-stat">
-          <span>Площадь</span>
-          <span class="val" id="stat-area">{% if summary.total_area %}{{ summary.total_area|floatformat:0 }} га{% else %}—{% endif %}</span>
-        </div>
-        {% for cs in crop_stats %}
-        <div class="agro-stat">
-          <span>{{ crop_type_labels|default_if_none:'' }}</span>
-          <span class="val">{{ cs.cnt }} ({{ cs.area|floatformat:0 }} га)</span>
-        </div>
-        {% endfor %}
+      <div style="margin-top: 10px;">
+        <div style="font-size: 12px; font-weight: 700; margin-bottom: 4px; color: #444;">Сводка</div>
+        <div class="agro-stat"><span>Угодий</span><span class="val" id="stat-count">—</span></div>
+        <div class="agro-stat"><span>Площадь</span><span class="val" id="stat-area">—</span></div>
+        <div class="agro-stat"><span>Пашня</span><span class="val" id="stat-arable">—</span></div>
+        <div class="agro-stat"><span>Сенокос</span><span class="val" id="stat-hayfield">—</span></div>
+        <div class="agro-stat"><span>Пастбище</span><span class="val" id="stat-pasture">—</span></div>
+        <div class="agro-stat"><span>Насаждения</span><span class="val" id="stat-perennial">—</span></div>
       </div>
 
       <div class="agro-legend">
@@ -132,207 +181,315 @@
         <canvas id="ndvi-chart"></canvas>
       </div>
     </div>
-  </div>
 
-  <!-- Map -->
-  <div class="col s12 m8 l9">
-    <div id="agro-map"></div>
+    <!-- ── Right sidebar: preview cards ── -->
+    <div class="agro-ui__right">
+      <div id="agro-list"></div>
+    </div>
   </div>
-</div>
 {% endblock %}
 
+{% block site_footer %}{% endblock %}
+
 {% block scripts %}
-<script src="{% static 'legacy/js/leaflet.js' %}"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-<script>
-(function () {
-  /* ── Map init ──────────────────────────────── */
-  var map = L.map('agro-map', { zoomControl: true }).setView([45.3, 34.1], 8);
+  <script src="{% static 'legacy/js/leaflet.js' %}"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script>
+  (function () {
+    /* ── Map init ──────────────────────────────── */
+    var map = L.map('agro-map', { scrollWheelZoom: true, zoomControl: false }).setView([45.3, 34.1], 8);
 
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-    maxZoom: 19,
-    attribution: '&copy; OSM &copy; CARTO'
-  }).addTo(map);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19, attribution: '&copy; OSM &copy; CARTO'
+    }).addTo(map);
 
-  var satelliteLayer = L.tileLayer(
-    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-    maxZoom: 19,
-    attribution: '&copy; Esri'
-  });
+    var satLayer = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      { maxZoom: 19, attribution: '&copy; Esri' }
+    );
 
-  L.control.layers({
-    'Карта': L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', { maxZoom: 19 }).addTo(map),
-    'Спутник': satelliteLayer,
-  }).addTo(map);
+    L.control.layers({
+      'Карта': L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', { maxZoom: 19 }).addTo(map),
+      'Спутник': satLayer,
+    }).addTo(map);
 
-  /* ── Layers ────────────────────────────────── */
-  var districtLayer = null;
-  var farmlandLayer = null;
+    /* ── State ──────────────────────────────────── */
+    var districtLayer = null;
+    var farmlandLayer = null;
+    var _features = [];
+    var _farmlandLayersById = {};
 
-  function ndviColor(val) {
-    if (val === undefined || val === null) return '#9E9E9E';
-    if (val >= 0.6) return '#4CAF50';
-    if (val >= 0.4) return '#8BC34A';
-    if (val >= 0.2) return '#FFC107';
-    if (val >= 0.1) return '#FF9800';
-    return '#F44336';
-  }
+    function esc(s) { return (s || '').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-  function clearLayer(layerVar) {
-    if (layerVar) map.removeLayer(layerVar);
-    return null;
-  }
-
-  /* ── Region change → load districts via page reload ── */
-  var regionSel = document.getElementById('agro-region');
-  var districtSel = document.getElementById('agro-district');
-
-  regionSel.addEventListener('change', function () {
-    var regionId = this.value;
-    // Load districts dynamically
-    districtSel.innerHTML = '<option value="">— Все районы —</option>';
-    if (!regionId) return;
-    fetch('/agrocosmos/api/districts/?region=' + regionId)
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        if (!data.features) return;
-        data.features.forEach(function (f) {
-          var opt = document.createElement('option');
-          opt.value = f.properties.id;
-          opt.textContent = f.properties.name;
-          districtSel.appendChild(opt);
-        });
-        // Show district boundaries
-        districtLayer = clearLayer(districtLayer);
-        districtLayer = L.geoJSON(data, {
-          style: { color: '#1565C0', weight: 2, fillOpacity: 0.05 },
-          onEachFeature: function (f, layer) {
-            layer.bindTooltip(f.properties.name, { sticky: true });
-          }
-        }).addTo(map);
-        if (districtLayer.getBounds().isValid()) {
-          map.fitBounds(districtLayer.getBounds(), { padding: [20, 20] });
-        }
-      });
-  });
-
-  /* ── Load farmlands ─────────────────────────── */
-  document.getElementById('agro-load').addEventListener('click', function () {
-    var regionId = regionSel.value;
-    var districtId = districtSel.value;
-    if (!regionId && !districtId) {
-      M.toast({ html: 'Выберите регион', classes: 'red' });
-      return;
+    function ndviColor(val) {
+      if (val === undefined || val === null) return '#9E9E9E';
+      if (val >= 0.6) return '#4CAF50';
+      if (val >= 0.4) return '#8BC34A';
+      if (val >= 0.2) return '#FFC107';
+      if (val >= 0.1) return '#FF9800';
+      return '#F44336';
     }
-    var url = '/agrocosmos/api/farmlands/?';
-    if (districtId) url += 'district=' + districtId;
-    else url += 'region=' + regionId;
 
-    this.textContent = 'Загрузка…';
-    var btn = this;
+    function clearLayer(lyr) { if (lyr) map.removeLayer(lyr); return null; }
 
-    fetch(url)
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        btn.innerHTML = '<i class="material-icons left">layers</i>Загрузить угодья';
-        farmlandLayer = clearLayer(farmlandLayer);
+    var cropIcons = {
+      arable: '🌾', hayfield: '🌿', pasture: '🐄', perennial: '🌳', other: '📐',
+    };
 
-        if (!data.features || !data.features.length) {
-          M.toast({ html: 'Угодья не найдены', classes: 'orange' });
-          return;
+    /* ── Right sidebar rendering ───────────────── */
+    var listEl = document.getElementById('agro-list');
+    var LIST_PAGE = 30;
+    var _listRendered = 0;
+
+    function renderList(features, mode) {
+      _features = features || [];
+      _listRendered = 0;
+      listEl.innerHTML = '';
+
+      if (!_features.length) {
+        listEl.innerHTML = '<div style="padding:12px; color:#777; font-size:13px;">Нет данных для отображения</div>';
+        return;
+      }
+
+      var header = mode === 'districts' ? 'Районы (' + _features.length + ')' : 'Угодья (' + _features.length + ')';
+      listEl.innerHTML = '<div class="agro-list-header">' + header + '</div>';
+      appendChunk();
+    }
+
+    function appendChunk() {
+      var end = Math.min(_listRendered + LIST_PAGE, _features.length);
+      if (_listRendered >= end) return;
+      var html = '';
+      for (var i = _listRendered; i < end; i++) {
+        var f = _features[i];
+        var p = f.properties;
+        if (p.crop_type) {
+          // Farmland card
+          var ndviTxt = (p.ndvi !== undefined) ? '<div class="agro-card__ndvi" style="color:' + ndviColor(p.ndvi) + ';">NDVI: ' + p.ndvi + ' (' + p.ndvi_date + ')</div>' : '';
+          html += '<div class="agro-card" data-type="farmland" data-id="' + p.id + '">'
+            + '<div class="agro-card__icon agro-card__icon--' + p.crop_type + '">' + (cropIcons[p.crop_type] || '📐') + '</div>'
+            + '<div class="agro-card__body">'
+            + '<div class="agro-card__title">' + esc(p.crop_type_label) + ' #' + p.id + '</div>'
+            + '<div class="agro-card__meta">' + esc(p.district) + ' · ' + p.area_ha + ' га</div>'
+            + (p.cadastral ? '<div class="agro-card__meta">Кадастр: ' + esc(p.cadastral) + '</div>' : '')
+            + ndviTxt
+            + '</div></div>';
+        } else {
+          // District card
+          html += '<div class="agro-card" data-type="district" data-id="' + p.id + '">'
+            + '<div class="agro-card__icon agro-card__icon--district"><i class="material-icons" style="font-size:22px;">map</i></div>'
+            + '<div class="agro-card__body">'
+            + '<div class="agro-card__title">' + esc(p.name) + '</div>'
+            + '<div class="agro-card__meta">Код: ' + esc(p.code || '—') + '</div>'
+            + '</div></div>';
         }
+      }
+      listEl.insertAdjacentHTML('beforeend', html);
+      _listRendered = end;
+    }
 
-        farmlandLayer = L.geoJSON(data, {
-          style: function (f) {
-            var ndvi = f.properties.ndvi;
-            return {
-              color: '#333',
-              weight: 1,
-              fillColor: ndviColor(ndvi),
-              fillOpacity: 0.55,
-            };
-          },
-          onEachFeature: function (f, layer) {
-            var p = f.properties;
-            var html = '<b>' + p.crop_type_label + '</b><br>'
-              + 'Площадь: ' + p.area_ha + ' га<br>'
-              + 'Район: ' + p.district;
-            if (p.cadastral) html += '<br>Кадастр: ' + p.cadastral;
-            if (p.ndvi !== undefined) html += '<br>NDVI: <b>' + p.ndvi + '</b> (' + p.ndvi_date + ')';
-            html += '<br><a href="#" class="ndvi-link" data-id="' + p.id + '">📈 График NDVI</a>';
-            layer.bindPopup(html);
-          }
-        }).addTo(map);
+    // Infinite scroll on right sidebar
+    document.querySelector('.agro-ui__right').addEventListener('scroll', function () {
+      if (_listRendered >= _features.length) return;
+      if (this.scrollTop + this.clientHeight >= this.scrollHeight - 200) {
+        appendChunk();
+      }
+    });
 
-        if (farmlandLayer.getBounds().isValid()) {
-          map.fitBounds(farmlandLayer.getBounds(), { padding: [20, 20] });
-        }
+    // Click on card → zoom to feature
+    listEl.addEventListener('click', function (e) {
+      var card = e.target.closest('.agro-card');
+      if (!card) return;
+      var type = card.getAttribute('data-type');
+      var id = parseInt(card.getAttribute('data-id') || '0', 10);
+      if (!id) return;
 
-        document.getElementById('stat-count').textContent = data.features.length;
-        var totalArea = 0;
-        data.features.forEach(function (f) { totalArea += (f.properties.area_ha || 0); });
-        document.getElementById('stat-area').textContent = Math.round(totalArea).toLocaleString('ru') + ' га';
-      })
-      .catch(function () {
-        btn.innerHTML = '<i class="material-icons left">layers</i>Загрузить угодья';
-        M.toast({ html: 'Ошибка загрузки', classes: 'red' });
-      });
-  });
-
-  /* ── NDVI chart ─────────────────────────────── */
-  var ndviChart = null;
-
-  document.addEventListener('click', function (e) {
-    if (!e.target.classList.contains('ndvi-link')) return;
-    e.preventDefault();
-    var fid = e.target.getAttribute('data-id');
-    if (!fid) return;
-
-    fetch('/agrocosmos/api/farmland/ndvi/?farmland=' + fid)
-      .then(function (r) { return r.json(); })
-      .then(function (resp) {
-        if (!resp.ok || !resp.data.length) {
-          M.toast({ html: 'Нет данных NDVI', classes: 'orange' });
-          return;
-        }
-        var panel = document.getElementById('ndvi-panel');
-        panel.style.display = 'block';
-        document.getElementById('ndvi-title').textContent = 'NDVI — угодье #' + fid;
-
-        var labels = resp.data.map(function (d) { return d.date; });
-        var means = resp.data.map(function (d) { return d.mean; });
-        var mins = resp.data.map(function (d) { return d.min; });
-        var maxs = resp.data.map(function (d) { return d.max; });
-
-        if (ndviChart) ndviChart.destroy();
-
-        ndviChart = new Chart(document.getElementById('ndvi-chart'), {
-          type: 'line',
-          data: {
-            labels: labels,
-            datasets: [
-              { label: 'Среднее', data: means, borderColor: '#4CAF50', borderWidth: 2, fill: false, pointRadius: 2 },
-              { label: 'Мин', data: mins, borderColor: '#FF9800', borderWidth: 1, borderDash: [4, 2], fill: false, pointRadius: 0 },
-              { label: 'Макс', data: maxs, borderColor: '#2196F3', borderWidth: 1, borderDash: [4, 2], fill: false, pointRadius: 0 },
-            ]
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: { legend: { display: true, labels: { boxWidth: 12, font: { size: 10 } } } },
-            scales: {
-              x: { ticks: { font: { size: 9 }, maxRotation: 45 } },
-              y: { min: -0.1, max: 1, ticks: { font: { size: 10 } } }
-            }
+      if (type === 'farmland' && _farmlandLayersById[id]) {
+        var lyr = _farmlandLayersById[id];
+        map.fitBounds(lyr.getBounds(), { maxZoom: 15, padding: [30, 30] });
+        lyr.openPopup();
+      } else if (type === 'district' && districtLayer) {
+        districtLayer.eachLayer(function (lyr) {
+          if (lyr.feature && lyr.feature.properties && lyr.feature.properties.id === id) {
+            map.fitBounds(lyr.getBounds(), { maxZoom: 12, padding: [30, 30] });
           }
         });
-      });
-  });
+      }
+    });
 
-  /* ── Auto-trigger if region pre-selected ─── */
-  if (regionSel.value) {
-    regionSel.dispatchEvent(new Event('change'));
-  }
-})();
-</script>
+    /* ── Region change → load districts ─────────── */
+    var regionSel = document.getElementById('agro-region');
+    var districtSel = document.getElementById('agro-district');
+
+    regionSel.addEventListener('change', function () {
+      var regionId = this.value;
+      districtSel.innerHTML = '<option value="">— Все районы —</option>';
+      farmlandLayer = clearLayer(farmlandLayer);
+      _farmlandLayersById = {};
+      if (!regionId) {
+        districtLayer = clearLayer(districtLayer);
+        renderList([], 'districts');
+        return;
+      }
+      fetch('/agrocosmos/api/districts/?region=' + regionId)
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (!data.features) return;
+          data.features.forEach(function (f) {
+            var opt = document.createElement('option');
+            opt.value = f.properties.id;
+            opt.textContent = f.properties.name;
+            districtSel.appendChild(opt);
+          });
+          districtLayer = clearLayer(districtLayer);
+          districtLayer = L.geoJSON(data, {
+            style: { color: '#1565C0', weight: 2, fillOpacity: 0.05 },
+            onEachFeature: function (f, layer) {
+              layer.bindTooltip(f.properties.name, { sticky: true });
+            }
+          }).addTo(map);
+          if (districtLayer.getBounds().isValid()) {
+            map.fitBounds(districtLayer.getBounds(), { padding: [20, 20] });
+          }
+          renderList(data.features, 'districts');
+        });
+    });
+
+    /* ── Load farmlands ────────────────────────── */
+    function updateStats(features) {
+      var total = features.length;
+      var area = 0;
+      var byType = { arable: 0, hayfield: 0, pasture: 0, perennial: 0 };
+      features.forEach(function (f) {
+        var p = f.properties;
+        area += (p.area_ha || 0);
+        if (byType[p.crop_type] !== undefined) byType[p.crop_type]++;
+      });
+      document.getElementById('stat-count').textContent = total.toLocaleString('ru');
+      document.getElementById('stat-area').textContent = Math.round(area).toLocaleString('ru') + ' га';
+      document.getElementById('stat-arable').textContent = byType.arable || '—';
+      document.getElementById('stat-hayfield').textContent = byType.hayfield || '—';
+      document.getElementById('stat-pasture').textContent = byType.pasture || '—';
+      document.getElementById('stat-perennial').textContent = byType.perennial || '—';
+    }
+
+    document.getElementById('agro-load').addEventListener('click', function () {
+      var regionId = regionSel.value;
+      var districtId = districtSel.value;
+      if (!regionId && !districtId) return;
+
+      var url = '/agrocosmos/api/farmlands/?';
+      if (districtId) url += 'district=' + districtId;
+      else url += 'region=' + regionId;
+
+      var btn = this;
+      btn.textContent = 'Загрузка…';
+
+      fetch(url)
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          btn.innerHTML = '<i class="material-icons left">layers</i>Загрузить';
+          farmlandLayer = clearLayer(farmlandLayer);
+          _farmlandLayersById = {};
+
+          if (!data.features || !data.features.length) {
+            renderList([], 'farmlands');
+            return;
+          }
+
+          farmlandLayer = L.geoJSON(data, {
+            style: function (f) {
+              return { color: '#333', weight: 1, fillColor: ndviColor(f.properties.ndvi), fillOpacity: 0.55 };
+            },
+            onEachFeature: function (f, layer) {
+              var p = f.properties;
+              var html = '<b>' + esc(p.crop_type_label) + '</b> #' + p.id + '<br>'
+                + 'Площадь: ' + p.area_ha + ' га<br>'
+                + 'Район: ' + esc(p.district);
+              if (p.cadastral) html += '<br>Кадастр: ' + esc(p.cadastral);
+              if (p.ndvi !== undefined) html += '<br>NDVI: <b>' + p.ndvi + '</b> (' + p.ndvi_date + ')';
+              html += '<br><a href="#" class="ndvi-link" data-id="' + p.id + '" style="color:#2e7d32;">📈 График NDVI</a>';
+              layer.bindPopup(html);
+              _farmlandLayersById[p.id] = layer;
+            }
+          }).addTo(map);
+
+          if (farmlandLayer.getBounds().isValid()) {
+            map.fitBounds(farmlandLayer.getBounds(), { padding: [20, 20] });
+          }
+
+          updateStats(data.features);
+          renderList(data.features, 'farmlands');
+        })
+        .catch(function () {
+          btn.innerHTML = '<i class="material-icons left">layers</i>Загрузить';
+        });
+    });
+
+    /* ── NDVI chart ──────────────────────────────── */
+    var ndviChart = null;
+
+    document.addEventListener('click', function (e) {
+      if (!e.target.classList.contains('ndvi-link')) return;
+      e.preventDefault();
+      var fid = e.target.getAttribute('data-id');
+      if (!fid) return;
+
+      fetch('/agrocosmos/api/farmland/ndvi/?farmland=' + fid)
+        .then(function (r) { return r.json(); })
+        .then(function (resp) {
+          if (!resp.ok || !resp.data.length) return;
+          var panel = document.getElementById('ndvi-panel');
+          panel.style.display = 'block';
+          document.getElementById('ndvi-title').textContent = 'NDVI — угодье #' + fid;
+
+          var labels = resp.data.map(function (d) { return d.date; });
+          var means = resp.data.map(function (d) { return d.mean; });
+          var mins = resp.data.map(function (d) { return d.min; });
+          var maxs = resp.data.map(function (d) { return d.max; });
+
+          if (ndviChart) ndviChart.destroy();
+          ndviChart = new Chart(document.getElementById('ndvi-chart'), {
+            type: 'line',
+            data: {
+              labels: labels,
+              datasets: [
+                { label: 'Среднее', data: means, borderColor: '#4CAF50', borderWidth: 2, fill: false, pointRadius: 2 },
+                { label: 'Мин', data: mins, borderColor: '#FF9800', borderWidth: 1, borderDash: [4, 2], fill: false, pointRadius: 0 },
+                { label: 'Макс', data: maxs, borderColor: '#2196F3', borderWidth: 1, borderDash: [4, 2], fill: false, pointRadius: 0 },
+              ]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: { legend: { display: true, labels: { boxWidth: 12, font: { size: 10 } } } },
+              scales: {
+                x: { ticks: { font: { size: 9 }, maxRotation: 45 } },
+                y: { min: -0.1, max: 1, ticks: { font: { size: 10 } } }
+              }
+            }
+          });
+        });
+    });
+
+    /* ── Auto-trigger if region pre-selected ─── */
+    if (regionSel.value) {
+      regionSel.dispatchEvent(new Event('change'));
+    }
+
+    /* ── Mobile sidebar toggle ────────────────── */
+    (function () {
+      var toggleBtn = document.getElementById('agro_toggle');
+      var leftPanel = document.getElementById('agro_left');
+      if (toggleBtn && leftPanel) {
+        toggleBtn.addEventListener('click', function () {
+          leftPanel.classList.toggle('open');
+        });
+        document.getElementById('agro-map').addEventListener('click', function () {
+          leftPanel.classList.remove('open');
+        });
+      }
+    })();
+  })();
+  </script>
 {% endblock %}
