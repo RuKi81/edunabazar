@@ -259,6 +259,7 @@
 
   </div>
 
+  {% block site_footer %}
   <footer style="background:#333; color:#ccc; padding:24px 0; margin-top:40px; font-size:14px;">
     <div class="container">
       <div class="row" style="margin-bottom:0;">
@@ -285,7 +286,7 @@
       </div>
     </div>
   </footer>
-  {% block footer %}{% endblock %}
+  {% endblock %}
 
   <script src="{% static 'legacy/js/jquery-3.7.1.min.js' %}"></script>
   <script type="text/javascript" src="{% static 'legacy/js/jquery.fancybox.pack.js' %}"></script>

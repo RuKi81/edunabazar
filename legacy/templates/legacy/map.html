@@ -16,8 +16,6 @@
     html, body { height: 100%; }
     .content { background: transparent !important; }
     .content > .container { width: 100% !important; min-width: 0 !important; padding: 0 !important; margin-top: 0 !important; }
-    .footer { display: none; }
-
     .hide-on-med-and-down { position: absolute; top: 0; left: 0; right: 0; z-index: 2000; }
     .hide-on-large-only { position: absolute; top: 0; left: 0; right: 0; z-index: 2000; }
 
@@ -197,6 +195,8 @@
     </div>
   </div>
 {% endblock %}
+
+{% block site_footer %}{% endblock %}
 
 {% block scripts %}
   <script src="{% static 'legacy/js/leaflet.js' %}"></script>
