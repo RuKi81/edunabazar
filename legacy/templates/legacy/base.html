@@ -201,6 +201,7 @@
           <li class="navmenu-elem"><a href="/adverts/">объявления</a></li>
           <li class="navmenu-elem"><a href="{% url 'seller_list' %}">предприятия</a></li>
           <li class="navmenu-elem"><a href="{% url 'prices_page' %}">цены</a></li>
+          <li class="navmenu-elem"><a href="{% url 'agrocosmos:dashboard' %}">агрокосмос</a></li>
 
           {% if legacy_user %}
             <li class="navmenu-elem"><a href="{% url 'favorites_list' %}">избранное</a></li>
@@ -237,6 +238,7 @@
       <li><a href="/adverts/"><i class="material-icons">list</i>объявления</a></li>
       <li><a href="{% url 'seller_list' %}"><i class="material-icons">business</i>предприятия</a></li>
       <li><a href="{% url 'prices_page' %}"><i class="material-icons">trending_up</i>цены</a></li>
+      <li><a href="{% url 'agrocosmos:dashboard' %}"><i class="material-icons">satellite_alt</i>агрокосмос</a></li>
       <li><div class="divider"></div></li>
       {% if legacy_user %}
         <li><a href="{% url 'favorites_list' %}"><i class="material-icons">favorite</i>избранное</a></li>

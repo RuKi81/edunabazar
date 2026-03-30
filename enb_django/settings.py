@@ -59,6 +59,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'drf_spectacular',
     'legacy',
+    'agrocosmos',
 ]
 
 REST_FRAMEWORK = {
