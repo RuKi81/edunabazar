@@ -68,8 +68,8 @@
           <label for="name" {% if form.name %}class="active"{% endif %}>Имя продавца / Компании</label>
         </div>
 
-        <input id="lat" name="lat" type="hidden" value="{{ form.lat|default:'' }}">
-        <input id="lon" name="lon" type="hidden" value="{{ form.lon|default:'' }}">
+        <input id="lat" name="lat" type="hidden" value="{% if form.lat %}{{ form.lat|stringformat:'f' }}{% endif %}">
+        <input id="lon" name="lon" type="hidden" value="{% if form.lon %}{{ form.lon|stringformat:'f' }}{% endif %}">
 
         <div class="row" style="margin-bottom: 6px;">
           <div class="input-field col s12 m8" style="margin-top:0;">

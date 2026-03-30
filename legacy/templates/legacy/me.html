@@ -68,8 +68,8 @@
                 <label for="address" class="active">Адрес</label>
               </div>
 
-              <input id="lat" name="lat" type="hidden" value="{% if legacy_user.location %}{{ legacy_user.location.y|floatformat:6 }}{% endif %}">
-              <input id="lon" name="lon" type="hidden" value="{% if legacy_user.location %}{{ legacy_user.location.x|floatformat:6 }}{% endif %}">
+              <input id="lat" name="lat" type="hidden" value="{% if legacy_user.location %}{{ legacy_user.location.y|stringformat:'.6f' }}{% endif %}">
+              <input id="lon" name="lon" type="hidden" value="{% if legacy_user.location %}{{ legacy_user.location.x|stringformat:'.6f' }}{% endif %}">
 
               <div class="col s12" style="margin-top: 6px;">
                 <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom: 6px;">

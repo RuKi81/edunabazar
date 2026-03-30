@@ -145,8 +145,8 @@
             </div>
           </div>
 
-          <input id="lat" name="lat" type="hidden" value="{{ form.lat|default:'' }}">
-          <input id="lon" name="lon" type="hidden" value="{{ form.lon|default:'' }}">
+          <input id="lat" name="lat" type="hidden" value="{% if form.lat %}{{ form.lat|stringformat:'f' }}{% endif %}">
+          <input id="lon" name="lon" type="hidden" value="{% if form.lon %}{{ form.lon|stringformat:'f' }}{% endif %}">
 
           <div class="col s12" style="margin-top: 6px;">
             <div class="row" style="margin-bottom: 6px;">
