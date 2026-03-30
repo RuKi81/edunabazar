@@ -72,6 +72,26 @@
             {% if errors.contacts %}<div style="color:#d32f2f; font-size: 12px; margin-top: 6px;">{{ errors.contacts }}</div>{% endif %}
           </div>
 
+          <div class="col s12" id="extra-contacts-block" style="margin-top: 8px;">
+            <div style="font-size: 13px; color: #555; margin-bottom: 6px;">Дополнительные контакты (необязательно)</div>
+            <div id="ec-rows">
+              {% for ec in form.extra_contacts %}
+              <div class="ec-row" style="display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap;">
+                <select name="ec_type" class="browser-default" style="flex:0 0 150px; height:36px;">
+                  <option value="email" {% if ec.type == 'email' %}selected{% endif %}>Email</option>
+                  <option value="telegram" {% if ec.type == 'telegram' %}selected{% endif %}>Telegram</option>
+                  <option value="max" {% if ec.type == 'max' %}selected{% endif %}>MAX</option>
+                  <option value="social" {% if ec.type == 'social' %}selected{% endif %}>Соцсеть</option>
+                  <option value="website" {% if ec.type == 'website' %}selected{% endif %}>Сайт</option>
+                </select>
+                <input name="ec_value" type="text" value="{{ ec.value }}" placeholder="Ссылка или имя" style="flex:1 1 180px; height:36px; margin:0; padding:0 8px; border:1px solid #ccc; border-radius:2px; box-sizing:border-box;">
+                <a href="#" class="ec-remove" style="color:#d32f2f; font-size:20px; text-decoration:none; line-height:1;" title="Удалить">&times;</a>
+              </div>
+              {% endfor %}
+            </div>
+            <a href="#" id="ec-add" style="font-size:13px; color:#0090b6;">+ Добавить контакт</a>
+          </div>
+
           {% if existing_photos %}
           <div class="col s12" style="margin-top: 12px;">
             <div style="font-size: 13px; color: #555; margin-bottom: 6px;">Текущие фотографии:</div>
@@ -469,6 +489,34 @@
             e.preventDefault();
             setStatus('Укажите адрес на карте (кликните на карте или воспользуйтесь поиском)');
             if (mapEl) mapEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        });
+      }
+
+      /* --- Extra contacts dynamic rows --- */
+      var ecRows = document.getElementById('ec-rows');
+      var ecAdd = document.getElementById('ec-add');
+      if (ecRows && ecAdd) {
+        var ecRowHtml = '<div class="ec-row" style="display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap;">'
+          + '<select name="ec_type" class="browser-default" style="flex:0 0 150px; height:36px;">'
+          + '<option value="email">Email</option>'
+          + '<option value="telegram">Telegram</option>'
+          + '<option value="max">MAX</option>'
+          + '<option value="social">Соцсеть</option>'
+          + '<option value="website">Сайт</option>'
+          + '</select>'
+          + '<input name="ec_value" type="text" placeholder="Ссылка или имя" style="flex:1 1 180px; height:36px; margin:0; padding:0 8px; border:1px solid #ccc; border-radius:2px; box-sizing:border-box;">'
+          + '<a href="#" class="ec-remove" style="color:#d32f2f; font-size:20px; text-decoration:none; line-height:1;" title="Удалить">&times;</a>'
+          + '</div>';
+        ecAdd.addEventListener('click', function (e) {
+          e.preventDefault();
+          ecRows.insertAdjacentHTML('beforeend', ecRowHtml);
+        });
+        ecRows.addEventListener('click', function (e) {
+          if (e.target.classList.contains('ec-remove')) {
+            e.preventDefault();
+            var row = e.target.closest('.ec-row');
+            if (row) row.remove();
           }
         });
       }

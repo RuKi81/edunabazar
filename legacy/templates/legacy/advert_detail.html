@@ -159,6 +159,16 @@
             <div class="ad-profile__item__value">{% firstof advert.contacts advert.author.phone advert.author.email advert.author.username %}</div>
           </div>
         </div>
+
+        {% for ec in extra_contacts %}
+        <div class="ad-profile__item" style="margin-top:6px;">
+          <i class="material-icons" style="font-size:20px;vertical-align:middle;">{% if ec.type == 'email' %}email{% elif ec.type == 'telegram' %}send{% elif ec.type == 'max' %}chat{% elif ec.type == 'social' %}group{% elif ec.type == 'website' %}language{% else %}link{% endif %}</i>
+          <div class="ad-profile__item__text" style="display:inline-block;vertical-align:middle;margin-left:8px;">
+            <div class="ad-profile__item__prop">{% if ec.type == 'email' %}Email{% elif ec.type == 'telegram' %}Telegram{% elif ec.type == 'max' %}MAX{% elif ec.type == 'social' %}Соцсеть{% elif ec.type == 'website' %}Сайт{% else %}Контакт{% endif %}:</div>
+            <div class="ad-profile__item__value">{% if ec.type == 'website' or ec.type == 'social' %}<a href="{{ ec.value }}" target="_blank" rel="noopener" style="color:#0090b6;">{{ ec.value }}</a>{% elif ec.type == 'email' %}<a href="mailto:{{ ec.value }}" style="color:#0090b6;">{{ ec.value }}</a>{% elif ec.type == 'telegram' %}<a href="https://t.me/{{ ec.value }}" target="_blank" rel="noopener" style="color:#0090b6;">{{ ec.value }}</a>{% else %}{{ ec.value }}{% endif %}</div>
+          </div>
+        </div>
+        {% endfor %}
       </div>
 
       {% if legacy_user and legacy_user.id != advert.author_id %}

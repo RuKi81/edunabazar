@@ -435,9 +435,19 @@ def advert_detail(request: HttpRequest, advert_id: int) -> HttpResponse:
             'is_admin_user': is_admin,
             'view_count': view_count,
             'is_favorited': is_favorited,
+            'extra_contacts': getattr(advert, 'extra_contacts', None) or [],
         },
     )
     return _no_store(resp)
+
+
+_EXTRA_CONTACT_LABELS = {
+    'email': ('Email', 'email'),
+    'telegram': ('Telegram', 'send'),
+    'max': ('MAX', 'chat'),
+    'social': ('Соцсеть', 'group'),
+    'website': ('Сайт', 'language'),
+}
 
 
 def _parse_advert_form(post, files):
@@ -528,6 +538,16 @@ def _parse_advert_form(post, files):
     if lat is None or lon is None:
         errors['lat'] = 'Укажите адрес на карте'
 
+    _CONTACT_TYPES = {'email', 'telegram', 'max', 'social', 'website'}
+    extra_contacts = []
+    ec_types = post.getlist('ec_type') if hasattr(post, 'getlist') else []
+    ec_values = post.getlist('ec_value') if hasattr(post, 'getlist') else []
+    for ct, cv in zip(ec_types, ec_values):
+        ct = (ct or '').strip()
+        cv = (cv or '').strip()
+        if ct in _CONTACT_TYPES and cv:
+            extra_contacts.append({'type': ct, 'value': cv})
+
     photos = files.getlist('photos') if files else []
     if len(photos) > 10:
         errors['photos'] = 'Максимум 10 фотографий'
@@ -569,6 +589,7 @@ def _parse_advert_form(post, files):
         'lat': lat,
         'lon': lon,
         'photos': photos,
+        'extra_contacts': extra_contacts,
     }
     form_data = {
         'type': advert_type,
@@ -587,6 +608,7 @@ def _parse_advert_form(post, files):
         'delivery': delivery,
         'lat': lat_raw,
         'lon': lon_raw,
+        'extra_contacts': extra_contacts,
     }
     return cleaned, errors, form_data
 
@@ -619,6 +641,7 @@ def advert_create(request: HttpRequest) -> HttpResponse:
                 min_volume=cleaned['min_volume'],
                 wholesale_volume=cleaned['wholesale_volume'],
                 volume=cleaned['volume'],
+                extra_contacts=cleaned['extra_contacts'] or [],
                 priority=0,
                 created_at=now,
                 updated_at=now,
@@ -677,6 +700,7 @@ def advert_edit(request: HttpRequest, advert_id: int) -> HttpResponse:
                 min_volume=cleaned['min_volume'],
                 wholesale_volume=cleaned['wholesale_volume'],
                 volume=cleaned['volume'],
+                extra_contacts=cleaned['extra_contacts'] or [],
                 updated_at=timezone.now(),
             )
             delete_ids_raw = request.POST.getlist('delete_photo')
@@ -723,6 +747,7 @@ def advert_edit(request: HttpRequest, advert_id: int) -> HttpResponse:
             'delivery': bool(advert.delivery),
             'lat': lat_val,
             'lon': lon_val,
+            'extra_contacts': getattr(advert, 'extra_contacts', None) or [],
         }
 
     resp = render(
@@ -1738,6 +1763,8 @@ def legacy_register_sms_confirm(request: HttpRequest) -> HttpResponse:
         if (now - created_at).total_seconds() > ttl_seconds:
             errors_all = 'Код устарел. Запросите новый'
 
+    reg_extra_contacts = []
+
     if request.method == 'POST' and not errors_all:
         code_entered = (request.POST.get('code') or '').strip()
         username = (request.POST.get('username') or '').strip()
@@ -1749,6 +1776,16 @@ def legacy_register_sms_confirm(request: HttpRequest) -> HttpResponse:
         lon_raw = (request.POST.get('lon') or '').strip().replace(',', '.')
 
         show_address = 1 if show_address_raw in {'1', 'true', 'yes', 'on'} else 0
+
+        _REG_CONTACT_TYPES = {'email', 'telegram', 'max', 'social', 'website'}
+        reg_extra_contacts = []
+        ec_types = request.POST.getlist('ec_type')
+        ec_values = request.POST.getlist('ec_value')
+        for ect, ecv in zip(ec_types, ec_values):
+            ect = (ect or '').strip()
+            ecv = (ecv or '').strip()
+            if ect in _REG_CONTACT_TYPES and ecv:
+                reg_extra_contacts.append({'type': ect, 'value': ecv})
 
         lat = None
         lon = None
@@ -1812,6 +1849,7 @@ def legacy_register_sms_confirm(request: HttpRequest) -> HttpResponse:
                 created_at=now,
                 updated_at=now,
                 contacts=contacts_val,
+                extra_contacts=reg_extra_contacts or [],
             )
             if lat is not None and lon is not None:
                 create_kwargs['location'] = Point(float(lon), float(lat), srid=4326)
@@ -1856,6 +1894,7 @@ def legacy_register_sms_confirm(request: HttpRequest) -> HttpResponse:
                 'lat': request.POST.get('lat', '') if request.method == 'POST' else '',
                 'lon': request.POST.get('lon', '') if request.method == 'POST' else '',
                 'show_address': (request.POST.get('show_address', '') if request.method == 'POST' else ''),
+                'extra_contacts': reg_extra_contacts,
             },
             'phone': phone,
             'dev_code': otp_code if settings.DEBUG else '',

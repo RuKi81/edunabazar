@@ -24,6 +24,7 @@ class Advert(models.Model):
     price_unit = models.CharField(max_length=10, blank=True, default='кг')
     hidden_at = models.DateTimeField(blank=True, null=True)
     deleted_at = models.DateTimeField(blank=True, null=True)
+    extra_contacts = models.JSONField(blank=True, null=True, default=list)
     status = models.SmallIntegerField(db_comment='╤ЄрЄєё юс· тыхэш ')
 
     def __str__(self):
@@ -335,6 +336,7 @@ class LegacyUser(models.Model):
     created_at = models.DateTimeField()
     updated_at = models.DateTimeField()
     location = models.PointField(srid=4326, blank=True, null=True)
+    extra_contacts = models.JSONField(blank=True, null=True, default=list)
     contacts = models.TextField(db_comment='╩юэЄръЄ√')
 
     def __str__(self):
