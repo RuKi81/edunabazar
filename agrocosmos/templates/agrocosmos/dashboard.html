@@ -153,8 +153,11 @@
         {% endfor %}
       </select>
 
-      <button id="agro-load" class="btn agro-ui__btn" type="button">
-        <i class="material-icons left">layers</i>Загрузить
+      <button id="agro-load-borders" class="btn agro-ui__btn" type="button">
+        <i class="material-icons left">border_style</i>Границы региона
+      </button>
+      <button id="agro-load-farmlands" class="btn agro-ui__btn" type="button">
+        <i class="material-icons left">layers</i>Границы угодий
       </button>
 
       <div style="margin-top: 10px;">
@@ -317,20 +320,15 @@
       }
     });
 
-    /* ── Region change → load districts ─────────── */
+    /* ── Selectors ──────────────────────────────── */
     var regionSel = document.getElementById('agro-region');
     var districtSel = document.getElementById('agro-district');
 
+    // When region changes — just update district dropdown, no auto-load
     regionSel.addEventListener('change', function () {
       var regionId = this.value;
       districtSel.innerHTML = '<option value="">— Все районы —</option>';
-      farmlandLayer = clearLayer(farmlandLayer);
-      _farmlandLayersById = {};
-      if (!regionId) {
-        districtLayer = clearLayer(districtLayer);
-        renderList([], 'districts');
-        return;
-      }
+      if (!regionId) return;
       fetch('/agrocosmos/api/districts/?region=' + regionId)
         .then(function (r) { return r.json(); })
         .then(function (data) {
@@ -341,21 +339,46 @@
             opt.textContent = f.properties.name;
             districtSel.appendChild(opt);
           });
+        });
+    });
+
+    /* ── Button 1: Границы региона ─────────────── */
+    document.getElementById('agro-load-borders').addEventListener('click', function () {
+      var regionId = regionSel.value;
+      if (!regionId) return;
+
+      var btn = this;
+      btn.textContent = 'Загрузка…';
+
+      fetch('/agrocosmos/api/districts/?region=' + regionId)
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          btn.innerHTML = '<i class="material-icons left">border_style</i>Границы региона';
           districtLayer = clearLayer(districtLayer);
+
+          if (!data.features || !data.features.length) {
+            renderList([], 'districts');
+            return;
+          }
+
           districtLayer = L.geoJSON(data, {
             style: { color: '#1565C0', weight: 2, fillOpacity: 0.05 },
             onEachFeature: function (f, layer) {
               layer.bindTooltip(f.properties.name, { sticky: true });
             }
           }).addTo(map);
+
           if (districtLayer.getBounds().isValid()) {
             map.fitBounds(districtLayer.getBounds(), { padding: [20, 20] });
           }
           renderList(data.features, 'districts');
+        })
+        .catch(function () {
+          btn.innerHTML = '<i class="material-icons left">border_style</i>Границы региона';
         });
     });
 
-    /* ── Load farmlands ────────────────────────── */
+    /* ── Button 2: Границы угодий ──────────────── */
     function updateStats(features) {
       var total = features.length;
       var area = 0;
@@ -373,7 +396,7 @@
       document.getElementById('stat-perennial').textContent = byType.perennial || '—';
     }
 
-    document.getElementById('agro-load').addEventListener('click', function () {
+    document.getElementById('agro-load-farmlands').addEventListener('click', function () {
       var regionId = regionSel.value;
       var districtId = districtSel.value;
       if (!regionId && !districtId) return;
@@ -388,7 +411,7 @@
       fetch(url)
         .then(function (r) { return r.json(); })
         .then(function (data) {
-          btn.innerHTML = '<i class="material-icons left">layers</i>Загрузить';
+          btn.innerHTML = '<i class="material-icons left">layers</i>Границы угодий';
           farmlandLayer = clearLayer(farmlandLayer);
           _farmlandLayersById = {};
 
@@ -422,7 +445,7 @@
           renderList(data.features, 'farmlands');
         })
         .catch(function () {
-          btn.innerHTML = '<i class="material-icons left">layers</i>Загрузить';
+          btn.innerHTML = '<i class="material-icons left">layers</i>Границы угодий';
         });
     });
 
