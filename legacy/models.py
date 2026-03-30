@@ -36,8 +36,12 @@ class Advert(models.Model):
             photo = AdvertPhoto.objects.filter(advert_id=self.id).order_by('sort', 'id').first()
         else:
             photo = prefetched[0] if prefetched else None
+        if not photo:
+            return ''
         try:
-            return photo.image.url if photo and photo.image else ''
+            if photo.thumbnail and hasattr(photo.thumbnail, 'url'):
+                return photo.thumbnail.url
+            return photo.image.url if photo.image else ''
         except Exception:
             return ''
 
@@ -50,8 +54,17 @@ class AdvertPhoto(models.Model):
     id = models.AutoField(primary_key=True)
     advert = models.ForeignKey(Advert, on_delete=models.CASCADE, related_name='photos')
     image = models.FileField(upload_to='adverts/photos/')
+    thumbnail = models.FileField(upload_to='adverts/thumbs/', blank=True, default='')
     sort = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    @property
+    def thumb_url(self):
+        if self.thumbnail and hasattr(self.thumbnail, 'url'):
+            return self.thumbnail.url
+        if self.image and hasattr(self.image, 'url'):
+            return self.image.url
+        return ''
 
     def __str__(self):
         return f'Photo #{self.id} for advert {self.advert_id}'

@@ -37,6 +37,7 @@ from .cache_utils import (
     MAP_CATEGORIES_KEY, MAP_CATEGORIES_TIMEOUT,
     HOME_PREFIX, HOME_TIMEOUT,
 )
+from .image_utils import process_uploaded_image
 
 
 logger = logging.getLogger(__name__)
@@ -598,7 +599,12 @@ def advert_create(request: HttpRequest) -> HttpResponse:
                 status=5,
             )
             for i, photo_file in enumerate(cleaned['photos']):
-                AdvertPhoto.objects.create(advert=advert, image=photo_file, sort=i)
+                compressed, thumb = process_uploaded_image(photo_file)
+                photo = AdvertPhoto(advert=advert, sort=i)
+                photo.image.save(compressed.name, compressed, save=False)
+                if thumb:
+                    photo.thumbnail.save(thumb.name, thumb, save=False)
+                photo.save()
             invalidate_advert_caches()
             return redirect(f"/adverts/{int(advert.id)}/")
 
@@ -658,7 +664,12 @@ def advert_edit(request: HttpRequest, advert_id: int) -> HttpResponse:
                 AdvertPhoto.objects.filter(advert_id=int(advert_id), id__in=delete_ids).delete()
             next_sort = AdvertPhoto.objects.filter(advert_id=int(advert_id)).count()
             for i, photo_file in enumerate(cleaned['photos']):
-                AdvertPhoto.objects.create(advert=advert, image=photo_file, sort=next_sort + i)
+                compressed, thumb = process_uploaded_image(photo_file)
+                photo = AdvertPhoto(advert=advert, sort=next_sort + i)
+                photo.image.save(compressed.name, compressed, save=False)
+                if thumb:
+                    photo.thumbnail.save(thumb.name, thumb, save=False)
+                photo.save()
             invalidate_advert_caches()
             return redirect(f"/adverts/{int(advert_id)}/")
     else:
@@ -1049,8 +1060,11 @@ def map_adverts_api(request: HttpRequest) -> JsonResponse:
         try:
             prefetched = getattr(a, 'prefetched_photos', None)
             photo = prefetched[0] if prefetched else None
-            if photo and getattr(photo, 'image', None):
-                thumb_url = getattr(photo.image, 'url', '') or ''
+            if photo:
+                if getattr(photo, 'thumbnail', None) and photo.thumbnail:
+                    thumb_url = getattr(photo.thumbnail, 'url', '') or ''
+                elif getattr(photo, 'image', None):
+                    thumb_url = getattr(photo.image, 'url', '') or ''
         except Exception:
             thumb_url = ''
 
