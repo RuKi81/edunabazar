@@ -527,9 +527,11 @@
                 map.fitBounds(bounds, { padding: [30, 30] });
               }
               if (focusAdvertId && markerById[focusAdvertId]) {
-                var m = markerById[focusAdvertId];
-                map.setView(m.getLatLng(), focusZoom || 12);
-                m.openPopup();
+                var fm = markerById[focusAdvertId];
+                cluster.zoomToShowLayer(fm, function () {
+                  map.setView(fm.getLatLng(), focusZoom || 16);
+                  setTimeout(function () { fm.openPopup(); }, 300);
+                });
               }
             }
           })

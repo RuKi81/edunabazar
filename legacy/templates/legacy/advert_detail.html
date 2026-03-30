@@ -182,6 +182,8 @@
           data-lat="{{ advert_lat }}"
           data-lon="{{ advert_lon }}"
           data-advert-id="{{ advert.id }}"
+          {% if advert.category and advert.category.catalog %}data-catalog="{{ advert.category.catalog.id }}"{% endif %}
+          {% if advert.category %}data-category="{{ advert.category.id }}"{% endif %}
           title="Открыть на карте"
         ></div>
       {% endif %}
@@ -300,8 +302,12 @@
       L.marker([lat, lon]).addTo(m);
 
       el.addEventListener('click', function () {
-        var url = '/map/?lat=' + encodeURIComponent(lat) + '&lon=' + encodeURIComponent(lon) + '&zoom=12';
+        var url = '/map/?lat=' + encodeURIComponent(lat) + '&lon=' + encodeURIComponent(lon) + '&zoom=16';
         if (advertId) url += '&advert_id=' + encodeURIComponent(advertId);
+        var catalog = el.getAttribute('data-catalog');
+        var category = el.getAttribute('data-category');
+        if (catalog) url += '&catalog=' + encodeURIComponent(catalog);
+        if (category) url += '&category=' + encodeURIComponent(category);
         window.location.href = url;
       });
     })();
