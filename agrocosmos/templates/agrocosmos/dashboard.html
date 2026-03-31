@@ -410,12 +410,9 @@
       console.log('[farmlands] fetch:', url);
 
       fetch(url)
-        .then(function (r) {
-          console.log('[farmlands] status:', r.status, 'total:', r.headers.get('X-Total-Count'));
-          return r.json();
-        })
+        .then(function (r) { return r.json(); })
         .then(function (data) {
-          console.log('[farmlands] features:', data.features ? data.features.length : 0);
+          console.log('[farmlands] features:', data.features ? data.features.length : 0, 'centroids:', data.centroids);
           btn.innerHTML = '<i class="material-icons left">layers</i>Границы угодий';
           farmlandLayer = clearLayer(farmlandLayer);
           _farmlandLayersById = {};
@@ -425,22 +422,52 @@
             return;
           }
 
-          farmlandLayer = L.geoJSON(data, {
-            style: function (f) {
-              return { color: '#333', weight: 1, fillColor: ndviColor(f.properties.ndvi), fillOpacity: 0.55 };
-            },
-            onEachFeature: function (f, layer) {
-              var p = f.properties;
-              var html = '<b>' + esc(p.crop_type_label) + '</b> #' + p.id + '<br>'
-                + 'Площадь: ' + p.area_ha + ' га<br>'
-                + 'Район: ' + esc(p.district);
-              if (p.cadastral) html += '<br>Кадастр: ' + esc(p.cadastral);
-              if (p.ndvi !== undefined) html += '<br>NDVI: <b>' + p.ndvi + '</b> (' + p.ndvi_date + ')';
-              html += '<br><a href="#" class="ndvi-link" data-id="' + p.id + '" style="color:#2e7d32;">📈 График NDVI</a>';
-              layer.bindPopup(html);
-              _farmlandLayersById[p.id] = layer;
-            }
-          }).addTo(map);
+          var cropColors = {
+            arable: '#4CAF50', hayfield: '#8BC34A', pasture: '#FFC107',
+            perennial: '#FF9800', other: '#9E9E9E'
+          };
+
+          if (data.centroids) {
+            // Region overview: render as circle markers (fast for 133K+)
+            farmlandLayer = L.geoJSON(data, {
+              pointToLayer: function (f, latlng) {
+                return L.circleMarker(latlng, {
+                  radius: 3,
+                  fillColor: cropColors[f.properties.crop_type] || '#9E9E9E',
+                  color: '#333',
+                  weight: 0.5,
+                  fillOpacity: 0.7
+                });
+              },
+              onEachFeature: function (f, layer) {
+                var p = f.properties;
+                var html = '<b>' + esc(p.crop_type_label) + '</b> #' + p.id + '<br>'
+                  + 'Площадь: ' + p.area_ha + ' га<br>'
+                  + 'Район: ' + esc(p.district);
+                if (p.cadastral) html += '<br>Кадастр: ' + esc(p.cadastral);
+                layer.bindPopup(html);
+                _farmlandLayersById[p.id] = layer;
+              }
+            }).addTo(map);
+          } else {
+            // District detail: full polygons
+            farmlandLayer = L.geoJSON(data, {
+              style: function (f) {
+                return { color: '#333', weight: 1, fillColor: ndviColor(f.properties.ndvi), fillOpacity: 0.55 };
+              },
+              onEachFeature: function (f, layer) {
+                var p = f.properties;
+                var html = '<b>' + esc(p.crop_type_label) + '</b> #' + p.id + '<br>'
+                  + 'Площадь: ' + p.area_ha + ' га<br>'
+                  + 'Район: ' + esc(p.district);
+                if (p.cadastral) html += '<br>Кадастр: ' + esc(p.cadastral);
+                if (p.ndvi !== undefined) html += '<br>NDVI: <b>' + p.ndvi + '</b> (' + p.ndvi_date + ')';
+                html += '<br><a href="#" class="ndvi-link" data-id="' + p.id + '" style="color:#2e7d32;">📈 График NDVI</a>';
+                layer.bindPopup(html);
+                _farmlandLayersById[p.id] = layer;
+              }
+            }).addTo(map);
+          }
 
           if (farmlandLayer.getBounds().isValid()) {
             map.fitBounds(farmlandLayer.getBounds(), { padding: [20, 20] });

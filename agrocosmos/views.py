@@ -117,13 +117,14 @@ def api_districts(request: HttpRequest) -> JsonResponse:
     return JsonResponse({'type': 'FeatureCollection', 'features': features})
 
 
-def api_farmlands(request: HttpRequest):
+def api_farmlands(request: HttpRequest) -> JsonResponse:
     """GeoJSON farmlands filtered by district (or region).
-    Uses ST_Simplify + reduced precision for large sets.
-    Streams response for 10k+ features.
+    Region-level → centroids (points) for 133K+ fast overview.
+    District-level → full polygons.
     """
     district_id = request.GET.get('district')
     region_id = request.GET.get('region')
+    use_centroids = False
 
     qs = Farmland.objects.all()
     if district_id:
@@ -134,39 +135,18 @@ def api_farmlands(request: HttpRequest):
     elif region_id:
         try:
             qs = qs.filter(district__region_id=int(region_id))
+            use_centroids = True
         except (TypeError, ValueError):
             pass
     else:
         return JsonResponse({'type': 'FeatureCollection', 'features': []})
 
-    total = qs.count()
-
-    # For large sets: simplify geometry + lower precision
-    if total > 10000:
-        precision = 4
-        # ST_Simplify tolerance ~0.001° ≈ 100m — good for overview
-        qs = qs.annotate(
-            geojson=RawSQL(
-                "ST_AsGeoJSON(ST_Simplify(geom, 0.001), %s)",
-                [precision],
-            )
-        )
-    elif total > 3000:
-        precision = 5
-        qs = qs.annotate(
-            geojson=RawSQL(
-                "ST_AsGeoJSON(ST_Simplify(geom, 0.0003), %s)",
-                [precision],
-            )
-        )
-    else:
-        qs = qs.annotate(geojson=AsGeoJSON('geom', precision=6))
-
     # Get latest NDVI mean per farmland for coloring
     latest_ndvi = {}
+    ndvi_qs = Farmland.objects.filter(pk__in=qs.values('pk'))
     ndvi_rows = (
         VegetationIndex.objects
-        .filter(farmland__in=qs, index_type='ndvi')
+        .filter(farmland__in=ndvi_qs, index_type='ndvi')
         .order_by('farmland_id', '-acquired_date')
         .distinct('farmland_id')
         .values('farmland_id', 'mean', 'acquired_date')
@@ -174,42 +154,49 @@ def api_farmlands(request: HttpRequest):
     for nr in ndvi_rows:
         latest_ndvi[nr['farmland_id']] = {'mean': nr['mean'], 'date': str(nr['acquired_date'])}
 
-    rows = qs.values(
-        'id', 'crop_type', 'area_ha', 'cadastral_number', 'district__name', 'geojson',
-    )
+    if use_centroids:
+        # Region overview: centroids as Points — lightweight
+        rows = qs.annotate(
+            geojson=AsGeoJSON(Centroid('geom'), precision=4)
+        ).values(
+            'id', 'crop_type', 'area_ha', 'cadastral_number', 'district__name', 'geojson',
+        )
+    else:
+        # District detail: full polygons
+        rows = qs.annotate(
+            geojson=AsGeoJSON('geom', precision=6)
+        ).values(
+            'id', 'crop_type', 'area_ha', 'cadastral_number', 'district__name', 'geojson',
+        )
 
     crop_labels = dict(Farmland.CropType.choices)
-
-    def _stream():
-        yield '{"type":"FeatureCollection","features":['
-        first = True
-        for r in rows.iterator(chunk_size=2000):
-            ndvi_info = latest_ndvi.get(r['id'])
-            props = {
-                'id': r['id'],
-                'crop_type': r['crop_type'],
-                'crop_type_label': crop_labels.get(r['crop_type'], r['crop_type']),
-                'area_ha': round(r['area_ha'], 2),
-                'cadastral': r['cadastral_number'],
-                'district': r['district__name'],
-            }
-            if ndvi_info:
-                props['ndvi'] = round(ndvi_info['mean'], 3)
-                props['ndvi_date'] = ndvi_info['date']
-            feat = json.dumps({
+    features = []
+    for r in rows:
+        ndvi_info = latest_ndvi.get(r['id'])
+        props = {
+            'id': r['id'],
+            'crop_type': r['crop_type'],
+            'crop_type_label': crop_labels.get(r['crop_type'], r['crop_type']),
+            'area_ha': round(r['area_ha'], 2),
+            'cadastral': r['cadastral_number'],
+            'district': r['district__name'],
+        }
+        if ndvi_info:
+            props['ndvi'] = round(ndvi_info['mean'], 3)
+            props['ndvi_date'] = ndvi_info['date']
+        geom = json.loads(r['geojson']) if r['geojson'] else None
+        if geom:
+            features.append({
                 'type': 'Feature',
                 'properties': props,
-                'geometry': json.loads(r['geojson']) if r['geojson'] else None,
-            }, ensure_ascii=False, separators=(',', ':'))
-            if not first:
-                yield ','
-            yield feat
-            first = False
-        yield ']}'
+                'geometry': geom,
+            })
 
-    resp = StreamingHttpResponse(_stream(), content_type='application/json')
-    resp['X-Total-Count'] = str(total)
-    return resp
+    return JsonResponse({
+        'type': 'FeatureCollection',
+        'features': features,
+        'centroids': use_centroids,
+    })
 
 
 def api_farmland_ndvi(request: HttpRequest) -> JsonResponse:
