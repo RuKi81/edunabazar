@@ -49,6 +49,8 @@ class Command(BaseCommand):
         parser.add_argument('--encoding', default='utf-8', help='File encoding')
         parser.add_argument('--clear', action='store_true', help='Delete existing farmlands for this region')
         parser.add_argument('--batch-size', type=int, default=500, help='Batch size for bulk_create')
+        parser.add_argument('--auto-create-districts', action='store_true',
+                            help='Auto-create District objects from unique values in district field')
 
     def handle(self, *args, **options):
         source = options['source']
@@ -61,8 +63,14 @@ class Command(BaseCommand):
             return
 
         districts = {d.name.lower(): d for d in District.objects.filter(region=region)}
-        if not districts:
-            self.stderr.write(f'No districts found for {region.name}. Import districts first.')
+
+        if options['auto_create_districts']:
+            self.stdout.write('Auto-create districts enabled — will create from data')
+        elif not districts:
+            self.stderr.write(
+                f'No districts found for {region.name}. '
+                f'Use --auto-create-districts or import districts first.'
+            )
             return
 
         if options['clear']:
@@ -87,7 +95,7 @@ class Command(BaseCommand):
         key = raw.strip().lower()
         return _CROP_TYPE_MAP.get(key, default)
 
-    def _resolve_district(self, raw, districts, fallback=None):
+    def _resolve_district(self, raw, districts, region=None, auto_create=False, fallback=None):
         if not raw:
             return fallback
         key = raw.strip().lower()
@@ -97,6 +105,17 @@ class Command(BaseCommand):
         for dname, d in districts.items():
             if dname.startswith(key) or key.startswith(dname):
                 return d
+        # Auto-create if enabled
+        if auto_create and region and raw.strip():
+            code = raw.strip().lower().replace(' ', '_')[:100]
+            d, created = District.objects.get_or_create(
+                region=region, name=raw.strip(),
+                defaults={'code': code, 'geom': region.geom},
+            )
+            districts[key] = d
+            if created:
+                self.stdout.write(f'  + District: {raw.strip()}')
+            return d
         return fallback
 
     def _import_geojson(self, path, region, districts, options):
@@ -122,7 +141,11 @@ class Command(BaseCommand):
 
         for feat in features:
             props = feat.get('properties', {})
-            district = self._resolve_district(str(props.get(dist_field, '')), districts, fallback_district)
+            district = self._resolve_district(
+                str(props.get(dist_field, '')), districts,
+                region=region, auto_create=options.get('auto_create_districts', False),
+                fallback=fallback_district,
+            )
             if not district:
                 skipped += 1
                 continue
@@ -205,7 +228,11 @@ class Command(BaseCommand):
             except Exception:
                 pass
 
-            district = self._resolve_district(dist_name, districts, fallback_district)
+            district = self._resolve_district(
+                dist_name, districts,
+                region=region, auto_create=options.get('auto_create_districts', False),
+                fallback=fallback_district,
+            )
             if not district:
                 skipped += 1
                 continue
@@ -245,12 +272,24 @@ class Command(BaseCommand):
                 except Exception:
                     area = 0
 
+            # Collect extra properties
+            extra_props = {}
+            for field_name in layer.fields:
+                if field_name not in (dist_field, crop_field, area_field, cad_field):
+                    try:
+                        val = feat.get(field_name)
+                        if val is not None:
+                            extra_props[field_name] = str(val)
+                    except Exception:
+                        pass
+
             batch.append(Farmland(
                 district=district,
                 crop_type=crop_type,
                 cadastral_number=cadastral,
                 area_ha=area,
                 geom=geom,
+                properties=extra_props if extra_props else None,
             ))
 
             if len(batch) >= batch_size:
