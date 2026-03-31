@@ -5,6 +5,7 @@ from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.contrib.gis.db.models.functions import AsGeoJSON
 from django.db.models import Count, Sum, Avg, Q
+from django.views.decorators.cache import cache_page
 
 from .models import Region, District, Farmland, VegetationIndex
 
@@ -189,6 +190,7 @@ def _tile_bbox(z, x, y):
     return xmin, ymin, xmax, ymax
 
 
+@cache_page(60 * 10)  # 10 min in Redis
 def api_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
     """Mapbox Vector Tile (MVT) endpoint for farmland polygons.
     Uses PostGIS ST_AsMVT for on-the-fly tile generation.
@@ -260,10 +262,10 @@ def api_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
         logger.error('MVT tile error z=%s x=%s y=%s: %s', z, x, y, e)
         tile_bytes = b''
 
-    return HttpResponse(
-        tile_bytes,
-        content_type='application/x-protobuf',
-    )
+    resp = HttpResponse(tile_bytes, content_type='application/x-protobuf')
+    resp['Cache-Control'] = 'public, max-age=600'
+    resp['Access-Control-Allow-Origin'] = '*'
+    return resp
 
 
 def api_farmland_ndvi(request: HttpRequest) -> JsonResponse:
