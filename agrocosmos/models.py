@@ -4,7 +4,7 @@ from django.contrib.gis.db import models
 class Region(models.Model):
     """Субъект РФ (например, Республика Крым)."""
     name = models.CharField(max_length=255, verbose_name='Название')
-    code = models.CharField(max_length=10, unique=True, verbose_name='Код субъекта')
+    code = models.CharField(max_length=100, unique=True, verbose_name='Код субъекта')
     geom = models.MultiPolygonField(srid=4326, verbose_name='Границы')
     created_at = models.DateTimeField(auto_now_add=True)
 
