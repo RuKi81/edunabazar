@@ -8,7 +8,10 @@ tzdata>=2025.1
 requests>=2.31.0
 feedparser>=6.0.0
 django-redis>=5.4.0
-numpy>=1.26.0,<2.0.0
+
+# numpy is NOT installed — server CPU lacks X86_V2 for numpy 2.x,
+# and numpy 1.x doesn't support Python 3.13.
+# Django GIS works fine without it; we use CDSE Statistical API.
 
 # GDAL / GEOS are installed at OS level.
 # On Ubuntu: apt-get install -y gdal-bin libgdal-dev libgeos-dev
