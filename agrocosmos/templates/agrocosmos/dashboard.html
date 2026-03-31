@@ -407,10 +407,15 @@
 
       var btn = this;
       btn.textContent = 'Загрузка…';
+      console.log('[farmlands] fetch:', url);
 
       fetch(url)
-        .then(function (r) { return r.json(); })
+        .then(function (r) {
+          console.log('[farmlands] status:', r.status, 'total:', r.headers.get('X-Total-Count'));
+          return r.json();
+        })
         .then(function (data) {
+          console.log('[farmlands] features:', data.features ? data.features.length : 0);
           btn.innerHTML = '<i class="material-icons left">layers</i>Границы угодий';
           farmlandLayer = clearLayer(farmlandLayer);
           _farmlandLayersById = {};
@@ -444,7 +449,8 @@
           updateStats(data.features);
           renderList(data.features, 'farmlands');
         })
-        .catch(function () {
+        .catch(function (err) {
+          console.error('[farmlands] ERROR:', err);
           btn.innerHTML = '<i class="material-icons left">layers</i>Границы угодий';
         });
     });
