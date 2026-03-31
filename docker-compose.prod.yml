@@ -1,20 +1,16 @@
-version: "3.9"
-
 services:
-  db:
-    image: postgis/postgis:16-3.4
+  redis:
+    image: redis:7-alpine
     restart: always
-    environment:
-      POSTGRES_DB: ${DB_NAME:-enb_DB}
-      POSTGRES_USER: ${DB_USER:-admin}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-admin}
+    expose:
+      - "6379"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - redis_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-admin} -d ${DB_NAME:-enb_DB}"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
-      timeout: 5s
-      retries: 5
+      timeout: 3s
+      retries: 3
 
   web:
     build: .
@@ -22,17 +18,24 @@ services:
     env_file:
       - .env
     environment:
-      DB_HOST: db
-      DB_PORT: "5432"
+      DB_HOST: ${DB_HOST:-10.0.0.11}
+      DB_PORT: ${DB_PORT:-5432}
       DJANGO_DEBUG: "0"
-    depends_on:
-      db:
-        condition: service_healthy
+      REDIS_URL: redis://redis:6379/0
     volumes:
       - ./media:/app/media
       - static_files:/app/staticfiles
     expose:
       - "8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
   nginx:
     image: nginx:1.27-alpine
@@ -57,5 +60,5 @@ services:
     entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
 
 volumes:
-  pgdata:
   static_files:
+  redis_data:
