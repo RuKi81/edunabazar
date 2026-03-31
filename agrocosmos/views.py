@@ -5,7 +5,6 @@ from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.contrib.gis.db.models.functions import AsGeoJSON
 from django.db.models import Count, Sum, Avg, Q
-from django.views.decorators.cache import cache_page
 
 from .models import Region, District, Farmland, VegetationIndex
 
@@ -171,12 +170,32 @@ def api_farmlands(request: HttpRequest) -> JsonResponse:
     return JsonResponse({'type': 'FeatureCollection', 'features': features})
 
 
-@cache_page(60 * 10)  # cache tiles 10 min
+def _tile_bbox(z, x, y):
+    """Convert tile coords to EPSG:3857 bounding box."""
+    import math
+    n = 2.0 ** z
+    lon_min = x / n * 360.0 - 180.0
+    lon_max = (x + 1) / n * 360.0 - 180.0
+    lat_max = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / n))))
+    lat_min = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (y + 1) / n))))
+    # Convert to EPSG:3857
+    def to_3857(lon, lat):
+        x = lon * 20037508.34 / 180.0
+        y = math.log(math.tan((90 + lat) * math.pi / 360.0)) / (math.pi / 180.0)
+        y = y * 20037508.34 / 180.0
+        return x, y
+    xmin, ymin = to_3857(lon_min, lat_min)
+    xmax, ymax = to_3857(lon_max, lat_max)
+    return xmin, ymin, xmax, ymax
+
+
 def api_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
     """Mapbox Vector Tile (MVT) endpoint for farmland polygons.
     Uses PostGIS ST_AsMVT for on-the-fly tile generation.
     """
-    # Optional region filter
+    import logging
+    logger = logging.getLogger('agrocosmos')
+
     region_id = request.GET.get('region')
     district_id = request.GET.get('district')
 
@@ -184,18 +203,26 @@ def api_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
     params = []
 
     if district_id:
-        where_clauses.append("f.district_id = %s")
-        params.append(int(district_id))
+        try:
+            where_clauses.append("f.district_id = %s")
+            params.append(int(district_id))
+        except (TypeError, ValueError):
+            pass
     elif region_id:
-        where_clauses.append("d.region_id = %s")
-        params.append(int(region_id))
+        try:
+            where_clauses.append("d.region_id = %s")
+            params.append(int(region_id))
+        except (TypeError, ValueError):
+            pass
 
     where_sql = ("AND " + " AND ".join(where_clauses)) if where_clauses else ""
 
+    xmin, ymin, xmax, ymax = _tile_bbox(z, x, y)
+
     sql = f"""
         WITH
-        tile_bounds AS (
-            SELECT ST_TileEnvelope(%s, %s, %s) AS envelope
+        bounds AS (
+            SELECT ST_MakeEnvelope(%s, %s, %s, %s, 3857) AS envelope
         ),
         tile_data AS (
             SELECT
@@ -205,16 +232,16 @@ def api_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
                 f.cadastral_number,
                 d.name AS district,
                 ST_AsMVTGeom(
-                    f.geom,
-                    tb.envelope,
+                    ST_Transform(f.geom, 3857),
+                    b.envelope,
                     4096,
                     256,
                     true
                 ) AS geom
             FROM agro_farmland f
             JOIN agro_district d ON d.id = f.district_id
-            CROSS JOIN tile_bounds tb
-            WHERE f.geom && tb.envelope
+            CROSS JOIN bounds b
+            WHERE f.geom && ST_Transform(b.envelope, 4326)
             {where_sql}
         )
         SELECT ST_AsMVT(tile_data, 'farmlands', 4096, 'geom')
@@ -222,10 +249,16 @@ def api_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
         WHERE geom IS NOT NULL;
     """
 
-    with connection.cursor() as cursor:
-        cursor.execute(sql, [z, x, y] + params)
-        row = cursor.fetchone()
-        tile_bytes = row[0] if row and row[0] else b''
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, [xmin, ymin, xmax, ymax] + params)
+            row = cursor.fetchone()
+            raw = row[0] if row and row[0] else b''
+            # psycopg may return memoryview
+            tile_bytes = bytes(raw) if not isinstance(raw, bytes) else raw
+    except Exception as e:
+        logger.error('MVT tile error z=%s x=%s y=%s: %s', z, x, y, e)
+        tile_bytes = b''
 
     return HttpResponse(
         tile_bytes,
