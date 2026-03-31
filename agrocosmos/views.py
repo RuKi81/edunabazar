@@ -73,8 +73,16 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 # ── GeoJSON API endpoints ──────────────────────────────────────────
 
 def api_regions(request: HttpRequest) -> JsonResponse:
-    """GeoJSON FeatureCollection of regions (simplified geometry)."""
-    rows = Region.objects.annotate(geojson=AsGeoJSON('geom', precision=5)).values('id', 'name', 'code', 'geojson')
+    """GeoJSON FeatureCollection of regions (simplified geometry).
+    Optional ?id=<pk> to return a single region."""
+    qs = Region.objects.all()
+    region_id = request.GET.get('id')
+    if region_id:
+        try:
+            qs = qs.filter(pk=int(region_id))
+        except (TypeError, ValueError):
+            pass
+    rows = qs.annotate(geojson=AsGeoJSON('geom', precision=5)).values('id', 'name', 'code', 'geojson')
     features = []
     for r in rows:
         features.append({

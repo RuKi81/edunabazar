@@ -350,7 +350,7 @@
       var btn = this;
       btn.textContent = 'Загрузка…';
 
-      fetch('/agrocosmos/api/districts/?region=' + regionId)
+      fetch('/agrocosmos/api/regions/?id=' + regionId)
         .then(function (r) { return r.json(); })
         .then(function (data) {
           btn.innerHTML = '<i class="material-icons left">border_style</i>Границы региона';
