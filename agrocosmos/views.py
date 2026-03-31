@@ -147,7 +147,7 @@ def api_farmlands(request: HttpRequest) -> JsonResponse:
 
     rows = qs.annotate(geojson=AsGeoJSON('geom', precision=6)).values(
         'id', 'crop_type', 'area_ha', 'cadastral_number', 'district__name', 'geojson',
-    )[:5000]
+    )
 
     crop_labels = dict(Farmland.CropType.choices)
     features = []
