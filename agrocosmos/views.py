@@ -3,6 +3,9 @@ import json
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.contrib.gis.db.models.functions import Centroid, AsGeoJSON
+from django.contrib.gis.db.models.functions import Transform
+from django.db.models.expressions import RawSQL
+from django.http import StreamingHttpResponse
 from django.db.models import Count, Sum, Avg, Q
 
 from .models import Region, District, Farmland, VegetationIndex
@@ -114,8 +117,11 @@ def api_districts(request: HttpRequest) -> JsonResponse:
     return JsonResponse({'type': 'FeatureCollection', 'features': features})
 
 
-def api_farmlands(request: HttpRequest) -> JsonResponse:
-    """GeoJSON farmlands filtered by district (or region). Limit to 5000."""
+def api_farmlands(request: HttpRequest):
+    """GeoJSON farmlands filtered by district (or region).
+    Uses ST_Simplify + reduced precision for large sets.
+    Streams response for 10k+ features.
+    """
     district_id = request.GET.get('district')
     region_id = request.GET.get('region')
 
@@ -133,6 +139,29 @@ def api_farmlands(request: HttpRequest) -> JsonResponse:
     else:
         return JsonResponse({'type': 'FeatureCollection', 'features': []})
 
+    total = qs.count()
+
+    # For large sets: simplify geometry + lower precision
+    if total > 10000:
+        precision = 4
+        # ST_Simplify tolerance ~0.001° ≈ 100m — good for overview
+        qs = qs.annotate(
+            geojson=RawSQL(
+                "ST_AsGeoJSON(ST_Simplify(geom, 0.001), %s)",
+                [precision],
+            )
+        )
+    elif total > 3000:
+        precision = 5
+        qs = qs.annotate(
+            geojson=RawSQL(
+                "ST_AsGeoJSON(ST_Simplify(geom, 0.0003), %s)",
+                [precision],
+            )
+        )
+    else:
+        qs = qs.annotate(geojson=AsGeoJSON('geom', precision=6))
+
     # Get latest NDVI mean per farmland for coloring
     latest_ndvi = {}
     ndvi_rows = (
@@ -145,31 +174,42 @@ def api_farmlands(request: HttpRequest) -> JsonResponse:
     for nr in ndvi_rows:
         latest_ndvi[nr['farmland_id']] = {'mean': nr['mean'], 'date': str(nr['acquired_date'])}
 
-    rows = qs.annotate(geojson=AsGeoJSON('geom', precision=6)).values(
+    rows = qs.values(
         'id', 'crop_type', 'area_ha', 'cadastral_number', 'district__name', 'geojson',
     )
 
     crop_labels = dict(Farmland.CropType.choices)
-    features = []
-    for r in rows:
-        ndvi_info = latest_ndvi.get(r['id'])
-        props = {
-            'id': r['id'],
-            'crop_type': r['crop_type'],
-            'crop_type_label': crop_labels.get(r['crop_type'], r['crop_type']),
-            'area_ha': round(r['area_ha'], 2),
-            'cadastral': r['cadastral_number'],
-            'district': r['district__name'],
-        }
-        if ndvi_info:
-            props['ndvi'] = round(ndvi_info['mean'], 3)
-            props['ndvi_date'] = ndvi_info['date']
-        features.append({
-            'type': 'Feature',
-            'properties': props,
-            'geometry': json.loads(r['geojson']),
-        })
-    return JsonResponse({'type': 'FeatureCollection', 'features': features})
+
+    def _stream():
+        yield '{"type":"FeatureCollection","features":['
+        first = True
+        for r in rows.iterator(chunk_size=2000):
+            ndvi_info = latest_ndvi.get(r['id'])
+            props = {
+                'id': r['id'],
+                'crop_type': r['crop_type'],
+                'crop_type_label': crop_labels.get(r['crop_type'], r['crop_type']),
+                'area_ha': round(r['area_ha'], 2),
+                'cadastral': r['cadastral_number'],
+                'district': r['district__name'],
+            }
+            if ndvi_info:
+                props['ndvi'] = round(ndvi_info['mean'], 3)
+                props['ndvi_date'] = ndvi_info['date']
+            feat = json.dumps({
+                'type': 'Feature',
+                'properties': props,
+                'geometry': json.loads(r['geojson']) if r['geojson'] else None,
+            }, ensure_ascii=False, separators=(',', ':'))
+            if not first:
+                yield ','
+            yield feat
+            first = False
+        yield ']}'
+
+    resp = StreamingHttpResponse(_stream(), content_type='application/json')
+    resp['X-Total-Count'] = str(total)
+    return resp
 
 
 def api_farmland_ndvi(request: HttpRequest) -> JsonResponse:
