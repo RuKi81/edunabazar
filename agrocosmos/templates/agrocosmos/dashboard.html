@@ -433,29 +433,43 @@
 
       var _highlightedId = null;
       mvtLayer.on('click', function (e) {
-        L.DomEvent.stop(e);
-        var p = (e.layer && e.layer.properties) || (e.propagatedFrom && e.propagatedFrom.properties) || {};
-        console.log('[MVT click]', p);
+        var src = e.layer || e.propagatedFrom || e.sourceTarget || {};
+        var p = src.properties || {};
+        console.log('[MVT click] layer:', src, 'props:', p);
         if (!p.id) return;
 
         // Highlight clicked polygon
         if (_highlightedId) {
-          mvtLayer.resetFeatureStyle(_highlightedId);
+          try { mvtLayer.resetFeatureStyle(_highlightedId); } catch(ex) {}
         }
         _highlightedId = p.id;
-        mvtLayer.setFeatureStyle(p.id, {
-          fill: true, fillColor: '#FFEB3B', fillOpacity: 0.8,
-          color: '#F57F17', weight: 2
-        });
+        try {
+          mvtLayer.setFeatureStyle(p.id, {
+            fill: true, fillColor: '#FFEB3B', fillOpacity: 0.8,
+            color: '#F57F17', weight: 2
+          });
+        } catch(ex) {}
 
         var cropLabel = {arable:'Пашня', hayfield:'Сенокос', pasture:'Пастбище', perennial:'Многолетнее насаждение', other:'Прочее'};
         var area = (p.area_ha != null) ? Number(p.area_ha).toFixed(2) : '?';
-        var html = '<b>' + esc(cropLabel[p.crop_type] || p.crop_type) + '</b> #' + p.id + '<br>'
+        var popupHtml = '<b>' + esc(cropLabel[p.crop_type] || p.crop_type) + '</b> #' + p.id + '<br>'
           + 'Площадь: ' + area + ' га<br>'
           + 'Район: ' + esc(p.district || '');
-        if (p.cadastral_number) html += '<br>Кадастр: ' + esc(p.cadastral_number);
-        html += '<br><a href="#" class="ndvi-link" data-id="' + p.id + '" style="color:#2e7d32;">📈 График NDVI</a>';
-        L.popup().setLatLng(e.latlng).setContent(html).openOn(map);
+        if (p.cadastral_number) popupHtml += '<br>Кадастр: ' + esc(p.cadastral_number);
+        popupHtml += '<br><a href="#" class="ndvi-link" data-id="' + p.id + '" style="color:#2e7d32;">📈 График NDVI</a>';
+        L.popup().setLatLng(e.latlng).setContent(popupHtml).openOn(map);
+
+        // Show card in right sidebar
+        var icon = cropIcons[p.crop_type] || '📐';
+        var label = cropLabel[p.crop_type] || p.crop_type;
+        listEl.innerHTML = '<div class="agro-list-header">Выбранное угодье</div>'
+          + '<div class="agro-card" data-type="farmland" data-id="' + p.id + '">'
+          + '<div class="agro-card__icon agro-card__icon--' + (p.crop_type || 'other') + '">' + icon + '</div>'
+          + '<div class="agro-card__body">'
+          + '<div class="agro-card__title">' + esc(label) + ' #' + p.id + '</div>'
+          + '<div class="agro-card__meta">' + esc(p.district || '') + ' · ' + area + ' га</div>'
+          + (p.cadastral_number ? '<div class="agro-card__meta">Кадастр: ' + esc(p.cadastral_number) + '</div>' : '')
+          + '</div></div>';
       });
 
       mvtLayer.addTo(map);
