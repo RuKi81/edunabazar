@@ -1,12 +1,11 @@
 import json
 
+from django.db import connection
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
-from django.contrib.gis.db.models.functions import Centroid, AsGeoJSON
-from django.contrib.gis.db.models.functions import Transform
-from django.db.models.expressions import RawSQL
-from django.http import StreamingHttpResponse
+from django.contrib.gis.db.models.functions import AsGeoJSON
 from django.db.models import Count, Sum, Avg, Q
+from django.views.decorators.cache import cache_page
 
 from .models import Region, District, Farmland, VegetationIndex
 
@@ -118,35 +117,21 @@ def api_districts(request: HttpRequest) -> JsonResponse:
 
 
 def api_farmlands(request: HttpRequest) -> JsonResponse:
-    """GeoJSON farmlands filtered by district (or region).
-    Region-level → centroids (points) for 133K+ fast overview.
-    District-level → full polygons.
-    """
+    """GeoJSON farmlands for a single district. For region overview use MVT tiles."""
     district_id = request.GET.get('district')
-    region_id = request.GET.get('region')
-    use_centroids = False
+    if not district_id:
+        return JsonResponse({'type': 'FeatureCollection', 'features': []})
 
-    qs = Farmland.objects.all()
-    if district_id:
-        try:
-            qs = qs.filter(district_id=int(district_id))
-        except (TypeError, ValueError):
-            pass
-    elif region_id:
-        try:
-            qs = qs.filter(district__region_id=int(region_id))
-            use_centroids = True
-        except (TypeError, ValueError):
-            pass
-    else:
+    try:
+        qs = Farmland.objects.filter(district_id=int(district_id))
+    except (TypeError, ValueError):
         return JsonResponse({'type': 'FeatureCollection', 'features': []})
 
     # Get latest NDVI mean per farmland for coloring
     latest_ndvi = {}
-    ndvi_qs = Farmland.objects.filter(pk__in=qs.values('pk'))
     ndvi_rows = (
         VegetationIndex.objects
-        .filter(farmland__in=ndvi_qs, index_type='ndvi')
+        .filter(farmland__in=qs, index_type='ndvi')
         .order_by('farmland_id', '-acquired_date')
         .distinct('farmland_id')
         .values('farmland_id', 'mean', 'acquired_date')
@@ -154,20 +139,11 @@ def api_farmlands(request: HttpRequest) -> JsonResponse:
     for nr in ndvi_rows:
         latest_ndvi[nr['farmland_id']] = {'mean': nr['mean'], 'date': str(nr['acquired_date'])}
 
-    if use_centroids:
-        # Region overview: centroids as Points — lightweight
-        rows = qs.annotate(
-            geojson=AsGeoJSON(Centroid('geom'), precision=4)
-        ).values(
-            'id', 'crop_type', 'area_ha', 'cadastral_number', 'district__name', 'geojson',
-        )
-    else:
-        # District detail: full polygons
-        rows = qs.annotate(
-            geojson=AsGeoJSON('geom', precision=6)
-        ).values(
-            'id', 'crop_type', 'area_ha', 'cadastral_number', 'district__name', 'geojson',
-        )
+    rows = qs.annotate(
+        geojson=AsGeoJSON('geom', precision=6)
+    ).values(
+        'id', 'crop_type', 'area_ha', 'cadastral_number', 'district__name', 'geojson',
+    )
 
     crop_labels = dict(Farmland.CropType.choices)
     features = []
@@ -192,11 +168,69 @@ def api_farmlands(request: HttpRequest) -> JsonResponse:
                 'geometry': geom,
             })
 
-    return JsonResponse({
-        'type': 'FeatureCollection',
-        'features': features,
-        'centroids': use_centroids,
-    })
+    return JsonResponse({'type': 'FeatureCollection', 'features': features})
+
+
+@cache_page(60 * 10)  # cache tiles 10 min
+def api_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
+    """Mapbox Vector Tile (MVT) endpoint for farmland polygons.
+    Uses PostGIS ST_AsMVT for on-the-fly tile generation.
+    """
+    # Optional region filter
+    region_id = request.GET.get('region')
+    district_id = request.GET.get('district')
+
+    where_clauses = []
+    params = []
+
+    if district_id:
+        where_clauses.append("f.district_id = %s")
+        params.append(int(district_id))
+    elif region_id:
+        where_clauses.append("d.region_id = %s")
+        params.append(int(region_id))
+
+    where_sql = ("AND " + " AND ".join(where_clauses)) if where_clauses else ""
+
+    sql = f"""
+        WITH
+        tile_bounds AS (
+            SELECT ST_TileEnvelope(%s, %s, %s) AS envelope
+        ),
+        tile_data AS (
+            SELECT
+                f.id,
+                f.crop_type,
+                f.area_ha,
+                f.cadastral_number,
+                d.name AS district,
+                ST_AsMVTGeom(
+                    f.geom,
+                    tb.envelope,
+                    4096,
+                    256,
+                    true
+                ) AS geom
+            FROM agro_farmland f
+            JOIN agro_district d ON d.id = f.district_id
+            CROSS JOIN tile_bounds tb
+            WHERE f.geom && tb.envelope
+            {where_sql}
+        )
+        SELECT ST_AsMVT(tile_data, 'farmlands', 4096, 'geom')
+        FROM tile_data
+        WHERE geom IS NOT NULL;
+    """
+
+    with connection.cursor() as cursor:
+        cursor.execute(sql, [z, x, y] + params)
+        row = cursor.fetchone()
+        tile_bytes = row[0] if row and row[0] else b''
+
+    return HttpResponse(
+        tile_bytes,
+        content_type='application/x-protobuf',
+    )
 
 
 def api_farmland_ndvi(request: HttpRequest) -> JsonResponse:

@@ -196,6 +196,7 @@
 
 {% block scripts %}
   <script src="{% static 'legacy/js/leaflet.js' %}"></script>
+  <script src="https://unpkg.com/leaflet.vectorgrid@1.3.0/dist/Leaflet.VectorGrid.bundled.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script>
   (function () {
@@ -219,6 +220,7 @@
     /* ── State ──────────────────────────────────── */
     var districtLayer = null;
     var farmlandLayer = null;
+    var mvtLayer = null;
     var _features = [];
     var _farmlandLayersById = {};
 
@@ -396,23 +398,76 @@
       document.getElementById('stat-perennial').textContent = byType.perennial || '—';
     }
 
+    var cropColors = {
+      arable: '#4CAF50', hayfield: '#8BC34A', pasture: '#FFC107',
+      perennial: '#FF9800', other: '#9E9E9E'
+    };
+
+    function loadMVT(regionId, districtId) {
+      // Remove old MVT / GeoJSON layers
+      if (mvtLayer) { map.removeLayer(mvtLayer); mvtLayer = null; }
+      farmlandLayer = clearLayer(farmlandLayer);
+      _farmlandLayersById = {};
+
+      var filter = districtId ? 'district=' + districtId : 'region=' + regionId;
+      var tileUrl = '/agrocosmos/api/tiles/{z}/{x}/{y}.pbf?' + filter;
+
+      mvtLayer = L.vectorGrid.protobuf(tileUrl, {
+        rendererFactory: L.canvas.tile,
+        vectorTileLayerStyles: {
+          farmlands: function (props) {
+            return {
+              fill: true,
+              fillColor: cropColors[props.crop_type] || '#9E9E9E',
+              fillOpacity: 0.55,
+              color: '#333',
+              weight: 0.8
+            };
+          }
+        },
+        interactive: true,
+        getFeatureId: function (f) { return f.properties.id; },
+        maxZoom: 18,
+        minZoom: 5
+      });
+
+      mvtLayer.on('click', function (e) {
+        var p = e.layer.properties;
+        var cropLabel = {arable:'Пашня', hayfield:'Сенокос', pasture:'Пастбище', perennial:'Многолетнее насаждение', other:'Прочее'};
+        var html = '<b>' + esc(cropLabel[p.crop_type] || p.crop_type) + '</b> #' + p.id + '<br>'
+          + 'Площадь: ' + (p.area_ha ? p.area_ha.toFixed(2) : '?') + ' га<br>'
+          + 'Район: ' + esc(p.district);
+        if (p.cadastral_number) html += '<br>Кадастр: ' + esc(p.cadastral_number);
+        html += '<br><a href="#" class="ndvi-link" data-id="' + p.id + '" style="color:#2e7d32;">📈 График NDVI</a>';
+        L.popup().setLatLng(e.latlng).setContent(html).openOn(map);
+      });
+
+      mvtLayer.addTo(map);
+    }
+
     document.getElementById('agro-load-farmlands').addEventListener('click', function () {
       var regionId = regionSel.value;
       var districtId = districtSel.value;
       if (!regionId && !districtId) return;
 
-      var url = '/agrocosmos/api/farmlands/?';
-      if (districtId) url += 'district=' + districtId;
-      else url += 'region=' + regionId;
-
       var btn = this;
       btn.textContent = 'Загрузка…';
-      console.log('[farmlands] fetch:', url);
 
+      if (!districtId) {
+        // Region overview: MVT tiles (handles 133K+ polygons)
+        loadMVT(regionId, null);
+        btn.innerHTML = '<i class="material-icons left">layers</i>Границы угодий';
+        renderList([], 'farmlands');
+        return;
+      }
+
+      // Single district: GeoJSON for full detail + popup + NDVI
+      if (mvtLayer) { map.removeLayer(mvtLayer); mvtLayer = null; }
+
+      var url = '/agrocosmos/api/farmlands/?district=' + districtId;
       fetch(url)
         .then(function (r) { return r.json(); })
         .then(function (data) {
-          console.log('[farmlands] features:', data.features ? data.features.length : 0, 'centroids:', data.centroids);
           btn.innerHTML = '<i class="material-icons left">layers</i>Границы угодий';
           farmlandLayer = clearLayer(farmlandLayer);
           _farmlandLayersById = {};
@@ -422,52 +477,22 @@
             return;
           }
 
-          var cropColors = {
-            arable: '#4CAF50', hayfield: '#8BC34A', pasture: '#FFC107',
-            perennial: '#FF9800', other: '#9E9E9E'
-          };
-
-          if (data.centroids) {
-            // Region overview: render as circle markers (fast for 133K+)
-            farmlandLayer = L.geoJSON(data, {
-              pointToLayer: function (f, latlng) {
-                return L.circleMarker(latlng, {
-                  radius: 3,
-                  fillColor: cropColors[f.properties.crop_type] || '#9E9E9E',
-                  color: '#333',
-                  weight: 0.5,
-                  fillOpacity: 0.7
-                });
-              },
-              onEachFeature: function (f, layer) {
-                var p = f.properties;
-                var html = '<b>' + esc(p.crop_type_label) + '</b> #' + p.id + '<br>'
-                  + 'Площадь: ' + p.area_ha + ' га<br>'
-                  + 'Район: ' + esc(p.district);
-                if (p.cadastral) html += '<br>Кадастр: ' + esc(p.cadastral);
-                layer.bindPopup(html);
-                _farmlandLayersById[p.id] = layer;
-              }
-            }).addTo(map);
-          } else {
-            // District detail: full polygons
-            farmlandLayer = L.geoJSON(data, {
-              style: function (f) {
-                return { color: '#333', weight: 1, fillColor: ndviColor(f.properties.ndvi), fillOpacity: 0.55 };
-              },
-              onEachFeature: function (f, layer) {
-                var p = f.properties;
-                var html = '<b>' + esc(p.crop_type_label) + '</b> #' + p.id + '<br>'
-                  + 'Площадь: ' + p.area_ha + ' га<br>'
-                  + 'Район: ' + esc(p.district);
-                if (p.cadastral) html += '<br>Кадастр: ' + esc(p.cadastral);
-                if (p.ndvi !== undefined) html += '<br>NDVI: <b>' + p.ndvi + '</b> (' + p.ndvi_date + ')';
-                html += '<br><a href="#" class="ndvi-link" data-id="' + p.id + '" style="color:#2e7d32;">📈 График NDVI</a>';
-                layer.bindPopup(html);
-                _farmlandLayersById[p.id] = layer;
-              }
-            }).addTo(map);
-          }
+          farmlandLayer = L.geoJSON(data, {
+            style: function (f) {
+              return { color: '#333', weight: 1, fillColor: cropColors[f.properties.crop_type] || '#9E9E9E', fillOpacity: 0.55 };
+            },
+            onEachFeature: function (f, layer) {
+              var p = f.properties;
+              var html = '<b>' + esc(p.crop_type_label) + '</b> #' + p.id + '<br>'
+                + 'Площадь: ' + p.area_ha + ' га<br>'
+                + 'Район: ' + esc(p.district);
+              if (p.cadastral) html += '<br>Кадастр: ' + esc(p.cadastral);
+              if (p.ndvi !== undefined) html += '<br>NDVI: <b>' + p.ndvi + '</b> (' + p.ndvi_date + ')';
+              html += '<br><a href="#" class="ndvi-link" data-id="' + p.id + '" style="color:#2e7d32;">📈 График NDVI</a>';
+              layer.bindPopup(html);
+              _farmlandLayersById[p.id] = layer;
+            }
+          }).addTo(map);
 
           if (farmlandLayer.getBounds().isValid()) {
             map.fitBounds(farmlandLayer.getBounds(), { padding: [20, 20] });
