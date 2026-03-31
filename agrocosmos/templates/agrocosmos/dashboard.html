@@ -469,58 +469,10 @@
       var btn = this;
       btn.textContent = 'Загрузка…';
 
-      if (!districtId) {
-        // Region overview: MVT tiles (handles 133K+ polygons)
-        loadMVT(regionId, null);
-        btn.innerHTML = '<i class="material-icons left">layers</i>Границы угодий';
-        renderList([], 'farmlands');
-        return;
-      }
-
-      // Single district: GeoJSON for full detail + popup + NDVI
-      if (mvtLayer) { map.removeLayer(mvtLayer); mvtLayer = null; }
-
-      var url = '/agrocosmos/api/farmlands/?district=' + districtId;
-      fetch(url)
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-          btn.innerHTML = '<i class="material-icons left">layers</i>Границы угодий';
-          farmlandLayer = clearLayer(farmlandLayer);
-          _farmlandLayersById = {};
-
-          if (!data.features || !data.features.length) {
-            renderList([], 'farmlands');
-            return;
-          }
-
-          farmlandLayer = L.geoJSON(data, {
-            style: function (f) {
-              return { color: '#333', weight: 1, fillColor: cropColors[f.properties.crop_type] || '#9E9E9E', fillOpacity: 0.55 };
-            },
-            onEachFeature: function (f, layer) {
-              var p = f.properties;
-              var html = '<b>' + esc(p.crop_type_label) + '</b> #' + p.id + '<br>'
-                + 'Площадь: ' + p.area_ha + ' га<br>'
-                + 'Район: ' + esc(p.district);
-              if (p.cadastral) html += '<br>Кадастр: ' + esc(p.cadastral);
-              if (p.ndvi !== undefined) html += '<br>NDVI: <b>' + p.ndvi + '</b> (' + p.ndvi_date + ')';
-              html += '<br><a href="#" class="ndvi-link" data-id="' + p.id + '" style="color:#2e7d32;">📈 График NDVI</a>';
-              layer.bindPopup(html);
-              _farmlandLayersById[p.id] = layer;
-            }
-          }).addTo(map);
-
-          if (farmlandLayer.getBounds().isValid()) {
-            map.fitBounds(farmlandLayer.getBounds(), { padding: [20, 20] });
-          }
-
-          updateStats(data.features);
-          renderList(data.features, 'farmlands');
-        })
-        .catch(function (err) {
-          console.error('[farmlands] ERROR:', err);
-          btn.innerHTML = '<i class="material-icons left">layers</i>Границы угодий';
-        });
+      // Always MVT tiles — fast for any scale
+      loadMVT(regionId, districtId || null);
+      btn.innerHTML = '<i class="material-icons left">layers</i>Границы угодий';
+      renderList([], 'farmlands');
     });
 
     /* ── NDVI chart ──────────────────────────────── */
