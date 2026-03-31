@@ -22,7 +22,7 @@ class District(models.Model):
     """Муниципальный район."""
     region = models.ForeignKey(Region, on_delete=models.CASCADE, related_name='districts')
     name = models.CharField(max_length=255, verbose_name='Название')
-    code = models.CharField(max_length=20, blank=True, default='', verbose_name='Код района')
+    code = models.CharField(max_length=150, blank=True, default='', verbose_name='Код района')
     geom = models.MultiPolygonField(srid=4326, verbose_name='Границы')
     created_at = models.DateTimeField(auto_now_add=True)
 
