@@ -21,4 +21,4 @@ RUN DJANGO_DEBUG=1 DJANGO_SECRET_KEY=build-only-key python manage.py collectstat
 
 EXPOSE 8000
 
-CMD ["gunicorn", "enb_django.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "120"]
+CMD ["gunicorn", "enb_django.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "300"]
