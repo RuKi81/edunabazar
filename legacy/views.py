@@ -2042,6 +2042,7 @@ def legacy_me(request: HttpRequest) -> HttpResponse:
     show_address_enabled = ('show_address=0' not in current_contacts)
 
     if request.method == 'POST':
+        username = (request.POST.get('username') or '').strip()
         email = (request.POST.get('email') or '').strip()
         name = (request.POST.get('name') or '').strip()
         phone = (request.POST.get('phone') or '').strip()
@@ -2068,6 +2069,13 @@ def legacy_me(request: HttpRequest) -> HttpResponse:
             lat = None
             lon = None
 
+        if not username:
+            errors['username'] = 'Введите логин'
+        elif len(username) > 255:
+            errors['username'] = 'Логин слишком длинный (макс. 255 символов)'
+        elif LegacyUser.objects.filter(username=username).exclude(pk=user.pk).exists():
+            errors['username'] = 'Этот логин уже занят'
+
         if not email:
             errors['email'] = 'Введите email'
         elif LegacyUser.objects.filter(email=email).exclude(pk=user.pk).exists():
@@ -2085,7 +2093,8 @@ def legacy_me(request: HttpRequest) -> HttpResponse:
             contacts_new = contacts_new.replace(';;', ';')
             contacts_new = contacts_new.strip(' ;\n\t')
 
-            update_fields = ['email', 'name', 'phone', 'address', 'contacts', 'updated_at']
+            update_fields = ['username', 'email', 'name', 'phone', 'address', 'contacts', 'updated_at']
+            user.username = username
             user.email = email
             user.name = name
             user.phone = phone

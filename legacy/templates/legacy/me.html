@@ -36,7 +36,6 @@
 
           <ul class="collection" style="margin:0 0 12px 0;">
             <li class="collection-item" style="padding: 8px 12px;"><strong>id:</strong> {{ legacy_user.id }}</li>
-            <li class="collection-item" style="padding: 8px 12px;"><strong>username:</strong> {{ legacy_user.username }}</li>
           </ul>
 
           <a href="{% url 'change_password' %}" class="btn-flat enb-btn-xs" style="margin-bottom:8px; display:inline-block;">🔑 Сменить пароль</a>
@@ -45,6 +44,14 @@
             {% csrf_token %}
 
             <div class="row" style="margin-bottom:0;">
+              <div class="input-field col s12">
+                <input id="username" name="username" type="text" value="{{ legacy_user.username|default:'' }}">
+                <label for="username" class="active">Логин</label>
+                {% if errors.username %}
+                  <div style="color:#d32f2f;font-size:12px;margin-top:4px;">{{ errors.username }}</div>
+                {% endif %}
+              </div>
+
               <div class="input-field col s12">
                 <input id="name" name="name" type="text" value="{{ legacy_user.name|default:'' }}">
                 <label for="name" class="active">Имя</label>

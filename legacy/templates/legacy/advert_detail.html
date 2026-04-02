@@ -224,6 +224,11 @@
 
       <section class="adverts-detail">
         <div class="adverts-detail__params">
+          {% if advert.category and advert.category.catalog %}
+          <div class="adverts-detail__params-item">
+            <b>Каталог:</b> {{ advert.category.catalog.title }}
+          </div>
+          {% endif %}
           <div class="adverts-detail__params-item">
             <b>Категория:</b> {{ advert.category.title }}
           </div>
