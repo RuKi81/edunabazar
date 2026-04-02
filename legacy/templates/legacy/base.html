@@ -228,32 +228,33 @@
         <img class="brand-logo__img" src="{% static 'legacy/images/logo.png' %}" alt="Еду на базар">
       </a>
     </div>
-
-    <ul id="slide-out" class="sidenav">
-      <li class="sidenav-logo">
-        <a href="/" style="padding:0 !important; height:auto; line-height:normal;">
-          <img src="{% static 'legacy/images/logo.png' %}" alt="Еду на базар" style="height:48px; width:auto;">
-        </a>
-      </li>
-      <li><a href="/adverts/"><i class="material-icons">list</i>объявления</a></li>
-      <li><a href="{% url 'seller_list' %}"><i class="material-icons">business</i>предприятия</a></li>
-      <li><a href="{% url 'prices_page' %}"><i class="material-icons">trending_up</i>цены</a></li>
-      <li><a href="{% url 'agrocosmos:dashboard' %}"><i class="material-icons">satellite_alt</i>агрокосмос</a></li>
-      <li><div class="divider"></div></li>
-      {% if legacy_user %}
-        <li><a href="{% url 'favorites_list' %}"><i class="material-icons">favorite</i>избранное</a></li>
-        <li><a href="{% url 'messages_inbox' %}"><i class="material-icons">mail</i>сообщения</a></li>
-        {% if is_admin_user %}
-          <li><a href="{% url 'admin_users' %}"><i class="material-icons">settings</i>админка</a></li>
-        {% endif %}
-        <li><a href="{% url 'legacy_me' %}"><i class="material-icons">person</i>кабинет</a></li>
-        <li><a href="{% url 'legacy_logout' %}"><i class="material-icons">exit_to_app</i>выход</a></li>
-      {% else %}
-        <li><a href="{% url 'legacy_register_start' %}?next={{ request.path|urlencode }}"><i class="material-icons">person_add</i>регистрация</a></li>
-        <li><a href="{% url 'legacy_login' %}?next={{ request.path }}"><i class="material-icons">login</i>вход</a></li>
-      {% endif %}
-    </ul>
   </div>
+
+  <!-- Sidenav must be outside hide-on-large-only to avoid its stacking context (z-index:1000) -->
+  <ul id="slide-out" class="sidenav">
+    <li class="sidenav-logo">
+      <a href="/" style="padding:0 !important; height:auto; line-height:normal;">
+        <img src="{% static 'legacy/images/logo.png' %}" alt="Еду на базар" style="height:48px; width:auto;">
+      </a>
+    </li>
+    <li><a href="/adverts/"><i class="material-icons">list</i>объявления</a></li>
+    <li><a href="{% url 'seller_list' %}"><i class="material-icons">business</i>предприятия</a></li>
+    <li><a href="{% url 'prices_page' %}"><i class="material-icons">trending_up</i>цены</a></li>
+    <li><a href="{% url 'agrocosmos:dashboard' %}"><i class="material-icons">satellite_alt</i>агрокосмос</a></li>
+    <li><div class="divider"></div></li>
+    {% if legacy_user %}
+      <li><a href="{% url 'favorites_list' %}"><i class="material-icons">favorite</i>избранное</a></li>
+      <li><a href="{% url 'messages_inbox' %}"><i class="material-icons">mail</i>сообщения</a></li>
+      {% if is_admin_user %}
+        <li><a href="{% url 'admin_users' %}"><i class="material-icons">settings</i>админка</a></li>
+      {% endif %}
+      <li><a href="{% url 'legacy_me' %}"><i class="material-icons">person</i>кабинет</a></li>
+      <li><a href="{% url 'legacy_logout' %}"><i class="material-icons">exit_to_app</i>выход</a></li>
+    {% else %}
+      <li><a href="{% url 'legacy_register_start' %}?next={{ request.path|urlencode }}"><i class="material-icons">person_add</i>регистрация</a></li>
+      <li><a href="{% url 'legacy_login' %}?next={{ request.path }}"><i class="material-icons">login</i>вход</a></li>
+    {% endif %}
+  </ul>
 
   <div class="container" style="margin-top: 16px;">
     {% block content %}{% endblock %}
