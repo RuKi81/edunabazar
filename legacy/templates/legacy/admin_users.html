@@ -7,8 +7,11 @@
     <div class="col s12">
       <h5 style="margin: 10px 0 14px 0; color:#7fb500; font-weight: 800;">Админка: пользователи</h5>
 
-      <div style="margin: 0 0 12px 0;">
+      <div style="margin: 0 0 12px 0; display:flex; gap:8px; flex-wrap:wrap;">
         <a class="btn" href="{% url 'admin_catalogs' %}" style="background:#7fb500; box-shadow:none; border-radius:0;">Каталоги</a>
+        <a class="btn" href="{% url 'admin_reviews' %}" style="background:#ff9800; box-shadow:none; border-radius:0;">⭐ Отзывы</a>
+        <a class="btn" href="{% url 'admin_messages' %}" style="background:#2196f3; box-shadow:none; border-radius:0;">💬 Сообщения</a>
+        <a class="btn" href="{% url 'admin_campaigns' %}" style="background:#9c27b0; box-shadow:none; border-radius:0;">📨 Рассылки</a>
       </div>
 
       <form method="get" class="row" style="margin-bottom: 10px;">

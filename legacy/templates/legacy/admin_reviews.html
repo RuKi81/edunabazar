@@ -1,0 +1,112 @@
+{% extends 'legacy/base.html' %}
+
+{% block title %}Админка — Модерация отзывов{% endblock %}
+
+{% block content %}
+  <div class="row" style="margin-bottom:0;">
+    <div class="col s12">
+      <div style="margin: 10px 0 6px 0;">
+        <a href="{% url 'admin_users' %}" style="color:#0090b6;">← Админка</a>
+      </div>
+
+      <h5 style="margin: 6px 0 14px 0; color:#7fb500; font-weight: 800;">Модерация отзывов</h5>
+
+      {# Status filter tabs #}
+      <div style="margin-bottom:16px; display:flex; gap:8px; flex-wrap:wrap;">
+        <a href="?status=moderation"
+           class="btn btn-small" style="box-shadow:none; border-radius:0; {% if status_filter == 'moderation' %}background:#ff9800;{% else %}background:#e0e0e0; color:#333;{% endif %}">
+          На модерации ({{ count_moderation }})
+        </a>
+        <a href="?status=published"
+           class="btn btn-small" style="box-shadow:none; border-radius:0; {% if status_filter == 'published' %}background:#4caf50;{% else %}background:#e0e0e0; color:#333;{% endif %}">
+          Опубликованы ({{ count_published }})
+        </a>
+        <a href="?status=hidden"
+           class="btn btn-small" style="box-shadow:none; border-radius:0; {% if status_filter == 'hidden' %}background:#9e9e9e;{% else %}background:#e0e0e0; color:#333;{% endif %}">
+          Скрыты ({{ count_hidden }})
+        </a>
+        <a href="?status=all"
+           class="btn btn-small" style="box-shadow:none; border-radius:0; {% if status_filter == 'all' %}background:#2196f3; color:#fff;{% else %}background:#e0e0e0; color:#333;{% endif %}">
+          Все
+        </a>
+      </div>
+
+      {% if not reviews %}
+        <div style="color:#777; padding:20px 0;">Нет отзывов.</div>
+      {% else %}
+        {% for r in reviews %}
+          <div class="card" style="box-shadow:none; border:1px solid #e6e6e6; margin-bottom:8px;">
+            <div class="card-content" style="padding:14px 16px;">
+              <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+                <div style="flex:1; min-width:200px;">
+                  <div style="font-size:13px; color:#777; margin-bottom:4px;">
+                    <b>{{ r.author.name|default:r.author.username }}</b>
+                    · {{ r.created_at|date:"d.m.Y H:i" }}
+                    · {% if r.type == 0 %}Объявление #{{ r.object_id }}{% elif r.type == 1 %}Продавец #{{ r.object_id }}{% endif %}
+                    · <span style="color:#ff9800;">★ {{ r.points }}/5</span>
+                  </div>
+                  <div style="font-size:14px; word-break:break-word;">{{ r.text|truncatechars:500 }}</div>
+                  <div style="font-size:11px; color:#aaa; margin-top:4px;">
+                    {% if r.status == 5 %}
+                      <span style="background:#fff3e0; color:#e65100; padding:1px 8px; border-radius:8px;">На модерации</span>
+                    {% elif r.status == 10 %}
+                      <span style="background:#e8f5e9; color:#2e7d32; padding:1px 8px; border-radius:8px;">Опубликован</span>
+                    {% elif r.status == 3 %}
+                      <span style="background:#f5f5f5; color:#777; padding:1px 8px; border-radius:8px;">Скрыт</span>
+                    {% endif %}
+                  </div>
+                </div>
+                <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+                  {% if r.status != 10 %}
+                  <form method="post" action="{% url 'admin_review_action' r.pk %}" style="margin:0;">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="publish">
+                    <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                    <button class="btn btn-small" type="submit" style="background:#4caf50; box-shadow:none; border-radius:0; font-size:11px; height:28px; line-height:28px;">
+                      Опубликовать
+                    </button>
+                  </form>
+                  {% endif %}
+
+                  {% if r.status != 3 %}
+                  <form method="post" action="{% url 'admin_review_action' r.pk %}" style="margin:0;">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="hide">
+                    <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                    <button class="btn btn-small" type="submit" style="background:#ff9800; box-shadow:none; border-radius:0; font-size:11px; height:28px; line-height:28px;">
+                      Скрыть
+                    </button>
+                  </form>
+                  {% endif %}
+
+                  <form method="post" action="{% url 'admin_review_action' r.pk %}" style="margin:0;" onsubmit="return confirm('Удалить отзыв?');">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="delete">
+                    <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                    <button class="btn btn-small" type="submit" style="background:#b00020; box-shadow:none; border-radius:0; font-size:11px; height:28px; line-height:28px;">
+                      Удалить
+                    </button>
+                  </form>
+                </div>
+              </div>
+            </div>
+          </div>
+        {% endfor %}
+
+        {# Pagination #}
+        {% if reviews.has_other_pages %}
+        <div style="text-align:center; margin:20px 0;">
+          {% if reviews.has_previous %}
+            <a href="?status={{ status_filter }}&page={{ reviews.previous_page_number }}" class="btn btn-small" style="background:#e0e0e0; color:#333; box-shadow:none; border-radius:0;">← Назад</a>
+          {% endif %}
+          <span style="margin:0 12px; color:#777;">Страница {{ reviews.number }} из {{ reviews.paginator.num_pages }}</span>
+          {% if reviews.has_next %}
+            <a href="?status={{ status_filter }}&page={{ reviews.next_page_number }}" class="btn btn-small" style="background:#e0e0e0; color:#333; box-shadow:none; border-radius:0;">Далее →</a>
+          {% endif %}
+        </div>
+        {% endif %}
+      {% endif %}
+
+    </div>
+  </div>
+{% endblock %}

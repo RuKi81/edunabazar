@@ -2512,9 +2512,9 @@ def messages_unread_count_api(request: HttpRequest) -> JsonResponse:
 # ---------------------------------------------------------------------------
 
 def admin_campaigns(request: HttpRequest) -> HttpResponse:
-    admin_user = _require_admin(request)
-    if isinstance(admin_user, HttpResponse):
-        return admin_user
+    admin_user, deny = _require_admin(request)
+    if deny:
+        return deny
 
     campaigns = EmailCampaign.objects.all()
     return _no_store(render(request, 'legacy/admin_campaigns.html', {
@@ -2524,9 +2524,9 @@ def admin_campaigns(request: HttpRequest) -> HttpResponse:
 
 
 def admin_campaign_create(request: HttpRequest) -> HttpResponse:
-    admin_user = _require_admin(request)
-    if isinstance(admin_user, HttpResponse):
-        return admin_user
+    admin_user, deny = _require_admin(request)
+    if deny:
+        return deny
 
     errors: dict[str, str] = {}
 
@@ -2566,9 +2566,9 @@ def admin_campaign_create(request: HttpRequest) -> HttpResponse:
 
 
 def admin_campaign_detail(request: HttpRequest, campaign_id: int) -> HttpResponse:
-    admin_user = _require_admin(request)
-    if isinstance(admin_user, HttpResponse):
-        return admin_user
+    admin_user, deny = _require_admin(request)
+    if deny:
+        return deny
 
     campaign = get_object_or_404(EmailCampaign, pk=campaign_id)
 
@@ -2635,9 +2635,9 @@ def admin_campaign_detail(request: HttpRequest, campaign_id: int) -> HttpRespons
 
 
 def admin_campaign_delete(request: HttpRequest, campaign_id: int) -> HttpResponse:
-    admin_user = _require_admin(request)
-    if isinstance(admin_user, HttpResponse):
-        return admin_user
+    admin_user, deny = _require_admin(request)
+    if deny:
+        return deny
 
     campaign = get_object_or_404(EmailCampaign, pk=campaign_id)
     if request.method == 'POST':
@@ -2646,8 +2646,8 @@ def admin_campaign_delete(request: HttpRequest, campaign_id: int) -> HttpRespons
 
 
 def admin_campaign_send_test(request: HttpRequest, campaign_id: int) -> JsonResponse:
-    admin_user = _require_admin(request)
-    if isinstance(admin_user, HttpResponse):
+    admin_user, deny = _require_admin(request)
+    if deny:
         return JsonResponse({'ok': False, 'error': 'Forbidden'}, status=403)
 
     campaign = get_object_or_404(EmailCampaign, pk=campaign_id)
@@ -2672,9 +2672,9 @@ def admin_campaign_send_test(request: HttpRequest, campaign_id: int) -> JsonResp
 
 
 def admin_campaign_upload_excel(request: HttpRequest, campaign_id: int) -> HttpResponse:
-    admin_user = _require_admin(request)
-    if isinstance(admin_user, HttpResponse):
-        return admin_user
+    admin_user, deny = _require_admin(request)
+    if deny:
+        return deny
 
     campaign = get_object_or_404(EmailCampaign, pk=campaign_id)
 
@@ -2735,8 +2735,8 @@ def admin_campaign_upload_excel(request: HttpRequest, campaign_id: int) -> HttpR
 
 def admin_campaign_send_batch(request: HttpRequest, campaign_id: int) -> JsonResponse:
     """AJAX: send one batch of emails (by log ID range)."""
-    admin_user = _require_admin(request)
-    if isinstance(admin_user, HttpResponse):
+    admin_user, deny = _require_admin(request)
+    if deny:
         return JsonResponse({'ok': False, 'error': 'Forbidden'}, status=403)
 
     campaign = get_object_or_404(EmailCampaign, pk=campaign_id)
@@ -2839,6 +2839,109 @@ def admin_campaign_send_batch(request: HttpRequest, campaign_id: int) -> JsonRes
         'failed': failed,
         'message': f'Отправлено {sent}, ошибок {failed}',
     })
+
+
+# ---------------------------------------------------------------------------
+#  Moderation: Reviews & Messages
+# ---------------------------------------------------------------------------
+
+def admin_reviews(request: HttpRequest) -> HttpResponse:
+    admin_user, deny = _require_admin(request)
+    if deny:
+        return deny
+
+    status_filter = (request.GET.get('status') or 'moderation').strip()
+    status_map = {
+        'moderation': _REVIEW_STATUS_MODERATION,
+        'published': _REVIEW_STATUS_PUBLISHED,
+        'hidden': _REVIEW_STATUS_HIDDEN,
+    }
+    qs = Review.objects.select_related('author').order_by('-created_at', '-id')
+    if status_filter in status_map:
+        qs = qs.filter(status=status_map[status_filter])
+    else:
+        qs = qs.exclude(status=_REVIEW_STATUS_DELETED)
+
+    paginator = Paginator(qs, 50)
+    page = paginator.get_page(request.GET.get('page', 1))
+
+    return _no_store(render(request, 'legacy/admin_reviews.html', {
+        'legacy_user': admin_user,
+        'reviews': page,
+        'status_filter': status_filter,
+        'count_moderation': Review.objects.filter(status=_REVIEW_STATUS_MODERATION).count(),
+        'count_published': Review.objects.filter(status=_REVIEW_STATUS_PUBLISHED).count(),
+        'count_hidden': Review.objects.filter(status=_REVIEW_STATUS_HIDDEN).count(),
+    }))
+
+
+def admin_review_action(request: HttpRequest, review_id: int) -> HttpResponse:
+    admin_user, deny = _require_admin(request)
+    if deny:
+        return deny
+
+    if request.method != 'POST':
+        return redirect('/legacy-admin/reviews/')
+
+    action = (request.POST.get('action') or '').strip()
+    now = timezone.now()
+
+    if action == 'publish':
+        Review.objects.filter(pk=review_id).update(status=_REVIEW_STATUS_PUBLISHED, updated_at=now)
+    elif action == 'hide':
+        Review.objects.filter(pk=review_id).update(status=_REVIEW_STATUS_HIDDEN, updated_at=now)
+    elif action == 'delete':
+        Review.objects.filter(pk=review_id).update(status=_REVIEW_STATUS_DELETED, updated_at=now)
+
+    next_url = (request.POST.get('next') or '').strip()
+    if next_url and url_has_allowed_host_and_scheme(
+        url=next_url, allowed_hosts={request.get_host()}, require_https=request.is_secure(),
+    ):
+        return redirect(next_url)
+    return redirect('/legacy-admin/reviews/')
+
+
+def admin_messages(request: HttpRequest) -> HttpResponse:
+    admin_user, deny = _require_admin(request)
+    if deny:
+        return deny
+
+    q = (request.GET.get('q') or '').strip()
+    qs = Message.objects.select_related('sender', 'recipient', 'advert').order_by('-created_at')
+    if q:
+        qs = qs.filter(
+            Q(text__icontains=q)
+            | Q(sender__username__icontains=q)
+            | Q(sender__name__icontains=q)
+            | Q(recipient__username__icontains=q)
+            | Q(recipient__name__icontains=q)
+        )
+
+    paginator = Paginator(qs, 50)
+    page = paginator.get_page(request.GET.get('page', 1))
+
+    return _no_store(render(request, 'legacy/admin_messages.html', {
+        'legacy_user': admin_user,
+        'messages_page': page,
+        'q': q,
+        'total_count': Message.objects.count(),
+    }))
+
+
+def admin_message_delete(request: HttpRequest, message_id: int) -> HttpResponse:
+    admin_user, deny = _require_admin(request)
+    if deny:
+        return deny
+
+    if request.method == 'POST':
+        Message.objects.filter(pk=message_id).delete()
+
+    next_url = (request.POST.get('next') or '').strip()
+    if next_url and url_has_allowed_host_and_scheme(
+        url=next_url, allowed_hosts={request.get_host()}, require_https=request.is_secure(),
+    ):
+        return redirect(next_url)
+    return redirect('/legacy-admin/messages/')
 
 
 def favorite_toggle(request: HttpRequest, advert_id: int) -> JsonResponse:

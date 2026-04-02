@@ -1,0 +1,78 @@
+{% extends 'legacy/base.html' %}
+
+{% block title %}Админка — Сообщения{% endblock %}
+
+{% block content %}
+  <div class="row" style="margin-bottom:0;">
+    <div class="col s12">
+      <div style="margin: 10px 0 6px 0;">
+        <a href="{% url 'admin_users' %}" style="color:#0090b6;">← Админка</a>
+      </div>
+
+      <h5 style="margin: 6px 0 14px 0; color:#7fb500; font-weight: 800;">Сообщения ({{ total_count }})</h5>
+
+      <form method="get" class="row" style="margin-bottom: 10px;">
+        <div class="col s12 m8">
+          <input type="text" name="q" value="{{ q }}" placeholder="Поиск (текст / логин / имя)" style="height: 36px;" />
+        </div>
+        <div class="col s12 m4" style="margin-top: 6px;">
+          <button class="btn" type="submit" style="background:#7fb500; box-shadow:none; border-radius:0;">Найти</button>
+          {% if q %}
+            <a href="{% url 'admin_messages' %}" class="btn-flat" style="font-size:13px;">Сбросить</a>
+          {% endif %}
+        </div>
+      </form>
+
+      {% if not messages_page %}
+        <div style="color:#777; padding:20px 0;">Нет сообщений.</div>
+      {% else %}
+        {% for m in messages_page %}
+          <div class="card" style="box-shadow:none; border:1px solid #e6e6e6; margin-bottom:6px;">
+            <div class="card-content" style="padding:12px 16px;">
+              <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+                <div style="flex:1; min-width:200px;">
+                  <div style="font-size:12px; color:#777; margin-bottom:4px;">
+                    <b>{{ m.sender.name|default:m.sender.username }}</b>
+                    →
+                    <b>{{ m.recipient.name|default:m.recipient.username }}</b>
+                    · {{ m.created_at|date:"d.m.Y H:i" }}
+                    {% if m.advert %}
+                      · <a href="{% url 'advert_detail' m.advert_id %}" style="color:#0090b6;">объявление #{{ m.advert_id }}</a>
+                    {% endif %}
+                    {% if not m.is_read %}
+                      · <span style="background:#e3f2fd; color:#1565c0; padding:1px 6px; border-radius:6px; font-size:10px;">Не прочитано</span>
+                    {% endif %}
+                  </div>
+                  <div style="font-size:13px; word-break:break-word;">{{ m.text|truncatechars:400 }}</div>
+                </div>
+                <div>
+                  <form method="post" action="{% url 'admin_message_delete' m.pk %}" style="margin:0;" onsubmit="return confirm('Удалить сообщение?');">
+                    {% csrf_token %}
+                    <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                    <button class="btn btn-small" type="submit" style="background:#b00020; box-shadow:none; border-radius:0; font-size:11px; height:28px; line-height:28px;">
+                      Удалить
+                    </button>
+                  </form>
+                </div>
+              </div>
+            </div>
+          </div>
+        {% endfor %}
+
+        {# Pagination #}
+        {% if messages_page.has_other_pages %}
+        <div style="text-align:center; margin:20px 0;">
+          {% if messages_page.has_previous %}
+            <a href="?{% if q %}q={{ q }}&{% endif %}page={{ messages_page.previous_page_number }}" class="btn btn-small" style="background:#e0e0e0; color:#333; box-shadow:none; border-radius:0;">← Назад</a>
+          {% endif %}
+          <span style="margin:0 12px; color:#777;">Страница {{ messages_page.number }} из {{ messages_page.paginator.num_pages }}</span>
+          {% if messages_page.has_next %}
+            <a href="?{% if q %}q={{ q }}&{% endif %}page={{ messages_page.next_page_number }}" class="btn btn-small" style="background:#e0e0e0; color:#333; box-shadow:none; border-radius:0;">Далее →</a>
+          {% endif %}
+        </div>
+        {% endif %}
+      {% endif %}
+
+    </div>
+  </div>
+{% endblock %}

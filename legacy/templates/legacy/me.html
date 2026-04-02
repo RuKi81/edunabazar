@@ -41,6 +41,8 @@
           <a href="{% url 'change_password' %}" class="btn-flat enb-btn-xs" style="margin-bottom:8px; display:inline-block;">🔑 Сменить пароль</a>
           {% if is_admin_cabinet %}
             <a href="{% url 'admin_campaigns' %}" class="btn-flat enb-btn-xs" style="margin-bottom:8px; display:inline-block;">📨 Email-рассылки</a>
+            <a href="{% url 'admin_reviews' %}" class="btn-flat enb-btn-xs" style="margin-bottom:8px; display:inline-block;">⭐ Отзывы</a>
+            <a href="{% url 'admin_messages' %}" class="btn-flat enb-btn-xs" style="margin-bottom:8px; display:inline-block;">💬 Сообщения</a>
           {% endif %}
 
           <form method="post" action="">
