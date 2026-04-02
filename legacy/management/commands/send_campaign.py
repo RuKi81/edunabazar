@@ -56,7 +56,7 @@ class Command(BaseCommand):
             raise CommandError(f'Campaign #{campaign_id} not found')
 
         if campaign.status == EmailCampaign.STATUS_DONE:
-            raise CommandError(f'Campaign #{campaign_id} is already done')
+            raise CommandError(f'Campaign #{campaign_id} is already done.')
 
         if campaign.status == EmailCampaign.STATUS_SENDING and not resume:
             raise CommandError(
@@ -129,12 +129,15 @@ class Command(BaseCommand):
         return list(qs.values_list('email', flat=True))
 
     def _send_campaign(self, campaign, rate, batch_size, dry_run, limit=0):
-        """Send pending emails with throttling."""
+        """Send pending emails with throttling and auto-reconnect."""
         campaign.status = EmailCampaign.STATUS_SENDING
         campaign.save(update_fields=['status'])
 
         from_email = campaign.from_email or settings.DEFAULT_FROM_EMAIL
         delay = 1.0 / rate if rate > 0 else 1.0
+        max_retries = 2
+        consecutive_failures = 0
+        max_consecutive_failures = 10
 
         pending_logs = EmailLog.objects.filter(
             campaign=campaign,
@@ -165,6 +168,15 @@ class Command(BaseCommand):
                 self.stdout.write(f'  Reached limit of {limit} emails for this run')
                 break
 
+            # Stop if too many consecutive failures (likely rate-limited)
+            if consecutive_failures >= max_consecutive_failures:
+                self.stderr.write(self.style.ERROR(
+                    f'  ⚠ {max_consecutive_failures} consecutive failures — '
+                    f'likely rate-limited. Pausing campaign.'
+                ))
+                self._stop_requested = True
+                break
+
             # Open/reopen SMTP connection every batch_size emails
             if connection is None or batch_counter >= batch_size:
                 if connection:
@@ -172,48 +184,109 @@ class Command(BaseCommand):
                         connection.close()
                     except Exception:
                         pass
+                    connection = None
                 if not dry_run:
-                    connection = get_connection()
-                    connection.open()
+                    try:
+                        connection = get_connection()
+                        connection.open()
+                    except Exception as e:
+                        logger.error('SMTP connect failed: %s', e)
+                        self.stderr.write(self.style.ERROR(
+                            f'  SMTP connect error: {e}'
+                        ))
+                        time.sleep(30)
+                        try:
+                            connection = get_connection()
+                            connection.open()
+                        except Exception as e2:
+                            self.stderr.write(self.style.ERROR(
+                                f'  SMTP reconnect also failed: {e2} — pausing.'
+                            ))
+                            self._stop_requested = True
+                            break
                 batch_counter = 0
 
-            try:
-                if not dry_run:
-                    msg = EmailMultiAlternatives(
-                        subject=campaign.subject,
-                        body=campaign.body_text or campaign.subject,
-                        from_email=from_email,
-                        to=[log.recipient_email],
-                        connection=connection,
-                    )
-                    if campaign.body_html:
-                        msg.attach_alternative(campaign.body_html, 'text/html')
-                    msg.send(fail_silently=False)
+            email_sent = False
+            for attempt in range(1, max_retries + 2):
+                try:
+                    if not dry_run:
+                        msg = EmailMultiAlternatives(
+                            subject=campaign.subject,
+                            body=campaign.body_text or campaign.subject,
+                            from_email=from_email,
+                            to=[log.recipient_email],
+                            connection=connection,
+                        )
+                        if campaign.body_html:
+                            msg.attach_alternative(campaign.body_html, 'text/html')
+                        msg.send(fail_silently=False)
 
-                log.status = EmailLog.STATUS_SENT
-                log.sent_at = timezone.now()
-                log.save(update_fields=['status', 'sent_at'])
-                sent += 1
-                batch_counter += 1
+                    log.status = EmailLog.STATUS_SENT
+                    log.sent_at = timezone.now()
+                    log.save(update_fields=['status', 'sent_at'])
+                    sent += 1
+                    batch_counter += 1
+                    consecutive_failures = 0
+                    email_sent = True
+                    break
 
-            except Exception as e:
-                error_msg = str(e)[:500]
-                log.status = EmailLog.STATUS_FAILED
-                log.error_message = error_msg
-                log.save(update_fields=['status', 'error_message'])
-                failed += 1
-                logger.warning('Failed to send to %s: %s', log.recipient_email, error_msg)
+                except Exception as e:
+                    error_msg = str(e)[:500]
+                    if attempt <= max_retries:
+                        logger.info(
+                            'Retry %d/%d for %s: %s',
+                            attempt, max_retries, log.recipient_email, error_msg,
+                        )
+                        # Reset connection before retry
+                        if connection:
+                            try:
+                                connection.close()
+                            except Exception:
+                                pass
+                            connection = None
+                        backoff = min(5 * attempt, 30)
+                        time.sleep(backoff)
+                        try:
+                            connection = get_connection()
+                            connection.open()
+                            batch_counter = 0
+                        except Exception:
+                            connection = None
+                    else:
+                        log.status = EmailLog.STATUS_FAILED
+                        log.error_message = error_msg
+                        log.save(update_fields=['status', 'error_message'])
+                        failed += 1
+                        consecutive_failures += 1
+                        logger.warning('Failed to send to %s: %s', log.recipient_email, error_msg)
+                        # Reset connection so next email gets a fresh one
+                        if connection:
+                            try:
+                                connection.close()
+                            except Exception:
+                                pass
+                            connection = None
+
+            # Cooldown after consecutive failures
+            if consecutive_failures >= 3:
+                cooldown = min(10 * consecutive_failures, 60)
+                self.stdout.write(self.style.WARNING(
+                    f'  {consecutive_failures} consecutive failures, '
+                    f'cooling down {cooldown}s...'
+                ))
+                time.sleep(cooldown)
 
             # Progress
             total_done = sent + failed
-            if total_done % 100 == 0 or total_done == total_pending:
+            if total_done % 50 == 0 or total_done == total_pending:
                 self.stdout.write(
                     f'  [{total_done}/{total_pending}] '
                     f'sent={sent} failed={failed}'
                 )
 
             # Throttle
-            time.sleep(delay)
+            if email_sent:
+                time.sleep(delay)
 
         # Close connection
         if connection:
