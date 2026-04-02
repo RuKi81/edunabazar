@@ -1,4 +1,6 @@
+import io
 import json
+import re
 import urllib.request
 import urllib.parse
 from functools import lru_cache
@@ -6,6 +8,7 @@ import random
 import secrets
 import datetime
 import logging
+import time
 
 from django.conf import settings
 from django.http import HttpRequest, HttpResponse
@@ -2569,6 +2572,9 @@ def admin_campaign_detail(request: HttpRequest, campaign_id: int) -> HttpRespons
 
     campaign = get_object_or_404(EmailCampaign, pk=campaign_id)
 
+    upload_message = request.session.pop('campaign_upload_message', '')
+    upload_error = request.session.pop('campaign_upload_error', '')
+
     # Stats
     sent = EmailLog.objects.filter(campaign=campaign, status=EmailLog.STATUS_SENT).count()
     failed = EmailLog.objects.filter(campaign=campaign, status=EmailLog.STATUS_FAILED).count()
@@ -2587,6 +2593,33 @@ def admin_campaign_detail(request: HttpRequest, campaign_id: int) -> HttpRespons
             qs = qs.exclude(status=10)
         audience_count = qs.count()
 
+    # Build batches of 180
+    BATCH_SIZE = 180
+    all_logs = list(
+        EmailLog.objects.filter(campaign=campaign)
+        .order_by('id')
+        .values_list('id', 'status', named=True)
+    )
+    batches = []
+    for i in range(0, len(all_logs), BATCH_SIZE):
+        chunk = all_logs[i:i + BATCH_SIZE]
+        b_sent = sum(1 for r in chunk if r.status == EmailLog.STATUS_SENT)
+        b_failed = sum(1 for r in chunk if r.status == EmailLog.STATUS_FAILED)
+        b_pending = sum(1 for r in chunk if r.status == EmailLog.STATUS_PENDING)
+        batch_num = (i // BATCH_SIZE) + 1
+        first_id = chunk[0].id
+        last_id = chunk[-1].id
+        batches.append({
+            'num': batch_num,
+            'total': len(chunk),
+            'sent': b_sent,
+            'failed': b_failed,
+            'pending': b_pending,
+            'first_id': first_id,
+            'last_id': last_id,
+            'done': b_pending == 0,
+        })
+
     return _no_store(render(request, 'legacy/admin_campaign_detail.html', {
         'legacy_user': admin_user,
         'campaign': campaign,
@@ -2595,6 +2628,9 @@ def admin_campaign_detail(request: HttpRequest, campaign_id: int) -> HttpRespons
         'pending': pending,
         'recent_errors': recent_errors,
         'audience_count': audience_count,
+        'batches': batches,
+        'upload_message': upload_message,
+        'upload_error': upload_error,
     }))
 
 
@@ -2633,6 +2669,176 @@ def admin_campaign_send_test(request: HttpRequest, campaign_id: int) -> JsonResp
         return JsonResponse({'ok': True})
     except Exception as e:
         return JsonResponse({'ok': False, 'error': str(e)[:500]})
+
+
+def admin_campaign_upload_excel(request: HttpRequest, campaign_id: int) -> HttpResponse:
+    admin_user = _require_admin(request)
+    if isinstance(admin_user, HttpResponse):
+        return admin_user
+
+    campaign = get_object_or_404(EmailCampaign, pk=campaign_id)
+
+    if request.method != 'POST':
+        return redirect(f'/legacy-admin/campaigns/{campaign_id}/')
+
+    excel_file = request.FILES.get('excel_file')
+    if not excel_file:
+        request.session['campaign_upload_error'] = 'Файл не выбран'
+        return redirect(f'/legacy-admin/campaigns/{campaign_id}/')
+
+    if not excel_file.name.endswith(('.xlsx', '.xls')):
+        request.session['campaign_upload_error'] = 'Поддерживаются только файлы .xlsx / .xls'
+        return redirect(f'/legacy-admin/campaigns/{campaign_id}/')
+
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(excel_file.read()), read_only=True)
+        ws = wb.active
+
+        email_re = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
+        raw_emails = set()
+        for row in ws.iter_rows(values_only=True):
+            for cell in row:
+                if cell and isinstance(cell, str):
+                    found = email_re.findall(cell.strip().lower())
+                    raw_emails.update(found)
+        wb.close()
+    except Exception as e:
+        request.session['campaign_upload_error'] = f'Ошибка чтения файла: {e}'
+        return redirect(f'/legacy-admin/campaigns/{campaign_id}/')
+
+    if not raw_emails:
+        request.session['campaign_upload_error'] = 'В файле не найдено email-адресов'
+        return redirect(f'/legacy-admin/campaigns/{campaign_id}/')
+
+    # Deduplicate against existing logs for this campaign
+    existing = set(
+        EmailLog.objects.filter(campaign=campaign)
+        .values_list('recipient_email', flat=True)
+    )
+    new_emails = sorted(raw_emails - existing)
+
+    if new_emails:
+        logs = [EmailLog(campaign=campaign, recipient_email=e) for e in new_emails]
+        EmailLog.objects.bulk_create(logs, batch_size=1000)
+
+        campaign.total_recipients = EmailLog.objects.filter(campaign=campaign).count()
+        campaign.save(update_fields=['total_recipients'])
+
+    skipped = len(raw_emails) - len(new_emails)
+    msg = f'Загружено {len(new_emails)} новых адресов из файла «{excel_file.name}».'
+    if skipped:
+        msg += f' Пропущено дублей: {skipped}.'
+    request.session['campaign_upload_message'] = msg
+    return redirect(f'/legacy-admin/campaigns/{campaign_id}/')
+
+
+def admin_campaign_send_batch(request: HttpRequest, campaign_id: int) -> JsonResponse:
+    """AJAX: send one batch of emails (by log ID range)."""
+    admin_user = _require_admin(request)
+    if isinstance(admin_user, HttpResponse):
+        return JsonResponse({'ok': False, 'error': 'Forbidden'}, status=403)
+
+    campaign = get_object_or_404(EmailCampaign, pk=campaign_id)
+
+    first_id = int(request.POST.get('first_id', 0))
+    last_id = int(request.POST.get('last_id', 0))
+    if not first_id or not last_id:
+        return JsonResponse({'ok': False, 'error': 'Missing batch IDs'})
+
+    logs = list(
+        EmailLog.objects.filter(
+            campaign=campaign,
+            id__gte=first_id,
+            id__lte=last_id,
+            status=EmailLog.STATUS_PENDING,
+        ).order_by('id')
+    )
+
+    if not logs:
+        return JsonResponse({'ok': True, 'sent': 0, 'failed': 0, 'message': 'Нет писем для отправки'})
+
+    # Mark campaign as sending
+    if campaign.status in (EmailCampaign.STATUS_DRAFT, EmailCampaign.STATUS_PAUSED):
+        campaign.status = EmailCampaign.STATUS_SENDING
+        if not campaign.started_at:
+            campaign.started_at = timezone.now()
+        campaign.save(update_fields=['status', 'started_at'])
+
+    from django.core.mail import get_connection
+
+    from_email = campaign.from_email or settings.DEFAULT_FROM_EMAIL
+    sent = 0
+    failed = 0
+    connection = None
+
+    try:
+        connection = get_connection()
+        connection.open()
+    except Exception as e:
+        return JsonResponse({'ok': False, 'error': f'SMTP connect error: {e}'})
+
+    for log in logs:
+        try:
+            msg = EmailMultiAlternatives(
+                subject=campaign.subject,
+                body=campaign.body_text or campaign.subject,
+                from_email=from_email,
+                to=[log.recipient_email],
+                connection=connection,
+            )
+            if campaign.body_html:
+                msg.attach_alternative(campaign.body_html, 'text/html')
+            msg.send(fail_silently=False)
+
+            log.status = EmailLog.STATUS_SENT
+            log.sent_at = timezone.now()
+            log.save(update_fields=['status', 'sent_at'])
+            sent += 1
+
+        except Exception as e:
+            error_msg = str(e)[:500]
+            log.status = EmailLog.STATUS_FAILED
+            log.error_message = error_msg
+            log.save(update_fields=['status', 'error_message'])
+            failed += 1
+
+            # Try to reconnect for remaining emails
+            if connection:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+                connection = None
+            try:
+                connection = get_connection()
+                connection.open()
+            except Exception:
+                connection = None
+
+        time.sleep(1)  # 1 email/sec throttle
+
+    if connection:
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+    # Update campaign counters
+    campaign.sent_count = EmailLog.objects.filter(campaign=campaign, status=EmailLog.STATUS_SENT).count()
+    campaign.failed_count = EmailLog.objects.filter(campaign=campaign, status=EmailLog.STATUS_FAILED).count()
+    remaining = EmailLog.objects.filter(campaign=campaign, status=EmailLog.STATUS_PENDING).count()
+    if remaining == 0:
+        campaign.status = EmailCampaign.STATUS_DONE
+        campaign.finished_at = timezone.now()
+    campaign.save(update_fields=['sent_count', 'failed_count', 'status', 'finished_at'])
+
+    return JsonResponse({
+        'ok': True,
+        'sent': sent,
+        'failed': failed,
+        'message': f'Отправлено {sent}, ошибок {failed}',
+    })
 
 
 def favorite_toggle(request: HttpRequest, advert_id: int) -> JsonResponse:

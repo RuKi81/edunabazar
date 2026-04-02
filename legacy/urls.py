@@ -60,6 +60,8 @@ urlpatterns = [
     path('legacy-admin/campaigns/<int:campaign_id>/', views.admin_campaign_detail, name='admin_campaign_detail'),
     path('legacy-admin/campaigns/<int:campaign_id>/delete/', views.admin_campaign_delete, name='admin_campaign_delete'),
     path('legacy-admin/campaigns/<int:campaign_id>/send-test/', views.admin_campaign_send_test, name='admin_campaign_send_test'),
+    path('legacy-admin/campaigns/<int:campaign_id>/upload-excel/', views.admin_campaign_upload_excel, name='admin_campaign_upload_excel'),
+    path('legacy-admin/campaigns/<int:campaign_id>/send-batch/', views.admin_campaign_send_batch, name='admin_campaign_send_batch'),
 
     # 301 redirects for old/dead URLs found in search engines
     path('cart', RedirectView.as_view(url='/adverts/', permanent=True)),

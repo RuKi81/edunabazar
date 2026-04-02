@@ -77,6 +77,85 @@
         </div>
       </div>
 
+      {# Upload Excel #}
+      <div class="card" style="box-shadow:none; border:1px solid #e6e6e6;">
+        <div class="card-content" style="padding: 16px;">
+          <div style="font-weight:800; margin-bottom:10px;">📎 Загрузка email из Excel</div>
+
+          {% if upload_message %}
+            <div style="background:#e8f5e9; color:#2e7d32; padding:10px; border-radius:4px; margin-bottom:12px; font-size:13px;">{{ upload_message }}</div>
+          {% endif %}
+          {% if upload_error %}
+            <div style="background:#ffebee; color:#b00020; padding:10px; border-radius:4px; margin-bottom:12px; font-size:13px;">{{ upload_error }}</div>
+          {% endif %}
+
+          <form method="post" action="{% url 'admin_campaign_upload_excel' campaign.pk %}" enctype="multipart/form-data">
+            {% csrf_token %}
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+              <input type="file" name="excel_file" accept=".xlsx,.xls" style="max-width:350px;">
+              <button class="btn" type="submit" style="background:#7fb500; box-shadow:none; border-radius:0;">
+                Загрузить
+              </button>
+            </div>
+            <div style="color:#999; font-size:11px; margin-top:6px;">
+              Загрузите .xlsx файл с email-адресами. Адреса будут найдены автоматически из всех ячеек. Дубли пропускаются.
+            </div>
+          </form>
+        </div>
+      </div>
+
+      {# Batches of 180 #}
+      {% if batches %}
+      <div class="card" style="box-shadow:none; border:1px solid #e6e6e6;">
+        <div class="card-content" style="padding: 16px;">
+          <div style="font-weight:800; margin-bottom:10px;">📨 Группы рассылки (по 180 писем)</div>
+
+          <table style="font-size:13px; width:100%; border-collapse:collapse;">
+            <thead>
+              <tr style="border-bottom:2px solid #ddd; background:#f5f5f5;">
+                <th style="text-align:left; padding:8px;">Группа</th>
+                <th style="text-align:center; padding:8px;">Всего</th>
+                <th style="text-align:center; padding:8px;">✓ Отправлено</th>
+                <th style="text-align:center; padding:8px;">✗ Ошибки</th>
+                <th style="text-align:center; padding:8px;">⏳ Ожидает</th>
+                <th style="text-align:center; padding:8px;">Статус</th>
+                <th style="text-align:center; padding:8px;">Действие</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for b in batches %}
+              <tr id="batch-row-{{ b.num }}" style="border-bottom:1px solid #eee;">
+                <td style="padding:8px; font-weight:700;">Группа {{ b.num }}</td>
+                <td style="padding:8px; text-align:center;">{{ b.total }}</td>
+                <td style="padding:8px; text-align:center; color:#4caf50; font-weight:700;" id="batch-sent-{{ b.num }}">{{ b.sent }}</td>
+                <td style="padding:8px; text-align:center; color:#b00020; font-weight:700;" id="batch-failed-{{ b.num }}">{{ b.failed }}</td>
+                <td style="padding:8px; text-align:center; color:#999;" id="batch-pending-{{ b.num }}">{{ b.pending }}</td>
+                <td style="padding:8px; text-align:center;" id="batch-status-{{ b.num }}">
+                  {% if b.done %}
+                    <span style="background:#4caf50; color:#fff; padding:2px 10px; border-radius:10px; font-size:11px; font-weight:700;">Готово</span>
+                  {% else %}
+                    <span style="background:#ff9800; color:#fff; padding:2px 10px; border-radius:10px; font-size:11px; font-weight:700;">Ожидает</span>
+                  {% endif %}
+                </td>
+                <td style="padding:8px; text-align:center;">
+                  {% if not b.done %}
+                    <button class="btn btn-small" id="batch-btn-{{ b.num }}"
+                            style="background:#2196f3; box-shadow:none; border-radius:0; font-size:11px; height:28px; line-height:28px; padding:0 12px;"
+                            onclick="sendBatch({{ b.num }}, {{ b.first_id }}, {{ b.last_id }})">
+                      Отправить
+                    </button>
+                  {% else %}
+                    <span style="color:#999; font-size:12px;">—</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+
       {# Actions #}
       <div class="card" style="box-shadow:none; border:1px solid #e6e6e6;">
         <div class="card-content" style="padding: 16px;">
@@ -93,26 +172,6 @@
               <span id="test_result" style="font-size:13px;"></span>
             </div>
           </div>
-
-          {# Launch instructions #}
-          {% if campaign.status == 'draft' %}
-          <div style="margin-bottom:14px;">
-            <div style="color:#777; font-weight:700; font-size:12px; margin-bottom:4px;">Запуск рассылки</div>
-            <div style="background:#f5f5f5; padding:12px; border-radius:4px; font-family:monospace; font-size:13px;">
-              python manage.py send_campaign {{ campaign.pk }}
-            </div>
-            <div style="color:#999; font-size:11px; margin-top:4px;">
-              Запустите эту команду на сервере. Параметры: --rate=1 (писем/сек), --dry-run (тест без отправки)
-            </div>
-          </div>
-          {% elif campaign.status == 'paused' %}
-          <div style="margin-bottom:14px;">
-            <div style="color:#777; font-weight:700; font-size:12px; margin-bottom:4px;">Продолжить рассылку</div>
-            <div style="background:#f5f5f5; padding:12px; border-radius:4px; font-family:monospace; font-size:13px;">
-              python manage.py send_campaign {{ campaign.pk }} --resume
-            </div>
-          </div>
-          {% endif %}
 
           {# Delete #}
           {% if campaign.status == 'draft' or campaign.status == 'done' %}
@@ -167,6 +226,8 @@
   </div>
 
   <script>
+  var csrf = '{{ csrf_token }}';
+
   function sendTest() {
     var email = document.getElementById('test_email').value.trim();
     var resultEl = document.getElementById('test_result');
@@ -175,7 +236,6 @@
     btn.disabled = true;
     resultEl.textContent = 'Отправка...';
     resultEl.style.color = '#777';
-    var csrf = document.querySelector('[name=csrfmiddlewaretoken]').value;
     fetch('{% url "admin_campaign_send_test" campaign.pk %}', {
       method: 'POST',
       headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRFToken': csrf},
@@ -196,6 +256,42 @@
       btn.disabled = false;
       resultEl.textContent = '✗ Ошибка сети';
       resultEl.style.color = '#b00020';
+    });
+  }
+
+  function sendBatch(num, firstId, lastId) {
+    var btn = document.getElementById('batch-btn-' + num);
+    var statusEl = document.getElementById('batch-status-' + num);
+    btn.disabled = true;
+    btn.textContent = 'Отправка...';
+    btn.style.background = '#ff9800';
+    statusEl.innerHTML = '<span style="color:#2196f3; font-weight:700;">Отправляется...</span>';
+
+    fetch('{% url "admin_campaign_send_batch" campaign.pk %}', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRFToken': csrf},
+      body: 'first_id=' + firstId + '&last_id=' + lastId
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.ok) {
+        document.getElementById('batch-sent-' + num).textContent = parseInt(document.getElementById('batch-sent-' + num).textContent) + data.sent;
+        document.getElementById('batch-failed-' + num).textContent = parseInt(document.getElementById('batch-failed-' + num).textContent) + data.failed;
+        document.getElementById('batch-pending-' + num).textContent = '0';
+        statusEl.innerHTML = '<span style="background:#4caf50; color:#fff; padding:2px 10px; border-radius:10px; font-size:11px; font-weight:700;">Готово</span>';
+        btn.style.display = 'none';
+      } else {
+        statusEl.innerHTML = '<span style="color:#b00020; font-weight:700;">Ошибка: ' + (data.error || '') + '</span>';
+        btn.disabled = false;
+        btn.textContent = 'Повторить';
+        btn.style.background = '#ff5722';
+      }
+    })
+    .catch(function() {
+      statusEl.innerHTML = '<span style="color:#b00020; font-weight:700;">Ошибка сети</span>';
+      btn.disabled = false;
+      btn.textContent = 'Повторить';
+      btn.style.background = '#ff5722';
     });
   }
   </script>

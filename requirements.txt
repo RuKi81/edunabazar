@@ -8,6 +8,7 @@ tzdata>=2025.1
 requests>=2.31.0
 feedparser>=6.0.0
 django-redis>=5.4.0
+openpyxl>=3.1.0
 
 # numpy is NOT installed — server CPU lacks X86_V2 for numpy 2.x,
 # and numpy 1.x doesn't support Python 3.13.
