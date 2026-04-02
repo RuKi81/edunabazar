@@ -48,6 +48,12 @@ docker compose -f "$COMPOSE_FILE" exec web python manage.py collectstatic --noin
 echo "--- Cleaning up old images ---"
 docker image prune -f
 
+# Setup cron for daily news fetch at 07:00 Moscow time
+CRON_CMD='CRON_TZ=Europe/Moscow
+0 7 * * * cd /opt/edunabazar && docker compose -f docker-compose.prod.yml exec -T web python manage.py fetch_news --count 3 >> /var/log/fetch_news.log 2>&1'
+( crontab -l 2>/dev/null | grep -v 'fetch_news' | grep -v 'CRON_TZ' ; echo "$CRON_CMD" ) | crontab -
+echo "--- Cron job for fetch_news installed ---"
+
 echo "=== Deploy finished at $(date) ==="
 echo "--- Service status ---"
 docker compose -f "$COMPOSE_FILE" ps

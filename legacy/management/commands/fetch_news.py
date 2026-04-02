@@ -8,7 +8,7 @@ Usage:
     python manage.py fetch_news --count 3  # fetch 3 articles
 
 Cron (daily at 07:00 Moscow time):
-    0 7 * * * cd /opt/edunabazar && docker compose -f deploy/app/docker-compose.yml exec -T web python manage.py fetch_news
+    0 7 * * * cd /opt/edunabazar && docker compose -f docker-compose.prod.yml exec -T web python manage.py fetch_news
 """
 
 import hashlib
@@ -28,6 +28,7 @@ from django.utils import timezone
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from legacy.models import News, NewsFeedSource, NewsKeyword
+from legacy.cache_utils import invalidate_home_cache
 
 logger = logging.getLogger('legacy.fetch_news')
 
@@ -319,6 +320,16 @@ class Command(BaseCommand):
         count = options['count']
         today = date.today()
 
+        self.stdout.write(f'[fetch_news] Started at {timezone.now()}, today={today}, count={count}, dry={dry}')
+
+        try:
+            self._do_fetch(dry, count, today)
+        except Exception as exc:
+            self.stderr.write(self.style.ERROR(f'[fetch_news] FATAL ERROR: {exc}'))
+            logger.exception('fetch_news crashed')
+            raise
+
+    def _do_fetch(self, dry, count, today):
         # Check how many news we already have for today
         existing_today = News.objects.filter(published_at=today).count()
         if existing_today >= count and not dry:
@@ -328,10 +339,28 @@ class Command(BaseCommand):
             return
 
         remaining = count - existing_today if not dry else count
+        self.stdout.write(f'[fetch_news] Need {remaining} more article(s) for today')
+
+        # Check RSS sources
+        from legacy.models import NewsFeedSource
+        src_count = NewsFeedSource.objects.filter(is_active=True).count()
+        self.stdout.write(f'[fetch_news] Active RSS sources in DB: {src_count}')
+        if src_count == 0:
+            self.stderr.write(self.style.ERROR(
+                '[fetch_news] ERROR: No active RSS sources in news_feed_source table! '
+                'Add sources via Django admin: /admin/legacy/newsfeedsource/'
+            ))
+            return
+
+        # Check GigaChat config
+        from django.conf import settings
+        has_gigachat = bool(getattr(settings, 'GIGACHAT_AUTH_KEY', ''))
+        self.stdout.write(f'[fetch_news] GigaChat configured: {has_gigachat}')
 
         entries = _fetch_rss_entries(max_age_days=3)
+        self.stdout.write(f'[fetch_news] RSS entries found (after keyword filter): {len(entries)}')
         if not entries:
-            self.stdout.write(self.style.WARNING('No agro news found in RSS feeds.'))
+            self.stdout.write(self.style.WARNING('[fetch_news] No agro news found in RSS feeds.'))
             return
 
         # Filter out already saved URLs
@@ -340,6 +369,7 @@ class Command(BaseCommand):
                 source_url__in=[e['url'] for e in entries]
             ).values_list('source_url', flat=True)
         )
+        self.stdout.write(f'[fetch_news] Already saved URLs (skip): {len(existing_urls)}')
 
         saved = 0
         for entry in entries:
@@ -389,4 +419,7 @@ class Command(BaseCommand):
             saved += 1
             self.stdout.write(self.style.SUCCESS(f'Saved: {new_title}'))
 
-        self.stdout.write(self.style.SUCCESS(f'\nDone. Saved {saved} article(s).'))
+        if saved > 0:
+            invalidate_home_cache()
+            self.stdout.write(self.style.SUCCESS(f'[fetch_news] Home cache invalidated'))
+        self.stdout.write(self.style.SUCCESS(f'\n[fetch_news] Done. Saved {saved} article(s).'))

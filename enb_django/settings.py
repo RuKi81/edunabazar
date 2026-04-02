@@ -297,5 +297,15 @@ LOGGING = {
             'level': 'ERROR',
             'propagate': False,
         },
+        'legacy': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'legacy.fetch_news': {
+            'handlers': ['console'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
     },
 }

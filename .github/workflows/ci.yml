@@ -128,3 +128,5 @@ jobs:
             docker compose -f docker-compose.prod.yml exec -T web python manage.py migrate --noinput
             docker compose -f docker-compose.prod.yml exec -T web python manage.py collectstatic --noinput
             docker image prune -f
+            # Setup cron for daily news fetch at 07:00 Moscow time
+            ( crontab -l 2>/dev/null | grep -v 'fetch_news' | grep -v 'CRON_TZ' ; printf 'CRON_TZ=Europe/Moscow\n0 7 * * * cd /opt/edunabazar && docker compose -f docker-compose.prod.yml exec -T web python manage.py fetch_news --count 3 >> /var/log/fetch_news.log 2>&1\n' ) | crontab -

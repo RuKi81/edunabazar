@@ -1,0 +1,327 @@
+# Архитектура проекта «Еду на базар» (edunabazar)
+
+> **Репозиторий:** <https://github.com/RuKi81/edunabazar>
+> **Домен:** edunabazar.ru / www.edunabazar.ru
+> **Дата:** 2025-03-31
+
+---
+
+## 1. Общая схема инфраструктуры
+
+```
+                  ┌─────────────────────────────────────────────┐
+                  │            Интернет / Пользователь           │
+                  └────────────────────┬────────────────────────┘
+                                       │  :80 / :443
+                  ┌────────────────────▼────────────────────────┐
+                  │        VM1 — App-сервер (195.47.196.46)     │
+                  │                                             │
+                  │  ┌─────────┐   ┌──────────┐  ┌───────────┐ │
+                  │  │  Nginx  │──▶│ Gunicorn  │  │   Redis   │ │
+                  │  │ :80/:443│   │  :8000    │  │   :6379   │ │
+                  │  └─────────┘   └──────────┘  └───────────┘ │
+                  │  ┌──────────┐                               │
+                  │  │ Certbot  │  (Let's Encrypt)              │
+                  │  └──────────┘                               │
+                  └────────────────────┬────────────────────────┘
+                                       │  :5432 (TCP)
+                  ┌────────────────────▼────────────────────────┐
+                  │        VM2 — DB-сервер (93.95.98.209)       │
+                  │                                             │
+                  │  ┌────────────────────────────────────────┐ │
+                  │  │  PostgreSQL 16 + PostGIS 3.4 (Docker)  │ │
+                  │  │  :5432                                 │ │
+                  │  └────────────────────────────────────────┘ │
+                  └─────────────────────────────────────────────┘
+```
+
+---
+
+## 2. Серверы и IP-адреса
+
+| Роль | IP-адрес | Внутренний IP (VPC) | Расположение | ОС |
+|------|----------|--------------------|--------------|----|
+| **VM1 — App-сервер** | `195.47.196.46` | `10.0.0.10` (предполагаемый) | — | Ubuntu (Docker) |
+| **VM2 — DB-сервер** | `93.95.98.209` | `10.0.0.11` | — | Ubuntu (Docker) |
+
+### Открытые порты
+
+| Сервер | Порт | Протокол | Сервис | Доступ |
+|--------|------|----------|--------|--------|
+| VM1 | 80 | TCP | Nginx (HTTP → HTTPS redirect) | Публичный |
+| VM1 | 443 | TCP | Nginx (HTTPS) | Публичный |
+| VM1 | 22 | TCP | SSH | Администрирование |
+| VM2 | 5432 | TCP | PostgreSQL | Только с VM1 (`195.47.196.46`) |
+| VM2 | 22 | TCP | SSH | Администрирование |
+
+---
+
+## 3. Стек технологий
+
+| Компонент | Технология | Версия |
+|-----------|-----------|--------|
+| Язык | Python | 3.13 |
+| Фреймворк | Django | 5.1.15 |
+| WSGI-сервер | Gunicorn | latest |
+| Веб-сервер / реверс-прокси | Nginx | 1.27-alpine |
+| БД | PostgreSQL + PostGIS | 16 + 3.4 |
+| Кэш / сессии | Redis | 7-alpine |
+| SSL | Let's Encrypt (Certbot) | — |
+| Контейнеризация | Docker / Docker Compose | — |
+| CI/CD | GitHub Actions | — |
+| REST API | Django REST Framework + drf-spectacular | — |
+| Геоданные | GeoDjango (GDAL, GEOS, PostGIS) | — |
+| Email | Yandex SMTP (`smtp.yandex.ru:587`) | — |
+| SMS | SMSC.ru | — |
+| LLM (рерайт новостей) | GigaChat (Sber) | — |
+
+---
+
+## 4. Структура проекта
+
+```
+edunabazar/
+├── enb_django/              # Конфигурация Django-проекта
+│   ├── settings.py
+│   ├── urls.py
+│   ├── wsgi.py / asgi.py
+│
+├── legacy/                  # Основное приложение (маркетплейс)
+│   ├── models.py            # Advert, LegacyUser, Seller, Catalog, Categories,
+│   │                        #   Review, Message, News, EmailCampaign, Favorite, ...
+│   ├── views.py
+│   ├── api.py / api_urls.py # REST API v1
+│   ├── templates/legacy/
+│   ├── static/legacy/
+│   └── management/commands/ # Management-команды (новости, рассылки и т.д.)
+│
+├── agrocosmos/              # Приложение «Агрокосмос» (ГИС + спутники)
+│   ├── models.py            # Region, District, Farmland, SatelliteScene,
+│   │                        #   VegetationIndex (NDVI, EVI, MSAVI, NDWI, NDMI)
+│   ├── views.py
+│   ├── services/
+│   ├── templates/agrocosmos/
+│   └── management/commands/
+│
+├── deploy/                  # Деплой-скрипты и конфигурации
+│   ├── nginx.conf
+│   ├── deploy.sh
+│   ├── setup-app.sh         # Первоначальная настройка VM1
+│   ├── setup-db.sh          # Первоначальная настройка VM2
+│   └── db/
+│       ├── docker-compose.yml
+│       ├── pg_hba_custom.conf
+│       ├── backup.sh
+│       └── .env.example
+│
+├── .github/workflows/ci.yml # CI/CD pipeline
+├── docker-compose.yml       # Локальная разработка
+├── docker-compose.prod.yml  # Продакшен (VM1)
+├── Dockerfile
+├── requirements.txt
+├── .env.example
+└── manage.py
+```
+
+---
+
+## 5. Django-приложения и модели
+
+### 5.1 `legacy` — Маркетплейс объявлений
+
+| Модель | Таблица | managed | Описание |
+|--------|---------|---------|----------|
+| `Advert` | `advert` | **False** | Объявление (предложение/спрос) |
+| `AdvertPhoto` | `advert_photo` | True | Фото объявления |
+| `Catalog` | `catalog` | **False** | Каталог (группа категорий) |
+| `Categories` | `categories` | **False** | Категория товара |
+| `Seller` | `seller` | **False** | Профиль продавца |
+| `LegacyUser` | `legacy_user` | **False** | Пользователь (legacy) |
+| `Review` | `review` | **False** | Отзыв |
+| `Message` | `message` | True | Сообщение между пользователями |
+| `News` | `news` | True | Агро-новость (RSS → GigaChat рерайт) |
+| `NewsKeyword` | `news_keyword` | True | Ключевое слово для фильтрации новостей |
+| `NewsFeedSource` | `news_feed_source` | True | RSS-источник новостей |
+| `EmailCampaign` | `email_campaign` | True | Email-рассылка |
+| `EmailLog` | `email_log` | True | Лог отправки email |
+| `Favorite` | `favorite` | True | Избранное |
+| `AdvertView` | `advert_view` | True | Просмотр объявления |
+
+> Модели с `managed = False` — унаследованы из старой PHP-базы, Django не управляет их миграциями.
+
+### 5.2 `agrocosmos` — ГИС-модуль (спутниковый мониторинг)
+
+| Модель | Таблица | Описание |
+|--------|---------|----------|
+| `Region` | `agro_region` | Субъект РФ (MultiPolygon) |
+| `District` | `agro_district` | Муниципальный район (MultiPolygon) |
+| `Farmland` | `agro_farmland` | Полигон сельхоз. угодья (пашня, пастбище и т.д.) |
+| `SatelliteScene` | `agro_satellite_scene` | Метаданные спутникового снимка (Sentinel-2, Landsat, MODIS) |
+| `VegetationIndex` | `agro_vegetation_index` | Зональная статистика вегетационных индексов по угодью |
+
+---
+
+## 6. URL-маршруты
+
+| Путь | Назначение |
+|------|-----------|
+| `/` | Главная страница (legacy) |
+| `/admin/` | Django Admin |
+| `/api/v1/` | REST API v1 (legacy) |
+| `/api/docs/` | Swagger UI |
+| `/api/redoc/` | ReDoc |
+| `/api/schema/` | OpenAPI-схема |
+| `/agrocosmos/` | Модуль Агрокосмос |
+| `/healthz` | Health-check (для Docker / мониторинга) |
+| `/robots.txt` | SEO |
+| `/sitemap.xml` | SEO |
+| `/turbo-rss.xml` | Yandex Turbo RSS |
+
+---
+
+## 7. Доступы и переменные окружения
+
+### 7.1 Файл `.env` на VM1 (App-сервер)
+
+| Переменная | Описание | Пример (прод) |
+|-----------|----------|---------------|
+| `DJANGO_SECRET_KEY` | Секретный ключ Django | *(случайная строка 50+ символов)* |
+| `DJANGO_DEBUG` | Режим отладки | `0` |
+| `DJANGO_ALLOWED_HOSTS` | Разрешённые хосты | `195.47.196.46 edunabazar.ru www.edunabazar.ru` |
+| `DJANGO_ADMIN_USERS` | Логины админов | `admin` |
+| `DB_HOST` | Хост БД | `93.95.98.209` |
+| `DB_PORT` | Порт БД | `5432` |
+| `DB_NAME` | Имя БД | `enb_DB` |
+| `DB_USER` | Пользователь БД | `enb_app` |
+| `DB_PASSWORD` | Пароль БД | *(секрет)* |
+| `REDIS_URL` | URL Redis | `redis://redis:6379/0` *(задаётся в compose)* |
+| `EMAIL_BACKEND` | Email-бэкенд | `django.core.mail.backends.smtp.EmailBackend` |
+| `EMAIL_HOST` | SMTP-сервер | `smtp.yandex.ru` |
+| `EMAIL_PORT` | SMTP-порт | `587` |
+| `EMAIL_USE_TLS` | TLS | `1` |
+| `EMAIL_HOST_USER` | Email-логин | `edunabazar2017@yandex.ru` |
+| `EMAIL_HOST_PASSWORD` | Email-пароль | *(секрет — пароль приложения Яндекс)* |
+| `DEFAULT_FROM_EMAIL` | Адрес отправителя | `edunabazar2017@yandex.ru` |
+| `SMSC_LOGIN` | Логин SMSC.ru | *(секрет)* |
+| `SMSC_PASSWORD` | Пароль SMSC.ru | *(секрет)* |
+| `SMSC_SENDER` | Отправитель SMS | *(настроить)* |
+| `GIGACHAT_AUTH_KEY` | Ключ GigaChat (base64) | *(секрет)* |
+| `CSRF_TRUSTED_ORIGINS` | Trusted origins | `https://edunabazar.ru,https://www.edunabazar.ru` |
+| `SECURE_SSL_REDIRECT` | Редирект на HTTPS | `1` |
+| `SECURE_HSTS_SECONDS` | HSTS | `31536000` |
+
+### 7.2 Файл `.env` на VM2 (DB-сервер)
+
+| Переменная | Описание | Пример |
+|-----------|----------|--------|
+| `DB_NAME` | Имя БД | `enb_DB` |
+| `DB_USER` | Пользователь БД | `enb_app` |
+| `DB_PASSWORD` | Пароль БД | *(секрет — должен совпадать с VM1)* |
+
+### 7.3 GitHub Actions Secrets
+
+| Секрет | Описание |
+|--------|----------|
+| `SERVER_HOST` | IP app-сервера (`195.47.196.46`) |
+| `SERVER_USER` | SSH-пользователь |
+| `SERVER_SSH_KEY` | Приватный SSH-ключ для деплоя |
+| `SERVER_PORT` | SSH-порт (по умолчанию `22`) |
+
+---
+
+## 8. Доступ к БД (pg_hba)
+
+Файл `deploy/db/pg_hba_custom.conf` ограничивает сетевой доступ к PostgreSQL:
+
+| Тип | БД | Пользователь | Адрес | Метод |
+|-----|-----|-------------|-------|-------|
+| local | all | all | — | trust |
+| host | all | all | 127.0.0.1/32 | scram-sha-256 |
+| host | all | all | ::1/128 | scram-sha-256 |
+| host | enb_DB | enb_app | **195.47.196.46/32** | scram-sha-256 |
+| host | all | all | 0.0.0.0/0 | **reject** |
+
+Дополнительно: UFW на VM2 разрешает порт `5432` только с `195.47.196.46`.
+
+---
+
+## 9. Docker-контейнеры (прод)
+
+**VM1** (`docker-compose.prod.yml`):
+
+| Контейнер | Образ | Порты | Назначение |
+|-----------|-------|-------|-----------|
+| `web` | *(build из Dockerfile)* | 8000 (internal) | Django + Gunicorn (3 workers) |
+| `nginx` | `nginx:1.27-alpine` | 80, 443 | Реверс-прокси, статика, SSL |
+| `redis` | `redis:7-alpine` | 6379 (internal) | Кэш + сессии |
+| `certbot` | `certbot/certbot` | — | Авто-обновление SSL-сертификатов |
+
+**VM2** (`deploy/db/docker-compose.yml`):
+
+| Контейнер | Образ | Порты | Назначение |
+|-----------|-------|-------|-----------|
+| `db` | `postgis/postgis:16-3.4` | 5432 | PostgreSQL + PostGIS |
+
+---
+
+## 10. CI/CD Pipeline
+
+```
+push/PR → main/master
+    │
+    ├── [lint]     Flake8 (синтаксис, импорты, сложность)
+    │
+    ├── [test]     PostGIS service → migrate → django check → manage.py test legacy
+    │
+    └── [docker-build] (только main/master, после lint+test)
+         │
+         └── [deploy] SSH → VM1:
+               git pull → docker compose build → up -d → migrate → collectstatic
+```
+
+---
+
+## 11. Бэкапы
+
+- **Скрипт:** `deploy/db/backup.sh`
+- **Расписание:** cron, ежедневно в 03:00 (`0 3 * * *`)
+- **Хранение:** `/mnt/nas/pg_backups/` (14 дней)
+- **Формат:** `pg_dump | gzip` → `enb_DB_YYYY-MM-DD_HHMM.sql.gz`
+
+---
+
+## 12. Локальная разработка
+
+```bash
+# 1. Скопировать .env
+cp .env.example .env
+# Отредактировать .env (DB_HOST=127.0.0.1, DJANGO_DEBUG=1)
+
+# 2. Запустить PostgreSQL + приложение
+docker compose up -d
+
+# 3. Миграции
+docker compose exec web python manage.py migrate
+
+# 4. Приложение доступно на http://localhost:8000
+```
+
+**Локальная БД (docker-compose.yml):**
+- `POSTGRES_DB`: `enb_DB`
+- `POSTGRES_USER`: `admin`
+- `POSTGRES_PASSWORD`: `admin`
+- Порт: `5432`
+
+---
+
+## 13. Важные пути на серверах
+
+| Путь | Сервер | Описание |
+|------|--------|----------|
+| `/opt/edunabazar/` | VM1 | Корень проекта |
+| `/opt/edunabazar/.env` | VM1 | Переменные окружения (прод) |
+| `/opt/edunabazar/media/` | VM1 | Загруженные файлы (фото и т.д.) |
+| `/opt/edunabazar-db/` | VM2 | Конфигурация БД |
+| `/opt/edunabazar-db/.env` | VM2 | Переменные БД |
+| `/mnt/nas/pg_backups/` | VM2 | Бэкапы БД |
+| `/var/log/pg_backup.log` | VM2 | Лог бэкапов |
