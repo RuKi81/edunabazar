@@ -2,7 +2,7 @@
 
 > **Репозиторий:** <https://github.com/RuKi81/edunabazar>
 > **Домен:** edunabazar.ru / www.edunabazar.ru
-> **Дата:** 2025-03-31
+> **Дата:** 2026-04-03
 
 ---
 
@@ -14,7 +14,12 @@
                   └────────────────────┬────────────────────────┘
                                        │  :80 / :443
                   ┌────────────────────▼────────────────────────┐
-                  │        VM1 — App-сервер (195.47.196.46)     │
+                  │   PVE-шлюз (195.47.196.46)                  │
+                  │   DNAT :80→10.0.0.10:80, :443→10.0.0.10:443│
+                  └────────────────────┬────────────────────────┘
+                                       │  NAT
+                  ┌────────────────────▼────────────────────────┐
+                  │   VM1 — App-сервер (10.0.0.10)              │
                   │                                             │
                   │  ┌─────────┐   ┌──────────┐  ┌───────────┐ │
                   │  │  Nginx  │──▶│ Gunicorn  │  │   Redis   │ │
@@ -26,7 +31,7 @@
                   └────────────────────┬────────────────────────┘
                                        │  :5432 (TCP)
                   ┌────────────────────▼────────────────────────┐
-                  │        VM2 — DB-сервер (93.95.98.209)       │
+                  │   VM2 — DB-сервер (10.0.0.11)               │
                   │                                             │
                   │  ┌────────────────────────────────────────┐ │
                   │  │  PostgreSQL 16 + PostGIS 3.4 (Docker)  │ │
@@ -39,10 +44,11 @@
 
 ## 2. Серверы и IP-адреса
 
-| Роль | IP-адрес | Внутренний IP (VPC) | Расположение | ОС |
-|------|----------|--------------------|--------------|----|
-| **VM1 — App-сервер** | `195.47.196.46` | `10.0.0.10` (предполагаемый) | — | Ubuntu (Docker) |
-| **VM2 — DB-сервер** | `93.95.98.209` | `10.0.0.11` | — | Ubuntu (Docker) |
+| Роль | Внешний IP | Внутренний IP | Доступ по SSH | ОС |
+|------|-----------|--------------|---------------|---|
+| **PVE-шлюз** | `195.47.196.46` | — | `ssh root@195.47.196.46` | Proxmox VE |
+| **VM1 — App-сервер** | — (за NAT) | `10.0.0.10` | `ssh root@195.47.196.46 "ssh root@10.0.0.10"` | Ubuntu (Docker) |
+| **VM2 — DB-сервер** | — (за NAT) | `10.0.0.11` | `ssh root@195.47.196.46 "ssh root@10.0.0.11"` | Ubuntu (Docker) |
 
 ### Открытые порты
 
@@ -115,8 +121,7 @@ edunabazar/
 │       └── .env.example
 │
 ├── .github/workflows/ci.yml # CI/CD pipeline
-├── docker-compose.yml       # Локальная разработка
-├── docker-compose.prod.yml  # Продакшен (VM1)
+├── docker-compose.yml       # Продакшен (только web-сервис, БД внешняя)
 ├── Dockerfile
 ├── requirements.txt
 ├── .env.example
@@ -174,7 +179,11 @@ edunabazar/
 | `/agrocosmos/` | Модуль Агрокосмос |
 | `/healthz` | Health-check (для Docker / мониторинга) |
 | `/robots.txt` | SEO |
-| `/sitemap.xml` | SEO |
+| `/sitemap.xml` | Sitemap index (ссылки на sub-sitemaps) |
+| `/sitemap-static.xml` | Статические страницы + каталоги/категории |
+| `/sitemap-adverts.xml` | Все объявления |
+| `/sitemap-sellers.xml` | Все продавцы |
+| `/sitemap-news.xml` | Все новости |
 | `/turbo-rss.xml` | Yandex Turbo RSS |
 
 ---
@@ -189,7 +198,7 @@ edunabazar/
 | `DJANGO_DEBUG` | Режим отладки | `0` |
 | `DJANGO_ALLOWED_HOSTS` | Разрешённые хосты | `195.47.196.46 edunabazar.ru www.edunabazar.ru` |
 | `DJANGO_ADMIN_USERS` | Логины админов | `admin` |
-| `DB_HOST` | Хост БД | `93.95.98.209` |
+| `DB_HOST` | Хост БД | `10.0.0.11` |
 | `DB_PORT` | Порт БД | `5432` |
 | `DB_NAME` | Имя БД | `enb_DB` |
 | `DB_USER` | Пользователь БД | `enb_app` |
@@ -247,14 +256,27 @@ edunabazar/
 
 ## 9. Docker-контейнеры (прод)
 
-**VM1** (`docker-compose.prod.yml`):
+**VM1** (10.0.0.10):
 
-| Контейнер | Образ | Порты | Назначение |
-|-----------|-------|-------|-----------|
-| `web` | *(build из Dockerfile)* | 8000 (internal) | Django + Gunicorn (3 workers) |
-| `nginx` | `nginx:1.27-alpine` | 80, 443 | Реверс-прокси, статика, SSL |
-| `redis` | `redis:7-alpine` | 6379 (internal) | Кэш + сессии |
-| `certbot` | `certbot/certbot` | — | Авто-обновление SSL-сертификатов |
+`docker-compose.yml` содержит **только** сервис `web`. Остальные контейнеры — orphan (созданы отдельно).
+
+| Контейнер | Образ | Порты | В compose | Назначение |
+|-----------|-------|-------|-----------|----------|
+| `edunabazar-web-1` | *(build из Dockerfile)* | 8000 | **Да** | Django + Gunicorn |
+| `edunabazar-nginx-1` | `nginx:1.27-alpine` | 80, 443 | Нет (orphan) | Реверс-прокси, статика, SSL |
+| `edunabazar-redis-1` | `redis:7-alpine` | 6379 | Нет (orphan) | Кэш + сессии |
+| `edunabazar-certbot-1` | `certbot/certbot` | — | Нет (orphan) | SSL-сертификаты |
+
+> ⚠️ БД НЕ в Docker на VM1. Используется внешняя БД на VM2 (10.0.0.11), настроенная через `.env`.
+> **Не добавлять** `db` сервис в `docker-compose.yml` — это создаст пустую локальную БД и сломает сайт.
+
+### Nginx — монтирование файлов
+
+| Хост (VM1) | Контейнер | Режим |
+|---|---|---|
+| `/opt/edunabazar/deploy/nginx.conf` | `/etc/nginx/conf.d/default.conf` | ro |
+| `/opt/edunabazar/deploy/certbot/conf` | `/etc/letsencrypt` | ro |
+| `/opt/edunabazar/deploy/certbot/www` | `/var/www/certbot` | — |
 
 **VM2** (`deploy/db/docker-compose.yml`):
 
@@ -276,7 +298,26 @@ push/PR → main/master
     └── [docker-build] (только main/master, после lint+test)
          │
          └── [deploy] SSH → VM1:
-               git pull → docker compose build → up -d → migrate → collectstatic
+               git pull → docker compose build → up -d --no-deps → collectstatic
+```
+
+### Ручной деплой (с PVE-шлюза)
+
+```bash
+ssh root@10.0.0.10 "cd /opt/edunabazar && git pull && docker compose build web && docker compose up -d --no-deps web && docker restart edunabazar-nginx-1"
+```
+
+> ⚠️ **Обязательно:**
+> - Использовать `--no-deps` чтобы не создать лишний db-контейнер
+> - После пересоздания web **перезапустить nginx** (он кеширует DNS upstream)
+
+### Перевыпуск SSL-сертификата
+
+```bash
+# 1. Временно переключить nginx на HTTP-only (если SSL сломан)
+# 2. Выпустить сертификат:
+ssh root@10.0.0.10 "docker exec edunabazar-certbot-1 certbot certonly --webroot -w /var/www/certbot -d edunabazar.ru -d www.edunabazar.ru --non-interactive --agree-tos --email admin@edunabazar.ru"
+# 3. Восстановить полный nginx.conf и перезапустить nginx
 ```
 
 ---
@@ -320,6 +361,9 @@ docker compose exec web python manage.py migrate
 |------|--------|----------|
 | `/opt/edunabazar/` | VM1 | Корень проекта |
 | `/opt/edunabazar/.env` | VM1 | Переменные окружения (прод) |
+| `/opt/edunabazar/deploy/nginx.conf` | VM1 | Конфиг Nginx (bind-mount в контейнер) |
+| `/opt/edunabazar/deploy/certbot/conf/` | VM1 | SSL-сертификаты Let's Encrypt |
+| `/opt/edunabazar/deploy/certbot/www/` | VM1 | ACME challenge directory |
 | `/opt/edunabazar/media/` | VM1 | Загруженные файлы (фото и т.д.) |
 | `/opt/edunabazar-db/` | VM2 | Конфигурация БД |
 | `/opt/edunabazar-db/.env` | VM2 | Переменные БД |
