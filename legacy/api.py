@@ -14,6 +14,10 @@ from .serializers import (
     MessageSerializer,
 )
 from .views import _get_current_legacy_user, _is_admin_user
+from .constants import (
+    ADVERT_STATUS_DELETED, ADVERT_STATUS_MODERATION, ADVERT_STATUS_PUBLISHED,
+    REVIEW_STATUS_DELETED, REVIEW_STATUS_MODERATION, REVIEW_STATUS_PUBLISHED,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -63,9 +67,9 @@ class AdvertViewSet(viewsets.GenericViewSet,
         qs = Advert.objects.select_related('category', 'author').prefetch_related(_thumb_prefetch)
 
         if is_admin:
-            qs = qs.exclude(status=0)
+            qs = qs.exclude(status=ADVERT_STATUS_DELETED)
         else:
-            qs = qs.filter(status=10)
+            qs = qs.filter(status=ADVERT_STATUS_PUBLISHED)
 
         # Filters
         q = (self.request.query_params.get('q') or '').strip()
@@ -119,7 +123,7 @@ class AdvertViewSet(viewsets.GenericViewSet,
             priority=0,
             created_at=now,
             updated_at=now,
-            status=5,
+            status=ADVERT_STATUS_MODERATION,
         )
         out = AdvertDetailSerializer(advert, context={'request': request})
         return Response(out.data, status=status.HTTP_201_CREATED)
@@ -172,7 +176,7 @@ class ReviewViewSet(viewsets.GenericViewSet,
     permission_classes = [IsLegacyAuthenticatedOrReadOnly]
 
     def get_queryset(self):
-        qs = Review.objects.select_related('author').filter(status=10)
+        qs = Review.objects.select_related('author').filter(status=REVIEW_STATUS_PUBLISHED)
         review_type = self.request.query_params.get('review_type')
         object_id = self.request.query_params.get('object_id')
         try:
@@ -200,7 +204,7 @@ class ReviewViewSet(viewsets.GenericViewSet,
 
         existing = Review.objects.filter(
             type=d['review_type'], object_id=d['object_id'], author_id=user.id,
-        ).exclude(status=0).exists()
+        ).exclude(status=REVIEW_STATUS_DELETED).exists()
         if existing:
             return Response({'detail': 'Вы уже оставили отзыв'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -213,7 +217,7 @@ class ReviewViewSet(viewsets.GenericViewSet,
             text=d['text'],
             created_at=now,
             updated_at=now,
-            status=5,
+            status=REVIEW_STATUS_MODERATION,
         )
         out = ReviewSerializer(review, context={'request': request})
         return Response(out.data, status=status.HTTP_201_CREATED)

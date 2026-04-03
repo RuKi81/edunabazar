@@ -10,6 +10,7 @@ from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.utils import timezone
 
 from .models import Advert, News, Seller
+from .constants import ADVERT_STATUS_PUBLISHED, SELLER_STATUS_ACTIVE
 from .cache_utils import SITEMAP_KEY, SITEMAP_TIMEOUT, TURBO_RSS_KEY, TURBO_RSS_TIMEOUT
 
 SITEMAP_ADVERTS_KEY = 'sitemap_adverts_xml'
@@ -126,7 +127,7 @@ def sitemap_adverts_xml(request: HttpRequest) -> HttpResponse:
 
     now = timezone.now().strftime('%Y-%m-%d')
     urls = []
-    for a in Advert.objects.filter(status=10).order_by('-updated_at')[:5000]:
+    for a in Advert.objects.filter(status=ADVERT_STATUS_PUBLISHED).order_by('-updated_at')[:5000]:
         lastmod = a.updated_at.strftime('%Y-%m-%d') if a.updated_at else now
         urls.append(_url(f'{SITE_URL}/adverts/{a.id}/', lastmod, 'weekly', '0.7'))
 
@@ -142,7 +143,7 @@ def sitemap_sellers_xml(request: HttpRequest) -> HttpResponse:
 
     now = timezone.now().strftime('%Y-%m-%d')
     urls = []
-    for s in Seller.objects.filter(status=10).order_by('-updated_at')[:2000]:
+    for s in Seller.objects.filter(status=SELLER_STATUS_ACTIVE).order_by('-updated_at')[:2000]:
         lastmod = s.updated_at.strftime('%Y-%m-%d') if s.updated_at else now
         urls.append(_url(f'{SITE_URL}/sellers/{s.id}/', lastmod, 'weekly', '0.6'))
 
@@ -182,7 +183,7 @@ def turbo_rss(request: HttpRequest) -> HttpResponse:
 
     # Published adverts (latest 1000)
     for a in (Advert.objects
-              .filter(status=10)
+              .filter(status=ADVERT_STATUS_PUBLISHED)
               .select_related('category__catalog', 'author')
               .order_by('-updated_at')[:1000]):
         title = escape(a.title or '')
@@ -286,7 +287,7 @@ def healthcheck(request: HttpRequest) -> JsonResponse:
         checks['db'] = str(e)
         status_code = 503
     try:
-        checks['adverts_count'] = Advert.objects.filter(status=10).count()
+        checks['adverts_count'] = Advert.objects.filter(status=ADVERT_STATUS_PUBLISHED).count()
     except Exception:
         checks['adverts_count'] = None
     return JsonResponse(checks, status=status_code)
