@@ -27,6 +27,7 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from django.db import transaction
 from django.contrib.auth import authenticate, login as django_login
 from PIL import Image as PILImage
+from .slug_utils import get_slug_map
 
 from django.core.cache import cache
 
@@ -352,8 +353,57 @@ def home(request: HttpRequest) -> HttpResponse:
     return resp
 
 
-def advert_list(request: HttpRequest) -> HttpResponse:
+def advert_list(request: HttpRequest, catalog_slug: str = '', category_slug: str = '') -> HttpResponse:
     legacy_user = _get_current_legacy_user(request)
+
+    # --- Resolve catalog/category from slug or GET params ---
+    slug_map = get_slug_map()
+    catalog_id = None
+    category_id = None
+
+    if catalog_slug:
+        catalog_id = slug_map['catalog_by_slug'].get(catalog_slug)
+        if catalog_id is None:
+            from django.http import Http404
+            raise Http404
+        if category_slug:
+            category_id = slug_map['category_by_slug'].get((catalog_slug, category_slug))
+            if category_id is None:
+                raise Http404
+    else:
+        # Legacy GET params — redirect to slug URL if possible
+        try:
+            _cat_id = int((request.GET.get('catalog') or '').strip() or 0) or None
+        except Exception:
+            _cat_id = None
+        try:
+            _categ_id = int((request.GET.get('category') or '').strip() or 0) or None
+        except Exception:
+            _categ_id = None
+
+        if _categ_id and _categ_id in slug_map['category_by_id']:
+            cs, cats = slug_map['category_by_id'][_categ_id]
+            params = request.GET.copy()
+            params.pop('catalog', None)
+            params.pop('category', None)
+            qs_str = params.urlencode()
+            url = f'/adverts/{cs}/{cats}/'
+            if qs_str:
+                url += '?' + qs_str
+            return redirect(url, permanent=True)
+        elif _cat_id and _cat_id in slug_map['catalog_by_id']:
+            cs = slug_map['catalog_by_id'][_cat_id]
+            params = request.GET.copy()
+            params.pop('catalog', None)
+            qs_str = params.urlencode()
+            url = f'/adverts/{cs}/'
+            if qs_str:
+                url += '?' + qs_str
+            return redirect(url, permanent=True)
+        else:
+            catalog_id = _cat_id
+            category_id = _categ_id
+
     q = (request.GET.get('q') or '').strip()
     sort = (request.GET.get('sort') or 'id').strip()
     if sort not in {'id', 'price', 'count'}:
@@ -398,16 +448,6 @@ def advert_list(request: HttpRequest) -> HttpResponse:
     if delivery_raw in {'1', 'true', 'yes', 'on'}:
         qs = qs.filter(delivery=True)
 
-    catalog_id = None
-    category_id = None
-    try:
-        catalog_id = int((request.GET.get('catalog') or '').strip() or 0) or None
-    except Exception:
-        catalog_id = None
-    try:
-        category_id = int((request.GET.get('category') or '').strip() or 0) or None
-    except Exception:
-        category_id = None
     if category_id is not None:
         qs = qs.filter(category_id=category_id)
     if catalog_id is not None:
@@ -439,6 +479,9 @@ def advert_list(request: HttpRequest) -> HttpResponse:
             'categories': Categories.objects.filter(active=1).select_related('catalog').order_by('title'),
             'category_id': category_id,
             'legacy_user': legacy_user,
+            'catalog_slug': catalog_slug,
+            'category_slug': category_slug,
+            'slug_map': slug_map,
         },
     )
     return _no_store(resp)

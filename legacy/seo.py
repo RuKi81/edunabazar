@@ -12,6 +12,11 @@ from django.utils import timezone
 from .models import Advert, News, Seller
 from .cache_utils import SITEMAP_KEY, SITEMAP_TIMEOUT, TURBO_RSS_KEY, TURBO_RSS_TIMEOUT
 
+SITEMAP_ADVERTS_KEY = 'sitemap_adverts_xml'
+SITEMAP_SELLERS_KEY = 'sitemap_sellers_xml'
+SITEMAP_NEWS_KEY = 'sitemap_news_xml'
+SITEMAP_STATIC_KEY = 'sitemap_static_xml'
+
 
 SITE_URL = 'https://edunabazar.ru'
 
@@ -54,44 +59,111 @@ def robots_txt(request: HttpRequest) -> HttpResponse:
 
 
 def sitemap_xml(request: HttpRequest) -> HttpResponse:
+    """Sitemap index pointing to sub-sitemaps."""
     cached = cache.get(SITEMAP_KEY)
     if cached is not None:
         return HttpResponse(cached, content_type='application/xml; charset=utf-8')
 
+    now = timezone.now().strftime('%Y-%m-%dT%H:%M:%S+03:00')
+    subs = [
+        f'{SITE_URL}/sitemap-static.xml',
+        f'{SITE_URL}/sitemap-adverts.xml',
+        f'{SITE_URL}/sitemap-sellers.xml',
+        f'{SITE_URL}/sitemap-news.xml',
+    ]
+    entries = []
+    for loc in subs:
+        entries.append(
+            f'  <sitemap>\n'
+            f'    <loc>{loc}</loc>\n'
+            f'    <lastmod>{now}</lastmod>\n'
+            f'  </sitemap>'
+        )
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        + '\n'.join(entries)
+        + '\n</sitemapindex>\n'
+    )
+    cache.set(SITEMAP_KEY, xml, SITEMAP_TIMEOUT)
+    return HttpResponse(xml, content_type='application/xml; charset=utf-8')
+
+
+def sitemap_static_xml(request: HttpRequest) -> HttpResponse:
+    cached = cache.get(SITEMAP_STATIC_KEY)
+    if cached is not None:
+        return HttpResponse(cached, content_type='application/xml; charset=utf-8')
+
+    from .slug_utils import get_slug_map
+
     now = timezone.now().strftime('%Y-%m-%d')
+    urls = [
+        _url(SITE_URL + '/', now, 'daily', '1.0'),
+        _url(SITE_URL + '/adverts/', now, 'hourly', '0.9'),
+        _url(SITE_URL + '/map/', now, 'daily', '0.8'),
+        _url(SITE_URL + '/sellers/', now, 'daily', '0.6'),
+        _url(SITE_URL + '/prices/', now, 'daily', '0.6'),
+        _url(SITE_URL + '/about/', now, 'monthly', '0.5'),
+        _url(SITE_URL + '/contacts/', now, 'monthly', '0.5'),
+        _url(SITE_URL + '/howto/', now, 'monthly', '0.5'),
+    ]
 
+    slug_map = get_slug_map()
+    for cat_slug in slug_map['catalog_by_slug']:
+        urls.append(_url(f'{SITE_URL}/adverts/{cat_slug}/', now, 'daily', '0.8'))
+    for (cat_slug, categ_slug) in slug_map['category_by_slug']:
+        urls.append(_url(f'{SITE_URL}/adverts/{cat_slug}/{categ_slug}/', now, 'daily', '0.7'))
+
+    xml = _wrap_urlset(urls)
+    cache.set(SITEMAP_STATIC_KEY, xml, SITEMAP_TIMEOUT)
+    return HttpResponse(xml, content_type='application/xml; charset=utf-8')
+
+
+def sitemap_adverts_xml(request: HttpRequest) -> HttpResponse:
+    cached = cache.get(SITEMAP_ADVERTS_KEY)
+    if cached is not None:
+        return HttpResponse(cached, content_type='application/xml; charset=utf-8')
+
+    now = timezone.now().strftime('%Y-%m-%d')
     urls = []
-
-    # Static pages
-    urls.append(_url(SITE_URL + '/', now, 'daily', '1.0'))
-    urls.append(_url(SITE_URL + '/adverts/', now, 'hourly', '0.9'))
-    urls.append(_url(SITE_URL + '/map/', now, 'daily', '0.8'))
-    urls.append(_url(SITE_URL + '/sellers/', now, 'daily', '0.6'))
-    urls.append(_url(SITE_URL + '/about/', now, 'monthly', '0.5'))
-    urls.append(_url(SITE_URL + '/contacts/', now, 'monthly', '0.5'))
-    urls.append(_url(SITE_URL + '/howto/', now, 'monthly', '0.5'))
-
-    # Adverts (published only)
     for a in Advert.objects.filter(status=10).order_by('-updated_at')[:5000]:
         lastmod = a.updated_at.strftime('%Y-%m-%d') if a.updated_at else now
         urls.append(_url(f'{SITE_URL}/adverts/{a.id}/', lastmod, 'weekly', '0.7'))
 
-    # Sellers (published only)
+    xml = _wrap_urlset(urls)
+    cache.set(SITEMAP_ADVERTS_KEY, xml, SITEMAP_TIMEOUT)
+    return HttpResponse(xml, content_type='application/xml; charset=utf-8')
+
+
+def sitemap_sellers_xml(request: HttpRequest) -> HttpResponse:
+    cached = cache.get(SITEMAP_SELLERS_KEY)
+    if cached is not None:
+        return HttpResponse(cached, content_type='application/xml; charset=utf-8')
+
+    now = timezone.now().strftime('%Y-%m-%d')
+    urls = []
     for s in Seller.objects.filter(status=10).order_by('-updated_at')[:2000]:
         lastmod = s.updated_at.strftime('%Y-%m-%d') if s.updated_at else now
         urls.append(_url(f'{SITE_URL}/sellers/{s.id}/', lastmod, 'weekly', '0.6'))
 
-    # News
+    xml = _wrap_urlset(urls)
+    cache.set(SITEMAP_SELLERS_KEY, xml, SITEMAP_TIMEOUT)
+    return HttpResponse(xml, content_type='application/xml; charset=utf-8')
+
+
+def sitemap_news_xml(request: HttpRequest) -> HttpResponse:
+    cached = cache.get(SITEMAP_NEWS_KEY)
+    if cached is not None:
+        return HttpResponse(cached, content_type='application/xml; charset=utf-8')
+
+    now = timezone.now().strftime('%Y-%m-%d')
+    urls = []
     for n in News.objects.filter(is_active=True).order_by('-published_at')[:1000]:
         lastmod = n.published_at.strftime('%Y-%m-%d') if n.published_at else now
         urls.append(_url(f'{SITE_URL}/news/{n.id}/', lastmod, 'monthly', '0.5'))
 
-    xml = '<?xml version="1.0" encoding="UTF-8"?>\n'
-    xml += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
-    xml += '\n'.join(urls)
-    xml += '\n</urlset>\n'
-
-    cache.set(SITEMAP_KEY, xml, SITEMAP_TIMEOUT)
+    xml = _wrap_urlset(urls)
+    cache.set(SITEMAP_NEWS_KEY, xml, SITEMAP_TIMEOUT)
     return HttpResponse(xml, content_type='application/xml; charset=utf-8')
 
 
@@ -218,6 +290,15 @@ def healthcheck(request: HttpRequest) -> JsonResponse:
     except Exception:
         checks['adverts_count'] = None
     return JsonResponse(checks, status=status_code)
+
+
+def _wrap_urlset(urls: list) -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        + '\n'.join(urls)
+        + '\n</urlset>\n'
+    )
 
 
 def _url(loc: str, lastmod: str, changefreq: str, priority: str) -> str:

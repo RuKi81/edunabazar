@@ -251,7 +251,7 @@
             <b>Опт от:</b> {{ advert.wholesale_volume }}
           </div>
           <div class="adverts-detail__params-item">
-            <b>Обновлено:</b> {{ advert.updated_at|date:"d.m.Y" }}
+            <b>Обновлено:</b> <time datetime="{{ advert.updated_at|date:'Y-m-d' }}">{{ advert.updated_at|date:"d.m.Y" }}</time>
           </div>
         </div>
 

@@ -715,4 +715,18 @@
       }
     })();
   </script>
+
+  <!-- JSON-LD: BreadcrumbList -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "Главная", "item": "https://edunabazar.ru/"},
+      {"@type": "ListItem", "position": 2, "name": "Объявления"{% if not catalog_slug %}}{% else %}, "item": "https://edunabazar.ru/adverts/"}{% endif %}
+      {% if catalog_slug %},{"@type": "ListItem", "position": 3, "name": "{{ catalog_slug }}"{% if not category_slug %}}{% else %}, "item": "https://edunabazar.ru/adverts/{{ catalog_slug }}/"}{% endif %}{% endif %}
+      {% if category_slug %},{"@type": "ListItem", "position": 4, "name": "{{ category_slug }}"}{% endif %}
+    ]
+  }
+  </script>
 {% endblock %}

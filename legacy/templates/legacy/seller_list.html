@@ -81,4 +81,16 @@
       {% endif %}
     </div>
   </div>
+
+  <!-- JSON-LD: BreadcrumbList -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "Главная", "item": "https://edunabazar.ru/"},
+      {"@type": "ListItem", "position": 2, "name": "Предприятия"}
+    ]
+  }
+  </script>
 {% endblock %}

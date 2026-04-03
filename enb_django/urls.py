@@ -19,11 +19,18 @@ from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView, SpectacularRedocView
-from legacy.seo import robots_txt, sitemap_xml, turbo_rss, yandex_verification, healthcheck
+from legacy.seo import (
+    robots_txt, sitemap_xml, sitemap_static_xml, sitemap_adverts_xml,
+    sitemap_sellers_xml, sitemap_news_xml, turbo_rss, yandex_verification, healthcheck,
+)
 
 urlpatterns = [
     path('robots.txt', robots_txt, name='robots_txt'),
     path('sitemap.xml', sitemap_xml, name='sitemap_xml'),
+    path('sitemap-static.xml', sitemap_static_xml, name='sitemap_static_xml'),
+    path('sitemap-adverts.xml', sitemap_adverts_xml, name='sitemap_adverts_xml'),
+    path('sitemap-sellers.xml', sitemap_sellers_xml, name='sitemap_sellers_xml'),
+    path('sitemap-news.xml', sitemap_news_xml, name='sitemap_news_xml'),
     path('turbo-rss.xml', turbo_rss, name='turbo_rss'),
     path('yandex_3d52c6e8c3e0f2e0.html', yandex_verification, name='yandex_verification'),
     path('healthz', healthcheck, name='healthcheck'),

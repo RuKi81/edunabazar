@@ -16,7 +16,7 @@
       <h1 style="font-size: 1.6rem; font-weight: 700; margin: 16px 0 10px;">{{ news.title }}</h1>
 
       <div style="color:#777; font-size: 12px; margin-bottom: 16px;">
-        {{ news.published_at|date:"d.m.Y" }}
+        <time datetime="{{ news.published_at|date:'Y-m-d' }}">{{ news.published_at|date:"d.m.Y" }}</time>
         {% if news.source_name %} · {{ news.source_name }}{% endif %}
       </div>
 
