@@ -273,6 +273,8 @@
 
   <div class="col m12 height_1">&nbsp;</div>
 
+  <h1 style="font-size:1.4rem; font-weight:700; color:#333; margin:0 0 10px 0;">Объявления сельхозпродукции, техники и услуг</h1>
+
   <button class="adverts-filter-toggle" id="adverts_filter_toggle">
     <i class="material-icons" style="vertical-align:middle; font-size:18px; margin-right:4px;">tune</i> Фильтры
   </button>
@@ -396,9 +398,9 @@
               <div class="col s12 m3">
                 <a class="adverts-item__thumb" href="{% url 'advert_detail' a.id %}">
                   {% if a.thumb_url %}
-                    <img src="{{ a.thumb_url }}" alt="{{ a.title }}" style="width:100%;height:109px;object-fit:cover;display:block;background:#eee;">
+                    <img src="{{ a.thumb_url }}" alt="{{ a.title }}" loading="lazy" style="width:100%;height:109px;object-fit:cover;display:block;background:#eee;">
                   {% else %}
-                    <img src="{{ a.title|pick_thumb_url }}" alt="{{ a.title }}" style="width:100%;height:109px;object-fit:contain;display:block;background:#eee;">
+                    <img src="{{ a.title|pick_thumb_url }}" alt="{{ a.title }}" loading="lazy" style="width:100%;height:109px;object-fit:contain;display:block;background:#eee;">
                   {% endif %}
                 </a>
               </div>

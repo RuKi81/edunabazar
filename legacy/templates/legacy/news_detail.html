@@ -26,7 +26,7 @@
 
       {% if news.source_url %}
         <div style="margin-top: 20px; padding-top: 12px; border-top: 1px solid #eee;">
-          <a href="{{ news.source_url }}" target="_blank" rel="noopener" style="font-size: 13px; color: #999;">
+          <a href="{{ news.source_url }}" target="_blank" rel="nofollow noopener" style="font-size: 13px; color: #999;">
             Источник: {{ news.source_name|default:"ссылка" }}
           </a>
         </div>
