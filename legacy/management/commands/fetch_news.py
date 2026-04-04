@@ -93,12 +93,18 @@ _DEFAULT_EXCLUDE_KW = [
 
 def _is_agro(title: str, summary: str, include_kw: list[str], exclude_kw: list[str]) -> bool:
     """Check if the article is about agriculture/food and not about excluded topics."""
-    combined = (title + ' ' + summary).lower()
+    title_lower = title.lower()
+    summary_lower = summary.lower()
+    combined = title_lower + ' ' + summary_lower
     if any(kw in combined for kw in exclude_kw):
         return False
-    # Require at least 1 include keyword hit
-    hits = sum(1 for kw in include_kw if kw in combined)
-    return hits >= 1
+    # Keywords in title are a strong signal — 1 hit is enough
+    title_hits = sum(1 for kw in include_kw if kw in title_lower)
+    if title_hits >= 1:
+        return True
+    # Keywords only in summary — require 2+ to avoid false positives
+    total_hits = sum(1 for kw in include_kw if kw in combined)
+    return total_hits >= 2
 
 
 def _fetch_rss_entries(max_age_days: int = 3) -> list[dict]:
@@ -119,9 +125,18 @@ def _fetch_rss_entries(max_age_days: int = 3) -> list[dict]:
     if not exclude_kw:
         exclude_kw = _DEFAULT_EXCLUDE_KW
 
+    _rss_agent = 'Mozilla/5.0 (compatible; EdunaBazarBot/1.0)'
     for feed_info in feed_sources:
         try:
-            feed = feedparser.parse(feed_info['url'])
+            feed = feedparser.parse(
+                feed_info['url'],
+                agent=_rss_agent,
+                request_headers={'Accept': 'application/rss+xml, application/xml, text/xml'},
+            )
+            if feed.bozo and not feed.entries:
+                logger.warning('RSS bozo error for %s: %s', feed_info['url'],
+                               getattr(feed, 'bozo_exception', 'unknown'))
+            logger.info('RSS %s: %d raw entries', feed_info['name'], len(feed.entries))
             for entry in feed.entries[:30]:
                 title = _clean_html(getattr(entry, 'title', ''))
                 summary = _clean_html(getattr(entry, 'summary', ''))
@@ -241,12 +256,19 @@ def _rewrite_with_gigachat(title: str, summary: str) -> dict | None:
         # Parse response
         new_title = ''
         new_text = ''
+        collecting_text = False
+        text_lines = []
         for line in content.split('\n'):
-            line = line.strip()
-            if line.upper().startswith('ЗАГОЛОВОК:'):
-                new_title = line.split(':', 1)[1].strip()
-            elif line.upper().startswith('ТЕКСТ:'):
-                new_text = line.split(':', 1)[1].strip()
+            stripped = line.strip()
+            if stripped.upper().startswith('ЗАГОЛОВОК:'):
+                new_title = stripped.split(':', 1)[1].strip()
+                collecting_text = False
+            elif stripped.upper().startswith('ТЕКСТ:'):
+                text_lines = [stripped.split(':', 1)[1].strip()]
+                collecting_text = True
+            elif collecting_text and stripped:
+                text_lines.append(stripped)
+        new_text = ' '.join(text_lines).strip()
 
         if new_title and new_text:
             return {'title': new_title[:500], 'text': new_text[:1000]}
@@ -372,6 +394,7 @@ class Command(BaseCommand):
         self.stdout.write(f'[fetch_news] Already saved URLs (skip): {len(existing_urls)}')
 
         saved = 0
+        skipped_by_llm = []  # fallback candidates if GigaChat rejects all
         for entry in entries:
             if saved >= remaining:
                 break
@@ -385,41 +408,52 @@ class Command(BaseCommand):
             # LLM relevance check
             if not _check_relevance_gigachat(entry['title'], entry['summary']):
                 self.stdout.write(self.style.WARNING('  SKIP: not relevant (GigaChat)'))
+                skipped_by_llm.append(entry)
                 continue
 
-            # Try to rewrite via LLM
-            rewritten = _rewrite_with_gigachat(entry['title'], entry['summary'])
+            saved += self._save_entry(entry, dry, today)
 
-            if rewritten:
-                new_title = rewritten['title']
-                new_text = rewritten['text']
-                self.stdout.write(self.style.SUCCESS(f'Rewritten: {new_title}'))
-            else:
-                # Fallback: use original title with trimmed summary
-                new_title = entry['title']
-                new_text = entry['summary'][:300] if entry['summary'] else ''
-                self.stdout.write(self.style.WARNING('Using original (no rewrite)'))
-
-            if dry:
-                self.stdout.write(f'Title: {new_title}')
-                self.stdout.write(f'Text: {new_text}')
-                self.stdout.write(f'URL: {entry["url"]}')
-                saved += 1
-                continue
-
-            News.objects.create(
-                title=new_title,
-                text=new_text,
-                source_url=entry['url'],
-                source_name=entry['source'],
-                source_title=entry['title'],
-                published_at=today,
-                is_active=True,
-            )
-            saved += 1
-            self.stdout.write(self.style.SUCCESS(f'Saved: {new_title}'))
+        # Fallback: if GigaChat rejected ALL candidates, save best keyword matches
+        if saved == 0 and skipped_by_llm:
+            self.stdout.write(self.style.WARNING(
+                f'\n[fetch_news] GigaChat rejected all {len(skipped_by_llm)} candidate(s). '
+                f'Saving up to {remaining} by keyword score only.'
+            ))
+            for entry in skipped_by_llm[:remaining]:
+                saved += self._save_entry(entry, dry, today)
 
         if saved > 0:
             invalidate_home_cache()
             self.stdout.write(self.style.SUCCESS(f'[fetch_news] Home cache invalidated'))
         self.stdout.write(self.style.SUCCESS(f'\n[fetch_news] Done. Saved {saved} article(s).'))
+
+    def _save_entry(self, entry, dry, today):
+        """Rewrite via GigaChat and save a single news entry. Returns 1 on success, 0 on failure."""
+        rewritten = _rewrite_with_gigachat(entry['title'], entry['summary'])
+
+        if rewritten:
+            new_title = rewritten['title']
+            new_text = rewritten['text']
+            self.stdout.write(self.style.SUCCESS(f'Rewritten: {new_title}'))
+        else:
+            new_title = entry['title']
+            new_text = entry['summary'][:300] if entry['summary'] else ''
+            self.stdout.write(self.style.WARNING('Using original (no rewrite)'))
+
+        if dry:
+            self.stdout.write(f'Title: {new_title}')
+            self.stdout.write(f'Text: {new_text}')
+            self.stdout.write(f'URL: {entry["url"]}')
+            return 1
+
+        News.objects.create(
+            title=new_title,
+            text=new_text,
+            source_url=entry['url'],
+            source_name=entry['source'],
+            source_title=entry['title'],
+            published_at=today,
+            is_active=True,
+        )
+        self.stdout.write(self.style.SUCCESS(f'Saved: {new_title}'))
+        return 1
