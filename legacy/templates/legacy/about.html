@@ -8,6 +8,59 @@
 {% block og_title %}О сервисе — Еду на базар{% endblock %}
 {% block og_description %}Онлайн-площадка для покупки и продажи сельскохозяйственной продукции напрямую от производителей.{% endblock %}
 
+{% block breadcrumbs %}
+  <nav class="breadcrumbs-nav" aria-label="Breadcrumb">
+    <ul class="breadcrumbs">
+      <li><a href="/">Главная</a></li>
+      <li><span class="breadcrumbs__current">О сервисе</span></li>
+    </ul>
+  </nav>
+{% endblock %}
+
+{% block scripts %}
+  <!-- JSON-LD: FAQPage -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "Что такое «Еду на базар»?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "«Еду на базар» — это онлайн-площадка, объединяющая производителей и покупателей сельскохозяйственной продукции. Фермеры, агропредприятия и частные хозяйства находят покупателей, а потребители — свежие продукты напрямую от производителя."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Что можно найти на площадке?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Овощи, фрукты, мясо, молочные продукты, зерно, семена, саженцы, сельскохозяйственную технику, удобрения, средства защиты растений, а также услуги: перевозка, обработка земли, ветеринария."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Размещение объявлений платное?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Нет, размещение объявлений на «Еду на базар» полностью бесплатно для всех пользователей."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Как начать пользоваться сервисом?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Зарегистрируйтесь по email или телефону, разместите объявление с фотографиями и указанием местоположения, и получайте сообщения от заинтересованных покупателей."
+        }
+      }
+    ]
+  }
+  </script>
+{% endblock %}
+
 {% block content %}
   <div class="row">
     <div class="col s12 m10 offset-m1">

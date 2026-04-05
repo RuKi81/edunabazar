@@ -8,6 +8,15 @@
 {% block og_title %}Как разместить объявление — Еду на базар{% endblock %}
 {% block og_description %}Пошаговая инструкция по размещению объявлений на edunabazar.ru{% endblock %}
 
+{% block breadcrumbs %}
+  <nav class="breadcrumbs-nav" aria-label="Breadcrumb">
+    <ul class="breadcrumbs">
+      <li><a href="/">Главная</a></li>
+      <li><span class="breadcrumbs__current">Как разместить</span></li>
+    </ul>
+  </nav>
+{% endblock %}
+
 {% block scripts %}
   <!-- JSON-LD: BreadcrumbList -->
   <script type="application/ld+json">

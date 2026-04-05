@@ -5,6 +5,7 @@
 {% block meta_description %}{{ news.text|truncatewords:25 }}{% endblock %}
 {% block og_title %}{{ news.title }} — Еду на базар{% endblock %}
 {% block og_description %}{{ news.text|truncatewords:25 }}{% endblock %}
+{% block canonical %}https://edunabazar.ru/news/{{ news.id }}/{% endblock %}
 
 {% block head %}
   <style>
