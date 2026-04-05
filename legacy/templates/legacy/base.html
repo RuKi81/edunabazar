@@ -154,6 +154,14 @@
       }
     }
 
+    /* Breadcrumbs */
+    .breadcrumbs { list-style: none; padding: 0; margin: 0 0 12px; display: flex; flex-wrap: wrap; align-items: center; font-size: 13px; color: #999; }
+    .breadcrumbs li { display: inline-flex; align-items: center; }
+    .breadcrumbs li + li::before { content: '›'; margin: 0 6px; color: #bbb; }
+    .breadcrumbs a { color: #0090b6; text-decoration: none; }
+    .breadcrumbs a:hover { text-decoration: underline; }
+    .breadcrumbs .breadcrumbs__current { color: #555; }
+
     /* Global mobile fixes — override app.css "html .container{width:1210px;min-width:1210px}" */
     *, *::before, *::after { box-sizing: border-box; }
     html { overflow-x: hidden; }
@@ -188,6 +196,32 @@
       table { max-width: 100%; overflow-x: auto; display: block; }
     }
   </style>
+
+  <!-- JSON-LD: WebSite + Organization (global) -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    "name": "Еду на базар",
+    "url": "https://edunabazar.ru",
+    "description": "Доска объявлений сельскохозяйственной продукции, техники и услуг",
+    "potentialAction": {
+      "@type": "SearchAction",
+      "target": "https://edunabazar.ru/adverts/?q={search_term_string}",
+      "query-input": "required name=search_term_string"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Еду на базар",
+      "url": "https://edunabazar.ru",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://edunabazar.ru{% static 'legacy/images/logo.png' %}"
+      },
+      "sameAs": ["https://ok.ru/profile/586187375362"]
+    }
+  }
+  </script>
 
   {% block head %}{% endblock %}
 </head>
@@ -262,6 +296,7 @@
   </ul>
 
   <div class="container" style="margin-top: 16px;">
+    {% block breadcrumbs %}{% endblock %}
     {% block content %}{% endblock %}
   </div>
 

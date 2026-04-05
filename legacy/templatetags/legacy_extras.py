@@ -3,7 +3,15 @@ from decimal import Decimal, InvalidOperation
 from django import template
 from django.templatetags.static import static
 
+from ..slug_utils import slugify_ru as _slugify_ru
+
 register = template.Library()
+
+
+@register.filter
+def slugify_ru(value):
+    """Transliterate Russian text to a URL-safe slug."""
+    return _slugify_ru(str(value)) if value else ''
 
 
 @register.simple_tag(takes_context=True)

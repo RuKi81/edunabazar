@@ -26,12 +26,18 @@
   </style>
 {% endblock %}
 
+{% block breadcrumbs %}
+  <nav aria-label="Breadcrumb">
+    <ul class="breadcrumbs">
+      <li><a href="/">Главная</a></li>
+      <li><span class="breadcrumbs__current">{{ news.title|truncatewords:7 }}</span></li>
+    </ul>
+  </nav>
+{% endblock %}
+
 {% block content %}
   <div class="row">
     <div class="col s12 m8 offset-m2">
-      <div style="margin-top: 16px;">
-        <a href="{% url 'home' %}" style="color:#0090b6; font-size:13px;">← На главную</a>
-      </div>
 
       <h1 style="font-size: 1.6rem; font-weight: 700; margin: 16px 0 10px;">{{ news.title }}</h1>
 

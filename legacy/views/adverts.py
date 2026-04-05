@@ -207,6 +207,31 @@ def advert_detail(request: HttpRequest, advert_id: int) -> HttpResponse:
     if legacy_user:
         is_favorited = Favorite.objects.filter(user=legacy_user, advert_id=advert_id).exists()
 
+    # Similar adverts (same category, excluding current)
+    _thumb_prefetch = Prefetch(
+        'photos',
+        queryset=AdvertPhoto.objects.order_by('sort', 'id'),
+        to_attr='prefetched_photos',
+    )
+    similar_adverts = list(
+        Advert.objects.filter(
+            category_id=advert.category_id, status=ADVERT_STATUS_PUBLISHED,
+        ).exclude(pk=advert_id)
+        .select_related('category')
+        .prefetch_related(_thumb_prefetch)
+        .order_by('-created_at')[:6]
+    )
+
+    # Other adverts by the same seller
+    seller_adverts = list(
+        Advert.objects.filter(
+            author_id=advert.author_id, status=ADVERT_STATUS_PUBLISHED,
+        ).exclude(pk=advert_id)
+        .select_related('category')
+        .prefetch_related(_thumb_prefetch)
+        .order_by('-created_at')[:6]
+    )
+
     resp = render(
         request,
         'legacy/advert_detail.html',
@@ -230,6 +255,8 @@ def advert_detail(request: HttpRequest, advert_id: int) -> HttpResponse:
             'view_count': view_count,
             'is_favorited': is_favorited,
             'extra_contacts': _normalize_extra_contacts(getattr(advert, 'extra_contacts', None) or []),
+            'similar_adverts': similar_adverts,
+            'seller_adverts': seller_adverts,
         },
     )
     return _no_store(resp)

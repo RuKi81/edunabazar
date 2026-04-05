@@ -8,12 +8,19 @@
 {% block og_title %}{{ seller.name }} — Еду на базар{% endblock %}
 {% block og_description %}{{ seller.name }} — предприятие на edunabazar.ru{% endblock %}
 
+{% block breadcrumbs %}
+  <nav aria-label="Breadcrumb">
+    <ul class="breadcrumbs">
+      <li><a href="/">Главная</a></li>
+      <li><a href="{% url 'seller_list' %}">Предприятия</a></li>
+      <li><span class="breadcrumbs__current">{{ seller.name|truncatewords:7 }}</span></li>
+    </ul>
+  </nav>
+{% endblock %}
+
 {% block content %}
   <div class="row" style="margin-bottom:0;">
     <div class="col s12">
-      <div style="margin: 10px 0 6px 0;">
-        <a href="{% url 'seller_list' %}" style="color:#0090b6;">← Все предприятия</a>
-      </div>
 
       {% if is_admin_user or legacy_user and legacy_user.id == seller.user_id %}
         <div style="margin: 0 0 10px 0;">
