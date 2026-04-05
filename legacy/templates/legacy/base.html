@@ -155,12 +155,13 @@
     }
 
     /* Breadcrumbs */
-    .breadcrumbs { list-style: none; padding: 0; margin: 0 0 8px; display: flex; flex-wrap: wrap; align-items: center; font-size: 12px; letter-spacing: .2px; }
-    .breadcrumbs li { display: inline-flex; align-items: center; color: #999; }
-    .breadcrumbs li + li::before { content: '/'; margin: 0 5px; color: #ccc; font-size: 11px; }
-    .breadcrumbs a { color: #7fb500; text-decoration: none; font-weight: 500; }
-    .breadcrumbs a:hover { color: #6a9800; text-decoration: underline; }
-    .breadcrumbs .breadcrumbs__current { color: #888; font-weight: 400; }
+    nav.breadcrumbs-nav { background: transparent; box-shadow: none; height: auto; line-height: normal; padding: 0; margin: 0; }
+    .breadcrumbs { list-style: none; padding: 0; margin: 0 0 6px; display: flex; flex-wrap: wrap; align-items: center; font-size: 11px; letter-spacing: .15px; }
+    .breadcrumbs li { display: inline-flex; align-items: center; color: #aaa; }
+    .breadcrumbs li + li::before { content: '/'; margin: 0 4px; color: #ccc; font-size: 10px; }
+    .breadcrumbs a { color: #999; text-decoration: none; font-weight: 400; }
+    .breadcrumbs a:hover { color: #666; text-decoration: underline; }
+    .breadcrumbs .breadcrumbs__current { color: #aaa; font-weight: 400; }
 
     /* Global mobile fixes — override app.css "html .container{width:1210px;min-width:1210px}" */
     *, *::before, *::after { box-sizing: border-box; }
