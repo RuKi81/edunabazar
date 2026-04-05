@@ -66,6 +66,9 @@ from .reviews import (                                          # noqa: F401
 # ── favorites ─────────────────────────────────────────────────────────────
 from .favorites import favorite_toggle, favorites_list          # noqa: F401
 
+# ── regions ──────────────────────────────────────────────────────────────
+from .regions import region_detail, region_list                  # noqa: F401
+
 # ── admin ─────────────────────────────────────────────────────────────────
 from .admin_views import (                                      # noqa: F401
     admin_users, admin_users_bulk_delete, admin_catalogs, admin_user_detail,

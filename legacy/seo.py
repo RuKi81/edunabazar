@@ -115,6 +115,11 @@ def sitemap_static_xml(request: HttpRequest) -> HttpResponse:
     for (cat_slug, categ_slug) in slug_map['category_by_slug']:
         urls.append(_url(f'{SITE_URL}/adverts/{cat_slug}/{categ_slug}/', now, 'daily', '0.7'))
 
+    from .regions import REGIONS_LIST
+    urls.append(_url(f'{SITE_URL}/region/', now, 'weekly', '0.6'))
+    for r in REGIONS_LIST:
+        urls.append(_url(f'{SITE_URL}/region/{r["slug"]}/', now, 'weekly', '0.6'))
+
     xml = _wrap_urlset(urls)
     cache.set(SITEMAP_STATIC_KEY, xml, SITEMAP_TIMEOUT)
     return HttpResponse(xml, content_type='application/xml; charset=utf-8')

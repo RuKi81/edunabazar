@@ -1,0 +1,31 @@
+{% extends 'legacy/base.html' %}
+{% load static legacy_extras %}
+
+{% block title %}Регионы — Еду на базар{% endblock %}
+
+{% block meta_description %}Объявления сельскохозяйственной продукции по регионам России. Найдите товары и услуги в вашем регионе на edunabazar.ru{% endblock %}
+{% block og_title %}Регионы — Еду на базар{% endblock %}
+{% block og_description %}Объявления сельхозпродукции по регионам России{% endblock %}
+
+{% block breadcrumbs %}
+  <nav class="breadcrumbs-nav" aria-label="Breadcrumb">
+    <ul class="breadcrumbs">
+      <li><a href="/">Главная</a></li>
+      <li><span class="breadcrumbs__current">Регионы</span></li>
+    </ul>
+  </nav>
+{% endblock %}
+
+{% block content %}
+  <h1 style="font-size: 1.5rem; font-weight: 700; margin: 0 0 20px;">Объявления по регионам</h1>
+
+  <div class="row">
+    {% for r in regions %}
+    <div class="col s6 m4 l3" style="margin-bottom: 10px;">
+      <a href="{% url 'region_detail' r.slug %}" style="display:block; padding:10px 14px; background:#fafafa; border:1px solid #eee; border-radius:4px; text-decoration:none; color:#555; font-size:13px; font-weight:500;">
+        {{ r.name }}
+      </a>
+    </div>
+    {% endfor %}
+  </div>
+{% endblock %}
