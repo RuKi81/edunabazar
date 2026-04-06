@@ -277,9 +277,8 @@ AUTHENTICATION_BACKENDS = [
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# ── OAuth: VK ID ──────────────────────────────────────────────────────────
+# ── OAuth: VK ID (id.vk.com, PKCE — client_secret не нужен) ───────────────
 VK_CLIENT_ID = os.getenv('VK_CLIENT_ID', '')
-VK_CLIENT_SECRET = os.getenv('VK_CLIENT_SECRET', '')
 VK_REDIRECT_URI = os.getenv('VK_REDIRECT_URI', 'https://edunabazar.ru/oauth/vk/callback/')
 
 # ── OAuth: Одноклассники ──────────────────────────────────────────────────

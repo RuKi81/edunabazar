@@ -1,4 +1,5 @@
 """OAuth views for VK and OK (Одноклассники) social login."""
+import base64
 import hashlib
 import logging
 import secrets
@@ -70,88 +71,104 @@ def _find_or_start_social(request, provider, provider_uid, profile: dict):
     return redirect('/oauth/complete/')
 
 
-# ─── VK ──────────────────────────────────────────────────────────────────
+# ─── VK ID (id.vk.com, PKCE) ─────────────────────────────────────────────
+
+def _generate_pkce() -> tuple[str, str]:
+    """Generate PKCE code_verifier and code_challenge (S256)."""
+    code_verifier = secrets.token_urlsafe(64)
+    digest = hashlib.sha256(code_verifier.encode('ascii')).digest()
+    code_challenge = base64.urlsafe_b64encode(digest).rstrip(b'=').decode('ascii')
+    return code_verifier, code_challenge
+
 
 def oauth_vk_start(request: HttpRequest) -> HttpResponse:
-    """Redirect user to VK authorization page."""
+    """Redirect user to VK ID authorization page."""
     next_url = (request.GET.get('next') or '').strip()
     if next_url:
         request.session['oauth_next'] = next_url
 
     state = secrets.token_urlsafe(16)
+    code_verifier, code_challenge = _generate_pkce()
+
     request.session['oauth_state'] = state
+    request.session['oauth_code_verifier'] = code_verifier
 
     params = {
         'client_id': settings.VK_CLIENT_ID,
         'redirect_uri': settings.VK_REDIRECT_URI,
-        'display': 'page',
-        'scope': 'email',
         'response_type': 'code',
         'state': state,
-        'v': '5.131',
+        'scope': 'email phone',
+        'code_challenge': code_challenge,
+        'code_challenge_method': 'S256',
     }
-    url = 'https://oauth.vk.com/authorize?' + urllib.parse.urlencode(params)
+    url = 'https://id.vk.com/authorize?' + urllib.parse.urlencode(params)
     return redirect(url)
 
 
 def oauth_vk_callback(request: HttpRequest) -> HttpResponse:
-    """Handle VK OAuth callback."""
+    """Handle VK ID OAuth callback (new id.vk.com API)."""
     error = request.GET.get('error')
     if error:
-        logger.warning('VK OAuth error: %s — %s', error, request.GET.get('error_description', ''))
+        logger.warning('VK ID error: %s — %s', error, request.GET.get('error_description', ''))
         return redirect('/register/')
 
     code = request.GET.get('code', '')
+    device_id = request.GET.get('device_id', '')
     state = request.GET.get('state', '')
 
     if not code or state != request.session.pop('oauth_state', ''):
-        logger.warning('VK OAuth: missing code or state mismatch')
+        logger.warning('VK ID: missing code or state mismatch')
         return redirect('/register/')
 
-    # Exchange code for access_token
+    code_verifier = request.session.pop('oauth_code_verifier', '')
+
+    # Exchange code for access_token via VK ID
     try:
-        resp = requests.post('https://oauth.vk.com/access_token', data={
-            'client_id': settings.VK_CLIENT_ID,
-            'client_secret': settings.VK_CLIENT_SECRET,
-            'redirect_uri': settings.VK_REDIRECT_URI,
+        resp = requests.post('https://id.vk.com/oauth2/auth', data={
+            'grant_type': 'authorization_code',
             'code': code,
+            'code_verifier': code_verifier,
+            'client_id': settings.VK_CLIENT_ID,
+            'device_id': device_id,
+            'redirect_uri': settings.VK_REDIRECT_URI,
+            'state': state,
         }, timeout=10)
         data = resp.json()
     except Exception:
-        logger.exception('VK OAuth token exchange failed')
+        logger.exception('VK ID token exchange failed')
         return redirect('/register/')
 
     access_token = data.get('access_token', '')
     vk_user_id = data.get('user_id')
-    email = data.get('email', '')
 
-    if not vk_user_id:
-        logger.warning('VK OAuth: no user_id in token response: %s', data)
+    if not access_token or not vk_user_id:
+        logger.warning('VK ID: no access_token/user_id: %s', data)
         return redirect('/register/')
 
-    # Fetch user profile
+    # Fetch user profile via VK ID user_info endpoint
     name = ''
+    email = ''
+    phone = ''
     try:
-        profile_resp = requests.get('https://api.vk.com/method/users.get', params={
-            'user_ids': vk_user_id,
-            'fields': 'first_name,last_name,photo_200',
+        info_resp = requests.post('https://id.vk.com/oauth2/user_info', data={
+            'client_id': settings.VK_CLIENT_ID,
             'access_token': access_token,
-            'v': '5.131',
         }, timeout=10)
-        profile_data = profile_resp.json()
-        users = profile_data.get('response', [])
-        if users:
-            u = users[0]
-            name = f"{u.get('first_name', '')} {u.get('last_name', '')}".strip()
+        info = info_resp.json().get('user', {})
+        first = info.get('first_name', '')
+        last = info.get('last_name', '')
+        name = f'{first} {last}'.strip()
+        email = info.get('email', '') or ''
+        phone = info.get('phone', '') or ''
     except Exception:
-        logger.exception('VK profile fetch failed')
+        logger.exception('VK ID user_info failed')
 
     profile = {
         'name': name,
-        'email': email or '',
-        'phone': '',
+        'email': email,
+        'phone': phone,
         'access_token': access_token,
-        'photo': '',
     }
     return _find_or_start_social(request, SocialAccount.PROVIDER_VK, str(vk_user_id), profile)
 
