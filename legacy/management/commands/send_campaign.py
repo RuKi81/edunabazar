@@ -65,7 +65,15 @@ class Command(BaseCommand):
             )
 
         if campaign.status == EmailCampaign.STATUS_DRAFT:
-            self._populate_logs(campaign)
+            existing_logs = EmailLog.objects.filter(campaign=campaign).exists()
+            if existing_logs:
+                # Logs already populated (e.g. by import_campaign_emails)
+                campaign.status = EmailCampaign.STATUS_SENDING
+                campaign.started_at = timezone.now()
+                campaign.save(update_fields=['status', 'started_at'])
+                self.stdout.write(f'Using {campaign.total_recipients} pre-populated recipients')
+            else:
+                self._populate_logs(campaign)
 
         if campaign.status == EmailCampaign.STATUS_PAUSED and not resume:
             raise CommandError(
