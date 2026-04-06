@@ -39,18 +39,18 @@
   <div class="card" style="margin-top:16px;">
     <div class="card-content">
       <p style="margin-top:0; font-weight:600;">Или войти по логину:</p>
-      <form method="post" class="auth-form">
+      <form method="post">
         {% csrf_token %}
         <input type="hidden" name="next" value="{{ next }}" />
 
-        <div class="input-field">
+        <div class="input-field" style="padding-left:0;">
           <input id="username" name="username" value="{{ username|default:'' }}" />
-          <label for="username">Username</label>
+          <label for="username" style="left:0;">Username</label>
         </div>
 
-        <div class="input-field">
+        <div class="input-field" style="padding-left:0;">
           <input id="password" name="password" type="password" />
-          <label for="password">Пароль</label>
+          <label for="password" style="left:0;">Пароль</label>
         </div>
 
         <button class="btn" type="submit">Войти</button>
