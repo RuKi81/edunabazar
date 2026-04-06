@@ -513,6 +513,7 @@ def advert_edit(request: HttpRequest, advert_id: int) -> HttpResponse:
                 wholesale_volume=cleaned['wholesale_volume'],
                 volume=cleaned['volume'],
                 extra_contacts=cleaned['extra_contacts'] or [],
+                created_at=timezone.now(),
                 updated_at=timezone.now(),
             )
             delete_ids_raw = request.POST.getlist('delete_photo')
