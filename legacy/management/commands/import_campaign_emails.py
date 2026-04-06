@@ -14,7 +14,7 @@ import re
 import openpyxl
 from django.core.management.base import BaseCommand, CommandError
 
-from legacy.models import EmailCampaign, EmailLog
+from legacy.models import EmailCampaign, EmailLog, EmailUnsubscribe
 
 
 class Command(BaseCommand):
@@ -101,6 +101,15 @@ class Command(BaseCommand):
 
         # Normalize exclusion set
         exclude_set = {e.strip().lower() for e in exclude_set if e}
+
+        # Also exclude unsubscribed emails
+        unsub_set = set(
+            EmailUnsubscribe.objects.values_list('email', flat=True)
+        )
+        unsub_set = {e.strip().lower() for e in unsub_set if e}
+        if unsub_set:
+            self.stdout.write(f'  Excluding {len(unsub_set)} unsubscribed addresses')
+        exclude_set |= unsub_set
 
         final_emails = [e for e in valid_emails if e not in exclude_set]
         excluded_count = len(valid_emails) - len(final_emails)

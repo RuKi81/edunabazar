@@ -74,6 +74,8 @@ urlpatterns = [
     path('legacy-admin/messages/', views.admin_messages, name='admin_messages'),
     path('legacy-admin/messages/<int:message_id>/delete/', views.admin_message_delete, name='admin_message_delete'),
 
+    path('unsubscribe/', views.email_unsubscribe, name='email_unsubscribe'),
+
     # 301 redirects for old/dead URLs found in search engines
     path('cart', RedirectView.as_view(url='/adverts/', permanent=True)),
     path('site/login', RedirectView.as_view(url='/login/', permanent=True)),

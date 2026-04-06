@@ -1,0 +1,26 @@
+{% extends 'legacy/base.html' %}
+
+{% block title %}Отписка от рассылки — Еду на базар{% endblock %}
+
+{% block content %}
+<div class="col m12 height_1">&nbsp;</div>
+<div class="row">
+  <div class="col s12 m8 offset-m2">
+    <div class="card">
+      <div class="card-content">
+        {% if error %}
+          <h5>Ошибка</h5>
+          <p>{{ error }}</p>
+        {% elif success %}
+          <h5>Вы отписались от рассылки</h5>
+          <p>Адрес <strong>{{ email }}</strong> больше не будет получать рассылки от edunabazar.ru.</p>
+        {% else %}
+          <h5>Отписка от рассылки</h5>
+          <p>Неверная ссылка для отписки.</p>
+        {% endif %}
+        <p style="margin-top:20px;"><a href="/" class="btn" style="background:#7fb500; border-radius:0; box-shadow:none;">На главную</a></p>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

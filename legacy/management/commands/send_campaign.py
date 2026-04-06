@@ -21,7 +21,8 @@ from django.core.mail import EmailMultiAlternatives, get_connection
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
-from legacy.models import EmailCampaign, EmailLog, LegacyUser
+from legacy.models import EmailCampaign, EmailLog, EmailUnsubscribe, LegacyUser
+from legacy.views.email_unsub import make_unsubscribe_url
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +148,19 @@ class Command(BaseCommand):
         consecutive_failures = 0
         max_consecutive_failures = 10
 
+        # Skip unsubscribed emails
+        unsub_emails = set(
+            EmailUnsubscribe.objects.values_list('email', flat=True)
+        )
+        if unsub_emails:
+            skip_count = EmailLog.objects.filter(
+                campaign=campaign,
+                status=EmailLog.STATUS_PENDING,
+                recipient_email__in=unsub_emails,
+            ).update(status=EmailLog.STATUS_FAILED, error_message='unsubscribed')
+            if skip_count:
+                self.stdout.write(f'  Skipped {skip_count} unsubscribed recipients')
+
         pending_logs = EmailLog.objects.filter(
             campaign=campaign,
             status=EmailLog.STATUS_PENDING,
@@ -218,15 +232,23 @@ class Command(BaseCommand):
             for attempt in range(1, max_retries + 2):
                 try:
                     if not dry_run:
+                        unsub_url = make_unsubscribe_url(log.recipient_email)
+                        body_html = (campaign.body_html or '').replace(
+                            '{{ unsubscribe_url }}', unsub_url,
+                        )
+                        body_text = (campaign.body_text or campaign.subject).replace(
+                            '{{ unsubscribe_url }}', unsub_url,
+                        )
                         msg = EmailMultiAlternatives(
                             subject=campaign.subject,
-                            body=campaign.body_text or campaign.subject,
+                            body=body_text,
                             from_email=from_email,
                             to=[log.recipient_email],
                             connection=connection,
+                            headers={'List-Unsubscribe': f'<{unsub_url}>'},
                         )
-                        if campaign.body_html:
-                            msg.attach_alternative(campaign.body_html, 'text/html')
+                        if body_html:
+                            msg.attach_alternative(body_html, 'text/html')
                         msg.send(fail_silently=False)
 
                     log.status = EmailLog.STATUS_SENT

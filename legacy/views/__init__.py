@@ -75,6 +75,9 @@ from .oauth import (                                             # noqa: F401
     oauth_complete,
 )
 
+# ── email unsubscribe ─────────────────────────────────────────────────────
+from .email_unsub import email_unsubscribe                       # noqa: F401
+
 # ── admin ─────────────────────────────────────────────────────────────────
 from .admin_views import (                                      # noqa: F401
     admin_users, admin_users_bulk_delete, admin_catalogs, admin_user_detail,

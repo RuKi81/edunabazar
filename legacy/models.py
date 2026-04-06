@@ -293,6 +293,19 @@ class EmailLog(models.Model):
         verbose_name_plural = 'Email-логи'
 
 
+class EmailUnsubscribe(models.Model):
+    email = models.EmailField('Email', unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.email
+
+    class Meta:
+        db_table = 'email_unsubscribe'
+        verbose_name = 'Отписка от рассылки'
+        verbose_name_plural = 'Отписки от рассылки'
+
+
 class Favorite(models.Model):
     user = models.ForeignKey('LegacyUser', on_delete=models.CASCADE, related_name='favorites')
     advert = models.ForeignKey(Advert, on_delete=models.CASCADE, related_name='favorites')
