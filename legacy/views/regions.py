@@ -35,7 +35,7 @@ def region_detail(request: HttpRequest, region_slug: str) -> HttpResponse:
         .filter(status=ADVERT_STATUS_PUBLISHED, location__within=bbox_poly)
         .select_related('category__catalog', 'author')
         .prefetch_related(_thumb_prefetch)
-        .order_by('-created_at', '-id')
+        .order_by('-updated_at', '-id')
     )
 
     # Category counts for sidebar

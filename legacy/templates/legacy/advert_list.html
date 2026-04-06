@@ -1,6 +1,6 @@
 {% extends 'legacy/base.html' %}
 
-{% load legacy_extras %}
+{% load legacy_extras static %}
 
 {% block title %}Объявления — Еду на базар{% endblock %}
 
@@ -400,7 +400,7 @@
                   {% if a.thumb_url %}
                     <img src="{{ a.thumb_url }}" alt="{{ a.title }}" loading="lazy" style="width:100%;height:109px;object-fit:cover;display:block;background:#eee;">
                   {% else %}
-                    <img src="{{ a.title|pick_thumb_url }}" alt="{{ a.title }}" loading="lazy" style="width:100%;height:109px;object-fit:contain;display:block;background:#fff;">
+                    <img src="{% static 'legacy/images/no_photo_102_109.jpg' %}" alt="Нет фото" loading="lazy" style="width:100%;height:109px;object-fit:contain;display:block;background:#fff;">
                   {% endif %}
                 </a>
               </div>

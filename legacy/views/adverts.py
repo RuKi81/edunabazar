@@ -127,13 +127,13 @@ def advert_list(request: HttpRequest, catalog_slug: str = '', category_slug: str
         qs = qs.filter(category__catalog_id=catalog_id)
 
     if q and sort == 'id':
-        qs = qs.order_by('-_rank', '-created_at', '-id')
+        qs = qs.order_by('-_rank', '-updated_at', '-id')
     elif sort == 'price':
-        qs = qs.order_by('-price', '-created_at', '-id')
+        qs = qs.order_by('-price', '-updated_at', '-id')
     elif sort == 'count':
-        qs = qs.order_by('-priority', '-created_at', '-id')
+        qs = qs.order_by('-priority', '-updated_at', '-id')
     else:
-        qs = qs.order_by('-created_at', '-id')
+        qs = qs.order_by('-updated_at', '-id')
 
     paginator = Paginator(qs, page_size)
     adverts_page = paginator.get_page(request.GET.get('page') or 1)

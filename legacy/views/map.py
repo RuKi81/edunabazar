@@ -109,9 +109,9 @@ def map_adverts_api(request: HttpRequest) -> JsonResponse:
             pass
 
     if sort_raw == 'price':
-        qs = qs.order_by('price', '-created_at', '-id')
+        qs = qs.order_by('price', '-updated_at', '-id')
     else:
-        qs = qs.order_by('-created_at', '-id')
+        qs = qs.order_by('-updated_at', '-id')
 
     qs = qs[:limit]
 

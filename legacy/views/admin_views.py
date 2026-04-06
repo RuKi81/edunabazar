@@ -145,7 +145,7 @@ def admin_user_detail(request: HttpRequest, user_id: int) -> HttpResponse:
         if not errors:
             LegacyUser.objects.filter(pk=int(u.id)).update(password_hash=make_password(new_password), updated_at=timezone.now())
             ok_message = 'Пароль изменён'
-    adverts = Advert.objects.filter(author_id=u.id).select_related('category').order_by('-created_at', '-id')
+    adverts = Advert.objects.filter(author_id=u.id).select_related('category').order_by('-updated_at', '-id')
     resp = render(
         request,
         'legacy/admin_user_detail.html',

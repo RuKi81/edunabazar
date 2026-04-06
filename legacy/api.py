@@ -95,7 +95,7 @@ class AdvertViewSet(viewsets.GenericViewSet,
         except (TypeError, ValueError):
             pass
 
-        return qs.order_by('-created_at', '-id')
+        return qs.order_by('-updated_at', '-id')
 
     def create(self, request, *args, **kwargs):
         user = _get_current_legacy_user(request)

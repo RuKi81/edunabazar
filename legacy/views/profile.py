@@ -29,7 +29,7 @@ def legacy_me(request: HttpRequest) -> HttpResponse:
     my_qs = Advert.objects.filter(author_id=user.id).exclude(status=ADVERT_STATUS_DELETED)
 
     my_adverts = _annotate_adverts(
-        list(my_qs.select_related('category').order_by('-created_at', '-id')),
+        list(my_qs.select_related('category').order_by('-updated_at', '-id')),
         user=user,
     )
 
@@ -53,7 +53,7 @@ def legacy_me(request: HttpRequest) -> HttpResponse:
         if admin_sort == 'hidden':
             qs = qs.order_by(F('hidden_at').desc(nulls_last=True), '-id')
         else:
-            qs = qs.order_by('-created_at', '-id')
+            qs = qs.order_by('-updated_at', '-id')
 
         admin_adverts = _annotate_adverts(list(qs[:500]))
         for a in admin_adverts:
