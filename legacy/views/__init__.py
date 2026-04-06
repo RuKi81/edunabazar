@@ -69,6 +69,13 @@ from .favorites import favorite_toggle, favorites_list          # noqa: F401
 # ── regions ──────────────────────────────────────────────────────────────
 from .regions import region_detail, region_list                  # noqa: F401
 
+# ── oauth ────────────────────────────────────────────────────────────────
+from .oauth import (                                             # noqa: F401
+    oauth_vk_start, oauth_vk_callback,
+    oauth_ok_start, oauth_ok_callback,
+    oauth_complete,
+)
+
 # ── admin ─────────────────────────────────────────────────────────────────
 from .admin_views import (                                      # noqa: F401
     admin_users, admin_users_bulk_delete, admin_catalogs, admin_user_detail,

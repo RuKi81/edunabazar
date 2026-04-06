@@ -277,6 +277,17 @@ AUTHENTICATION_BACKENDS = [
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# ── OAuth: VK ID ──────────────────────────────────────────────────────────
+VK_CLIENT_ID = os.getenv('VK_CLIENT_ID', '')
+VK_CLIENT_SECRET = os.getenv('VK_CLIENT_SECRET', '')
+VK_REDIRECT_URI = os.getenv('VK_REDIRECT_URI', 'https://edunabazar.ru/oauth/vk/callback/')
+
+# ── OAuth: Одноклассники ──────────────────────────────────────────────────
+OK_CLIENT_ID = os.getenv('OK_CLIENT_ID', '')          # Application ID
+OK_CLIENT_SECRET = os.getenv('OK_CLIENT_SECRET', '')    # Secret key
+OK_PUBLIC_KEY = os.getenv('OK_PUBLIC_KEY', '')          # Public key (for sig)
+OK_REDIRECT_URI = os.getenv('OK_REDIRECT_URI', 'https://edunabazar.ru/oauth/ok/callback/')
+
 TEST_RUNNER = 'legacy.test_runner.UnmanagedModelTestRunner'
 
 LOGGING = {

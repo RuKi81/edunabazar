@@ -1,0 +1,43 @@
+{% extends 'legacy/base.html' %}
+
+{% block title %}Завершение регистрации — Еду на базар{% endblock %}
+
+{% block content %}
+  <h1>Завершение регистрации</h1>
+
+  <div class="card">
+    <div class="card-content">
+      <p style="margin-top:0;">
+        Вы вошли через <strong>{{ provider_label }}</strong>. Заполните оставшиеся поля для завершения регистрации.
+      </p>
+
+      <form method="post">
+        {% csrf_token %}
+
+        <div class="input-field">
+          <input id="username" name="username" type="text" value="{{ form.username }}" class="{% if errors.username %}invalid{% endif %}" />
+          <label for="username">Username *</label>
+          {% if errors.username %}<span class="helper-text red-text">{{ errors.username }}</span>{% endif %}
+        </div>
+
+        <div class="input-field">
+          <input id="email" name="email" type="email" value="{{ form.email }}" class="{% if errors.email %}invalid{% endif %}" />
+          <label for="email">Email *</label>
+          {% if errors.email %}<span class="helper-text red-text">{{ errors.email }}</span>{% endif %}
+        </div>
+
+        <div class="input-field">
+          <input id="name" name="name" type="text" value="{{ form.name }}" />
+          <label for="name">Имя / название</label>
+        </div>
+
+        <div class="input-field">
+          <input id="phone" name="phone" type="tel" value="{{ form.phone }}" />
+          <label for="phone">Телефон</label>
+        </div>
+
+        <button class="btn" type="submit" style="background:#7fb500; box-shadow:none; border-radius:0;">Зарегистрироваться</button>
+      </form>
+    </div>
+  </div>
+{% endblock %}

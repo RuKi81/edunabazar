@@ -320,6 +320,32 @@ class AdvertView(models.Model):
         ]
 
 
+class SocialAccount(models.Model):
+    PROVIDER_VK = 'vk'
+    PROVIDER_OK = 'ok'
+    PROVIDER_CHOICES = [
+        (PROVIDER_VK, 'ВКонтакте'),
+        (PROVIDER_OK, 'Одноклассники'),
+    ]
+
+    user = models.ForeignKey('LegacyUser', on_delete=models.CASCADE, related_name='social_accounts')
+    provider = models.CharField(max_length=10, choices=PROVIDER_CHOICES)
+    provider_uid = models.CharField(max_length=255)
+    access_token = models.CharField(max_length=500, blank=True, default='')
+    extra_data = models.JSONField(blank=True, null=True, default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'social_account'
+        unique_together = [('provider', 'provider_uid')]
+        indexes = [
+            models.Index(fields=['user']),
+        ]
+
+    def __str__(self):
+        return f'{self.get_provider_display()} ({self.provider_uid}) → {self.user_id}'
+
+
 class LegacyUser(models.Model):
     type = models.PositiveSmallIntegerField(db_comment='0- ЇшчышЎю, 1-■ЁышЎю')
     username = models.CharField(unique=True, max_length=255, db_comment='╚ь  яюы№чютрЄхы ')
