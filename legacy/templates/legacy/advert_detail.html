@@ -61,8 +61,8 @@
       <li><a href="/">Главная</a></li>
       <li><a href="/adverts/">Объявления</a></li>
       {% if advert.category and advert.category.catalog %}
-        <li><a href="/adverts/{{ advert.category.catalog.title|slugify_ru }}/">{{ advert.category.catalog.title }}</a></li>
-        <li><a href="/adverts/{{ advert.category.catalog.title|slugify_ru }}/{{ advert.category.title|slugify_ru }}/">{{ advert.category.title }}</a></li>
+        <li><a href="/adverts/{{ advert.category.catalog.title|slugify_ru }}/">{{ advert.category.catalog.title|lower|capfirst }}</a></li>
+        <li><a href="/adverts/{{ advert.category.catalog.title|slugify_ru }}/{{ advert.category.title|slugify_ru }}/">{{ advert.category.title|lower|capfirst }}</a></li>
       {% endif %}
       <li><span class="breadcrumbs__current">{{ advert.title|truncatewords:7 }}</span></li>
     </ul>
@@ -239,14 +239,6 @@
 
       <section class="adverts-detail">
         <div class="adverts-detail__params">
-          {% if advert.category and advert.category.catalog %}
-          <div class="adverts-detail__params-item">
-            <b>Каталог:</b> {{ advert.category.catalog.title }}
-          </div>
-          {% endif %}
-          <div class="adverts-detail__params-item">
-            <b>Категория:</b> {{ advert.category.title }}
-          </div>
           <div class="adverts-detail__params-item">
             <b>Стоимость:</b> {{ advert.price|format_price }}{% if advert.price_unit %} / {{ advert.price_unit }}{% endif %}
           </div>
@@ -322,7 +314,7 @@
               {% if ad.thumb_url %}
                 <img src="{{ ad.thumb_url }}" alt="{{ ad.title }}" loading="lazy" style="width:100%; height:100px; object-fit:cover;">
               {% else %}
-                <img src="{% static 'legacy/images/no_photo_102_109.jpg' %}" alt="{{ ad.title }}" loading="lazy" style="width:100%; height:100px; object-fit:cover;">
+                <img src="{% static 'legacy/images/no_photo_102_109.jpg' %}" alt="{{ ad.title }}" loading="lazy" style="width:100%; height:100px; object-fit:contain; background:#fff;">
               {% endif %}
               <div style="padding:6px 8px;">
                 <div style="font-size:13px; font-weight:600; line-height:1.3; max-height:2.6em; overflow:hidden;">{{ ad.title|truncatewords:8 }}</div>
@@ -349,7 +341,7 @@
               {% if ad.thumb_url %}
                 <img src="{{ ad.thumb_url }}" alt="{{ ad.title }}" loading="lazy" style="width:100%; height:100px; object-fit:cover;">
               {% else %}
-                <img src="{% static 'legacy/images/no_photo_102_109.jpg' %}" alt="{{ ad.title }}" loading="lazy" style="width:100%; height:100px; object-fit:cover;">
+                <img src="{% static 'legacy/images/no_photo_102_109.jpg' %}" alt="{{ ad.title }}" loading="lazy" style="width:100%; height:100px; object-fit:contain; background:#fff;">
               {% endif %}
               <div style="padding:6px 8px;">
                 <div style="font-size:13px; font-weight:600; line-height:1.3; max-height:2.6em; overflow:hidden;">{{ ad.title|truncatewords:8 }}</div>

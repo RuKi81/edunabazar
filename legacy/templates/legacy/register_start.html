@@ -28,8 +28,11 @@
 
       <div style="border-top:1px solid #e0e0e0; margin-top:18px; padding-top:14px;">
         <p style="margin:0 0 10px; font-weight:600;">Или зарегистрироваться:</p>
-        <div style="display:flex; flex-wrap:wrap; gap:12px;">
-          <a class="btn" href="{% url 'legacy_register_sms' %}?next={{ request.GET.next|default:''|urlencode }}" style="background:#7fb500; box-shadow:none; border-radius:0;">По телефону (СМС)</a>
+        <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-start;">
+          <div>
+            <a class="btn" href="{% url 'legacy_register_sms' %}?next={{ request.GET.next|default:''|urlencode }}" style="background:#7fb500; box-shadow:none; border-radius:0;">По телефону (СМС)</a>
+            <div style="font-size:11px; color:#999; margin-top:4px;">только для абонентов Теле2, Мотив и Сбермобайл</div>
+          </div>
           <a class="btn" href="{% url 'legacy_register_email' %}?next={{ request.GET.next|default:''|urlencode }}" style="background:#0090b6; box-shadow:none; border-radius:0;">По Email</a>
         </div>
       </div>
