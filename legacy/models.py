@@ -321,11 +321,9 @@ class AdvertView(models.Model):
 
 
 class SocialAccount(models.Model):
-    PROVIDER_VK = 'vk'
-    PROVIDER_OK = 'ok'
+    PROVIDER_VK = 'vkid'
     PROVIDER_CHOICES = [
-        (PROVIDER_VK, 'ВКонтакте'),
-        (PROVIDER_OK, 'Одноклассники'),
+        (PROVIDER_VK, 'VK ID'),
     ]
 
     user = models.ForeignKey('LegacyUser', on_delete=models.CASCADE, related_name='social_accounts')

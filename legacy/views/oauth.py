@@ -81,11 +81,22 @@ def _generate_pkce() -> tuple[str, str]:
     return code_verifier, code_challenge
 
 
+# Allowed provider hints for VK ID unified auth (VK, OK, Mail.ru)
+_ALLOWED_PROVIDERS = {'', 'vk', 'ok_ru', 'mail_ru'}
+
+
 def oauth_vk_start(request: HttpRequest) -> HttpResponse:
-    """Redirect user to VK ID authorization page."""
+    """Redirect user to VK ID authorization page.
+
+    Optional ?provider=ok_ru or ?provider=mail_ru to hint at the login method.
+    """
     next_url = (request.GET.get('next') or '').strip()
     if next_url:
         request.session['oauth_next'] = next_url
+
+    provider_hint = (request.GET.get('provider') or '').strip()
+    if provider_hint not in _ALLOWED_PROVIDERS:
+        provider_hint = ''
 
     state = secrets.token_urlsafe(16)
     code_verifier, code_challenge = _generate_pkce()
@@ -102,6 +113,8 @@ def oauth_vk_start(request: HttpRequest) -> HttpResponse:
         'code_challenge': code_challenge,
         'code_challenge_method': 'S256',
     }
+    if provider_hint:
+        params['provider'] = provider_hint
     url = 'https://id.vk.com/authorize?' + urllib.parse.urlencode(params)
     return redirect(url)
 
@@ -173,105 +186,6 @@ def oauth_vk_callback(request: HttpRequest) -> HttpResponse:
     return _find_or_start_social(request, SocialAccount.PROVIDER_VK, str(vk_user_id), profile)
 
 
-# ─── OK (Одноклассники) ─────────────────────────────────────────────────
-
-def oauth_ok_start(request: HttpRequest) -> HttpResponse:
-    """Redirect user to OK authorization page."""
-    next_url = (request.GET.get('next') or '').strip()
-    if next_url:
-        request.session['oauth_next'] = next_url
-
-    state = secrets.token_urlsafe(16)
-    request.session['oauth_state'] = state
-
-    params = {
-        'client_id': settings.OK_CLIENT_ID,
-        'redirect_uri': settings.OK_REDIRECT_URI,
-        'scope': 'VALUABLE_ACCESS;GET_EMAIL',
-        'response_type': 'code',
-        'state': state,
-        'layout': 'w',
-    }
-    url = 'https://connect.ok.ru/oauth/authorize?' + urllib.parse.urlencode(params)
-    return redirect(url)
-
-
-def _ok_sig(params: dict, access_token: str) -> str:
-    """Calculate OK API request signature."""
-    secret_key = hashlib.md5(
-        (access_token + settings.OK_CLIENT_SECRET).encode()
-    ).hexdigest()
-    sorted_params = ''.join(f'{k}={params[k]}' for k in sorted(params))
-    return hashlib.md5((sorted_params + secret_key).encode()).hexdigest()
-
-
-def oauth_ok_callback(request: HttpRequest) -> HttpResponse:
-    """Handle OK OAuth callback."""
-    error = request.GET.get('error')
-    if error:
-        logger.warning('OK OAuth error: %s', error)
-        return redirect('/register/')
-
-    code = request.GET.get('code', '')
-    state = request.GET.get('state', '')
-
-    if not code or state != request.session.pop('oauth_state', ''):
-        logger.warning('OK OAuth: missing code or state mismatch')
-        return redirect('/register/')
-
-    # Exchange code for access_token
-    try:
-        resp = requests.post('https://api.ok.ru/oauth/token.do', data={
-            'client_id': settings.OK_CLIENT_ID,
-            'client_secret': settings.OK_CLIENT_SECRET,
-            'redirect_uri': settings.OK_REDIRECT_URI,
-            'code': code,
-            'grant_type': 'authorization_code',
-        }, timeout=10)
-        data = resp.json()
-    except Exception:
-        logger.exception('OK OAuth token exchange failed')
-        return redirect('/register/')
-
-    access_token = data.get('access_token', '')
-    if not access_token:
-        logger.warning('OK OAuth: no access_token: %s', data)
-        return redirect('/register/')
-
-    # Fetch user profile
-    api_params = {
-        'application_key': settings.OK_PUBLIC_KEY,
-        'format': 'json',
-        'method': 'users.getCurrentUser',
-        'fields': 'uid,name,first_name,last_name,email,pic_2',
-    }
-    api_params['sig'] = _ok_sig(api_params, access_token)
-    api_params['access_token'] = access_token
-
-    try:
-        profile_resp = requests.get('https://api.ok.ru/fb.do', params=api_params, timeout=10)
-        profile_data = profile_resp.json()
-    except Exception:
-        logger.exception('OK profile fetch failed')
-        return redirect('/register/')
-
-    ok_uid = str(profile_data.get('uid', ''))
-    if not ok_uid:
-        logger.warning('OK OAuth: no uid in profile: %s', profile_data)
-        return redirect('/register/')
-
-    name = profile_data.get('name', '')
-    email = profile_data.get('email', '')
-
-    profile = {
-        'name': name,
-        'email': email or '',
-        'phone': '',
-        'access_token': access_token,
-    }
-    return _find_or_start_social(request, SocialAccount.PROVIDER_OK, ok_uid, profile)
-
-
 # ─── Complete profile ────────────────────────────────────────────────────
 
 def oauth_complete(request: HttpRequest) -> HttpResponse:
@@ -340,7 +254,7 @@ def oauth_complete(request: HttpRequest) -> HttpResponse:
         'phone': request.POST.get('phone', '') if request.method == 'POST' else (oauth_profile.get('phone') or ''),
     }
 
-    provider_label = 'ВКонтакте' if oauth_profile['provider'] == 'vk' else 'Одноклассники'
+    provider_label = 'VK ID'
 
     resp = render(request, 'legacy/oauth_complete.html', {
         'errors': errors,
