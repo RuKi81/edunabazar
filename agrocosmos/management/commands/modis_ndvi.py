@@ -215,7 +215,6 @@ class Command(BaseCommand):
         sys.stdout.flush()
 
         created_total = 0
-        updated_total = 0
         stats_errors = 0
         t_stats = time.time()
 
@@ -259,8 +258,6 @@ class Command(BaseCommand):
 
             # Group farmlands by district for scene_id
             district_scenes = {}  # district_id → scene
-            batch_created = 0
-            batch_updated = 0
 
             # Pre-create scenes (few districts, fast)
             district_ids_needed = set()
@@ -282,75 +279,48 @@ class Command(BaseCommand):
                 )
                 district_scenes[did] = scene
 
-            # Batch upsert: collect all VegetationIndex records
-            to_create = []
-            to_update = []
+            # Upsert via INSERT ... ON CONFLICT UPDATE (no SELECT needed)
+            self.stdout.write(' DB…', ending='')
+            sys.stdout.flush()
 
-            # Get existing records in one query
-            fl_ids_with_data = [fid for fid in results if fid in fl_map]
-            scene_ids = [s.pk for s in district_scenes.values()]
-            existing = {}
-            if fl_ids_with_data and scene_ids:
-                for vi in VegetationIndex.objects.filter(
-                    farmland_id__in=fl_ids_with_data,
-                    scene_id__in=scene_ids,
-                    index_type='ndvi',
-                ):
-                    existing[(vi.farmland_id, vi.scene_id)] = vi
-
+            objs = []
             for fl_id, st in results.items():
                 fl_obj = fl_map.get(fl_id)
                 if not fl_obj:
                     continue
-
                 scene = district_scenes.get(fl_obj.district_id or 0)
                 if not scene:
                     continue
+                objs.append(VegetationIndex(
+                    farmland=fl_obj,
+                    scene=scene,
+                    index_type='ndvi',
+                    acquired_date=mid_date,
+                    mean=st['mean'],
+                    median=st['median'],
+                    min_val=st['min'],
+                    max_val=st['max'],
+                    std_val=st['std'],
+                    pixel_count=st['pixel_count'],
+                    valid_pixel_count=st['valid_pixel_count'],
+                ))
 
-                key = (fl_id, scene.pk)
-                if key in existing:
-                    vi = existing[key]
-                    vi.acquired_date = mid_date
-                    vi.mean = st['mean']
-                    vi.median = st['median']
-                    vi.min_val = st['min']
-                    vi.max_val = st['max']
-                    vi.std_val = st['std']
-                    vi.pixel_count = st['pixel_count']
-                    vi.valid_pixel_count = st['valid_pixel_count']
-                    to_update.append(vi)
-                else:
-                    to_create.append(VegetationIndex(
-                        farmland=fl_obj,
-                        scene=scene,
-                        index_type='ndvi',
-                        acquired_date=mid_date,
-                        mean=st['mean'],
-                        median=st['median'],
-                        min_val=st['min'],
-                        max_val=st['max'],
-                        std_val=st['std'],
-                        pixel_count=st['pixel_count'],
-                        valid_pixel_count=st['valid_pixel_count'],
-                    ))
-
-            if to_create:
-                VegetationIndex.objects.bulk_create(to_create, batch_size=5000)
-                batch_created = len(to_create)
-            if to_update:
-                VegetationIndex.objects.bulk_update(
-                    to_update,
-                    ['acquired_date', 'mean', 'median', 'min_val', 'max_val',
-                     'std_val', 'pixel_count', 'valid_pixel_count'],
+            if objs:
+                VegetationIndex.objects.bulk_create(
+                    objs,
                     batch_size=5000,
+                    update_conflicts=True,
+                    unique_fields=['farmland', 'scene', 'index_type'],
+                    update_fields=[
+                        'acquired_date', 'mean', 'median', 'min_val',
+                        'max_val', 'std_val', 'pixel_count',
+                        'valid_pixel_count',
+                    ],
                 )
-                batch_updated = len(to_update)
 
-            created_total += batch_created
-            updated_total += batch_updated
+            created_total += len(objs)
             self.stdout.write(
-                f'  → {len(results)} farmlands, '
-                f'+{batch_created} new, {batch_updated} upd'
+                f'  → {len(objs)} records saved'
             )
 
         # Summary
@@ -362,8 +332,7 @@ class Command(BaseCommand):
         self.stdout.write(
             f'\n═══════════════════════════════════════════════\n'
             f'  Done in {hours}h{minutes:02d}m{seconds:02d}s\n'
-            f'  New records: {created_total}\n'
-            f'  Updated records: {updated_total}\n'
+            f'  Records saved: {created_total}\n'
             f'  Errors: {stats_errors}\n'
             f'═══════════════════════════════════════════════'
         )
