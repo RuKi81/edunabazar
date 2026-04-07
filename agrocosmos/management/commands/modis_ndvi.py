@@ -237,18 +237,22 @@ class Command(BaseCommand):
                 continue
 
             # Midpoint date for the composite record
-            mid_date = (cf + (ct - cf) / 2).isoformat()
+            mid_date = (cf + (ct - cf) / 2)
 
-            # Save to DB
+            # Group farmlands by district for scene_id
+            district_scenes = {}  # district_id → scene
             batch_created = 0
             batch_updated = 0
 
-            for fl_id, st in results.items():
+            # Pre-create scenes (few districts, fast)
+            district_ids_needed = set()
+            for fl_id in results:
                 fl_obj = fl_map.get(fl_id)
-                if not fl_obj:
-                    continue
+                if fl_obj:
+                    district_ids_needed.add(fl_obj.district_id or 0)
 
-                scene_id = f'modis_{mid_date}_{fl_obj.district_id or 0}'
+            for did in district_ids_needed:
+                scene_id = f'modis_{mid_date.isoformat()}_{did}'
                 scene, _ = SatelliteScene.objects.get_or_create(
                     scene_id=scene_id,
                     defaults={
@@ -258,26 +262,71 @@ class Command(BaseCommand):
                         'processed': True,
                     },
                 )
+                district_scenes[did] = scene
 
-                _, is_new = VegetationIndex.objects.update_or_create(
-                    farmland=fl_obj,
-                    scene=scene,
+            # Batch upsert: collect all VegetationIndex records
+            to_create = []
+            to_update = []
+
+            # Get existing records in one query
+            fl_ids_with_data = [fid for fid in results if fid in fl_map]
+            scene_ids = [s.pk for s in district_scenes.values()]
+            existing = {}
+            if fl_ids_with_data and scene_ids:
+                for vi in VegetationIndex.objects.filter(
+                    farmland_id__in=fl_ids_with_data,
+                    scene_id__in=scene_ids,
                     index_type='ndvi',
-                    defaults={
-                        'acquired_date': mid_date,
-                        'mean': st['mean'],
-                        'median': st['median'],
-                        'min_val': st['min'],
-                        'max_val': st['max'],
-                        'std_val': st['std'],
-                        'pixel_count': st['pixel_count'],
-                        'valid_pixel_count': st['valid_pixel_count'],
-                    },
-                )
-                if is_new:
-                    batch_created += 1
+                ):
+                    existing[(vi.farmland_id, vi.scene_id)] = vi
+
+            for fl_id, st in results.items():
+                fl_obj = fl_map.get(fl_id)
+                if not fl_obj:
+                    continue
+
+                scene = district_scenes.get(fl_obj.district_id or 0)
+                if not scene:
+                    continue
+
+                key = (fl_id, scene.pk)
+                if key in existing:
+                    vi = existing[key]
+                    vi.acquired_date = mid_date
+                    vi.mean = st['mean']
+                    vi.median = st['median']
+                    vi.min_val = st['min']
+                    vi.max_val = st['max']
+                    vi.std_val = st['std']
+                    vi.pixel_count = st['pixel_count']
+                    vi.valid_pixel_count = st['valid_pixel_count']
+                    to_update.append(vi)
                 else:
-                    batch_updated += 1
+                    to_create.append(VegetationIndex(
+                        farmland=fl_obj,
+                        scene=scene,
+                        index_type='ndvi',
+                        acquired_date=mid_date,
+                        mean=st['mean'],
+                        median=st['median'],
+                        min_val=st['min'],
+                        max_val=st['max'],
+                        std_val=st['std'],
+                        pixel_count=st['pixel_count'],
+                        valid_pixel_count=st['valid_pixel_count'],
+                    ))
+
+            if to_create:
+                VegetationIndex.objects.bulk_create(to_create, batch_size=5000)
+                batch_created = len(to_create)
+            if to_update:
+                VegetationIndex.objects.bulk_update(
+                    to_update,
+                    ['acquired_date', 'mean', 'median', 'min_val', 'max_val',
+                     'std_val', 'pixel_count', 'valid_pixel_count'],
+                    batch_size=5000,
+                )
+                batch_updated = len(to_update)
 
             created_total += batch_created
             updated_total += batch_updated
