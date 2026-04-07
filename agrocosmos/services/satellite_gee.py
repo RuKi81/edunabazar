@@ -338,14 +338,14 @@ def fetch_ndvi_batch(farmlands, date_from, date_to, cloud_max=30,
 
 def fetch_modis_ndvi_batch(farmlands, date_from, date_to, min_valid_ratio=0.5):
     """
-    Batch MODIS NDVI (MOD13Q1, Terra, 250m, 16-day composite) via GEE.
+    Batch MODIS NDVI (MOD13Q1, Terra, 250m) via monthly median composite.
 
-    Returns one data point per 16-day period per polygon (up to 23/year).
-    Much faster than Sentinel-2 due to 250m resolution and pre-computed NDVI.
+    Creates a quality-filtered median NDVI composite for the date range,
+    then computes zonal stats for all polygons in ONE reduceRegions() call.
+    Same approach as S2 composite — avoids slow per-image getInfo() loop.
 
     Best for:
     - District / region level vegetation assessment
-    - Higher temporal frequency than monthly S2 composites
     - Rough per-farmland estimates (1 MODIS pixel ≈ 6.25 ha)
 
     Note: farmlands smaller than ~6 ha may have only 0-1 MODIS pixels.
@@ -368,6 +368,11 @@ def fetch_modis_ndvi_batch(farmlands, date_from, date_to, min_valid_ratio=0.5):
     if isinstance(date_to, date):
         date_to = date_to.isoformat()
 
+    # Midpoint date for the composite record
+    d1 = date.fromisoformat(date_from)
+    d2 = date.fromisoformat(date_to)
+    mid_date = (d1 + (d2 - d1) / 2).isoformat()
+
     ee_features = []
     for fl in farmlands:
         ee_features.append(
@@ -388,50 +393,44 @@ def fetch_modis_ndvi_batch(farmlands, date_from, date_to, min_valid_ratio=0.5):
             logger.info('No MODIS images for %s..%s', date_from, date_to)
             return {}
 
-        image_list = modis.toList(n_images)
+        # Quality-filter + scale NDVI for every image
+        def _process(image):
+            ndvi = image.select('NDVI').multiply(0.0001).rename('NDVI')
+            qa = image.select('SummaryQA')
+            good = qa.lte(1)  # 0=good, 1=marginal
+            return ndvi.updateMask(good)
 
+        ndvi_col = modis.map(_process)
+
+        # Median composite — one clean image from all MODIS tiles + dates
+        composite = ndvi_col.median().rename('NDVI')
+
+        # Total pixel coverage (any MODIS data, before quality mask)
+        total_band = modis.select('NDVI').mosaic().multiply(0.0001).rename('total')
+
+        stacked = composite.addBands(total_band)
+
+        # Single reduceRegions call for ALL polygons
         reducer = (ee.Reducer.mean()
                    .combine(ee.Reducer.count(), '', True)
                    .combine(ee.Reducer.min(), '', True)
                    .combine(ee.Reducer.max(), '', True)
                    .combine(ee.Reducer.stdDev(), '', True))
 
-        all_records = []
+        result_fc = stacked.reduceRegions(
+            collection=fc,
+            reducer=reducer,
+            scale=250,
+        )
 
-        for i in range(n_images):
-            image = ee.Image(image_list.get(i))
-
-            # NDVI band: raw values scaled by 0.0001
-            ndvi_raw = image.select('NDVI').multiply(0.0001).rename('NDVI')
-
-            # Quality filter: SummaryQA — 0=good, 1=marginal, 2=snow/ice, 3=cloudy
-            qa = image.select('SummaryQA')
-            good_mask = qa.lte(1)
-
-            ndvi_masked = ndvi_raw.updateMask(good_mask)
-            # Total band — unmasked NDVI for pixel count
-            total_band = ndvi_raw.rename('total')
-
-            stacked = ndvi_masked.addBands(total_band)
-
-            result_fc = stacked.reduceRegions(
-                collection=fc,
-                reducer=reducer,
-                scale=250,
-            )
-
-            img_date = ee.Date(image.get('system:time_start')).format('YYYY-MM-dd')
-            result_fc = result_fc.map(lambda f: f.set('date', img_date))
-
-            data = result_fc.getInfo()
-            all_records.extend(data.get('features', []))
+        data = result_fc.getInfo()
 
     except Exception as e:
         raise GEEError(f'GEE MODIS error: {e}')
 
     # Parse and group by farmland_id
     results = {}
-    for feat in all_records:
+    for feat in (data or {}).get('features', []):
         props = feat.get('properties', {})
         fl_id = props.get('fl_id')
         if fl_id is None:
@@ -452,7 +451,7 @@ def fetch_modis_ndvi_batch(farmlands, date_from, date_to, min_valid_ratio=0.5):
             results[fl_id] = []
 
         results[fl_id].append({
-            'date': props.get('date', ''),
+            'date': mid_date,
             'mean': round(mean, 4),
             'median': round(mean, 4),
             'min': round(props.get('NDVI_min', 0) or 0, 4),
@@ -464,7 +463,7 @@ def fetch_modis_ndvi_batch(farmlands, date_from, date_to, min_valid_ratio=0.5):
         })
 
     logger.info(
-        'MODIS batch: %d images, %d/%d farmlands with data (%s..%s)',
+        'MODIS composite: %d images → median, %d/%d polygons pass filter (%s..%s)',
         n_images, len(results), len(farmlands), date_from, date_to,
     )
     return results

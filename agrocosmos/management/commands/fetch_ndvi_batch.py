@@ -52,6 +52,17 @@ def _month_chunks(date_from, date_to):
     return chunks
 
 
+def _biweekly_chunks(date_from, date_to):
+    """Split date range into 16-day periods (matches MODIS MOD13Q1 cadence)."""
+    chunks = []
+    cursor = date_from
+    while cursor <= date_to:
+        end = min(cursor + timedelta(days=15), date_to)
+        chunks.append((cursor, end))
+        cursor = end + timedelta(days=1)
+    return chunks
+
+
 class Command(BaseCommand):
     help = 'Batch fetch NDVI for farmlands using GEE reduceRegions (fast)'
 
@@ -135,7 +146,12 @@ class Command(BaseCommand):
         batch_size = options['batch_size']
         throttle = options['throttle']
 
-        chunks = _month_chunks(date_from, date_to)
+        if sensor == 'modis':
+            chunks = _biweekly_chunks(date_from, date_to)
+            chunk_label = '16-day periods'
+        else:
+            chunks = _month_chunks(date_from, date_to)
+            chunk_label = 'months'
 
         # Split farmlands into batches
         batches = []
@@ -149,7 +165,7 @@ class Command(BaseCommand):
             f'═══════════════════════════════════════════════\n'
             f'  NDVI Batch Fetch — {sensor_label}\n'
             f'  Farmlands: {len(farmlands)} → {len(batches)} batches × {batch_size}\n'
-            f'  Period: {date_from} → {date_to} ({len(chunks)} months)\n'
+            f'  Period: {date_from} → {date_to} ({len(chunks)} {chunk_label})\n'
             f'  Total work units: {total_work} (batch × month)\n'
             f'  Cloud ≤{cloud_max}%  |  Valid ≥{min_valid*100:.0f}%  |  Throttle: {throttle}s\n'
             f'═══════════════════════════════════════════════'
