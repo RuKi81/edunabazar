@@ -196,3 +196,134 @@ def fetch_ndvi_stats(geometry_geojson, date_from, date_to, cloud_max=30,
 
     logger.info('GEE NDVI stats: %d dates for %s..%s', len(results), date_from, date_to)
     return results
+
+
+def fetch_ndvi_batch(farmlands, date_from, date_to, cloud_max=30,
+                     min_valid_ratio=0.95):
+    """
+    Batch NDVI stats for multiple farmlands using GEE reduceRegions().
+
+    ~100-500x faster than per-polygon fetch_ndvi_stats for large datasets.
+    Processes all Sentinel-2 images in the date range across all polygons
+    with a single reduceRegions() call per image.
+
+    Args:
+        farmlands: list of dicts, each with 'id' (int) and 'geometry' (GeoJSON)
+        date_from: str 'YYYY-MM-DD' or date object
+        date_to: str 'YYYY-MM-DD' or date object
+        cloud_max: max scene cloud cover %
+        min_valid_ratio: skip date+polygon where valid/total < this
+
+    Returns:
+        dict: {farmland_id: [{'date', 'mean', 'min', 'max', 'std',
+               'pixel_count', 'valid_pixel_count', 'valid_ratio'}, ...]}
+    """
+    initialize()
+
+    if isinstance(date_from, date):
+        date_from = date_from.isoformat()
+    if isinstance(date_to, date):
+        date_to = date_to.isoformat()
+
+    # Build ee.FeatureCollection from farmland polygons
+    ee_features = []
+    for fl in farmlands:
+        ee_features.append(
+            ee.Feature(ee.Geometry(fl['geometry']), {'fl_id': fl['id']})
+        )
+    fc = ee.FeatureCollection(ee_features)
+
+    try:
+        aoi = fc.geometry().bounds()
+
+        s2 = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+              .filterDate(date_from, date_to)
+              .filterBounds(aoi)
+              .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', cloud_max)))
+
+        n_images = s2.size().getInfo()
+        if n_images == 0:
+            logger.info('No images for batch %s..%s', date_from, date_to)
+            return {}
+
+        image_list = s2.toList(n_images)
+
+        # Combined reducer: NDVI stats + total pixel count
+        reducer = (ee.Reducer.mean()
+                   .combine(ee.Reducer.count(), '', True)
+                   .combine(ee.Reducer.min(), '', True)
+                   .combine(ee.Reducer.max(), '', True)
+                   .combine(ee.Reducer.stdDev(), '', True))
+
+        all_records = []
+
+        for i in range(n_images):
+            image = ee.Image(image_list.get(i))
+
+            # Cloud mask via SCL
+            scl = image.select('SCL')
+            cloud_mask = (scl.eq(4).Or(scl.eq(5))
+                          .Or(scl.eq(6)).Or(scl.eq(7)))
+
+            # NDVI (cloud-masked) + total pixel band (original mask)
+            ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI')
+            ndvi_masked = ndvi.updateMask(cloud_mask)
+            total_band = image.select('B4').rename('total')
+            stacked = ndvi_masked.addBands(total_band)
+
+            # Reduce over ALL polygons at once
+            result_fc = stacked.reduceRegions(
+                collection=fc,
+                reducer=reducer,
+                scale=10,
+            )
+
+            # Tag every feature with image date
+            img_date = ee.Date(image.get('system:time_start')).format('YYYY-MM-dd')
+            result_fc = result_fc.map(lambda f: f.set('date', img_date))
+
+            data = result_fc.getInfo()
+            all_records.extend(data.get('features', []))
+
+    except Exception as e:
+        raise GEEError(f'GEE batch error: {e}')
+
+    # Parse and group by farmland_id
+    results = {}
+    for feat in all_records:
+        props = feat.get('properties', {})
+        fl_id = props.get('fl_id')
+        if fl_id is None:
+            continue
+
+        total = props.get('total_count') or 0
+        valid = props.get('NDVI_count') or 0
+        mean = props.get('NDVI_mean')
+
+        if not total or not valid or mean is None:
+            continue
+
+        ratio = valid / total
+        if ratio < min_valid_ratio:
+            continue
+
+        if fl_id not in results:
+            results[fl_id] = []
+
+        results[fl_id].append({
+            'date': props.get('date', ''),
+            'mean': round(mean, 4),
+            'median': round(mean, 4),  # approximate; true median is expensive in batch
+            'min': round(props.get('NDVI_min', 0) or 0, 4),
+            'max': round(props.get('NDVI_max', 0) or 0, 4),
+            'std': round(props.get('NDVI_stdDev', 0) or 0, 4),
+            'pixel_count': int(total),
+            'valid_pixel_count': int(valid),
+            'valid_ratio': round(ratio, 4),
+        })
+
+    logger.info(
+        'GEE batch: %d images × %d polygons → %d farmlands with data (%s..%s)',
+        n_images, len(farmlands), len(results), date_from, date_to,
+    )
+    return results
