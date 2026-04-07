@@ -2,15 +2,16 @@
 Batch fetch NDVI statistics for farmlands using GEE reduceRegions().
 
 Processes multiple polygons per API call (~500x faster than per-polygon mode).
+Supports Sentinel-2 (10m, monthly composites) and MODIS (250m, 16-day composites).
 
 Usage:
-    # All farmlands in Crimea for 2025
+    # Sentinel-2: All farmlands in Crimea for 2025
     python manage.py fetch_ndvi_batch --region-id 37 \
         --date-from 2025-01-01 --date-to 2025-12-31
 
-    # Smaller batch size if GEE times out
-    python manage.py fetch_ndvi_batch --region-id 37 \
-        --date-from 2025-01-01 --date-to 2025-12-31 --batch-size 200
+    # MODIS: faster, 16-day frequency, good for region-level assessment
+    python manage.py fetch_ndvi_batch --region-id 37 --sensor modis \
+        --date-from 2025-01-01 --date-to 2025-12-31
 
     # Resume from a specific farmland ID
     python manage.py fetch_ndvi_batch --region-id 37 \
@@ -20,9 +21,9 @@ Usage:
     python manage.py fetch_ndvi_batch --district-id 5 \
         --date-from 2025-03-01 --date-to 2025-10-31
 
-Performance estimate (133K farmlands, 12 months, batch-size 500):
-    ~3,200 GEE calls × ~10-30s each ≈ 10-27 hours
-    vs per-polygon mode: ~1.6M calls ≈ 89 days
+Performance (133K farmlands, 12 months, batch-size 500):
+    Sentinel-2: ~3,200 calls × ~2.5min ≈ 5-6 days
+    MODIS:      ~3,200 calls × ~3sec  ≈ 2-3 hours
 """
 import json
 import signal
@@ -75,9 +76,22 @@ class Command(BaseCommand):
                             help='Seconds between GEE batch calls (default: 2.0)')
         parser.add_argument('--limit', type=int, default=0,
                             help='Limit total farmlands (for testing)')
+        parser.add_argument('--sensor', type=str, default='s2',
+                            choices=['s2', 'modis'],
+                            help='Sensor: s2 (Sentinel-2, 10m) or modis (MODIS Terra, 250m)')
 
     def handle(self, *args, **options):
-        from agrocosmos.services.satellite_gee import fetch_ndvi_batch, GEEError
+        from agrocosmos.services.satellite_gee import GEEError
+
+        sensor = options['sensor']
+        if sensor == 'modis':
+            from agrocosmos.services.satellite_gee import fetch_modis_ndvi_batch as batch_fn
+            satellite_type = 'modis_terra'
+            scene_prefix = 'modis'
+        else:
+            from agrocosmos.services.satellite_gee import fetch_ndvi_batch as batch_fn
+            satellite_type = 'sentinel2'
+            scene_prefix = 's2'
 
         # Graceful stop
         def _signal_handler(sig, frame):
@@ -114,6 +128,10 @@ class Command(BaseCommand):
         date_to = date.fromisoformat(options['date_to'])
         cloud_max = options['cloud_max']
         min_valid = options['min_valid_ratio']
+        # MODIS default: lower threshold (250m pixels, few per small farmland)
+        if sensor == 'modis' and '--min-valid-ratio' not in ' '.join(options.get('_args', [])):
+            if min_valid == 0.95:
+                min_valid = 0.5
         batch_size = options['batch_size']
         throttle = options['throttle']
 
@@ -126,9 +144,10 @@ class Command(BaseCommand):
 
         total_work = len(batches) * len(chunks)
 
+        sensor_label = 'MODIS Terra 250m' if sensor == 'modis' else 'Sentinel-2 10m'
         self.stdout.write(
             f'═══════════════════════════════════════════════\n'
-            f'  NDVI Batch Fetch (GEE reduceRegions)\n'
+            f'  NDVI Batch Fetch — {sensor_label}\n'
             f'  Farmlands: {len(farmlands)} → {len(batches)} batches × {batch_size}\n'
             f'  Period: {date_from} → {date_to} ({len(chunks)} months)\n'
             f'  Total work units: {total_work} (batch × month)\n'
@@ -178,14 +197,18 @@ class Command(BaseCommand):
                     f'({chunk_from}..{chunk_to})'
                 )
 
+                # Build kwargs (MODIS doesn't use cloud_max)
+                call_kwargs = dict(
+                    farmlands=batch_data,
+                    date_from=chunk_from,
+                    date_to=chunk_to,
+                    min_valid_ratio=min_valid,
+                )
+                if sensor == 's2':
+                    call_kwargs['cloud_max'] = cloud_max
+
                 try:
-                    results = fetch_ndvi_batch(
-                        farmlands=batch_data,
-                        date_from=chunk_from,
-                        date_to=chunk_to,
-                        cloud_max=cloud_max,
-                        min_valid_ratio=min_valid,
-                    )
+                    results = batch_fn(**call_kwargs)
                     gee_calls += 1
                 except GEEError as e:
                     self.stderr.write(f'    ERROR: {e}')
@@ -194,13 +217,7 @@ class Command(BaseCommand):
                     self.stderr.write('    Retrying in 15s…')
                     time.sleep(15)
                     try:
-                        results = fetch_ndvi_batch(
-                            farmlands=batch_data,
-                            date_from=chunk_from,
-                            date_to=chunk_to,
-                            cloud_max=cloud_max,
-                            min_valid_ratio=min_valid,
-                        )
+                        results = batch_fn(**call_kwargs)
                         gee_calls += 1
                         errors -= 1
                     except Exception:
@@ -224,11 +241,11 @@ class Command(BaseCommand):
                         continue
 
                     for s in stats_list:
-                        scene_id = f's2_{s["date"]}_{fl_obj.district_id or 0}'
+                        scene_id = f'{scene_prefix}_{s["date"]}_{fl_obj.district_id or 0}'
                         scene, _ = SatelliteScene.objects.get_or_create(
                             scene_id=scene_id,
                             defaults={
-                                'satellite': 'sentinel2',
+                                'satellite': satellite_type,
                                 'acquired_date': s['date'],
                                 'cloud_cover': 0,
                                 'processed': True,
