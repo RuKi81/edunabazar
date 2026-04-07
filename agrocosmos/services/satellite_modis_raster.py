@@ -109,28 +109,27 @@ def download_composite(region_geom_extent, region_id, date_from, date_to,
         # Median composite — cloud-free
         composite = ndvi_col.median().rename('NDVI').toFloat()
 
-        # Download as GeoTIFF via getDownloadURL
-        url = composite.getDownloadURL({
-            'name': 'modis_ndvi',
-            'region': aoi,
-            'scale': 250,
-            'format': 'GEO_TIFF',
-            'crs': 'EPSG:4326',
+        # Download as GeoTIFF via computePixels (uses compute API, no
+        # extra IAM permissions needed unlike getDownloadURL)
+        content = ee.data.computePixels({
+            'expression': composite,
+            'fileFormat': 'GEO_TIFF',
+            'grid': {
+                'crsCode': 'EPSG:4326',
+                'affineTransform': {
+                    'scaleX': 250 / 111320,   # ~250m in degrees at equator
+                    'shearX': 0,
+                    'translateX': xmin,
+                    'shearY': 0,
+                    'scaleY': -250 / 111320,
+                    'translateY': ymax,
+                },
+                'dimensions': {
+                    'width': int((xmax - xmin) / (250 / 111320)) + 1,
+                    'height': int((ymax - ymin) / (250 / 111320)) + 1,
+                },
+            },
         })
-
-        import requests
-        resp = requests.get(url, timeout=300)
-        resp.raise_for_status()
-
-        # GEE returns a zip with the GeoTIFF inside
-        content = resp.content
-        if content[:2] == b'PK':  # ZIP file
-            with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                tif_names = [n for n in zf.namelist() if n.endswith('.tif')]
-                if not tif_names:
-                    logger.error('No .tif in downloaded zip')
-                    return None
-                content = zf.read(tif_names[0])
 
         with open(out_path, 'wb') as f:
             f.write(content)
