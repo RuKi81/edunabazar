@@ -15,13 +15,16 @@ Storage: /data/modis/{region_id}/{year}/
 import io
 import logging
 import os
+import warnings
 import zipfile
 from datetime import date, timedelta
 from pathlib import Path
 
 import ee
+import numpy as np
 import rasterio
-import rasterstats
+import rasterio.features
+import rasterio.mask
 from django.conf import settings
 
 from .satellite_gee import GEEError, initialize
@@ -174,14 +177,21 @@ def download_year(region_geom_extent, region_id, date_from, date_to,
     return results
 
 
-def compute_zonal_stats(tif_path, farmland_geometries, min_valid_ratio=0.5):
+def compute_zonal_stats(tif_path, farmland_geometries, min_valid_ratio=0.5,
+                        progress_callback=None):
     """
     Compute NDVI zonal statistics for all farmlands from a local GeoTIFF.
+
+    Uses rasterio + numpy directly (no rasterstats) for speed:
+    1. Read entire raster into memory (~1 MB for MODIS)
+    2. Rasterize all polygons into a label array (pixel → farmland index)
+    3. Compute stats per label using numpy — vectorized, no per-polygon loop
 
     Args:
         tif_path: str, path to MODIS NDVI GeoTIFF
         farmland_geometries: list of dicts with 'id' and 'geometry' (GeoJSON)
         min_valid_ratio: min ratio of valid (non-nodata) pixels
+        progress_callback: optional callable(done, total) for progress
 
     Returns:
         dict: {farmland_id: {'mean', 'min', 'max', 'std',
@@ -190,59 +200,102 @@ def compute_zonal_stats(tif_path, farmland_geometries, min_valid_ratio=0.5):
     if not tif_path or not os.path.exists(tif_path):
         return {}
 
-    # Prepare geometries for rasterstats
-    geojson_features = []
-    id_map = []
-    for fl in farmland_geometries:
-        geojson_features.append(fl['geometry'])
-        id_map.append(fl['id'])
+    if not farmland_geometries:
+        return {}
 
     try:
-        stats = rasterstats.zonal_stats(
-            geojson_features,
-            tif_path,
-            stats=['mean', 'min', 'max', 'std', 'count'],
-            nodata=float('nan'),
+        with rasterio.open(tif_path) as ds:
+            ndvi = ds.read(1)  # shape: (H, W)
+            transform = ds.transform
+            nodata = ds.nodata
+
+        # Build valid mask
+        if nodata is not None and not np.isnan(nodata):
+            valid_mask = ndvi != nodata
+        else:
+            valid_mask = ~np.isnan(ndvi)
+
+        # Prepare shapes for rasterize: (geometry, label_index)
+        # Use 1-based indices (0 = no polygon)
+        shapes = []
+        id_list = []
+        for i, fl in enumerate(farmland_geometries):
+            shapes.append((fl['geometry'], i + 1))
+            id_list.append(fl['id'])
+
+        max_label = len(farmland_geometries)
+
+        # Rasterize all polygons at once → label array
+        labels = rasterio.features.rasterize(
+            shapes,
+            out_shape=ndvi.shape,
+            transform=transform,
+            fill=0,
+            dtype='int32',
             all_touched=True,
         )
+
+        # Flatten for vectorized processing
+        flat_labels = labels.ravel()
+        flat_ndvi = ndvi.ravel()
+        flat_valid = valid_mask.ravel()
+
+        # Total pixel count per label (including nodata)
+        all_mask = flat_labels > 0
+        total_per_label = np.bincount(
+            flat_labels[all_mask], minlength=max_label + 1
+        )
+
+        # Valid pixels only: sort by label for fast groupby
+        valid_px_mask = all_mask & flat_valid
+        valid_lbls = flat_labels[valid_px_mask]
+        valid_vals = flat_ndvi[valid_px_mask]
+
+        if len(valid_lbls) == 0:
+            return {}
+
+        order = np.argsort(valid_lbls, kind='mergesort')
+        sorted_lbls = valid_lbls[order]
+        sorted_vals = valid_vals[order]
+
+        # Split points for each label
+        split_pts = np.searchsorted(
+            sorted_lbls, np.arange(1, max_label + 2)
+        )
+
+        results = {}
+        for lbl in range(1, max_label + 1):
+            start = split_pts[lbl - 1]
+            end = split_pts[lbl]
+            valid_count = end - start
+            if valid_count == 0:
+                continue
+
+            total_count = int(total_per_label[lbl])
+            ratio = valid_count / total_count if total_count else 0
+            if ratio < min_valid_ratio:
+                continue
+
+            vals = sorted_vals[start:end]
+            fl_id = id_list[lbl - 1]
+
+            results[fl_id] = {
+                'mean': round(float(vals.mean()), 4),
+                'median': round(float(np.median(vals)), 4),
+                'min': round(float(vals.min()), 4),
+                'max': round(float(vals.max()), 4),
+                'std': round(float(vals.std()), 4),
+                'pixel_count': total_count,
+                'valid_pixel_count': int(valid_count),
+                'valid_ratio': round(ratio, 4),
+            }
+
+        if progress_callback:
+            progress_callback(len(results), len(farmland_geometries))
+
     except Exception as e:
         logger.error('Zonal stats error for %s: %s', tif_path, e)
         return {}
-
-    # Also get total pixel count (including nodata) via count with nodata=None
-    try:
-        total_stats = rasterstats.zonal_stats(
-            geojson_features,
-            tif_path,
-            stats=['count'],
-            all_touched=True,
-        )
-    except Exception:
-        total_stats = [{'count': 0}] * len(stats)
-
-    results = {}
-    for i, (fl_id, st, tst) in enumerate(zip(id_map, stats, total_stats)):
-        valid = st.get('count') or 0
-        total = tst.get('count') or 0
-        mean = st.get('mean')
-
-        if not total or not valid or mean is None:
-            continue
-
-        ratio = valid / total if total else 0
-        if ratio < min_valid_ratio:
-            continue
-
-        results[fl_id] = {
-            'mean': round(mean, 4),
-            'median': round(mean, 4),
-            'min': round(st.get('min', 0) or 0, 4),
-            'max': round(st.get('max', 0) or 0, 4),
-            'std': round(st.get('std', 0) or 0, 4),
-            'pixel_count': int(total),
-            'valid_pixel_count': int(valid),
-            'valid_ratio': round(ratio, 4),
-        }
 
     logger.info(
         'Zonal stats: %d/%d farmlands with valid data from %s',
