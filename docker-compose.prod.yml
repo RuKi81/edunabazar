@@ -25,6 +25,8 @@ services:
     volumes:
       - ./media:/app/media
       - static_files:/app/staticfiles
+      - modis_data:/data/modis
+      - ./gee-key.json:/app/gee-key.json:ro
     expose:
       - "8000"
     depends_on:
@@ -62,3 +64,4 @@ services:
 volumes:
   static_files:
   redis_data:
+  modis_data:
