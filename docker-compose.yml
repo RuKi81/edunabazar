@@ -7,3 +7,4 @@ services:
       - .env
     volumes:
       - ./media:/app/media
+      - ./gee-key.json:/app/gee-key.json:ro
