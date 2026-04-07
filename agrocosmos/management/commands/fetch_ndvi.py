@@ -40,7 +40,6 @@ from django.core.management.base import BaseCommand
 from django.db.models import Min, Max
 
 from agrocosmos.models import Farmland, SatelliteScene, VegetationIndex
-from agrocosmos.services.satellite import fetch_ndvi_stats, CDSEError
 
 
 def _month_chunks(date_from, date_to):
@@ -85,8 +84,18 @@ class Command(BaseCommand):
                             help='Skip farmland+month pairs that already have data in DB')
         parser.add_argument('--throttle', type=float, default=1.5,
                             help='Seconds to wait between API calls (default: 1.5)')
+        parser.add_argument('--backend', type=str, default='gee',
+                            choices=['gee', 'cdse'],
+                            help='API backend: gee (Google Earth Engine) or cdse (Copernicus)')
 
     def handle(self, *args, **options):
+        # Select backend
+        backend = options['backend']
+        if backend == 'gee':
+            from agrocosmos.services.satellite_gee import fetch_ndvi_stats, GEEError as BackendError
+        else:
+            from agrocosmos.services.satellite import fetch_ndvi_stats, CDSEError as BackendError
+
         # Graceful stop on Ctrl+C
         def _signal_handler(sig, frame):
             self._stop_requested = True
@@ -139,7 +148,7 @@ class Command(BaseCommand):
             f'  NDVI Fetch: {len(farmlands)} farmland(s)\n'
             f'  Period: {date_from} → {date_to} ({len(chunks)} month chunks)\n'
             f'  Cloud pre-filter: ≤{cloud_max}%  |  Valid pixel threshold: ≥{min_valid*100:.0f}%\n'
-            f'  Resume: {resume}  |  Throttle: {throttle}s\n'
+            f'  Backend: {backend.upper()}  |  Resume: {resume}  |  Throttle: {throttle}s\n'
             f'═══════════════════════════════════════════════'
         )
 
@@ -198,26 +207,23 @@ class Command(BaseCommand):
                         min_valid_ratio=min_valid,
                     )
                     api_calls += 1
-                except CDSEError as e:
+                except BackendError as e:
                     self.stderr.write(f'    ERROR ({chunk_from}..{chunk_to}): {e}')
                     errors += 1
-                    # If token error, wait and retry once
-                    if '401' in str(e) or '403' in str(e):
-                        self.stderr.write('    Retrying in 10s…')
-                        time.sleep(10)
-                        try:
-                            stats = fetch_ndvi_stats(
-                                geometry_geojson=geom_json,
-                                date_from=chunk_from,
-                                date_to=chunk_to,
-                                cloud_max=cloud_max,
-                                min_valid_ratio=min_valid,
-                            )
-                            api_calls += 1
-                            errors -= 1  # retry succeeded
-                        except Exception:
-                            continue
-                    else:
+                    # Retry once after wait
+                    self.stderr.write('    Retrying in 10s…')
+                    time.sleep(10)
+                    try:
+                        stats = fetch_ndvi_stats(
+                            geometry_geojson=geom_json,
+                            date_from=chunk_from,
+                            date_to=chunk_to,
+                            cloud_max=cloud_max,
+                            min_valid_ratio=min_valid,
+                        )
+                        api_calls += 1
+                        errors -= 1  # retry succeeded
+                    except Exception:
                         continue
                 except Exception as e:
                     self.stderr.write(f'    UNEXPECTED ERROR ({chunk_from}..{chunk_to}): {e}')
