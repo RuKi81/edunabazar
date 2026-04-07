@@ -13,10 +13,10 @@ RUN apt-get update && \
 WORKDIR /app
 
 COPY requirements.txt .
-ENV NPY_CPU_BASELINE="SSE SSE2" \
-    NPY_CPU_DISPATCH="none"
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir --no-binary :all: numpy>=2.1 && \
+    pip install --no-cache-dir --no-binary numpy numpy>=2.1 \
+        -Csetup-args=-Dcpu-baseline=none \
+        -Csetup-args=-Dcpu-dispatch=none && \
     pip install --no-cache-dir --no-binary numpy -r requirements.txt gunicorn
 
 COPY . .
