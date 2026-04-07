@@ -36,6 +36,22 @@ from django.core.management.base import BaseCommand
 from agrocosmos.models import Farmland, SatelliteScene, VegetationIndex
 
 
+def _simplify_coords(geojson, precision=4):
+    """Truncate coordinate precision to reduce GeoJSON payload size.
+
+    precision=4 → ~11m accuracy (fine for MODIS 250m).
+    precision=6 → ~0.11m accuracy (fine for Sentinel-2 10m).
+    """
+    def _round(coords):
+        if isinstance(coords[0], (int, float)):
+            return [round(c, precision) for c in coords]
+        return [_round(c) for c in coords]
+
+    result = dict(geojson)
+    result['coordinates'] = _round(geojson['coordinates'])
+    return result
+
+
 def _month_chunks(date_from, date_to):
     """Split date range into (first_day, last_day) tuples per month."""
     chunks = []
@@ -185,12 +201,14 @@ class Command(BaseCommand):
             # Prepare batch geometry data
             batch_data = []
             fl_map = {}  # pk → Farmland object
+            coord_precision = 4 if sensor == 'modis' else 6
             for fl in batch:
                 geom = fl.geom
                 if geom.geom_type == 'MultiPolygon' and len(geom) == 1:
                     geom_json = json.loads(geom[0].geojson)
                 else:
                     geom_json = json.loads(geom.geojson)
+                geom_json = _simplify_coords(geom_json, coord_precision)
                 batch_data.append({'id': fl.pk, 'geometry': geom_json})
                 fl_map[fl.pk] = fl
 
