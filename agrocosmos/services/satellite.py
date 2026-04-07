@@ -146,7 +146,8 @@ def search_scenes(geometry_geojson, date_from, date_to, cloud_max=30, limit=20):
     return results
 
 
-def fetch_ndvi_stats(geometry_geojson, date_from, date_to, cloud_max=30):
+def fetch_ndvi_stats(geometry_geojson, date_from, date_to, cloud_max=30,
+                     min_valid_ratio=0.95):
     """
     Compute NDVI zonal statistics for a polygon using CDSE Statistical API.
 
@@ -155,6 +156,9 @@ def fetch_ndvi_stats(geometry_geojson, date_from, date_to, cloud_max=30):
         date_from: start date
         date_to: end date
         cloud_max: max cloud cover %
+        min_valid_ratio: minimum ratio of valid (non-cloud/nodata) pixels
+            to total pixels. Dates below this threshold are skipped.
+            Default 0.95 means skip if >5% of polygon has no data.
 
     Returns:
         list of dicts, one per date:
@@ -168,6 +172,7 @@ def fetch_ndvi_stats(geometry_geojson, date_from, date_to, cloud_max=30):
                 'std': 0.11,
                 'pixel_count': 1200,
                 'valid_pixel_count': 980,
+                'valid_ratio': 0.817,
             },
             ...
         ]
@@ -245,7 +250,15 @@ def fetch_ndvi_stats(geometry_geojson, date_from, date_to, cloud_max=30):
         sample_count = b0.get('sampleCount', 0)
         valid_count = sample_count - no_data
 
-        if valid_count <= 0:
+        if valid_count <= 0 or sample_count <= 0:
+            continue
+
+        ratio = valid_count / sample_count
+        if ratio < min_valid_ratio:
+            logger.debug(
+                'Skipping %s: valid ratio %.1f%% < %.1f%%',
+                ts_from, ratio * 100, min_valid_ratio * 100,
+            )
             continue
 
         percentiles = stats.get('percentiles', {}).get('50.0', stats.get('mean', 0))
@@ -259,6 +272,7 @@ def fetch_ndvi_stats(geometry_geojson, date_from, date_to, cloud_max=30):
             'std': round(stats.get('stDev', 0), 4),
             'pixel_count': sample_count,
             'valid_pixel_count': valid_count,
+            'valid_ratio': round(ratio, 4),
         })
 
     logger.info('NDVI stats: %d intervals for %s..%s', len(results), date_from, date_to)
