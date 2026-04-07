@@ -201,9 +201,16 @@ class Command(BaseCommand):
             # Prepare batch geometry data
             batch_data = []
             fl_map = {}  # pk → Farmland object
+            # MODIS 250m: simplify shapes (tolerance ~0.002° ≈ 200m) + round coords
+            # S2 10m: only round coords to 6dp
             coord_precision = 4 if sensor == 'modis' else 6
+            simplify_tolerance = 0.002 if sensor == 'modis' else 0
             for fl in batch:
                 geom = fl.geom
+                if simplify_tolerance:
+                    geom = geom.simplify(simplify_tolerance, preserve_topology=True)
+                    if geom.empty:
+                        continue
                 if geom.geom_type == 'MultiPolygon' and len(geom) == 1:
                     geom_json = json.loads(geom[0].geojson)
                 else:
