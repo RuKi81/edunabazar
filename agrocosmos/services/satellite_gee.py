@@ -201,18 +201,26 @@ def fetch_ndvi_stats(geometry_geojson, date_from, date_to, cloud_max=30,
 def fetch_ndvi_batch(farmlands, date_from, date_to, cloud_max=30,
                      min_valid_ratio=0.95):
     """
-    Batch NDVI stats for multiple farmlands using GEE reduceRegions().
+    Batch NDVI via monthly median composite + single reduceRegions() call.
 
-    ~100-500x faster than per-polygon fetch_ndvi_stats for large datasets.
-    Processes all Sentinel-2 images in the date range across all polygons
-    with a single reduceRegions() call per image.
+    Creates a cloud-free median NDVI composite for the date range, then
+    computes zonal stats for all polygons in ONE reduceRegions() call.
+    The management command iterates monthly, so each call produces one
+    composite data point per farmland per month.
+
+    Much faster than per-image approach because:
+    - 1 reduceRegions call instead of N (one per Sentinel-2 image)
+    - Median composite is computed server-side efficiently
+
+    Best performance when farmlands are spatially grouped (same district)
+    so filterBounds returns fewer images.
 
     Args:
         farmlands: list of dicts, each with 'id' (int) and 'geometry' (GeoJSON)
         date_from: str 'YYYY-MM-DD' or date object
         date_to: str 'YYYY-MM-DD' or date object
         cloud_max: max scene cloud cover %
-        min_valid_ratio: skip date+polygon where valid/total < this
+        min_valid_ratio: skip polygon where valid/total < this
 
     Returns:
         dict: {farmland_id: [{'date', 'mean', 'min', 'max', 'std',
@@ -224,6 +232,11 @@ def fetch_ndvi_batch(farmlands, date_from, date_to, cloud_max=30,
         date_from = date_from.isoformat()
     if isinstance(date_to, date):
         date_to = date_to.isoformat()
+
+    # Midpoint date for the composite record
+    d1 = date.fromisoformat(date_from)
+    d2 = date.fromisoformat(date_to)
+    mid_date = (d1 + (d2 - d1) / 2).isoformat()
 
     # Build ee.FeatureCollection from farmland polygons
     ee_features = []
@@ -246,51 +259,45 @@ def fetch_ndvi_batch(farmlands, date_from, date_to, cloud_max=30,
             logger.info('No images for batch %s..%s', date_from, date_to)
             return {}
 
-        image_list = s2.toList(n_images)
+        # Cloud-mask + NDVI for every image
+        def _add_ndvi(image):
+            scl = image.select('SCL')
+            clear = (scl.eq(4).Or(scl.eq(5))
+                     .Or(scl.eq(6)).Or(scl.eq(7)))
+            ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI')
+            return ndvi.updateMask(clear)
 
-        # Combined reducer: NDVI stats + total pixel count
+        ndvi_col = s2.map(_add_ndvi)
+
+        # Median composite — one clean image from all observations
+        composite = ndvi_col.median().rename('NDVI')
+
+        # Total pixel coverage (any S2 data, before cloud mask)
+        total_band = s2.select('B4').mosaic().rename('total')
+
+        stacked = composite.addBands(total_band)
+
+        # Single reduceRegions call for ALL polygons
         reducer = (ee.Reducer.mean()
                    .combine(ee.Reducer.count(), '', True)
                    .combine(ee.Reducer.min(), '', True)
                    .combine(ee.Reducer.max(), '', True)
                    .combine(ee.Reducer.stdDev(), '', True))
 
-        all_records = []
+        result_fc = stacked.reduceRegions(
+            collection=fc,
+            reducer=reducer,
+            scale=10,
+        )
 
-        for i in range(n_images):
-            image = ee.Image(image_list.get(i))
-
-            # Cloud mask via SCL
-            scl = image.select('SCL')
-            cloud_mask = (scl.eq(4).Or(scl.eq(5))
-                          .Or(scl.eq(6)).Or(scl.eq(7)))
-
-            # NDVI (cloud-masked) + total pixel band (original mask)
-            ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI')
-            ndvi_masked = ndvi.updateMask(cloud_mask)
-            total_band = image.select('B4').rename('total')
-            stacked = ndvi_masked.addBands(total_band)
-
-            # Reduce over ALL polygons at once
-            result_fc = stacked.reduceRegions(
-                collection=fc,
-                reducer=reducer,
-                scale=10,
-            )
-
-            # Tag every feature with image date
-            img_date = ee.Date(image.get('system:time_start')).format('YYYY-MM-dd')
-            result_fc = result_fc.map(lambda f: f.set('date', img_date))
-
-            data = result_fc.getInfo()
-            all_records.extend(data.get('features', []))
+        data = result_fc.getInfo()
 
     except Exception as e:
         raise GEEError(f'GEE batch error: {e}')
 
     # Parse and group by farmland_id
     results = {}
-    for feat in all_records:
+    for feat in (data or {}).get('features', []):
         props = feat.get('properties', {})
         fl_id = props.get('fl_id')
         if fl_id is None:
@@ -311,9 +318,9 @@ def fetch_ndvi_batch(farmlands, date_from, date_to, cloud_max=30,
             results[fl_id] = []
 
         results[fl_id].append({
-            'date': props.get('date', ''),
+            'date': mid_date,
             'mean': round(mean, 4),
-            'median': round(mean, 4),  # approximate; true median is expensive in batch
+            'median': round(mean, 4),
             'min': round(props.get('NDVI_min', 0) or 0, 4),
             'max': round(props.get('NDVI_max', 0) or 0, 4),
             'std': round(props.get('NDVI_stdDev', 0) or 0, 4),
@@ -323,7 +330,7 @@ def fetch_ndvi_batch(farmlands, date_from, date_to, cloud_max=30,
         })
 
     logger.info(
-        'GEE batch: %d images × %d polygons → %d farmlands with data (%s..%s)',
-        n_images, len(farmlands), len(results), date_from, date_to,
+        'GEE composite: %d images → median, %d/%d polygons pass filter (%s..%s)',
+        n_images, len(results), len(farmlands), date_from, date_to,
     )
     return results

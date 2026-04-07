@@ -100,7 +100,7 @@ class Command(BaseCommand):
         if options['start_from_id']:
             qs = qs.filter(pk__gte=options['start_from_id'])
 
-        qs = qs.order_by('pk')
+        qs = qs.order_by('district_id', 'pk')
 
         if options['limit']:
             qs = qs[:options['limit']]
