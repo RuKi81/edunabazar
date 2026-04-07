@@ -223,9 +223,16 @@ class Command(BaseCommand):
                 ending='',
             )
 
+            def _progress(done, total):
+                self.stdout.write(
+                    f' [{done}/{total}]', ending='',
+                )
+                self.stdout.flush() if hasattr(self.stdout, 'flush') else None
+
             try:
                 results = compute_zonal_stats(
                     tif_path, fl_geoms, min_valid_ratio=min_valid,
+                    progress_callback=_progress,
                 )
             except Exception as e:
                 self.stderr.write(f'  → ERROR: {e}')
