@@ -383,10 +383,14 @@ def fetch_modis_ndvi_batch(farmlands, date_from, date_to, min_valid_ratio=0.5):
     try:
         aoi = fc.geometry().bounds()
 
-        # MODIS Terra 16-day NDVI at 250m
-        modis = (ee.ImageCollection('MODIS/061/MOD13Q1')
+        # MODIS Terra + Aqua 16-day NDVI at 250m (offset by 8 days)
+        terra = (ee.ImageCollection('MODIS/061/MOD13Q1')
                  .filterDate(date_from, date_to)
                  .filterBounds(aoi))
+        aqua = (ee.ImageCollection('MODIS/061/MYD13Q1')
+                .filterDate(date_from, date_to)
+                .filterBounds(aoi))
+        modis = terra.merge(aqua)
 
         n_images = modis.size().getInfo()
         if n_images == 0:
