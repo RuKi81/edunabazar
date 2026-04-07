@@ -170,8 +170,12 @@ class Command(BaseCommand):
 
         # --- STEP 2: Compute zonal stats ---
         self.stdout.write('\n📊 Step 2: Computing zonal statistics…')
+        import sys
+        sys.stdout.flush()
 
         # Load farmlands
+        self.stdout.write('  Loading farmlands…', ending='')
+        sys.stdout.flush()
         qs = Farmland.objects.select_related('district')
         if district:
             qs = qs.filter(district=district)
@@ -184,12 +188,15 @@ class Command(BaseCommand):
             self.stderr.write('No farmlands found')
             return
 
-        self.stdout.write(f'  Loaded {len(farmlands)} farmlands')
+        self.stdout.write(f' {len(farmlands)}')
+        sys.stdout.flush()
 
         # Prepare geometry data (simplified for MODIS 250m)
+        self.stdout.write('  Preparing geometries…', ending='')
+        sys.stdout.flush()
         fl_geoms = []
         fl_map = {}
-        for fl in farmlands:
+        for idx, fl in enumerate(farmlands):
             geom = fl.geom
             geom = geom.simplify(0.002, preserve_topology=True)
             if geom.empty:
@@ -200,8 +207,12 @@ class Command(BaseCommand):
                 geom_json = json.loads(geom.geojson)
             fl_geoms.append({'id': fl.pk, 'geometry': geom_json})
             fl_map[fl.pk] = fl
+            if (idx + 1) % 20000 == 0:
+                self.stdout.write(f' {idx+1}', ending='')
+                sys.stdout.flush()
 
-        self.stdout.write(f'  Prepared {len(fl_geoms)} geometries')
+        self.stdout.write(f' → {len(fl_geoms)} ready')
+        sys.stdout.flush()
 
         created_total = 0
         updated_total = 0
@@ -227,7 +238,7 @@ class Command(BaseCommand):
                 self.stdout.write(
                     f' [{done}/{total}]', ending='',
                 )
-                self.stdout.flush() if hasattr(self.stdout, 'flush') else None
+                sys.stdout.flush()
 
             try:
                 results = compute_zonal_stats(
