@@ -140,3 +140,38 @@ class VegetationIndex(models.Model):
 
     def __str__(self):
         return f'{self.index_type.upper()} {self.acquired_date} → {self.mean:.3f}'
+
+
+class MonitoringTask(models.Model):
+    """Задача мониторинга NDVI для региона."""
+
+    class Status(models.TextChoices):
+        ACTIVE = 'active', 'Активный'
+        PAUSED = 'paused', 'Приостановлен'
+        COMPLETED = 'completed', 'Завершён'
+
+    region = models.ForeignKey(Region, on_delete=models.CASCADE, related_name='monitoring_tasks')
+    year = models.IntegerField(verbose_name='Год')
+    status = models.CharField(
+        max_length=20, choices=Status.choices,
+        default=Status.ACTIVE, verbose_name='Статус',
+    )
+    last_check = models.DateTimeField(blank=True, null=True, verbose_name='Последняя проверка')
+    last_date_to = models.DateField(
+        blank=True, null=True,
+        verbose_name='Последний обработанный период (конец)',
+    )
+    records_total = models.IntegerField(default=0, verbose_name='Записей всего')
+    log = models.TextField(blank=True, default='', verbose_name='Лог')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'agro_monitoring_task'
+        ordering = ['-created_at']
+        unique_together = [('region', 'year')]
+        verbose_name = 'Задача мониторинга'
+        verbose_name_plural = 'Задачи мониторинга'
+
+    def __str__(self):
+        return f'{self.region.name} — {self.year} ({self.get_status_display()})'

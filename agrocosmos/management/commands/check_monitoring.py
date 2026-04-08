@@ -1,0 +1,161 @@
+"""
+Check active monitoring tasks and run NDVI pipeline for new 16-day periods.
+
+Designed to be called daily via cron/systemd timer:
+    docker compose exec -T web python manage.py check_monitoring
+
+Logic:
+- For each MonitoringTask with status='active':
+  1. Determine the next 16-day period to process
+  2. If today >= next period start + 16 days (data available), run modis_ndvi
+  3. Update task.last_date_to and task.last_check
+"""
+import logging
+import time
+from datetime import date, timedelta
+from io import StringIO
+
+from django.core.management import call_command
+from django.core.management.base import BaseCommand
+from django.utils import timezone
+
+from agrocosmos.models import MonitoringTask
+
+logger = logging.getLogger('agrocosmos')
+
+# MODIS composites are available ~5 days after the 16-day period ends
+AVAILABILITY_LAG_DAYS = 7
+
+
+class Command(BaseCommand):
+    help = 'Check active monitoring tasks and fetch new NDVI data'
+
+    def add_arguments(self, parser):
+        parser.add_argument(
+            '--dry-run', action='store_true',
+            help='Show what would be done without actually running',
+        )
+        parser.add_argument(
+            '--force', action='store_true',
+            help='Force run even if period is not yet due',
+        )
+
+    def handle(self, *args, **options):
+        dry_run = options['dry_run']
+        force = options['force']
+        today = date.today()
+
+        tasks = MonitoringTask.objects.filter(
+            status='active',
+        ).select_related('region')
+
+        if not tasks.exists():
+            self.stdout.write('No active monitoring tasks.')
+            return
+
+        self.stdout.write(f'Found {tasks.count()} active task(s), today={today}')
+
+        for task in tasks:
+            self._process_task(task, today, dry_run, force)
+
+    def _process_task(self, task, today, dry_run, force):
+        region = task.region
+        year = task.year
+
+        # Determine the year boundaries
+        year_start = date(year, 1, 1)
+        year_end = date(year, 12, 31)
+
+        # If we've already completed the year, mark as completed
+        if task.last_date_to and task.last_date_to >= year_end:
+            task.status = 'completed'
+            task.save()
+            self.stdout.write(
+                f'  [{region.name} {year}] Year complete, marking as completed.'
+            )
+            return
+
+        # Next period to process
+        if task.last_date_to:
+            next_from = task.last_date_to + timedelta(days=1)
+        else:
+            next_from = year_start
+
+        next_to = min(next_from + timedelta(days=15), year_end)
+
+        # Check if data should be available
+        data_available_date = next_to + timedelta(days=AVAILABILITY_LAG_DAYS)
+        if today < data_available_date and not force:
+            self.stdout.write(
+                f'  [{region.name} {year}] Next period: {next_from}..{next_to}, '
+                f'data available after {data_available_date}. Skipping.'
+            )
+            return
+
+        # Don't process future dates
+        if next_from > today and not force:
+            self.stdout.write(
+                f'  [{region.name} {year}] Next period {next_from} is in the future. Skipping.'
+            )
+            return
+
+        self.stdout.write(
+            f'  [{region.name} {year}] Processing {next_from}..{next_to}'
+        )
+
+        if dry_run:
+            self.stdout.write('    → DRY RUN, skipping.')
+            return
+
+        # Run modis_ndvi for this specific period
+        t0 = time.time()
+        out = StringIO()
+        try:
+            call_command(
+                'modis_ndvi',
+                region_id=region.pk,
+                date_from=next_from.isoformat(),
+                date_to=next_to.isoformat(),
+                stdout=out,
+                stderr=out,
+            )
+            elapsed = time.time() - t0
+            log_text = out.getvalue()
+
+            # Update task
+            task.last_check = timezone.now()
+            task.last_date_to = next_to
+
+            # Parse records count
+            for line in log_text.splitlines():
+                if 'Records saved:' in line:
+                    try:
+                        n = int(line.split('Records saved:')[1].strip())
+                        task.records_total += n
+                    except (ValueError, IndexError):
+                        pass
+
+            # Append to log (keep last 10K chars)
+            entry = f'\n[{timezone.now():%Y-%m-%d %H:%M}] {next_from}..{next_to}: '
+            for line in log_text.splitlines():
+                if 'records saved' in line.lower() or 'Done in' in line:
+                    entry += line.strip() + ' '
+            task.log = (task.log + entry)[-10000:]
+
+            # Check if year is now complete
+            if next_to >= year_end:
+                task.status = 'completed'
+
+            task.save()
+
+            self.stdout.write(
+                f'    → Done in {elapsed:.0f}s'
+            )
+
+        except Exception as e:
+            logger.error('check_monitoring error for %s %s: %s', region.name, year, e)
+            self.stderr.write(f'    → ERROR: {e}')
+
+            task.last_check = timezone.now()
+            task.log = (task.log + f'\n[{timezone.now():%Y-%m-%d %H:%M}] ERROR: {e}')[-10000:]
+            task.save()
