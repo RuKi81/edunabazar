@@ -75,87 +75,105 @@ class Command(BaseCommand):
             )
             return
 
-        # Next period to process
-        if task.last_date_to:
-            next_from = task.last_date_to + timedelta(days=1)
-        else:
-            next_from = year_start
+        # Process ALL available periods in one run (catch-up from year start)
+        periods_done = 0
+        while True:
+            # Next period to process
+            if task.last_date_to:
+                next_from = task.last_date_to + timedelta(days=1)
+            else:
+                next_from = year_start
 
-        next_to = min(next_from + timedelta(days=15), year_end)
+            next_to = min(next_from + timedelta(days=15), year_end)
 
-        # Check if data should be available
-        data_available_date = next_to + timedelta(days=AVAILABILITY_LAG_DAYS)
-        if today < data_available_date and not force:
+            # Don't process future dates
+            if next_from > today and not force:
+                self.stdout.write(
+                    f'  [{region.name} {year}] Next period {next_from} is in the future. Stop.'
+                )
+                break
+
+            # Check if data should be available
+            data_available_date = next_to + timedelta(days=AVAILABILITY_LAG_DAYS)
+            if today < data_available_date and not force:
+                self.stdout.write(
+                    f'  [{region.name} {year}] Period {next_from}..{next_to}: '
+                    f'data available after {data_available_date}. Stop.'
+                )
+                break
+
             self.stdout.write(
-                f'  [{region.name} {year}] Next period: {next_from}..{next_to}, '
-                f'data available after {data_available_date}. Skipping.'
+                f'  [{region.name} {year}] Processing {next_from}..{next_to}'
             )
-            return
 
-        # Don't process future dates
-        if next_from > today and not force:
-            self.stdout.write(
-                f'  [{region.name} {year}] Next period {next_from} is in the future. Skipping.'
-            )
-            return
+            if dry_run:
+                self.stdout.write('    → DRY RUN, skipping.')
+                # Simulate advance for dry-run preview
+                task.last_date_to = next_to
+                periods_done += 1
+                if next_to >= year_end:
+                    break
+                continue
+
+            # Run modis_ndvi for this specific period
+            t0 = time.time()
+            out = StringIO()
+            try:
+                call_command(
+                    'modis_ndvi',
+                    region_id=region.pk,
+                    date_from=next_from.isoformat(),
+                    date_to=next_to.isoformat(),
+                    stdout=out,
+                    stderr=out,
+                )
+                elapsed = time.time() - t0
+                log_text = out.getvalue()
+
+                # Update task
+                task.last_check = timezone.now()
+                task.last_date_to = next_to
+
+                # Parse records count
+                for line in log_text.splitlines():
+                    if 'Records saved:' in line:
+                        try:
+                            n = int(line.split('Records saved:')[1].strip())
+                            task.records_total += n
+                        except (ValueError, IndexError):
+                            pass
+
+                # Append to log (keep last 10K chars)
+                entry = f'\n[{timezone.now():%Y-%m-%d %H:%M}] {next_from}..{next_to}: '
+                for line in log_text.splitlines():
+                    if 'records saved' in line.lower() or 'Done in' in line:
+                        entry += line.strip() + ' '
+                task.log = (task.log + entry)[-10000:]
+
+                # Check if year is now complete
+                if next_to >= year_end:
+                    task.status = 'completed'
+
+                task.save()
+                periods_done += 1
+
+                self.stdout.write(
+                    f'    → Done in {elapsed:.0f}s (period {periods_done})'
+                )
+
+                if next_to >= year_end:
+                    break
+
+            except Exception as e:
+                logger.error('check_monitoring error for %s %s: %s', region.name, year, e)
+                self.stderr.write(f'    → ERROR: {e}')
+
+                task.last_check = timezone.now()
+                task.log = (task.log + f'\n[{timezone.now():%Y-%m-%d %H:%M}] ERROR: {e}')[-10000:]
+                task.save()
+                break  # Stop on error, will retry next cron run
 
         self.stdout.write(
-            f'  [{region.name} {year}] Processing {next_from}..{next_to}'
+            f'  [{region.name} {year}] Finished: {periods_done} period(s) processed, '
+            f'total records: {task.records_total}'
         )
-
-        if dry_run:
-            self.stdout.write('    → DRY RUN, skipping.')
-            return
-
-        # Run modis_ndvi for this specific period
-        t0 = time.time()
-        out = StringIO()
-        try:
-            call_command(
-                'modis_ndvi',
-                region_id=region.pk,
-                date_from=next_from.isoformat(),
-                date_to=next_to.isoformat(),
-                stdout=out,
-                stderr=out,
-            )
-            elapsed = time.time() - t0
-            log_text = out.getvalue()
-
-            # Update task
-            task.last_check = timezone.now()
-            task.last_date_to = next_to
-
-            # Parse records count
-            for line in log_text.splitlines():
-                if 'Records saved:' in line:
-                    try:
-                        n = int(line.split('Records saved:')[1].strip())
-                        task.records_total += n
-                    except (ValueError, IndexError):
-                        pass
-
-            # Append to log (keep last 10K chars)
-            entry = f'\n[{timezone.now():%Y-%m-%d %H:%M}] {next_from}..{next_to}: '
-            for line in log_text.splitlines():
-                if 'records saved' in line.lower() or 'Done in' in line:
-                    entry += line.strip() + ' '
-            task.log = (task.log + entry)[-10000:]
-
-            # Check if year is now complete
-            if next_to >= year_end:
-                task.status = 'completed'
-
-            task.save()
-
-            self.stdout.write(
-                f'    → Done in {elapsed:.0f}s'
-            )
-
-        except Exception as e:
-            logger.error('check_monitoring error for %s %s: %s', region.name, year, e)
-            self.stderr.write(f'    → ERROR: {e}')
-
-            task.last_check = timezone.now()
-            task.log = (task.log + f'\n[{timezone.now():%Y-%m-%d %H:%M}] ERROR: {e}')[-10000:]
-            task.save()
