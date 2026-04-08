@@ -577,6 +577,7 @@
         .catch(function (err) { console.error('NDVI stats error:', err); });
 
       // Multi-year regional chart
+      console.log('[loadNdviStats] years:', years, 'region:', regionId, 'district:', districtId);
       loadMultiYearChart(regionId, districtId, years);
     }
 
@@ -590,7 +591,7 @@
       });
 
       Promise.all(promises).then(function (results) {
-        // Collect all unique dates (as MM-DD for overlay) or full dates
+        console.log('[MultiYear] results:', JSON.stringify(results.map(function(r){ return {year:r.year, periods:r.data.length}; })));
         var datasets = [];
         var allLabels = new Set();
 
