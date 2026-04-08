@@ -362,6 +362,7 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
     year = request.GET.get('year')
     date_from = request.GET.get('date_from')
     date_to = request.GET.get('date_to')
+    crop_types = request.GET.get('crop_types')  # comma-separated, e.g. 'arable,hayfield'
 
     # Base queryset
     fl_qs = Farmland.objects.filter(district__region_id=region_id)
@@ -370,6 +371,23 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
             fl_qs = fl_qs.filter(district_id=int(district_id))
         except (TypeError, ValueError):
             pass
+
+    # Farmland summary (before crop_types filter, for Сводка)
+    fl_summary = (
+        fl_qs
+        .values('crop_type')
+        .annotate(
+            count=Count('id'),
+            total_area=Sum('area_ha'),
+        )
+        .order_by('crop_type')
+    )
+
+    # Apply crop_types filter
+    if crop_types:
+        ct_list = [ct.strip() for ct in crop_types.split(',') if ct.strip()]
+        if ct_list:
+            fl_qs = fl_qs.filter(crop_type__in=ct_list)
 
     vi_qs = VegetationIndex.objects.filter(
         farmland__in=fl_qs, index_type='ndvi',
@@ -430,6 +448,17 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
     with_ndvi = vi_qs.values('farmland_id').distinct().count()
     avg = vi_qs.aggregate(avg=Avg('mean'))['avg']
 
+    # Farmland summary by crop type
+    fl_summary_list = []
+    for row in fl_summary:
+        ct = row['crop_type']
+        fl_summary_list.append({
+            'crop_type': ct,
+            'label': crop_labels.get(ct, ct),
+            'count': row['count'],
+            'area_ha': round(row['total_area'] or 0, 1),
+        })
+
     return JsonResponse({
         'ok': True,
         'stats': {
@@ -440,5 +469,6 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
                 'with_ndvi': with_ndvi,
                 'mean_ndvi': _safe_round(avg),
             },
+            'farmland_summary': fl_summary_list,
         },
     })
