@@ -66,13 +66,15 @@ class Command(BaseCommand):
         )
         from agrocosmos.services.satellite_gee import GEEError
 
-        # Graceful stop
-        def _signal_handler(sig, frame):
-            self._stop_requested = True
-            self.stderr.write(self.style.WARNING(
-                '\n⚠ Ctrl+C — finishing current step…'
-            ))
-        signal.signal(signal.SIGINT, _signal_handler)
+        # Graceful stop (only works in main thread)
+        import threading
+        if threading.current_thread() is threading.main_thread():
+            def _signal_handler(sig, frame):
+                self._stop_requested = True
+                self.stderr.write(self.style.WARNING(
+                    '\n⚠ Ctrl+C — finishing current step…'
+                ))
+            signal.signal(signal.SIGINT, _signal_handler)
 
         # Resolve region
         region = None
