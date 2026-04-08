@@ -4,6 +4,8 @@ from django.db import connection
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.contrib.gis.db.models.functions import AsGeoJSON
+from datetime import date
+
 from django.db.models import Count, Sum, Avg, Q
 from django.views.decorators.cache import cache_page
 
@@ -60,6 +62,17 @@ def dashboard(request: HttpRequest) -> HttpResponse:
         .order_by('-area')
     )
 
+    # Available years: from NDVI data + current year
+    current_year = date.today().year
+    data_years = (
+        VegetationIndex.objects
+        .filter(index_type='ndvi')
+        .values_list('acquired_date__year', flat=True)
+        .distinct()
+        .order_by('-acquired_date__year')
+    )
+    years = sorted(set(list(data_years) + [current_year]), reverse=True)
+
     return render(request, 'agrocosmos/dashboard.html', {
         'legacy_user': _get_legacy_user(request),
         'regions': regions,
@@ -69,6 +82,7 @@ def dashboard(request: HttpRequest) -> HttpResponse:
         'summary': summary,
         'crop_stats': list(crop_stats),
         'crop_type_labels': dict(Farmland.CropType.choices),
+        'years': years,
     })
 
 

@@ -51,10 +51,18 @@
   .agro-badge--active { background: #4CAF50; }
   .agro-badge--paused { background: #FF9800; }
   .agro-badge--completed { background: #9E9E9E; }
+  .agro-badge--running { background: #2196F3; }
+  .agro-badge--failed { background: #F44336; }
 
   .agro-collapse-toggle { cursor: pointer; user-select: none; }
   .agro-collapse-body { display: none; }
   .agro-collapse-body.open { display: block; }
+
+  .agro-log { max-height: 120px; overflow-y: auto; background: #1e1e1e; color: #d4d4d4;
+    font-family: monospace; font-size: 11px; padding: 8px; border-radius: 3px; margin-top: 4px;
+    white-space: pre-wrap; word-break: break-all; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+  .agro-badge--running { animation: pulse 1.5s infinite; }
 </style>
 
 <div class="agro-panel">
@@ -99,7 +107,7 @@
             <select name="region_id" required>
               <option value="">— Выберите —</option>
               {% for r in regions %}
-                <option value="{{ r.id }}">{{ r.name }}</option>
+                <option value="{{ r.id }}">{{ r.name }} {% if r.farmland_count %}({{ r.farmland_count }} угодий){% endif %}</option>
               {% endfor %}
             </select>
           </div>
@@ -156,7 +164,7 @@
             <select name="region_id" required>
               <option value="">— Выберите —</option>
               {% for r in regions %}
-                <option value="{{ r.id }}">{{ r.name }}</option>
+                <option value="{{ r.id }}">{{ r.name }} {% if r.farmland_count %}({{ r.farmland_count }} угодий){% endif %}</option>
               {% endfor %}
             </select>
           </div>
@@ -192,14 +200,16 @@
             <select name="region_id" required>
               <option value="">— Выберите —</option>
               {% for r in regions %}
-                <option value="{{ r.id }}">{{ r.name }}</option>
+                <option value="{{ r.id }}">{{ r.name }} {% if r.farmland_count %}({{ r.farmland_count }} угодий){% endif %}</option>
               {% endfor %}
             </select>
           </div>
           <div class="agro-field">
             <label>Год</label>
             <select name="year" required>
-              <option value="{{ current_year }}">{{ current_year }}</option>
+              {% for y in years %}
+                <option value="{{ y }}" {% if y == current_year %}selected{% endif %}>{{ y }}</option>
+              {% endfor %}
             </select>
           </div>
           <div>
@@ -251,5 +261,69 @@
     </div>
   </div>
 
+  <!-- ═══ 6. Pipeline Runs (лог процессов) ═══ -->
+  <div class="agro-section">
+    <h2>⚡ Процессы пайплайна</h2>
+    <div class="body">
+      {% if pipeline_runs %}
+        <table class="agro-tasks" id="pipeline-table">
+          <thead>
+            <tr>
+              <th>Тип</th>
+              <th>Статус</th>
+              <th>Регион</th>
+              <th>Год</th>
+              <th>Описание</th>
+              <th>Записей</th>
+              <th>Начало</th>
+              <th>Длительность</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for run in pipeline_runs %}
+            <tr>
+              <td>{{ run.get_task_type_display }}</td>
+              <td><span class="agro-badge agro-badge--{{ run.status }}">{{ run.get_status_display }}</span></td>
+              <td>{{ run.region.name|default:"—" }}</td>
+              <td>{{ run.year|default:"—" }}</td>
+              <td style="max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ run.description|default:"—" }}</td>
+              <td>{{ run.records_count }}</td>
+              <td>{{ run.started_at|date:"d.m.Y H:i" }}</td>
+              <td>{{ run.duration }}</td>
+            </tr>
+            {% if run.log %}
+            <tr>
+              <td colspan="8">
+                <div class="agro-collapse-toggle" onclick="this.nextElementSibling.classList.toggle('open')">
+                  ▸ <span style="font-size:11px; color:#417690;">Показать лог</span>
+                </div>
+                <div class="agro-collapse-body">
+                  <div class="agro-log">{{ run.log }}</div>
+                </div>
+              </td>
+            </tr>
+            {% endif %}
+            {% endfor %}
+          </tbody>
+        </table>
+        <div class="agro-hint" style="margin-top:8px;">
+          <a href="{% url 'admin:agrocosmos_pipelinerun_changelist' %}">Все процессы →</a>
+        </div>
+      {% else %}
+        <p style="color:#888; font-size:13px;">Нет запусков</p>
+      {% endif %}
+    </div>
+  </div>
+
 </div>
+
+<script>
+// Auto-refresh page if any pipeline is still running
+(function() {
+  var badges = document.querySelectorAll('.agro-badge--running');
+  if (badges.length > 0) {
+    setTimeout(function() { location.reload(); }, 15000);
+  }
+})();
+</script>
 {% endblock %}

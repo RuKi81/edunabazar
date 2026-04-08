@@ -9,8 +9,11 @@ from django.utils.html import format_html
 
 from .models import (
     Region, District, Farmland, SatelliteScene, VegetationIndex,
-    MonitoringTask,
+    MonitoringTask, PipelineRun,
 )
+
+import logging
+logger = logging.getLogger('agrocosmos')
 
 
 # ── Standard model admins ─────────────────────────────────────────
@@ -50,6 +53,31 @@ class SatelliteSceneAdmin(admin.ModelAdmin):
 class VegetationIndexAdmin(admin.ModelAdmin):
     list_display = ('farmland', 'index_type', 'acquired_date', 'mean', 'median')
     list_filter = ('index_type', 'acquired_date')
+
+
+# ── PipelineRun admin ─────────────────────────────────────────────
+
+@admin.register(PipelineRun)
+class PipelineRunAdmin(admin.ModelAdmin):
+    list_display = ('task_type', 'status_badge', 'region', 'year',
+                    'description', 'records_count', 'started_at', 'finished_at', 'duration_col')
+    list_filter = ('status', 'task_type')
+    readonly_fields = ('task_type', 'status', 'region', 'year', 'description',
+                       'log', 'records_count', 'started_at', 'finished_at')
+
+    def status_badge(self, obj):
+        colors = {'running': '#2196F3', 'completed': '#4CAF50', 'failed': '#F44336'}
+        c = colors.get(obj.status, '#999')
+        return format_html(
+            '<span style="background:{};color:#fff;padding:2px 8px;'
+            'border-radius:3px;font-size:11px;">{}</span>',
+            c, obj.get_status_display(),
+        )
+    status_badge.short_description = 'Статус'
+
+    def duration_col(self, obj):
+        return obj.duration
+    duration_col.short_description = 'Длительность'
 
 
 # ── MonitoringTask admin ──────────────────────────────────────────
@@ -124,8 +152,12 @@ admin.AdminSite.get_urls = _patched_get_urls
 
 def agro_panel_view(request):
     """Main Agrocosmos control panel."""
-    regions = Region.objects.all()
+    from django.db.models import Count
+    regions = Region.objects.annotate(
+        farmland_count=Count('districts__farmlands'),
+    )
     tasks = MonitoringTask.objects.select_related('region').all()[:20]
+    pipeline_runs = PipelineRun.objects.select_related('region').all()[:30]
     current_year = date.today().year
     years = list(range(current_year, current_year - 6, -1))
 
@@ -134,6 +166,7 @@ def agro_panel_view(request):
         'title': 'Агрокосмос — Управление',
         'regions': regions,
         'tasks': tasks,
+        'pipeline_runs': pipeline_runs,
         'years': years,
         'current_year': current_year,
     })
@@ -154,17 +187,28 @@ def upload_region_view(request):
     name_field = request.POST.get('name_field', 'NAME')
     code_field = request.POST.get('code_field', 'CODE')
 
+    run = PipelineRun.objects.create(
+        task_type='upload_region',
+        description=f'Файл: {file.name}',
+    )
+
     try:
         created, updated, errors = import_region_vector(
             file, name_field=name_field, code_field=code_field,
         )
-        messages.success(
-            request,
-            f'Регионы: {created} создано, {updated} обновлено.'
-        )
+        run.status = 'completed'
+        run.records_count = created + updated
+        run.log = f'Создано: {created}, обновлено: {updated}\n' + '\n'.join(errors[:10])
+        run.finished_at = timezone.now()
+        run.save()
+        messages.success(request, f'Регионы: {created} создано, {updated} обновлено.')
         for e in errors[:5]:
             messages.warning(request, e)
     except Exception as e:
+        run.status = 'failed'
+        run.log = str(e)
+        run.finished_at = timezone.now()
+        run.save()
         messages.error(request, f'Ошибка импорта: {e}')
 
     return redirect('admin:agro_panel')
@@ -183,6 +227,13 @@ def upload_farmlands_view(request):
         messages.error(request, 'Укажите файл и регион')
         return redirect('admin:agro_panel')
 
+    region = Region.objects.get(pk=int(region_id))
+    run = PipelineRun.objects.create(
+        task_type='upload_farmlands',
+        region=region,
+        description=f'Файл: {file.name}',
+    )
+
     try:
         created, skipped, errors = import_farmland_vector(
             file, int(region_id),
@@ -193,22 +244,26 @@ def upload_farmlands_view(request):
             auto_create_districts=True,
             clear_existing=bool(request.POST.get('clear_existing')),
         )
-        messages.success(
-            request,
-            f'Угодья: {created} создано, {skipped} пропущено.'
-        )
+        run.status = 'completed'
+        run.records_count = created
+        run.log = f'Создано: {created}, пропущено: {skipped}\n' + '\n'.join(errors[:10])
+        run.finished_at = timezone.now()
+        run.save()
+        messages.success(request, f'Угодья: {created} создано, {skipped} пропущено.')
         for e in errors[:5]:
             messages.warning(request, e)
     except Exception as e:
+        run.status = 'failed'
+        run.log = str(e)
+        run.finished_at = timezone.now()
+        run.save()
         messages.error(request, f'Ошибка импорта: {e}')
 
     return redirect('admin:agro_panel')
 
 
-def _run_modis_bg(region_id, year, task_id=None):
+def _run_modis_bg(region_id, year, run_id=None):
     """Run modis_ndvi command in background thread."""
-    import logging
-    logger = logging.getLogger('agrocosmos')
     try:
         from django.core.management import call_command
         from io import StringIO
@@ -223,24 +278,64 @@ def _run_modis_bg(region_id, year, task_id=None):
         log_text = out.getvalue()
         logger.info('modis_ndvi done: region=%s year=%s', region_id, year)
 
-        if task_id:
+        if run_id:
             try:
-                task = MonitoringTask.objects.get(pk=task_id)
-                task.last_check = timezone.now()
-                task.log = log_text[-5000:]  # keep last 5K chars
-                # Parse records count from log
+                run = PipelineRun.objects.get(pk=run_id)
+                run.status = 'completed'
+                run.log = log_text[-8000:]
                 for line in log_text.splitlines():
                     if 'Records saved:' in line:
                         try:
-                            n = int(line.split('Records saved:')[1].strip())
-                            task.records_total += n
+                            run.records_count += int(line.split('Records saved:')[1].strip())
                         except (ValueError, IndexError):
                             pass
-                task.save()
-            except MonitoringTask.DoesNotExist:
+                run.finished_at = timezone.now()
+                run.save()
+            except PipelineRun.DoesNotExist:
                 pass
     except Exception as e:
         logger.error('modis_ndvi error: %s', e)
+        if run_id:
+            try:
+                run = PipelineRun.objects.get(pk=run_id)
+                run.status = 'failed'
+                run.log = str(e)
+                run.finished_at = timezone.now()
+                run.save()
+            except PipelineRun.DoesNotExist:
+                pass
+
+
+def _run_check_monitoring_bg(run_id=None):
+    """Run check_monitoring management command in background thread."""
+    from django.core.management import call_command
+    from io import StringIO
+    try:
+        out = StringIO()
+        call_command('check_monitoring', stdout=out, stderr=out)
+        log_text = out.getvalue()
+        logger.info('check_monitoring done: %s', log_text[-2000:])
+
+        if run_id:
+            try:
+                run = PipelineRun.objects.get(pk=run_id)
+                run.status = 'completed'
+                run.log = log_text[-8000:]
+                run.finished_at = timezone.now()
+                run.save()
+            except PipelineRun.DoesNotExist:
+                pass
+    except Exception as e:
+        logger.error('check_monitoring error: %s', e)
+        if run_id:
+            try:
+                run = PipelineRun.objects.get(pk=run_id)
+                run.status = 'failed'
+                run.log = str(e)
+                run.finished_at = timezone.now()
+                run.save()
+            except PipelineRun.DoesNotExist:
+                pass
 
 
 def run_archive_view(request):
@@ -258,10 +353,16 @@ def run_archive_view(request):
     region = Region.objects.get(pk=int(region_id))
     year = int(year)
 
-    # Start in background thread
+    run = PipelineRun.objects.create(
+        task_type='archive_ndvi',
+        region=region,
+        year=year,
+        description=f'{region.name}, {year} год',
+    )
+
     t = threading.Thread(
         target=_run_modis_bg,
-        args=(int(region_id), year),
+        args=(int(region_id), year, run.pk),
         daemon=True,
     )
     t.start()
@@ -304,7 +405,22 @@ def start_monitoring_view(request):
         messages.success(
             request,
             f'Мониторинг создан: {region.name}, {year}. '
-            f'Автопроверка каждые 2 недели (через cron).'
+            f'Обработка всех доступных периодов запущена в фоне.'
         )
+
+    # Run check_monitoring in background to process all available periods
+    run = PipelineRun.objects.create(
+        task_type='monitoring',
+        region=region,
+        year=year,
+        description=f'Мониторинг: {region.name}, {year} год',
+    )
+
+    t = threading.Thread(
+        target=_run_check_monitoring_bg,
+        args=(run.pk,),
+        daemon=True,
+    )
+    t.start()
 
     return redirect('admin:agro_panel')
