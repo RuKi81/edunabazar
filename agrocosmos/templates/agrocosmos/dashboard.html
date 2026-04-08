@@ -40,10 +40,25 @@
     .agro-stat .val { font-weight: 700; }
 
     .agro-legend {
-      display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; font-size: 11px;
+      display: flex; flex-direction: column; gap: 3px; margin-top: 10px; font-size: 11px;
     }
     .agro-legend span { display: inline-flex; align-items: center; gap: 3px; }
     .agro-legend i { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+
+    /* Crop type checkboxes in Сводка */
+    .agro-crop-cb { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 12px; cursor: pointer; }
+    .agro-crop-cb input[type=checkbox] { opacity: 0; position: absolute; }
+    .agro-crop-cb .cb-box {
+      width: 16px; height: 16px; border: 2px solid #999; border-radius: 3px;
+      display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+      transition: background .15s, border-color .15s;
+    }
+    .agro-crop-cb input:checked + .cb-box { background: #2e7d32; border-color: #2e7d32; }
+    .agro-crop-cb input:checked + .cb-box::after {
+      content: '\2713'; color: #fff; font-size: 11px; font-weight: 700; line-height: 1;
+    }
+    .agro-crop-cb .cb-label { flex: 1; }
+    .agro-crop-cb .cb-val { font-weight: 700; font-size: 11px; color: #444; white-space: nowrap; }
 
 
     /* ── Right sidebar ── */
@@ -167,25 +182,23 @@
       </div>
 
       <!-- Layer toggles -->
-      <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px; cursor:pointer; font-size:13px; font-weight:600;">
+      <label class="agro-crop-cb" style="margin-bottom:4px;">
         <input type="checkbox" id="agro-toggle-borders" />
-        <i class="material-icons" style="font-size:18px; color:#1565C0;">border_style</i>
-        Границы региона
+        <span class="cb-box"></span>
+        <i class="material-icons" style="font-size:16px; color:#1565C0;">border_style</i>
+        <span class="cb-label" style="font-size:11px;">Границы региона</span>
       </label>
-      <label style="display:flex; align-items:center; gap:8px; margin-bottom:10px; cursor:pointer; font-size:13px; font-weight:600;">
+      <label class="agro-crop-cb" style="margin-bottom:10px;">
         <input type="checkbox" id="agro-toggle-farmlands" />
-        <i class="material-icons" style="font-size:18px; color:#2e7d32;">layers</i>
-        Границы угодий
+        <span class="cb-box"></span>
+        <i class="material-icons" style="font-size:16px; color:#2e7d32;">layers</i>
+        <span class="cb-label" style="font-size:11px;">Границы угодий</span>
       </label>
 
       <div style="margin-top: 10px;">
         <div style="font-size: 12px; font-weight: 700; margin-bottom: 4px; color: #444;">Сводка</div>
         <div class="agro-stat"><span>Угодий</span><span class="val" id="stat-count">—</span></div>
-        <div class="agro-stat"><span>Площадь</span><span class="val" id="stat-area">—</span></div>
-        <div class="agro-stat"><span>Пашня</span><span class="val" id="stat-arable">—</span></div>
-        <div class="agro-stat"><span>Сенокос</span><span class="val" id="stat-hayfield">—</span></div>
-        <div class="agro-stat"><span>Пастбище</span><span class="val" id="stat-pasture">—</span></div>
-        <div class="agro-stat"><span>Насаждения</span><span class="val" id="stat-perennial">—</span></div>
+        <div id="crop-type-checkboxes" style="margin-top:6px;"></div>
       </div>
 
       <div class="agro-legend">
@@ -197,15 +210,6 @@
         <span><i style="background:#9E9E9E;"></i> Нет данных</span>
       </div>
 
-      <!-- NDVI stats by crop type -->
-      <div id="ndvi-stats-panel" style="display:none; margin-top:12px;">
-        <div style="font-size:12px; font-weight:700; margin-bottom:4px; color:#2e7d32;">NDVI по видам угодий</div>
-        <div id="ndvi-crop-stats"></div>
-        <div style="margin-top:6px;">
-          <div class="agro-stat"><span>Угодий с NDVI</span><span class="val" id="ndvi-stat-count">—</span></div>
-          <div class="agro-stat"><span>Средний NDVI</span><span class="val" id="ndvi-stat-mean">—</span></div>
-        </div>
-      </div>
 
     </div>
 
@@ -215,7 +219,7 @@
 
       <!-- Regional NDVI chart -->
       <div id="ndvi-region-chart-wrap" style="display:none; padding:12px; border-top:1px solid rgba(0,0,0,.08);">
-        <h3 style="font-size:13px; font-weight:700; margin:0 0 6px 0;">Динамика NDVI (регион)</h3>
+        <h3 id="ndvi-region-title" style="font-size:13px; font-weight:700; margin:0 0 6px 0;">Динамика NDVI</h3>
         <canvas id="ndvi-region-chart" style="max-height:200px;"></canvas>
       </div>
 
@@ -376,6 +380,8 @@
       document.getElementById('agro-toggle-farmlands').checked = false;
       districtLayer = clearLayer(districtLayer);
       if (mvtLayer) { map.removeLayer(mvtLayer); mvtLayer = null; }
+      document.getElementById('crop-type-checkboxes').innerHTML = '';
+      document.getElementById('stat-count').textContent = '—';
       if (!regionId) return;
       fetch('/agrocosmos/api/districts/?region=' + regionId)
         .then(function (r) { return r.json(); })
@@ -388,6 +394,35 @@
             districtSel.appendChild(opt);
           });
         });
+    });
+
+    // When district changes — auto-load district vector + reload MVT if visible
+    districtSel.addEventListener('change', function () {
+      var regionId = regionSel.value;
+      var districtId = this.value;
+      // Load district boundary
+      districtLayer = clearLayer(districtLayer);
+      if (districtId && regionId) {
+        fetch('/agrocosmos/api/districts/?region=' + regionId)
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (!data.features) return;
+            var feat = data.features.filter(function (f) { return String(f.properties.id) === districtId; });
+            if (!feat.length) return;
+            districtLayer = L.geoJSON({ type: 'FeatureCollection', features: feat }, {
+              style: { color: '#E65100', weight: 2.5, fillOpacity: 0.05, dashArray: '6 3' },
+              interactive: false
+            }).addTo(map);
+            if (districtLayer.getBounds().isValid()) {
+              map.fitBounds(districtLayer.getBounds(), { padding: [20, 20] });
+            }
+          });
+      }
+      // Reload MVT + stats if farmlands visible
+      if (document.getElementById('agro-toggle-farmlands').checked) {
+        loadMVT(regionId, districtId || null);
+        loadNdviStats();
+      }
     });
 
     /* ── Multi-year dropdown ───────────────────── */
@@ -453,11 +488,21 @@
       arable: '#4CAF50', hayfield: '#8BC34A', pasture: '#FFC107',
       perennial: '#FF9800', other: '#9E9E9E'
     };
+    var _activeCropTypes = new Set(['arable','hayfield','pasture','perennial','other']);
+
+    function getSelectedCropTypes() {
+      var cbs = document.querySelectorAll('.agro-crop-type-cb:checked');
+      if (!cbs.length) return new Set(['arable','hayfield','pasture','perennial','other']);
+      var s = new Set();
+      cbs.forEach(function (cb) { s.add(cb.value); });
+      return s;
+    }
 
     function loadMVT(regionId, districtId) {
       if (mvtLayer) { map.removeLayer(mvtLayer); mvtLayer = null; }
       farmlandLayer = clearLayer(farmlandLayer);
       _farmlandLayersById = {};
+      _activeCropTypes = getSelectedCropTypes();
 
       var filter = districtId ? 'district=' + districtId : 'region=' + regionId;
       var tileUrl = '/agrocosmos/api/tiles/{z}/{x}/{y}.pbf?' + filter;
@@ -466,6 +511,9 @@
         rendererFactory: L.canvas.tile,
         vectorTileLayerStyles: {
           farmlands: function (props) {
+            if (!_activeCropTypes.has(props.crop_type)) {
+              return { fill: false, stroke: false, opacity: 0, fillOpacity: 0, weight: 0 };
+            }
             return {
               fill: true,
               fillColor: cropColors[props.crop_type] || '#9E9E9E',
@@ -533,7 +581,6 @@
       } else {
         if (mvtLayer) { map.removeLayer(mvtLayer); mvtLayer = null; }
         farmlandLayer = clearLayer(farmlandLayer);
-        document.getElementById('ndvi-stats-panel').style.display = 'none';
         document.getElementById('ndvi-region-chart-wrap').style.display = 'none';
       }
     });
@@ -549,6 +596,11 @@
       var years = getSelectedYears();
       if (!years.length) return;
 
+      // Update chart title
+      var distOpt = districtSel.options[districtSel.selectedIndex];
+      var titleSuffix = districtId ? distOpt.textContent : 'регион';
+      document.getElementById('ndvi-region-title').textContent = 'Динамика NDVI (' + titleSuffix + ')';
+
       // Use first selected year for summary stats
       var url = '/agrocosmos/api/ndvi-stats/?region=' + regionId + '&year=' + years[0];
       if (districtId) url += '&district=' + districtId;
@@ -559,49 +611,69 @@
           if (!resp.ok) return;
           var s = resp.stats;
 
-          var panel = document.getElementById('ndvi-stats-panel');
-          panel.style.display = 'block';
-          document.getElementById('ndvi-stat-count').textContent = s.summary.with_ndvi.toLocaleString('ru');
-          document.getElementById('ndvi-stat-mean').textContent = s.summary.mean_ndvi.toFixed(3);
+          // Populate Сводка
+          var totalCount = 0, totalArea = 0;
+          var cbHtml = '';
+          if (s.farmland_summary) {
+            s.farmland_summary.forEach(function (fs) {
+              totalCount += fs.count;
+              totalArea += fs.area_ha;
+              var checked = _activeCropTypes.has(fs.crop_type) ? ' checked' : '';
+              cbHtml += '<label class="agro-crop-cb">'
+                + '<input type="checkbox" class="agro-crop-type-cb" value="' + fs.crop_type + '"' + checked + ' />'
+                + '<span class="cb-box"></span>'
+                + '<span class="cb-label">' + esc(fs.label) + '</span>'
+                + '<span class="cb-val">' + fs.area_ha.toLocaleString('ru') + ' га / ' + fs.count.toLocaleString('ru') + ' шт.</span>'
+                + '</label>';
+            });
+          }
+          document.getElementById('stat-count').textContent = totalArea.toLocaleString('ru', {maximumFractionDigits:0}) + ' га / ' + totalCount.toLocaleString('ru') + ' шт.';
+          document.getElementById('crop-type-checkboxes').innerHTML = cbHtml;
 
-          var html = '';
-          s.by_crop_type.forEach(function (c) {
-            var clr = ndviColor(c.mean_ndvi);
-            html += '<div class="agro-stat">' +
-              '<span>' + esc(c.label) + ' <small style="color:#888">(' + c.count + ')</small></span>' +
-              '<span class="val" style="color:' + clr + ';">' + c.mean_ndvi.toFixed(3) + '</span>' +
-              '</div>';
+          // Bind crop type checkbox events
+          document.querySelectorAll('.agro-crop-type-cb').forEach(function (cb) {
+            cb.addEventListener('change', onCropTypeChange);
           });
-          document.getElementById('ndvi-crop-stats').innerHTML = html;
         })
         .catch(function (err) { console.error('NDVI stats error:', err); });
 
       // Multi-year regional chart
-      console.log('[loadNdviStats] years:', years, 'region:', regionId, 'district:', districtId);
-      try {
+      loadMultiYearChart(regionId, districtId, years);
+    }
+
+    function onCropTypeChange() {
+      _activeCropTypes = getSelectedCropTypes();
+      var regionId = regionSel.value;
+      var districtId = districtSel.value;
+      // Re-render MVT with new crop filter
+      if (document.getElementById('agro-toggle-farmlands').checked && regionId) {
+        loadMVT(regionId, districtId || null);
+      }
+      // Reload chart with crop_types filter
+      var years = getSelectedYears();
+      if (years.length && regionId) {
         loadMultiYearChart(regionId, districtId, years);
-      } catch(e) {
-        console.error('[loadNdviStats] loadMultiYearChart ERROR:', e);
       }
     }
 
     function loadMultiYearChart(regionId, districtId, years) {
-      console.log('[loadMultiYearChart] CALLED, years=', years);
+      var ctParam = '';
+      var selCt = getSelectedCropTypes();
+      if (selCt.size < 5) {
+        ctParam = '&crop_types=' + Array.from(selCt).join(',');
+      }
       var promises = years.map(function (yr) {
-        var url = '/agrocosmos/api/ndvi-stats/?region=' + regionId + '&year=' + yr;
+        var url = '/agrocosmos/api/ndvi-stats/?region=' + regionId + '&year=' + yr + ctParam;
         if (districtId) url += '&district=' + districtId;
-        console.log('[MultiYear] fetch:', url);
         return fetch(url).then(function (r) { return r.json(); }).then(function (resp) {
-          console.log('[MultiYear] year=' + yr, 'periods=' + ((resp.ok && resp.stats) ? resp.stats.by_period.length : 0));
           return { year: yr, data: (resp.ok && resp.stats) ? resp.stats.by_period : [] };
         }).catch(function (err) {
-          console.error('[MultiYear] fetch error year=' + yr, err);
+          console.error('MultiYear fetch error year=' + yr, err);
           return { year: yr, data: [] };
         });
       });
 
       Promise.all(promises).then(function (results) {
-        console.log('[MultiYear] all done, datasets:', results.length);
         var datasets = [];
         var allLabels = new Set();
 
