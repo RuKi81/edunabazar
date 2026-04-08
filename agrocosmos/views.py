@@ -293,7 +293,10 @@ def api_farmland_ndvi(request: HttpRequest) -> JsonResponse:
     except (TypeError, ValueError):
         return JsonResponse({'ok': False, 'error': 'invalid farmland'}, status=400)
 
-    qs = VegetationIndex.objects.filter(farmland_id=fid, index_type='ndvi')
+    qs = VegetationIndex.objects.filter(
+        farmland_id=fid, index_type='ndvi',
+        mean__gte=-1, mean__lte=1,
+    )
 
     year = request.GET.get('year')
     if year:
@@ -370,6 +373,7 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
 
     vi_qs = VegetationIndex.objects.filter(
         farmland__in=fl_qs, index_type='ndvi',
+        mean__gte=-1, mean__lte=1,          # exclude NaN / Inf
     )
     if year:
         try:
