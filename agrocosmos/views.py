@@ -1,4 +1,5 @@
 import json
+import math
 
 from django.db import connection
 from django.http import HttpRequest, HttpResponse, JsonResponse
@@ -308,12 +309,24 @@ def api_farmland_ndvi(request: HttpRequest) -> JsonResponse:
     for r in rows:
         data.append({
             'date': str(r['acquired_date']),
-            'mean': round(r['mean'], 4),
-            'min': round(r['min_val'], 4),
-            'max': round(r['max_val'], 4),
-            'median': round(r['median'], 4),
+            'mean': _safe_round(r['mean']),
+            'min': _safe_round(r['min_val']),
+            'max': _safe_round(r['max_val']),
+            'median': _safe_round(r['median']),
         })
     return JsonResponse({'ok': True, 'data': data})
+
+
+def _safe_round(val, precision=4):
+    """Round a float safely, returning 0 for None/NaN/Inf."""
+    if val is None:
+        return 0.0
+    try:
+        if math.isnan(val) or math.isinf(val):
+            return 0.0
+    except TypeError:
+        return 0.0
+    return round(val, precision)
 
 
 def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
@@ -387,7 +400,7 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
             'crop_type': ct,
             'label': crop_labels.get(ct, ct),
             'count': row['count'],
-            'mean_ndvi': round(row['mean_ndvi'] or 0, 4),
+            'mean_ndvi': _safe_round(row['mean_ndvi']),
         })
 
     # Stats by period (time series, aggregated across all farmlands)
@@ -404,7 +417,7 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
     for row in by_period:
         by_period_list.append({
             'date': str(row['acquired_date']),
-            'mean_ndvi': round(row['mean_ndvi'] or 0, 4),
+            'mean_ndvi': _safe_round(row['mean_ndvi']),
             'count': row['count'],
         })
 
@@ -421,7 +434,7 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
             'summary': {
                 'total_farmlands': total_fl,
                 'with_ndvi': with_ndvi,
-                'mean_ndvi': round(avg or 0, 4),
+                'mean_ndvi': _safe_round(avg),
             },
         },
     })
