@@ -1,0 +1,255 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block title %}Агрокосмос — Управление{% endblock %}
+
+{% block breadcrumbs %}
+  <div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">Главная</a> &rsaquo; Агрокосмос
+  </div>
+{% endblock %}
+
+{% block content %}
+<style>
+  .agro-panel { max-width: 1100px; }
+  .agro-section {
+    background: #fff; border: 1px solid #ddd; border-radius: 4px;
+    margin-bottom: 20px; overflow: hidden;
+  }
+  .agro-section h2 {
+    background: #417690; color: #fff; margin: 0;
+    padding: 8px 14px; font-size: 14px; font-weight: 600;
+  }
+  .agro-section .body { padding: 16px; }
+  .agro-row { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 12px; }
+  .agro-field { display: flex; flex-direction: column; gap: 4px; }
+  .agro-field label { font-size: 12px; font-weight: 600; color: #666; }
+  .agro-field input, .agro-field select {
+    padding: 6px 10px; border: 1px solid #ccc; border-radius: 3px; font-size: 13px;
+  }
+  .agro-field input[type="file"] { padding: 4px; }
+  .agro-btn {
+    display: inline-block; padding: 7px 18px;
+    background: #417690; color: #fff; border: none; border-radius: 3px;
+    cursor: pointer; font-size: 13px; font-weight: 600;
+  }
+  .agro-btn:hover { background: #205067; }
+  .agro-btn--green { background: #4CAF50; }
+  .agro-btn--green:hover { background: #388E3C; }
+  .agro-btn--orange { background: #FF9800; }
+  .agro-btn--orange:hover { background: #F57C00; }
+  .agro-hint { font-size: 11px; color: #888; margin-top: 4px; }
+  .agro-cb { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+
+  .agro-tasks { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .agro-tasks th { text-align: left; padding: 6px 10px; background: #f5f5f5; border-bottom: 1px solid #ddd; font-size: 12px; color: #666; }
+  .agro-tasks td { padding: 6px 10px; border-bottom: 1px solid #eee; }
+  .agro-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 3px;
+    font-size: 11px; color: #fff; font-weight: 600;
+  }
+  .agro-badge--active { background: #4CAF50; }
+  .agro-badge--paused { background: #FF9800; }
+  .agro-badge--completed { background: #9E9E9E; }
+
+  .agro-collapse-toggle { cursor: pointer; user-select: none; }
+  .agro-collapse-body { display: none; }
+  .agro-collapse-body.open { display: block; }
+</style>
+
+<div class="agro-panel">
+
+  <!-- ═══ 1. Upload Region Vector ═══ -->
+  <div class="agro-section">
+    <h2>📁 Загрузка границ субъекта</h2>
+    <div class="body">
+      <form method="post" action="{% url 'admin:agro_upload_region' %}" enctype="multipart/form-data">
+        {% csrf_token %}
+        <div class="agro-row">
+          <div class="agro-field">
+            <label>Файл (ZIP с .shp или .geojson)</label>
+            <input type="file" name="file" accept=".zip,.geojson,.json" required>
+          </div>
+          <div class="agro-field">
+            <label>Поле имени</label>
+            <input type="text" name="name_field" value="NAME" size="12">
+          </div>
+          <div class="agro-field">
+            <label>Поле кода</label>
+            <input type="text" name="code_field" value="CODE" size="12">
+          </div>
+          <div>
+            <button type="submit" class="agro-btn">Загрузить регионы</button>
+          </div>
+        </div>
+        <div class="agro-hint">Формат: Shapefile в ZIP-архиве (.shp + .dbf + .shx + .prj) или GeoJSON</div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ═══ 2. Upload Farmland Vector ═══ -->
+  <div class="agro-section">
+    <h2>🌾 Загрузка границ угодий</h2>
+    <div class="body">
+      <form method="post" action="{% url 'admin:agro_upload_farmlands' %}" enctype="multipart/form-data">
+        {% csrf_token %}
+        <div class="agro-row">
+          <div class="agro-field">
+            <label>Регион</label>
+            <select name="region_id" required>
+              <option value="">— Выберите —</option>
+              {% for r in regions %}
+                <option value="{{ r.id }}">{{ r.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="agro-field">
+            <label>Файл (ZIP с .shp или .geojson)</label>
+            <input type="file" name="file" accept=".zip,.geojson,.json" required>
+          </div>
+        </div>
+
+        <div class="agro-collapse-toggle" onclick="this.nextElementSibling.classList.toggle('open')">
+          ▸ <span style="font-size:12px; color:#417690;">Дополнительные настройки полей</span>
+        </div>
+        <div class="agro-collapse-body">
+          <div class="agro-row" style="margin-top:10px;">
+            <div class="agro-field">
+              <label>Поле вида угодья</label>
+              <input type="text" name="crop_type_field" value="LAND_TYPE" size="14">
+            </div>
+            <div class="agro-field">
+              <label>Поле площади (га)</label>
+              <input type="text" name="area_field" value="AREA_HA" size="14">
+            </div>
+            <div class="agro-field">
+              <label>Поле кадастра</label>
+              <input type="text" name="cadastral_field" value="CAD_NUM" size="14">
+            </div>
+            <div class="agro-field">
+              <label>Поле района</label>
+              <input type="text" name="district_field" value="DISTRICT" size="14">
+            </div>
+          </div>
+          <label class="agro-cb">
+            <input type="checkbox" name="clear_existing" value="1">
+            Удалить существующие угодья перед импортом
+          </label>
+        </div>
+
+        <div style="margin-top: 12px;">
+          <button type="submit" class="agro-btn">Загрузить угодья</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ═══ 3. Archive NDVI Download ═══ -->
+  <div class="agro-section">
+    <h2>📡 Загрузка архивных данных NDVI</h2>
+    <div class="body">
+      <form method="post" action="{% url 'admin:agro_run_archive' %}">
+        {% csrf_token %}
+        <div class="agro-row">
+          <div class="agro-field">
+            <label>Регион</label>
+            <select name="region_id" required>
+              <option value="">— Выберите —</option>
+              {% for r in regions %}
+                <option value="{{ r.id }}">{{ r.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="agro-field">
+            <label>Год</label>
+            <select name="year" required>
+              {% for y in years %}
+                <option value="{{ y }}">{{ y }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <button type="submit" class="agro-btn agro-btn--green">Загрузить архив</button>
+          </div>
+        </div>
+        <div class="agro-hint">
+          Скачает MODIS NDVI растры за выбранный год и рассчитает зональную статистику.
+          Процесс ~20 мин в фоне.
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ═══ 4. Start Monitoring ═══ -->
+  <div class="agro-section">
+    <h2>🛰️ Постановка на мониторинг</h2>
+    <div class="body">
+      <form method="post" action="{% url 'admin:agro_start_monitoring' %}">
+        {% csrf_token %}
+        <div class="agro-row">
+          <div class="agro-field">
+            <label>Регион</label>
+            <select name="region_id" required>
+              <option value="">— Выберите —</option>
+              {% for r in regions %}
+                <option value="{{ r.id }}">{{ r.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="agro-field">
+            <label>Год</label>
+            <select name="year" required>
+              <option value="{{ current_year }}">{{ current_year }}</option>
+            </select>
+          </div>
+          <div>
+            <button type="submit" class="agro-btn agro-btn--orange">Начать мониторинг</button>
+          </div>
+        </div>
+        <div class="agro-hint">
+          Автоматическая проверка новых данных NDVI каждые 2 недели (через cron).
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ═══ 5. Active Monitoring Tasks ═══ -->
+  <div class="agro-section">
+    <h2>📋 Задачи мониторинга</h2>
+    <div class="body">
+      {% if tasks %}
+        <table class="agro-tasks">
+          <thead>
+            <tr>
+              <th>Регион</th>
+              <th>Год</th>
+              <th>Статус</th>
+              <th>Последняя проверка</th>
+              <th>Период до</th>
+              <th>Записей</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for t in tasks %}
+            <tr>
+              <td>{{ t.region.name }}</td>
+              <td>{{ t.year }}</td>
+              <td><span class="agro-badge agro-badge--{{ t.status }}">{{ t.get_status_display }}</span></td>
+              <td>{{ t.last_check|default:"—" }}</td>
+              <td>{{ t.last_date_to|default:"—" }}</td>
+              <td>{{ t.records_total|default:"0" }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <div class="agro-hint" style="margin-top:8px;">
+          <a href="{% url 'admin:agrocosmos_monitoringtask_changelist' %}">Все задачи →</a>
+        </div>
+      {% else %}
+        <p style="color:#888; font-size:13px;">Нет активных задач мониторинга</p>
+      {% endif %}
+    </div>
+  </div>
+
+</div>
+{% endblock %}

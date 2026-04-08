@@ -1,0 +1,13 @@
+{% extends "admin/app_index.html" %}
+
+{% block content %}
+<div style="margin-bottom: 20px; padding: 12px 16px; background: #e8f5e9; border: 1px solid #c8e6c9; border-radius: 4px;">
+  <a href="{% url 'admin:agro_panel' %}" style="font-size: 15px; font-weight: 600; color: #2e7d32; text-decoration: none;">
+    🛰️ Панель управления Агрокосмос →
+  </a>
+  <div style="font-size: 12px; color: #666; margin-top: 4px;">
+    Загрузка вектора, архивные данные NDVI, мониторинг
+  </div>
+</div>
+{{ block.super }}
+{% endblock %}

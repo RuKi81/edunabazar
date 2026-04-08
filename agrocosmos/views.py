@@ -7,7 +7,7 @@ from django.contrib.gis.db.models.functions import AsGeoJSON
 from django.db.models import Count, Sum, Avg, Q
 from django.views.decorators.cache import cache_page
 
-from .models import Region, District, Farmland, VegetationIndex
+from .models import Region, District, Farmland, VegetationIndex, MonitoringTask
 
 
 def _get_legacy_user(request):
@@ -269,7 +269,7 @@ def api_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
 
 
 def api_farmland_ndvi(request: HttpRequest) -> JsonResponse:
-    """NDVI time series for a single farmland."""
+    """NDVI time series for a single farmland. Optional ?year=2025 filter."""
     farmland_id = request.GET.get('farmland')
     if not farmland_id:
         return JsonResponse({'ok': False, 'error': 'farmland required'}, status=400)
@@ -278,11 +278,17 @@ def api_farmland_ndvi(request: HttpRequest) -> JsonResponse:
     except (TypeError, ValueError):
         return JsonResponse({'ok': False, 'error': 'invalid farmland'}, status=400)
 
-    rows = (
-        VegetationIndex.objects
-        .filter(farmland_id=fid, index_type='ndvi')
-        .order_by('acquired_date')
-        .values('acquired_date', 'mean', 'min_val', 'max_val', 'median')
+    qs = VegetationIndex.objects.filter(farmland_id=fid, index_type='ndvi')
+
+    year = request.GET.get('year')
+    if year:
+        try:
+            qs = qs.filter(acquired_date__year=int(year))
+        except (TypeError, ValueError):
+            pass
+
+    rows = qs.order_by('acquired_date').values(
+        'acquired_date', 'mean', 'min_val', 'max_val', 'median',
     )
     data = []
     for r in rows:
@@ -294,3 +300,114 @@ def api_farmland_ndvi(request: HttpRequest) -> JsonResponse:
             'median': round(r['median'], 4),
         })
     return JsonResponse({'ok': True, 'data': data})
+
+
+def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
+    """
+    Aggregated NDVI statistics by crop type for a region/district and period.
+
+    Params:
+        region (required): region ID
+        district (optional): district ID
+        year (optional): filter by year (default: all)
+        date_from / date_to (optional): date range filter
+
+    Returns:
+        {ok: true, stats: {
+            by_crop_type: [{crop_type, label, count, mean_ndvi, min_ndvi, max_ndvi}, ...],
+            by_period: [{date, mean_ndvi, count}, ...],
+            summary: {total_farmlands, with_ndvi, mean_ndvi}
+        }}
+    """
+    region_id = request.GET.get('region')
+    if not region_id:
+        return JsonResponse({'ok': False, 'error': 'region required'}, status=400)
+
+    try:
+        region_id = int(region_id)
+    except (TypeError, ValueError):
+        return JsonResponse({'ok': False, 'error': 'invalid region'}, status=400)
+
+    district_id = request.GET.get('district')
+    year = request.GET.get('year')
+    date_from = request.GET.get('date_from')
+    date_to = request.GET.get('date_to')
+
+    # Base queryset
+    fl_qs = Farmland.objects.filter(district__region_id=region_id)
+    if district_id:
+        try:
+            fl_qs = fl_qs.filter(district_id=int(district_id))
+        except (TypeError, ValueError):
+            pass
+
+    vi_qs = VegetationIndex.objects.filter(
+        farmland__in=fl_qs, index_type='ndvi',
+    )
+    if year:
+        try:
+            vi_qs = vi_qs.filter(acquired_date__year=int(year))
+        except (TypeError, ValueError):
+            pass
+    if date_from:
+        vi_qs = vi_qs.filter(acquired_date__gte=date_from)
+    if date_to:
+        vi_qs = vi_qs.filter(acquired_date__lte=date_to)
+
+    crop_labels = dict(Farmland.CropType.choices)
+
+    # Stats by crop type (average of all periods)
+    by_crop = (
+        vi_qs
+        .values('farmland__crop_type')
+        .annotate(
+            count=Count('farmland_id', distinct=True),
+            mean_ndvi=Avg('mean'),
+        )
+        .order_by('-mean_ndvi')
+    )
+    by_crop_list = []
+    for row in by_crop:
+        ct = row['farmland__crop_type']
+        by_crop_list.append({
+            'crop_type': ct,
+            'label': crop_labels.get(ct, ct),
+            'count': row['count'],
+            'mean_ndvi': round(row['mean_ndvi'] or 0, 4),
+        })
+
+    # Stats by period (time series, aggregated across all farmlands)
+    by_period = (
+        vi_qs
+        .values('acquired_date')
+        .annotate(
+            mean_ndvi=Avg('mean'),
+            count=Count('id'),
+        )
+        .order_by('acquired_date')
+    )
+    by_period_list = []
+    for row in by_period:
+        by_period_list.append({
+            'date': str(row['acquired_date']),
+            'mean_ndvi': round(row['mean_ndvi'] or 0, 4),
+            'count': row['count'],
+        })
+
+    # Summary
+    total_fl = fl_qs.count()
+    with_ndvi = vi_qs.values('farmland_id').distinct().count()
+    avg = vi_qs.aggregate(avg=Avg('mean'))['avg']
+
+    return JsonResponse({
+        'ok': True,
+        'stats': {
+            'by_crop_type': by_crop_list,
+            'by_period': by_period_list,
+            'summary': {
+                'total_farmlands': total_fl,
+                'with_ndvi': with_ndvi,
+                'mean_ndvi': round(avg or 0, 4),
+            },
+        },
+    })

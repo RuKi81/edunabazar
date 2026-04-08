@@ -10,4 +10,5 @@ urlpatterns = [
     path('api/farmlands/', views.api_farmlands, name='api_farmlands'),
     path('api/tiles/<int:z>/<int:x>/<int:y>.pbf', views.api_tile, name='api_tile'),
     path('api/farmland/ndvi/', views.api_farmland_ndvi, name='api_farmland_ndvi'),
+    path('api/ndvi-stats/', views.api_ndvi_stats, name='api_ndvi_stats'),
 ]

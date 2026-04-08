@@ -153,6 +153,14 @@
         {% endfor %}
       </select>
 
+      <select id="agro-year" class="browser-default agro-ui__select">
+        <option value="2025" selected>2025</option>
+        <option value="2024">2024</option>
+        <option value="2023">2023</option>
+        <option value="2022">2022</option>
+        <option value="2021">2021</option>
+      </select>
+
       <button id="agro-load-borders" class="btn agro-ui__btn" type="button">
         <i class="material-icons left">border_style</i>Границы региона
       </button>
@@ -177,6 +185,22 @@
         <span><i style="background:#FF9800;"></i> 0.1–0.2</span>
         <span><i style="background:#F44336;"></i> &lt; 0.1</span>
         <span><i style="background:#9E9E9E;"></i> Нет данных</span>
+      </div>
+
+      <!-- NDVI stats by crop type -->
+      <div id="ndvi-stats-panel" style="display:none; margin-top:12px;">
+        <div style="font-size:12px; font-weight:700; margin-bottom:4px; color:#2e7d32;">NDVI по видам угодий</div>
+        <div id="ndvi-crop-stats"></div>
+        <div style="margin-top:6px;">
+          <div class="agro-stat"><span>Угодий с NDVI</span><span class="val" id="ndvi-stat-count">—</span></div>
+          <div class="agro-stat"><span>Средний NDVI</span><span class="val" id="ndvi-stat-mean">—</span></div>
+        </div>
+      </div>
+
+      <!-- Regional NDVI time series chart -->
+      <div id="ndvi-region-chart-wrap" style="display:none; margin-top:12px;">
+        <h3 style="font-size:13px; font-weight:700; margin:0 0 6px 0;">Динамика NDVI (регион)</h3>
+        <canvas id="ndvi-region-chart" style="max-height:160px;"></canvas>
       </div>
 
       <div class="ndvi-chart-wrap" id="ndvi-panel">
@@ -331,6 +355,7 @@
     /* ── Selectors ──────────────────────────────── */
     var regionSel = document.getElementById('agro-region');
     var districtSel = document.getElementById('agro-district');
+    var yearSel = document.getElementById('agro-year');
 
     // When region changes — just update district dropdown, no auto-load
     regionSel.addEventListener('change', function () {
@@ -493,7 +518,88 @@
       loadMVT(regionId, districtId || null);
       btn.innerHTML = '<i class="material-icons left">layers</i>Границы угодий';
       renderList([], 'farmlands');
+
+      // Load NDVI stats for the selected region/year
+      loadNdviStats();
     });
+
+    // Reload stats when year changes
+    yearSel.addEventListener('change', function () {
+      if (regionSel.value) loadNdviStats();
+    });
+
+    /* ── NDVI stats by crop type + regional chart ── */
+    var regionNdviChart = null;
+
+    function loadNdviStats() {
+      var regionId = regionSel.value;
+      if (!regionId) return;
+      var districtId = districtSel.value;
+      var year = yearSel.value;
+      var url = '/agrocosmos/api/ndvi-stats/?region=' + regionId + '&year=' + year;
+      if (districtId) url += '&district=' + districtId;
+
+      fetch(url)
+        .then(function (r) { return r.json(); })
+        .then(function (resp) {
+          if (!resp.ok) return;
+          var s = resp.stats;
+
+          // Summary
+          var panel = document.getElementById('ndvi-stats-panel');
+          panel.style.display = 'block';
+          document.getElementById('ndvi-stat-count').textContent = s.summary.with_ndvi.toLocaleString('ru');
+          document.getElementById('ndvi-stat-mean').textContent = s.summary.mean_ndvi.toFixed(3);
+
+          // By crop type
+          var html = '';
+          s.by_crop_type.forEach(function (c) {
+            var clr = ndviColor(c.mean_ndvi);
+            html += '<div class="agro-stat">' +
+              '<span>' + esc(c.label) + ' <small style="color:#888">(' + c.count + ')</small></span>' +
+              '<span class="val" style="color:' + clr + ';">' + c.mean_ndvi.toFixed(3) + '</span>' +
+              '</div>';
+          });
+          document.getElementById('ndvi-crop-stats').innerHTML = html;
+
+          // Regional time series chart
+          if (s.by_period.length > 0) {
+            var wrap = document.getElementById('ndvi-region-chart-wrap');
+            wrap.style.display = 'block';
+
+            var labels = s.by_period.map(function (d) { return d.date; });
+            var vals = s.by_period.map(function (d) { return d.mean_ndvi; });
+
+            if (regionNdviChart) regionNdviChart.destroy();
+            regionNdviChart = new Chart(document.getElementById('ndvi-region-chart'), {
+              type: 'line',
+              data: {
+                labels: labels,
+                datasets: [{
+                  label: 'Средний NDVI',
+                  data: vals,
+                  borderColor: '#2e7d32',
+                  backgroundColor: 'rgba(46,125,50,0.1)',
+                  borderWidth: 2,
+                  fill: true,
+                  pointRadius: 3,
+                  tension: 0.3
+                }]
+              },
+              options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                  x: { ticks: { font: { size: 9 }, maxRotation: 45 } },
+                  y: { min: 0, max: 1, ticks: { font: { size: 10 } } }
+                }
+              }
+            });
+          }
+        })
+        .catch(function (err) { console.error('NDVI stats error:', err); });
+    }
 
     /* ── NDVI chart ──────────────────────────────── */
     var ndviChart = null;
@@ -504,7 +610,8 @@
       var fid = e.target.getAttribute('data-id');
       if (!fid) return;
 
-      fetch('/agrocosmos/api/farmland/ndvi/?farmland=' + fid)
+      var yearParam = yearSel.value ? '&year=' + yearSel.value : '';
+      fetch('/agrocosmos/api/farmland/ndvi/?farmland=' + fid + yearParam)
         .then(function (r) { return r.json(); })
         .then(function (resp) {
           if (!resp.ok || !resp.data.length) return;
