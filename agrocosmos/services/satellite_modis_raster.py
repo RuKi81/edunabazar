@@ -39,12 +39,22 @@ RASTER_DIR = os.environ.get(
 
 
 def _biweekly_chunks(date_from, date_to):
-    """Split date range into 16-day periods (matches MODIS MOD13Q1 cadence)."""
+    """
+    Split date range into 16-day periods aligned to Jan 1 of the year.
+
+    Anchoring to Jan 1 ensures that any --date-from value produces the
+    same chunk boundaries, preventing duplicate records when re-running
+    with different date ranges.
+    """
+    # Build grid anchored to Jan 1
+    epoch = date(date_from.year, 1, 1)
     chunks = []
-    cursor = date_from
+    cursor = epoch
     while cursor <= date_to:
-        end = min(cursor + timedelta(days=15), date_to)
-        chunks.append((cursor, end))
+        end = cursor + timedelta(days=15)
+        # Only include chunks that overlap with [date_from, date_to]
+        if end >= date_from:
+            chunks.append((max(cursor, date_from), min(end, date_to)))
         cursor = end + timedelta(days=1)
     return chunks
 
