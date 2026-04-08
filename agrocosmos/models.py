@@ -175,3 +175,49 @@ class MonitoringTask(models.Model):
 
     def __str__(self):
         return f'{self.region.name} — {self.year} ({self.get_status_display()})'
+
+
+class PipelineRun(models.Model):
+    """Лог запуска любого процесса пайплайна."""
+
+    class TaskType(models.TextChoices):
+        UPLOAD_REGION = 'upload_region', 'Загрузка региона'
+        UPLOAD_FARMLANDS = 'upload_farmlands', 'Загрузка угодий'
+        ARCHIVE_NDVI = 'archive_ndvi', 'Архивные данные NDVI'
+        MONITORING = 'monitoring', 'Мониторинг NDVI'
+
+    class Status(models.TextChoices):
+        RUNNING = 'running', 'Выполняется'
+        COMPLETED = 'completed', 'Завершён'
+        FAILED = 'failed', 'Ошибка'
+
+    task_type = models.CharField(max_length=30, choices=TaskType.choices, verbose_name='Тип процесса')
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.RUNNING, verbose_name='Статус')
+    region = models.ForeignKey(
+        Region, on_delete=models.SET_NULL, null=True, blank=True,
+        verbose_name='Регион',
+    )
+    year = models.IntegerField(null=True, blank=True, verbose_name='Год')
+    description = models.CharField(max_length=500, blank=True, default='', verbose_name='Описание')
+    log = models.TextField(blank=True, default='', verbose_name='Лог')
+    records_count = models.IntegerField(default=0, verbose_name='Записей')
+    started_at = models.DateTimeField(auto_now_add=True, verbose_name='Начало')
+    finished_at = models.DateTimeField(null=True, blank=True, verbose_name='Окончание')
+
+    class Meta:
+        db_table = 'agro_pipeline_run'
+        ordering = ['-started_at']
+        verbose_name = 'Запуск пайплайна'
+        verbose_name_plural = 'Запуски пайплайна'
+
+    def __str__(self):
+        return f'{self.get_task_type_display()} — {self.get_status_display()} ({self.started_at:%Y-%m-%d %H:%M})'
+
+    @property
+    def duration(self):
+        if self.finished_at and self.started_at:
+            delta = self.finished_at - self.started_at
+            minutes = int(delta.total_seconds() // 60)
+            seconds = int(delta.total_seconds() % 60)
+            return f'{minutes}м {seconds}с'
+        return '—'
