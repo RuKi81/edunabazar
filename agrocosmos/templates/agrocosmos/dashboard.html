@@ -585,13 +585,18 @@
       var promises = years.map(function (yr) {
         var url = '/agrocosmos/api/ndvi-stats/?region=' + regionId + '&year=' + yr;
         if (districtId) url += '&district=' + districtId;
+        console.log('[MultiYear] fetch:', url);
         return fetch(url).then(function (r) { return r.json(); }).then(function (resp) {
+          console.log('[MultiYear] year=' + yr, 'periods=' + ((resp.ok && resp.stats) ? resp.stats.by_period.length : 0));
           return { year: yr, data: (resp.ok && resp.stats) ? resp.stats.by_period : [] };
+        }).catch(function (err) {
+          console.error('[MultiYear] fetch error year=' + yr, err);
+          return { year: yr, data: [] };
         });
       });
 
       Promise.all(promises).then(function (results) {
-        console.log('[MultiYear] results:', JSON.stringify(results.map(function(r){ return {year:r.year, periods:r.data.length}; })));
+        console.log('[MultiYear] all done, datasets:', results.length);
         var datasets = [];
         var allLabels = new Set();
 
