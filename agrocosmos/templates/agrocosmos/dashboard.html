@@ -578,10 +578,15 @@
 
       // Multi-year regional chart
       console.log('[loadNdviStats] years:', years, 'region:', regionId, 'district:', districtId);
-      loadMultiYearChart(regionId, districtId, years);
+      try {
+        loadMultiYearChart(regionId, districtId, years);
+      } catch(e) {
+        console.error('[loadNdviStats] loadMultiYearChart ERROR:', e);
+      }
     }
 
     function loadMultiYearChart(regionId, districtId, years) {
+      console.log('[loadMultiYearChart] CALLED, years=', years);
       var promises = years.map(function (yr) {
         var url = '/agrocosmos/api/ndvi-stats/?region=' + regionId + '&year=' + yr;
         if (districtId) url += '&district=' + districtId;
