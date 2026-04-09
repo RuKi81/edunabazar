@@ -5,6 +5,7 @@
 
 {% block head %}
   <link rel="stylesheet" href="{% static 'legacy/css/leaflet.css' %}" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
   <style>
     :root { --map-header-h: 64px; }
     html, body { height: 100%; }
@@ -14,6 +15,7 @@
     .hide-on-large-only { position: absolute; top: 0; left: 0; right: 0; z-index: 2000; }
 
     .leaflet-control-zoom { display: none !important; }
+    .leaflet-draw { display: none !important; }
 
     .agro-ui { position: fixed; left: 0; right: 0; top: 0; bottom: 0; min-height: 650px; }
     #agro-map { position: absolute; left: 0; right: 0; top: 0; bottom: 0; }
@@ -28,7 +30,9 @@
       border-right: 1px solid rgba(0,0,0,0.08);
       overflow-y: auto;
       z-index: 1000;
+      transition: transform .25s ease;
     }
+    .agro-ui__left.collapsed { transform: translateX(-100%); }
     .agro-ui__left h2 {
       font-size: 15px; font-weight: 700; margin: 0 0 12px 0;
       display: flex; align-items: center; gap: 6px;
@@ -52,13 +56,32 @@
     .agro-cb-row [type="checkbox"] + span:before,
     .agro-cb-row [type="checkbox"] + span:after { top: 0; width: 15px; height: 15px; }
     .agro-cb-row [type="checkbox"]:checked + span:before { top: -3px; left: 1px; width: 8px; height: 13px; }
-    .agro-cb-row .cb-val { font-weight: 700; font-size: 9px; color: #444; white-space: nowrap; }
+    .agro-cb-row .cb-val { font-weight: 700; font-size: 9px; color: #444; white-space: nowrap; margin-left: auto; padding-left: 2px; flex-shrink: 0; max-width: 50%; text-align: right; overflow: hidden; text-overflow: ellipsis; }
 
     /* Chart loading bar */
     .ndvi-loader { height: 3px; background: #e0e0e0; border-radius: 2px; overflow: hidden; display: none; margin-top: 4px; }
     .ndvi-loader.active { display: block; }
     .ndvi-loader .bar { height: 100%; width: 30%; background: #2e7d32; border-radius: 2px; animation: ndvi-slide 1s ease-in-out infinite; }
     @keyframes ndvi-slide { 0%{transform:translateX(-100%)} 100%{transform:translateX(400%)} }
+
+    /* Measurement toolbar */
+    .agro-measure-bar {
+      position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
+      z-index: 1100; display: flex; gap: 4px; background: rgba(255,255,255,.92);
+      border-radius: 6px; box-shadow: 0 1px 6px rgba(0,0,0,.2); padding: 4px;
+    }
+    .agro-measure-bar button {
+      border: none; background: transparent; cursor: pointer; border-radius: 4px;
+      width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
+      font-size: 18px; color: #555;
+    }
+    .agro-measure-bar button:hover { background: #e8f5e9; }
+    .agro-measure-bar button.active { background: #c8e6c9; color: #2e7d32; }
+    .measure-result {
+      position: fixed; bottom: 60px; left: 50%; transform: translateX(-50%);
+      z-index: 1100; background: rgba(0,0,0,.75); color: #fff; padding: 6px 14px;
+      border-radius: 4px; font-size: 13px; font-weight: 600; display: none;
+    }
 
 
     /* ── Right sidebar ── */
@@ -71,7 +94,28 @@
       border-left: 1px solid rgba(0,0,0,0.08);
       overflow-y: auto;
       z-index: 1000;
+      transition: transform .25s ease;
     }
+    .agro-ui__right.collapsed { transform: translateX(100%); }
+
+    /* Sidebar collapse toggles */
+    .agro-collapse-btn {
+      position: fixed; top: calc(var(--map-header-h) + 12px);
+      z-index: 1100; width: 24px; height: 48px;
+      background: rgba(255,255,255,.92); border: 1px solid rgba(0,0,0,.12);
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      font-size: 16px; color: #555; padding: 0;
+      transition: left .25s ease, right .25s ease;
+    }
+    .agro-collapse-btn:hover { background: #f0f0f0; }
+    #agro-collapse-left {
+      left: 285px; border-radius: 0 4px 4px 0; border-left: none;
+    }
+    #agro-collapse-right {
+      right: 330px; border-radius: 4px 0 0 4px; border-right: none;
+    }
+    #agro-collapse-left.shifted { left: 0; }
+    #agro-collapse-right.shifted { right: 0; }
 
     .agro-card {
       padding: 10px 12px;
@@ -144,6 +188,16 @@
     <div id="agro-map"></div>
 
     <button class="agro-ui__toggle" id="agro_toggle" aria-label="Фильтры"><i class="material-icons">tune</i></button>
+    <button class="agro-collapse-btn" id="agro-collapse-left" title="Свернуть"><i class="material-icons" style="font-size:18px;">chevron_left</i></button>
+    <button class="agro-collapse-btn" id="agro-collapse-right" title="Свернуть"><i class="material-icons" style="font-size:18px;">chevron_right</i></button>
+
+    <!-- Measurement toolbar -->
+    <div class="agro-measure-bar">
+      <button id="measure-line" title="Линейка (расстояние)"><i class="material-icons">straighten</i></button>
+      <button id="measure-area" title="Площадь"><i class="material-icons">square_foot</i></button>
+      <button id="measure-clear" title="Очистить"><i class="material-icons">delete_outline</i></button>
+    </div>
+    <div class="measure-result" id="measure-result"></div>
 
     <!-- ── Left sidebar: controls ── -->
     <div class="agro-ui__left" id="agro_left">
@@ -249,6 +303,7 @@
     }
   </script>
   <script src="https://unpkg.com/leaflet.vectorgrid@1.3.0/dist/Leaflet.VectorGrid.bundled.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script>
   (function () {
@@ -558,7 +613,7 @@
           + 'Площадь: ' + area + ' га<br>'
           + 'Район: ' + esc(p.district || '');
         if (p.cadastral_number) popupHtml += '<br>Кадастр: ' + esc(p.cadastral_number);
-        popupHtml += '<br><a href="#" class="ndvi-link" data-id="' + p.id + '" style="color:#2e7d32;">📈 График NDVI</a>';
+        popupHtml += '<br><a href="#" class="ndvi-link" data-id="' + p.id + '" data-district="' + esc(p.district || '') + '" style="color:#2e7d32;">📈 График NDVI</a>';
         L.popup().setLatLng(e.latlng).setContent(popupHtml).openOn(map);
 
         // Show card in right sidebar
@@ -746,6 +801,7 @@
       if (!e.target.classList.contains('ndvi-link')) return;
       e.preventDefault();
       var fid = e.target.getAttribute('data-id');
+      var fDistrict = e.target.getAttribute('data-district') || '';
       if (!fid) return;
 
       var years = getSelectedYears();
@@ -760,7 +816,9 @@
       Promise.all(promises).then(function (results) {
         var panel = document.getElementById('ndvi-panel');
         panel.style.display = 'block';
-        document.getElementById('ndvi-title').textContent = 'NDVI — угодье #' + fid;
+        var titleTxt = 'NDVI — угодье #' + fid;
+        if (fDistrict) titleTxt += ' (' + fDistrict + ')';
+        document.getElementById('ndvi-title').textContent = titleTxt;
 
         var allLabels = new Set();
         results.forEach(function (res) {
@@ -812,6 +870,30 @@
       regionSel.dispatchEvent(new Event('change'));
     }
 
+    /* ── Sidebar collapse toggles ───────────────── */
+    (function () {
+      var leftPanel = document.getElementById('agro_left');
+      var rightPanel = document.querySelector('.agro-ui__right');
+      var btnL = document.getElementById('agro-collapse-left');
+      var btnR = document.getElementById('agro-collapse-right');
+
+      btnL.addEventListener('click', function () {
+        leftPanel.classList.toggle('collapsed');
+        btnL.classList.toggle('shifted');
+        var icon = btnL.querySelector('i');
+        icon.textContent = leftPanel.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
+        setTimeout(function () { map.invalidateSize(); }, 300);
+      });
+
+      btnR.addEventListener('click', function () {
+        rightPanel.classList.toggle('collapsed');
+        btnR.classList.toggle('shifted');
+        var icon = btnR.querySelector('i');
+        icon.textContent = rightPanel.classList.contains('collapsed') ? 'chevron_left' : 'chevron_right';
+        setTimeout(function () { map.invalidateSize(); }, 300);
+      });
+    })();
+
     /* ── Mobile sidebar toggle ────────────────── */
     (function () {
       var toggleBtn = document.getElementById('agro_toggle');
@@ -824,6 +906,93 @@
           leftPanel.classList.remove('open');
         });
       }
+    })();
+
+    /* ── Measurement tool (ruler + area) ───────── */
+    (function () {
+      var drawnItems = new L.FeatureGroup().addTo(map);
+      var resultEl = document.getElementById('measure-result');
+      var lineBtn = document.getElementById('measure-line');
+      var areaBtn = document.getElementById('measure-area');
+      var clearBtn = document.getElementById('measure-clear');
+      var activeHandler = null;
+
+      function deactivate() {
+        if (activeHandler) { activeHandler.disable(); activeHandler = null; }
+        lineBtn.classList.remove('active');
+        areaBtn.classList.remove('active');
+      }
+
+      function formatDist(m) {
+        return m >= 1000 ? (m / 1000).toFixed(2) + ' км' : m.toFixed(0) + ' м';
+      }
+
+      function formatArea(sqm) {
+        if (sqm >= 10000) return (sqm / 10000).toFixed(2) + ' га';
+        return sqm.toFixed(0) + ' м²';
+      }
+
+      lineBtn.addEventListener('click', function () {
+        deactivate();
+        lineBtn.classList.add('active');
+        activeHandler = new L.Draw.Polyline(map, {
+          shapeOptions: { color: '#E65100', weight: 3, dashArray: '8 4' },
+          metric: true, feet: false
+        });
+        activeHandler.enable();
+      });
+
+      areaBtn.addEventListener('click', function () {
+        deactivate();
+        areaBtn.classList.add('active');
+        activeHandler = new L.Draw.Polygon(map, {
+          shapeOptions: { color: '#1565C0', weight: 2, fillOpacity: 0.15 },
+          metric: true, feet: false
+        });
+        activeHandler.enable();
+      });
+
+      clearBtn.addEventListener('click', function () {
+        deactivate();
+        drawnItems.clearLayers();
+        resultEl.style.display = 'none';
+      });
+
+      map.on(L.Draw.Event.CREATED, function (e) {
+        var layer = e.layer;
+        drawnItems.addLayer(layer);
+        deactivate();
+
+        if (e.layerType === 'polyline') {
+          var latlngs = layer.getLatLngs();
+          var total = 0;
+          for (var i = 1; i < latlngs.length; i++) {
+            total += latlngs[i - 1].distanceTo(latlngs[i]);
+          }
+          resultEl.textContent = 'Расстояние: ' + formatDist(total);
+          resultEl.style.display = 'block';
+        } else if (e.layerType === 'polygon') {
+          var area = L.GeometryUtil ? L.GeometryUtil.geodesicArea(layer.getLatLngs()[0]) : 0;
+          if (!area) {
+            // fallback: simple calc
+            var ll = layer.getLatLngs()[0];
+            area = 0;
+            for (var j = 0; j < ll.length; j++) {
+              var k = (j + 1) % ll.length;
+              area += ll[j].lng * ll[k].lat;
+              area -= ll[k].lng * ll[j].lat;
+            }
+            area = Math.abs(area) / 2 * 111320 * 111320 * Math.cos(ll[0].lat * Math.PI / 180);
+          }
+          resultEl.textContent = 'Площадь: ' + formatArea(area);
+          resultEl.style.display = 'block';
+        }
+      });
+
+      // ESC to cancel drawing
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') deactivate();
+      });
     })();
   })();
   </script>
