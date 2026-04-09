@@ -254,6 +254,30 @@
         <div id="crop-type-checkboxes" style="margin-top:4px;"></div>
       </div>
 
+      <!-- Usage (Fact_isp) filter -->
+      <div style="margin-top: 6px; border-top: 1px solid rgba(0,0,0,.06); padding-top: 6px;">
+        <div style="font-size:10px; font-weight:700; color:#555; margin-bottom:3px;">Использование</div>
+        <div id="usage-stats" style="font-size:9px; color:#666; margin-bottom:3px;"></div>
+        <div class="agro-cb-row">
+          <label>
+            <input type="checkbox" class="agro-usage-cb" value="used" checked />
+            <span style="font-size:10px;"><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#4CAF50;vertical-align:-1px;margin-right:2px;"></i>Используется</span>
+          </label>
+        </div>
+        <div class="agro-cb-row">
+          <label>
+            <input type="checkbox" class="agro-usage-cb" value="unused" checked />
+            <span style="font-size:10px;"><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#F44336;vertical-align:-1px;margin-right:2px;"></i>Не используется</span>
+          </label>
+        </div>
+        <div class="agro-cb-row">
+          <label>
+            <input type="checkbox" class="agro-usage-cb" value="unknown" checked />
+            <span style="font-size:10px;"><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#9E9E9E;vertical-align:-1px;margin-right:2px;"></i>Нет данных</span>
+          </label>
+        </div>
+      </div>
+
       <div class="agro-legend" style="margin-top:8px;">
         <span style="font-weight:700; color:#555;">NDVI</span>
         <span><i style="background:#4CAF50;"></i> ≥ 0.6</span>
@@ -267,6 +291,10 @@
         <span><i style="background:#8BC34A;"></i> Сенокос</span>
         <span><i style="background:#FFC107;"></i> Пастбище</span>
         <span><i style="background:#FF9800;"></i> Насаждения</span>
+        <span style="font-weight:700; color:#555; margin-top:4px;">Использование</span>
+        <span><i style="background:#4CAF50;"></i> Используется</span>
+        <span><i style="background:#F44336;"></i> Не используется</span>
+        <span><i style="background:#9E9E9E;"></i> Нет данных</span>
       </div>
 
 
@@ -550,6 +578,9 @@
       perennial: '#FF9800', other: '#9E9E9E'
     };
     var _activeCropTypes = new Set(['arable','hayfield','pasture','perennial','other']);
+    var _activeUsage = new Set(['used','unused','unknown']);
+
+    var usageColors = { used: '#4CAF50', unused: '#F44336', unknown: '#9E9E9E' };
 
     function getSelectedCropTypes() {
       var cbs = document.querySelectorAll('.agro-crop-type-cb:checked');
@@ -559,11 +590,28 @@
       return s;
     }
 
+    function getSelectedUsage() {
+      var cbs = document.querySelectorAll('.agro-usage-cb:checked');
+      if (!cbs.length) return new Set(['used','unused','unknown']);
+      var s = new Set();
+      cbs.forEach(function (cb) { s.add(cb.value); });
+      return s;
+    }
+
+    function factIspToKey(fi) {
+      if (!fi) return 'unknown';
+      var low = fi.toLowerCase();
+      if (low.indexOf('не ') === 0 || low.indexOf('не и') >= 0) return 'unused';
+      if (low.indexOf('использ') >= 0) return 'used';
+      return 'unknown';
+    }
+
     function loadMVT(regionId, districtId) {
       if (mvtLayer) { map.removeLayer(mvtLayer); mvtLayer = null; }
       farmlandLayer = clearLayer(farmlandLayer);
       _farmlandLayersById = {};
       _activeCropTypes = getSelectedCropTypes();
+      _activeUsage = getSelectedUsage();
 
       var filter = districtId ? 'district=' + districtId : 'region=' + regionId;
       var tileUrl = '/agrocosmos/api/tiles/{z}/{x}/{y}.pbf?' + filter;
@@ -572,14 +620,18 @@
         rendererFactory: L.canvas.tile,
         vectorTileLayerStyles: {
           farmlands: function (props) {
-            if (!_activeCropTypes.has(props.crop_type)) {
+            var usageKey = factIspToKey(props.fact_isp);
+            if (!_activeCropTypes.has(props.crop_type) || !_activeUsage.has(usageKey)) {
               return { fill: false, stroke: false, opacity: 0, fillOpacity: 0, weight: 0 };
             }
+            var baseColor = cropColors[props.crop_type] || '#9E9E9E';
+            var borderColor = usageKey === 'unused' ? '#D32F2F' : '#333';
+            var opacity = usageKey === 'unused' ? 0.7 : 0.55;
             return {
               fill: true,
-              fillColor: cropColors[props.crop_type] || '#9E9E9E',
-              fillOpacity: 0.55,
-              color: '#333',
+              fillColor: usageKey === 'unused' ? '#F44336' : baseColor,
+              fillOpacity: opacity,
+              color: borderColor,
               weight: 0.8
             };
           }
@@ -609,9 +661,11 @@
 
         var cropLabel = {arable:'Пашня', hayfield:'Сенокос', pasture:'Пастбище', perennial:'Многолетнее насаждение', other:'Прочее'};
         var area = (p.area_ha != null) ? Number(p.area_ha).toFixed(2) : '?';
+        var usageLabel = p.fact_isp ? esc(p.fact_isp) : '<span style="color:#999;">нет данных</span>';
         var popupHtml = '<b>' + esc(cropLabel[p.crop_type] || p.crop_type) + '</b> #' + p.id + '<br>'
           + 'Площадь: ' + area + ' га<br>'
-          + 'Район: ' + esc(p.district || '');
+          + 'Район: ' + esc(p.district || '') + '<br>'
+          + 'Использование: ' + usageLabel;
         if (p.cadastral_number) popupHtml += '<br>Кадастр: ' + esc(p.cadastral_number);
         popupHtml += '<br><a href="#" class="ndvi-link" data-id="' + p.id + '" data-district="' + esc(p.district || '') + '" style="color:#2e7d32;">📈 График NDVI</a>';
         L.popup().setLatLng(e.latlng).setContent(popupHtml).openOn(map);
@@ -695,6 +749,21 @@
           document.querySelectorAll('.agro-crop-type-cb').forEach(function (cb) {
             cb.addEventListener('change', onCropTypeChange);
           });
+
+          // Populate usage stats
+          var usageEl = document.getElementById('usage-stats');
+          if (s.usage_summary && usageEl) {
+            var usageHtml = '';
+            var usageLabels = { 'Используется': 'Исп.', 'Не используется': 'Не исп.', '': 'Нет данных' };
+            s.usage_summary.forEach(function (u) {
+              var lbl = usageLabels[u.fact_isp] || u.fact_isp || 'Нет данных';
+              usageHtml += '<div style="display:flex;justify-content:space-between;">'
+                + '<span>' + esc(lbl) + '</span>'
+                + '<span style="font-weight:600;">' + u.area_ha.toLocaleString('ru') + ' га / ' + u.count.toLocaleString('ru') + ' шт.</span>'
+                + '</div>';
+            });
+            usageEl.innerHTML = usageHtml;
+          }
         })
         .catch(function (err) { console.error('NDVI stats error:', err); });
 
@@ -716,6 +785,19 @@
         loadMultiYearChart(regionId, districtId, years);
       }
     }
+
+    function onUsageChange() {
+      _activeUsage = getSelectedUsage();
+      var regionId = regionSel.value;
+      var districtId = districtSel.value;
+      if (document.getElementById('agro-toggle-farmlands').checked && regionId) {
+        loadMVT(regionId, districtId || null);
+      }
+    }
+
+    document.querySelectorAll('.agro-usage-cb').forEach(function (cb) {
+      cb.addEventListener('change', onUsageChange);
+    });
 
     function loadMultiYearChart(regionId, districtId, years) {
       var loader = document.getElementById('ndvi-region-loader');
