@@ -716,8 +716,16 @@
       var titleSuffix = districtId ? distOpt.textContent : 'регион';
       document.getElementById('ndvi-region-title').textContent = 'Динамика NDVI (' + titleSuffix + ')';
 
+      // Build fact_isp param
+      var fiParam = '';
+      var selFi = getSelectedUsage();
+      if (selFi.size === 1) {
+        if (selFi.has('used')) fiParam = '&fact_isp=used';
+        else if (selFi.has('unused')) fiParam = '&fact_isp=unused';
+      }
+
       // Use first selected year for summary stats
-      var url = '/agrocosmos/api/ndvi-stats/?region=' + regionId + '&year=' + years[0];
+      var url = '/agrocosmos/api/ndvi-stats/?region=' + regionId + '&year=' + years[0] + fiParam;
       if (districtId) url += '&district=' + districtId;
 
       fetch(url)
@@ -793,6 +801,11 @@
       if (document.getElementById('agro-toggle-farmlands').checked && regionId) {
         loadMVT(regionId, districtId || null);
       }
+      // Reload charts with updated usage filter
+      var years = getSelectedYears();
+      if (years.length && regionId) {
+        loadMultiYearChart(regionId, districtId, years);
+      }
     }
 
     document.querySelectorAll('.agro-usage-cb').forEach(function (cb) {
@@ -810,8 +823,14 @@
       if (selCt.size < 5) {
         ctParam = '&crop_types=' + Array.from(selCt).join(',');
       }
+      var fiParam2 = '';
+      var selFi2 = getSelectedUsage();
+      if (selFi2.size === 1) {
+        if (selFi2.has('used')) fiParam2 = '&fact_isp=used';
+        else if (selFi2.has('unused')) fiParam2 = '&fact_isp=unused';
+      }
       var promises = years.map(function (yr) {
-        var url = '/agrocosmos/api/ndvi-stats/?region=' + regionId + '&year=' + yr + ctParam;
+        var url = '/agrocosmos/api/ndvi-stats/?region=' + regionId + '&year=' + yr + ctParam + fiParam2;
         if (districtId) url += '&district=' + districtId;
         return fetch(url).then(function (r) { return r.json(); }).then(function (resp) {
           return { year: yr, data: (resp.ok && resp.stats) ? resp.stats.by_period : [] };
