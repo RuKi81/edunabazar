@@ -345,14 +345,18 @@
     /* ── Map init ──────────────────────────────── */
     var map = L.map('agro-map', { scrollWheelZoom: true, zoomControl: false }).setView([45.3, 34.1], 8);
 
-    // Base layers
+    // Custom pane for basemap tiles — always below vectors
+    map.createPane('basemapPane');
+    map.getPane('basemapPane').style.zIndex = 150;
+
+    // Base layers (all in basemapPane)
     var osmLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-      maxZoom: 19, attribution: '&copy; OSM &copy; CARTO'
+      maxZoom: 19, attribution: '&copy; OSM &copy; CARTO', pane: 'basemapPane'
     }).addTo(map);
 
     var satLayer = L.tileLayer(
       'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      { maxZoom: 19, attribution: '&copy; Esri' }
+      { maxZoom: 19, attribution: '&copy; Esri', pane: 'basemapPane' }
     );
 
     var hybridLabels = L.tileLayer(
@@ -362,7 +366,7 @@
 
     var satLayerHybrid = L.tileLayer(
       'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      { maxZoom: 19, attribution: '&copy; Esri' }
+      { maxZoom: 19, attribution: '&copy; Esri', pane: 'basemapPane' }
     );
 
     var _activeBase = 'map';
