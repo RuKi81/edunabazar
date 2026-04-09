@@ -7,7 +7,9 @@ from django.shortcuts import render
 from django.contrib.gis.db.models.functions import AsGeoJSON
 from datetime import date
 
-from django.db.models import Count, Sum, Avg, Q
+from django.db.models import Count, Sum, Avg, Q, Value, CharField
+from django.db.models.functions import Coalesce
+from django.db.models.fields.json import KeyTextTransform
 from django.views.decorators.cache import cache_page
 
 from .models import Region, District, Farmland, VegetationIndex, MonitoringTask
@@ -248,6 +250,7 @@ def api_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
                 f.area_ha,
                 f.cadastral_number,
                 d.name AS district,
+                COALESCE(f.properties->>'Fact_isp', '') AS fact_isp,
                 ST_AsMVTGeom(
                     ST_Transform(f.geom, 3857),
                     b.envelope,
@@ -363,6 +366,7 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
     date_from = request.GET.get('date_from')
     date_to = request.GET.get('date_to')
     crop_types = request.GET.get('crop_types')  # comma-separated, e.g. 'arable,hayfield'
+    fact_isp_filter = request.GET.get('fact_isp')  # 'used', 'unused', or empty for all
 
     # Base queryset
     fl_qs = Farmland.objects.filter(district__region_id=region_id)
@@ -383,11 +387,33 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
         .order_by('crop_type')
     )
 
+    # Usage (Fact_isp) summary
+    usage_summary_qs = (
+        fl_qs
+        .annotate(fi=Coalesce(KeyTextTransform('Fact_isp', 'properties'), Value(''), output_field=CharField()))
+        .values('fi')
+        .annotate(count=Count('id'), total_area=Sum('area_ha'))
+        .order_by('fi')
+    )
+    usage_summary = []
+    for row in usage_summary_qs:
+        usage_summary.append({
+            'fact_isp': row['fi'],
+            'count': row['count'],
+            'area_ha': round(row['total_area'] or 0, 1),
+        })
+
     # Apply crop_types filter
     if crop_types:
         ct_list = [ct.strip() for ct in crop_types.split(',') if ct.strip()]
         if ct_list:
             fl_qs = fl_qs.filter(crop_type__in=ct_list)
+
+    # Apply fact_isp filter
+    if fact_isp_filter == 'used':
+        fl_qs = fl_qs.filter(properties__Fact_isp='Используется')
+    elif fact_isp_filter == 'unused':
+        fl_qs = fl_qs.filter(properties__Fact_isp='Не используется')
 
     vi_qs = VegetationIndex.objects.filter(
         farmland__in=fl_qs, index_type='ndvi',
@@ -470,5 +496,6 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
                 'mean_ndvi': _safe_round(avg),
             },
             'farmland_summary': fl_summary_list,
+            'usage_summary': usage_summary,
         },
     })
