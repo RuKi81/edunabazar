@@ -16,6 +16,21 @@
 
     .leaflet-control-zoom { display: none !important; }
     .leaflet-draw { display: none !important; }
+    .leaflet-control-layers { display: none !important; }
+
+    /* Basemap switcher toolbar */
+    .basemap-bar {
+      position: fixed; bottom: 12px; right: 14px;
+      z-index: 1100; display: flex; gap: 3px; background: rgba(255,255,255,.92);
+      border-radius: 6px; box-shadow: 0 1px 6px rgba(0,0,0,.2); padding: 3px;
+    }
+    .basemap-btn {
+      border: none; background: transparent; cursor: pointer; border-radius: 4px;
+      padding: 5px 10px; font-size: 11px; font-weight: 600; color: #555;
+      display: flex; align-items: center; gap: 4px; white-space: nowrap;
+    }
+    .basemap-btn:hover { background: #e8f5e9; }
+    .basemap-btn.active { background: #c8e6c9; color: #2e7d32; }
 
     .agro-ui { position: fixed; left: 0; right: 0; top: 0; bottom: 0; min-height: 650px; }
     #agro-map { position: absolute; left: 0; right: 0; top: 0; bottom: 0; }
@@ -149,20 +164,6 @@
       border-bottom: 1px solid rgba(0,0,0,0.08);
     }
 
-    /* ── Mobile toggle ── */
-    .agro-ui__toggle {
-      display: none;
-      position: fixed;
-      top: calc(var(--map-header-h) + 8px);
-      left: 8px;
-      z-index: 1100;
-      background: #fff; border: none; border-radius: 4px;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.3);
-      width: 40px; height: 40px;
-      cursor: pointer; align-items: center; justify-content: center;
-      font-size: 24px; color: #333;
-    }
-
     @media (max-width: 992px) {
       :root { --map-header-h: 56px; }
       .agro-ui__left { width: 220px; }
@@ -170,7 +171,6 @@
     }
 
     @media (max-width: 600px) {
-      .agro-ui__toggle { display: flex; }
       .agro-ui__left {
         width: 260px;
         transform: translateX(-110%);
@@ -179,6 +179,7 @@
         background: rgba(255,255,255,0.95);
       }
       .agro-ui__left.open { transform: translateX(0); }
+      .basemap-bar { bottom: 56px; }
     }
   </style>
 {% endblock %}
@@ -187,9 +188,15 @@
   <div class="agro-ui">
     <div id="agro-map"></div>
 
-    <button class="agro-ui__toggle" id="agro_toggle" aria-label="Фильтры"><i class="material-icons">tune</i></button>
     <button class="agro-collapse-btn" id="agro-collapse-left" title="Свернуть"><i class="material-icons" style="font-size:18px;">chevron_left</i></button>
     <button class="agro-collapse-btn" id="agro-collapse-right" title="Свернуть"><i class="material-icons" style="font-size:18px;">chevron_right</i></button>
+
+    <!-- Basemap switcher -->
+    <div class="basemap-bar">
+      <button class="basemap-btn active" data-mode="map" title="Карта"><i class="material-icons" style="font-size:16px;">map</i> Карта</button>
+      <button class="basemap-btn" data-mode="satellite" title="Спутник"><i class="material-icons" style="font-size:16px;">satellite</i> Спутник</button>
+      <button class="basemap-btn" data-mode="hybrid" title="Гибрид"><i class="material-icons" style="font-size:16px;">satellite_alt</i> Гибрид</button>
+    </div>
 
     <!-- Measurement toolbar -->
     <div class="agro-measure-bar">
@@ -338,7 +345,8 @@
     /* ── Map init ──────────────────────────────── */
     var map = L.map('agro-map', { scrollWheelZoom: true, zoomControl: false }).setView([45.3, 34.1], 8);
 
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+    // Base layers
+    var osmLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
       maxZoom: 19, attribution: '&copy; OSM &copy; CARTO'
     }).addTo(map);
 
@@ -347,10 +355,27 @@
       { maxZoom: 19, attribution: '&copy; Esri' }
     );
 
-    L.control.layers({
-      'Карта': L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', { maxZoom: 19 }).addTo(map),
-      'Спутник': satLayer,
-    }).addTo(map);
+    var hybridLabels = L.tileLayer(
+      'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png',
+      { maxZoom: 19, attribution: '&copy; CARTO', pane: 'overlayPane' }
+    );
+
+    var satLayerHybrid = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      { maxZoom: 19, attribution: '&copy; Esri' }
+    );
+
+    var _activeBase = 'map';
+    function switchBase(mode) {
+      _activeBase = mode;
+      [osmLayer, satLayer, satLayerHybrid, hybridLabels].forEach(function (l) { map.removeLayer(l); });
+      if (mode === 'satellite') { satLayer.addTo(map); }
+      else if (mode === 'hybrid') { satLayerHybrid.addTo(map); hybridLabels.addTo(map); }
+      else { osmLayer.addTo(map); }
+      document.querySelectorAll('.basemap-btn').forEach(function (b) {
+        b.classList.toggle('active', b.getAttribute('data-mode') === mode);
+      });
+    }
 
     /* ── State ──────────────────────────────────── */
     var districtLayer = null;
@@ -833,10 +858,14 @@
         var url = '/agrocosmos/api/ndvi-stats/?region=' + regionId + '&year=' + yr + ctParam + fiParam2;
         if (districtId) url += '&district=' + districtId;
         return fetch(url).then(function (r) { return r.json(); }).then(function (resp) {
-          return { year: yr, data: (resp.ok && resp.stats) ? resp.stats.by_period : [] };
+          return {
+            year: yr,
+            data: (resp.ok && resp.stats) ? resp.stats.by_period : [],
+            baseline: (resp.ok && resp.stats && resp.stats.baseline) ? resp.stats.baseline : []
+          };
         }).catch(function (err) {
           console.error('MultiYear fetch error year=' + yr, err);
-          return { year: yr, data: [] };
+          return { year: yr, data: [], baseline: [] };
         });
       });
 
@@ -845,14 +874,39 @@
         var datasets = [];
         var allLabels = new Set();
 
+        // Collect baseline from first result
+        var baselineData = (results.length && results[0].baseline) ? results[0].baseline : [];
+
         results.forEach(function (res) {
           res.data.forEach(function (d) {
-            // Use month-day for x-axis to overlay years
             allLabels.add(d.date.substring(5)); // MM-DD
           });
         });
+        baselineData.forEach(function (b) {
+          allLabels.add(b.date); // already MM-DD
+        });
 
         var labels = Array.from(allLabels).sort();
+
+        // Add baseline as first dataset (gray dashed)
+        if (baselineData.length) {
+          var blLookup = {};
+          baselineData.forEach(function (b) { blLookup[b.date] = b.mean_ndvi; });
+          var blVals = labels.map(function (l) { return blLookup[l] !== undefined ? blLookup[l] : null; });
+          datasets.push({
+            label: 'Среднее (архив)',
+            data: blVals,
+            borderColor: '#9E9E9E',
+            backgroundColor: 'transparent',
+            borderWidth: 2,
+            borderDash: [6, 4],
+            fill: false,
+            pointRadius: 0,
+            tension: 0.3,
+            spanGaps: true,
+            order: 10
+          });
+        }
 
         results.forEach(function (res, idx) {
           var lookup = {};
@@ -871,8 +925,9 @@
           });
         });
 
-        if (!datasets.length) { wrap.style.display = 'none'; return; }
+        if (datasets.length <= (baselineData.length ? 1 : 0)) { wrap.style.display = 'none'; return; }
 
+        var showLegend = years.length > 1 || baselineData.length > 0;
         if (regionNdviChart) regionNdviChart.destroy();
         regionNdviChart = new Chart(document.getElementById('ndvi-region-chart'), {
           type: 'line',
@@ -882,7 +937,7 @@
             maintainAspectRatio: false,
             plugins: {
               legend: {
-                display: years.length > 1,
+                display: showLegend,
                 labels: { boxWidth: 14, font: { size: 11 } }
               }
             },
@@ -995,18 +1050,13 @@
       });
     })();
 
-    /* ── Mobile sidebar toggle ────────────────── */
+    /* ── Basemap switcher ─────────────────────── */
     (function () {
-      var toggleBtn = document.getElementById('agro_toggle');
-      var leftPanel = document.getElementById('agro_left');
-      if (toggleBtn && leftPanel) {
-        toggleBtn.addEventListener('click', function () {
-          leftPanel.classList.toggle('open');
+      document.querySelectorAll('.basemap-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          switchBase(btn.getAttribute('data-mode'));
         });
-        document.getElementById('agro-map').addEventListener('click', function () {
-          leftPanel.classList.remove('open');
-        });
-      }
+      });
     })();
 
     /* ── Measurement tool (ruler + area) ───────── */

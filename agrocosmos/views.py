@@ -5,14 +5,14 @@ from django.db import connection
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.contrib.gis.db.models.functions import AsGeoJSON
-from datetime import date
+from datetime import date, timedelta
 
 from django.db.models import Count, Sum, Avg, Q, Value, CharField
 from django.db.models.functions import Coalesce
 from django.db.models.fields.json import KeyTextTransform
 from django.views.decorators.cache import cache_page
 
-from .models import Region, District, Farmland, VegetationIndex, MonitoringTask
+from .models import Region, District, Farmland, VegetationIndex, MonitoringTask, NdviBaseline
 
 
 def _get_legacy_user(request):
@@ -485,11 +485,43 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
             'area_ha': round(row['total_area'] or 0, 1),
         })
 
+    # Baseline (historical average across all prior years)
+    baseline_qs = NdviBaseline.objects.filter(
+        district__region_id=region_id,
+        crop_type='',  # aggregated across all crop types
+    )
+    if district_id:
+        try:
+            baseline_qs = baseline_qs.filter(district_id=int(district_id))
+        except (TypeError, ValueError):
+            pass
+
+    baseline_agg = (
+        baseline_qs
+        .values('day_of_year')
+        .annotate(mean_ndvi=Avg('mean_ndvi'))
+        .order_by('day_of_year')
+    )
+    baseline_list = []
+    for row in baseline_agg:
+        doy = row['day_of_year']
+        # Convert day-of-year to MM-DD
+        try:
+            d = date(2024, 1, 1) + timedelta(days=doy - 1)
+            mm_dd = d.strftime('%m-%d')
+        except Exception:
+            mm_dd = f'{doy:03d}'
+        baseline_list.append({
+            'date': mm_dd,
+            'mean_ndvi': _safe_round(row['mean_ndvi']),
+        })
+
     return JsonResponse({
         'ok': True,
         'stats': {
             'by_crop_type': by_crop_list,
             'by_period': by_period_list,
+            'baseline': baseline_list,
             'summary': {
                 'total_farmlands': total_fl,
                 'with_ndvi': with_ndvi,

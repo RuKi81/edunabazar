@@ -177,6 +177,36 @@ class MonitoringTask(models.Model):
         return f'{self.region.name} — {self.year} ({self.get_status_display()})'
 
 
+class NdviBaseline(models.Model):
+    """Среднее историческое значение NDVI по району на дату (день года).
+
+    Рассчитывается по всем годам, кроме текущего. Пересчёт 7 января.
+    """
+    district = models.ForeignKey(District, on_delete=models.CASCADE, related_name='ndvi_baselines')
+    day_of_year = models.SmallIntegerField(verbose_name='День года (1‑366)')
+    mean_ndvi = models.FloatField(verbose_name='Среднее NDVI')
+    years_count = models.SmallIntegerField(default=0, verbose_name='Кол-во лет')
+    crop_type = models.CharField(
+        max_length=20,
+        choices=Farmland.CropType.choices,
+        blank=True, default='',
+        verbose_name='Вид угодья (пусто = все)',
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'agro_ndvi_baseline'
+        unique_together = [('district', 'day_of_year', 'crop_type')]
+        indexes = [
+            models.Index(fields=['district', 'crop_type', 'day_of_year']),
+        ]
+        verbose_name = 'Базовая линия NDVI'
+        verbose_name_plural = 'Базовые линии NDVI'
+
+    def __str__(self):
+        return f'Baseline d={self.district_id} doy={self.day_of_year} ndvi={self.mean_ndvi:.3f}'
+
+
 class PipelineRun(models.Model):
     """Лог запуска любого процесса пайплайна."""
 
