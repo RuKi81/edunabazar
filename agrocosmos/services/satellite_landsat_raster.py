@@ -103,7 +103,8 @@ def download_composite(region_geom_extent, region_id, date_from, date_to,
     aoi = ee.Geometry.Rectangle([xmin, ymin, xmax, ymax])
 
     df = date_from.isoformat()
-    dt = date_to.isoformat()
+    # GEE filterDate end is exclusive → add 1 day
+    dt = (date_to + timedelta(days=1)).isoformat()
 
     try:
         # Merge L8 + L9

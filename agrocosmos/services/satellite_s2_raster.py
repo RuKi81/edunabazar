@@ -18,6 +18,7 @@ Tile strategy:
     is split into tiles of MAX_TILE_PX (~4000×4000 = 40×40 km).
 """
 import logging
+import math
 import os
 from datetime import date, timedelta
 from pathlib import Path
@@ -38,6 +39,7 @@ RASTER_DIR = os.environ.get(
 SCALE_M = 10          # metres per pixel
 SCALE_DEG = SCALE_M / 111320  # approximate degrees at mid-latitudes
 COMPOSITE_DAYS = 5    # S2A+S2B revisit
+MAX_TILE_PX = 25000   # GEE limit is 32768; use 25K for safety margin
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +64,83 @@ def s2_chunks(date_from, date_to, days=COMPOSITE_DAYS):
 
 
 # ---------------------------------------------------------------------------
+# Tiling
+# ---------------------------------------------------------------------------
+
+def _tile_extents(xmin, ymin, xmax, ymax, scale_deg, max_px):
+    """
+    Split a bounding box into tiles that fit GEE computePixels limits.
+
+    Returns list of (tile_xmin, tile_ymin, tile_xmax, tile_ymax) tuples.
+    """
+    width_px = int((xmax - xmin) / scale_deg) + 1
+    height_px = int((ymax - ymin) / scale_deg) + 1
+
+    n_cols = math.ceil(width_px / max_px)
+    n_rows = math.ceil(height_px / max_px)
+
+    tile_w = (xmax - xmin) / n_cols
+    tile_h = (ymax - ymin) / n_rows
+
+    tiles = []
+    for row in range(n_rows):
+        for col in range(n_cols):
+            tx0 = xmin + col * tile_w
+            ty0 = ymin + row * tile_h
+            tx1 = min(tx0 + tile_w, xmax)
+            ty1 = min(ty0 + tile_h, ymax)
+            tiles.append((tx0, ty0, tx1, ty1))
+
+    return tiles
+
+
+def _download_tile(composite, tx0, ty0, tx1, ty1, scale_deg):
+    """Download a single tile from GEE as bytes."""
+    w = int((tx1 - tx0) / scale_deg) + 1
+    h = int((ty1 - ty0) / scale_deg) + 1
+    return ee.data.computePixels({
+        'expression': composite,
+        'fileFormat': 'GEO_TIFF',
+        'grid': {
+            'crsCode': 'EPSG:4326',
+            'affineTransform': {
+                'scaleX': scale_deg,
+                'shearX': 0,
+                'translateX': tx0,
+                'shearY': 0,
+                'scaleY': -scale_deg,
+                'translateY': ty1,
+            },
+            'dimensions': {'width': w, 'height': h},
+        },
+    })
+
+
+def _merge_tiles(tile_paths, out_path):
+    """Merge multiple GeoTIFF tiles into one file."""
+    import rasterio
+    from rasterio.merge import merge as rasterio_merge
+
+    datasets = [rasterio.open(p) for p in tile_paths]
+    try:
+        mosaic, transform = rasterio_merge(datasets)
+        profile = datasets[0].profile.copy()
+        profile.update(
+            width=mosaic.shape[2],
+            height=mosaic.shape[1],
+            transform=transform,
+        )
+        with rasterio.open(out_path, 'w', **profile) as dst:
+            dst.write(mosaic)
+    finally:
+        for ds in datasets:
+            ds.close()
+        for p in tile_paths:
+            if os.path.exists(p):
+                os.remove(p)
+
+
+# ---------------------------------------------------------------------------
 # Download
 # ---------------------------------------------------------------------------
 
@@ -76,6 +155,8 @@ def download_composite(region_geom_extent, region_id, date_from, date_to,
                        cloud_max=30, overwrite=False):
     """
     Download a cloud-free S2 median NDVI composite from GEE as GeoTIFF.
+
+    Automatically tiles large regions that exceed GEE pixel limits.
 
     Args:
         region_geom_extent: (xmin, ymin, xmax, ymax) in EPSG:4326
@@ -98,7 +179,8 @@ def download_composite(region_geom_extent, region_id, date_from, date_to,
     aoi = ee.Geometry.Rectangle([xmin, ymin, xmax, ymax])
 
     df = date_from.isoformat()
-    dt = date_to.isoformat()
+    # GEE filterDate end is exclusive → add 1 day
+    dt = (date_to + timedelta(days=1)).isoformat()
 
     try:
         s2 = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
@@ -121,38 +203,35 @@ def download_composite(region_geom_extent, region_id, date_from, date_to,
 
         composite = s2.map(_add_ndvi).median().rename('NDVI').toFloat()
 
-        width = int((xmax - xmin) / SCALE_DEG) + 1
-        height = int((ymax - ymin) / SCALE_DEG) + 1
+        # Check if tiling is needed
+        tiles = _tile_extents(xmin, ymin, xmax, ymax, SCALE_DEG, MAX_TILE_PX)
 
-        content = ee.data.computePixels({
-            'expression': composite,
-            'fileFormat': 'GEO_TIFF',
-            'grid': {
-                'crsCode': 'EPSG:4326',
-                'affineTransform': {
-                    'scaleX': SCALE_DEG,
-                    'shearX': 0,
-                    'translateX': xmin,
-                    'shearY': 0,
-                    'scaleY': -SCALE_DEG,
-                    'translateY': ymax,
-                },
-                'dimensions': {
-                    'width': width,
-                    'height': height,
-                },
-            },
-        })
+        if len(tiles) == 1:
+            # Single tile — download directly
+            content = _download_tile(composite, xmin, ymin, xmax, ymax, SCALE_DEG)
+            with open(out_path, 'wb') as f:
+                f.write(content)
+        else:
+            # Multi-tile: download each, then merge
+            logger.info('Region too large, splitting into %d tiles', len(tiles))
+            tile_paths = []
+            base = out_path.replace('.tif', '')
+            for ti, (tx0, ty0, tx1, ty1) in enumerate(tiles):
+                tile_path = f'{base}_tile{ti}.tif'
+                content = _download_tile(composite, tx0, ty0, tx1, ty1, SCALE_DEG)
+                with open(tile_path, 'wb') as f:
+                    f.write(content)
+                tile_paths.append(tile_path)
+                logger.info('  Tile %d/%d downloaded', ti + 1, len(tiles))
 
-        with open(out_path, 'wb') as f:
-            f.write(content)
+            _merge_tiles(tile_paths, out_path)
 
         import rasterio
         with rasterio.open(out_path) as ds:
             logger.info(
-                'Downloaded S2: %s (%d×%d, %.1f MB, %d images → median)',
+                'Downloaded S2: %s (%d×%d, %.1f MB, %d images → median, %d tiles)',
                 out_path, ds.width, ds.height,
-                os.path.getsize(out_path) / 1e6, n_images,
+                os.path.getsize(out_path) / 1e6, n_images, len(tiles),
             )
 
         return out_path
