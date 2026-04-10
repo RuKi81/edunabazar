@@ -161,14 +161,20 @@ class Command(BaseCommand):
         if min_valid is None:
             min_valid = cfg['default_min_valid']
 
-        region_extent = region.geom.extent
-        region_id = region.pk
+        # Use district extent when available (much smaller download for S2/L8)
+        if district:
+            download_extent = district.geom.extent
+            scope_id = f'd{district.pk}'
+        else:
+            download_extent = region.geom.extent
+            scope_id = str(region.pk)
+
         chunks = get_chunks(date_from, date_to)
 
         self.stdout.write(
             f'═══════════════════════════════════════════════\n'
             f'  Raster NDVI — {cfg["label"]}\n'
-            f'  Region: {region.name} (id={region_id})\n'
+            f'  Region: {region.name} (id={region.pk})\n'
             f'  {"District: " + district.name + " | " if district else ""}'
             f'Period: {date_from} → {date_to} ({len(chunks)} composites)\n'
             f'  Cloud ≤{cloud_max or "N/A"}%  |  Valid ≥{min_valid*100:.0f}%'
@@ -182,7 +188,7 @@ class Command(BaseCommand):
         # ── STEP 1: Download composites ──
         if not stats_only:
             self._download_step(
-                chunks, download_composite, region_extent, region_id,
+                chunks, download_composite, download_extent, scope_id,
                 cloud_max, harmonize if sensor == 'l8' else None,
                 overwrite, sensor,
             )
@@ -192,7 +198,7 @@ class Command(BaseCommand):
 
         # ── STEP 2: Zonal stats ──
         self._stats_step(
-            chunks, _raster_path, region_id, region, district,
+            chunks, _raster_path, scope_id, region, district,
             cfg, min_valid, compute_zonal_stats,
         )
 
