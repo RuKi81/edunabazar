@@ -14,8 +14,10 @@ Storage: /data/s2/{region_id}/{year}/
     s2_ndvi_{region_id}_{date_from}_{date_to}.tif
 
 Tile strategy:
-    At 10m a full Crimea composite is ~300 MB. For large regions the download
-    is split into tiles of MAX_TILE_PX (~4000×4000 = 40×40 km).
+    GEE computePixels has a 48 MB response limit (≈12M pixels at float32).
+    MAX_TILE_PX=3000 → each tile ≈ 3000×3000 = 9M pixels ≈ 36 MB.
+    Crimea at 10m = 46524×20699 → 16×7 = 112 tiles per composite.
+    Tiles are merged locally with LZW compression (~100-200 MB final).
 """
 import logging
 import math
@@ -39,7 +41,9 @@ RASTER_DIR = os.environ.get(
 SCALE_M = 10          # metres per pixel
 SCALE_DEG = SCALE_M / 111320  # approximate degrees at mid-latitudes
 COMPOSITE_DAYS = 5    # S2A+S2B revisit
-MAX_TILE_PX = 25000   # GEE limit is 32768; use 25K for safety margin
+# GEE computePixels response limit: 48 MB ≈ 12M pixels (float32).
+# 3000×3000 = 9M pixels ≈ 36 MB — safe margin.
+MAX_TILE_PX = 3000
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +121,7 @@ def _download_tile(composite, tx0, ty0, tx1, ty1, scale_deg):
 
 
 def _merge_tiles(tile_paths, out_path):
-    """Merge multiple GeoTIFF tiles into one file."""
+    """Merge multiple GeoTIFF tiles into one LZW-compressed file."""
     import rasterio
     from rasterio.merge import merge as rasterio_merge
 
@@ -129,6 +133,10 @@ def _merge_tiles(tile_paths, out_path):
             width=mosaic.shape[2],
             height=mosaic.shape[1],
             transform=transform,
+            compress='lzw',
+            tiled=True,
+            blockxsize=256,
+            blockysize=256,
         )
         with rasterio.open(out_path, 'w', **profile) as dst:
             dst.write(mosaic)
