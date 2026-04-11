@@ -1,30 +1,28 @@
 """
 Shared GEE raster download utilities with tiling and timeouts.
 
-Uses getDownloadURL() + requests instead of computePixels() to avoid:
-- 48 MB response size limit (still applies per tile, but we tile smartly)
-- Indefinite hangs (requests has configurable timeouts)
+Uses computePixels() with:
+- Auto-tiling to fit 48 MB response limit (~12M pixels at float32)
+- concurrent.futures timeout to prevent indefinite hangs
 
-GEE getDownloadURL limit: ~32 MB per band → ~8M pixels (float32).
-MAX_TILE_PX = 2500 → 2500×2500 = 6.25M pixels ≈ 25 MB — safe margin.
+MAX_TILE_PX = 3000 → each tile ≈ 3000×3000 = 9M pixels ≈ 36 MB (< 48 MB).
 """
 import logging
 import math
 import os
-import tempfile
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 import ee
-import requests as http_requests
 
 logger = logging.getLogger(__name__)
 
-MAX_TILE_PX = 2500
+MAX_TILE_PX = 3000
 DOWNLOAD_TIMEOUT = 300  # seconds per tile
 
 
 def tile_extents(xmin, ymin, xmax, ymax, scale_deg, max_px=MAX_TILE_PX):
     """
-    Split a bounding box into tiles that fit GEE download limits.
+    Split a bounding box into tiles that fit GEE computePixels limits.
 
     Returns list of (tile_xmin, tile_ymin, tile_xmax, tile_ymax) tuples.
     """
@@ -53,43 +51,51 @@ def tile_extents(xmin, ymin, xmax, ymax, scale_deg, max_px=MAX_TILE_PX):
     return tiles
 
 
-def download_tile(composite, tx0, ty0, tx1, ty1, scale_m,
+def _compute_pixels(params):
+    """Wrapper for ee.data.computePixels (for use in thread pool)."""
+    return ee.data.computePixels(params)
+
+
+def download_tile(composite, tx0, ty0, tx1, ty1, scale_deg,
                   timeout=DOWNLOAD_TIMEOUT):
     """
-    Download a single tile from GEE using getDownloadURL + requests.
+    Download a single tile from GEE using computePixels with a timeout.
 
     Returns bytes (GeoTIFF content).
     Raises GEEError on failure.
     """
     from .satellite_gee import GEEError
 
-    region = ee.Geometry.Rectangle([tx0, ty0, tx1, ty1])
+    w = int((tx1 - tx0) / scale_deg) + 1
+    h = int((ty1 - ty0) / scale_deg) + 1
+
+    params = {
+        'expression': composite,
+        'fileFormat': 'GEO_TIFF',
+        'grid': {
+            'crsCode': 'EPSG:4326',
+            'affineTransform': {
+                'scaleX': scale_deg,
+                'shearX': 0,
+                'translateX': tx0,
+                'shearY': 0,
+                'scaleY': -scale_deg,
+                'translateY': ty1,
+            },
+            'dimensions': {'width': w, 'height': h},
+        },
+    }
 
     try:
-        url = composite.getDownloadURL({
-            'scale': scale_m,
-            'region': region,
-            'format': 'GEO_TIFF',
-            'crs': 'EPSG:4326',
-        })
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_compute_pixels, params)
+            return future.result(timeout=timeout)
+    except TimeoutError:
+        raise GEEError(
+            f'computePixels timeout ({timeout}s) for tile {w}×{h}'
+        )
     except Exception as e:
-        raise GEEError(f'getDownloadURL failed: {e}')
-
-    try:
-        resp = http_requests.get(url, timeout=timeout, stream=True)
-        resp.raise_for_status()
-
-        content = resp.content
-        # GEE returns JSON error for some failures
-        if len(content) < 1000 and content[:1] == b'{':
-            raise GEEError(f'GEE returned error: {content[:500]}')
-
-        return content
-
-    except http_requests.Timeout:
-        raise GEEError(f'Download timeout ({timeout}s) for tile')
-    except http_requests.RequestException as e:
-        raise GEEError(f'Download failed: {e}')
+        raise GEEError(f'computePixels failed: {e}')
 
 
 def merge_tiles(tile_paths, out_path):
@@ -145,7 +151,7 @@ def download_tiled_composite(composite, extent, scale_m, out_path,
 
     if len(tiles) == 1:
         tx0, ty0, tx1, ty1 = tiles[0]
-        content = download_tile(composite, tx0, ty0, tx1, ty1, scale_m)
+        content = download_tile(composite, tx0, ty0, tx1, ty1, scale_deg)
         with open(out_path, 'wb') as f:
             f.write(content)
     else:
@@ -155,7 +161,7 @@ def download_tiled_composite(composite, extent, scale_m, out_path,
 
         for ti, (tx0, ty0, tx1, ty1) in enumerate(tiles):
             tile_path = f'{base}_tile{ti}.tif'
-            content = download_tile(composite, tx0, ty0, tx1, ty1, scale_m)
+            content = download_tile(composite, tx0, ty0, tx1, ty1, scale_deg)
             with open(tile_path, 'wb') as f:
                 f.write(content)
             tile_paths.append(tile_path)
