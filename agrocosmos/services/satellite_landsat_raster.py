@@ -37,7 +37,6 @@ RASTER_DIR = os.environ.get(
 )
 
 SCALE_M = 30
-SCALE_DEG = SCALE_M / 111320
 COMPOSITE_DAYS = 16  # L8 revisit; L8+L9 = 8 days overlap
 
 # Harmonization coefficients (Roy et al. 2016)
@@ -81,6 +80,9 @@ def download_composite(region_geom_extent, region_id, date_from, date_to,
     """
     Download a cloud-free L8+L9 median NDVI composite from GEE as GeoTIFF.
 
+    Automatically tiles large regions. Uses getDownloadURL + requests
+    for reliable downloads with timeouts.
+
     Args:
         region_geom_extent: (xmin, ymin, xmax, ymax) in EPSG:4326
         region_id: int
@@ -92,6 +94,8 @@ def download_composite(region_geom_extent, region_id, date_from, date_to,
     Returns:
         str: path to GeoTIFF, or None if no data
     """
+    from .gee_download import download_tiled_composite
+
     initialize()
 
     out_path = _raster_path(region_id, date_from, date_to)
@@ -143,42 +147,20 @@ def download_composite(region_geom_extent, region_id, date_from, date_to,
         if harmonize:
             composite = composite.multiply(HARMONIZE_A).add(HARMONIZE_B).rename('NDVI')
 
-        width = int((xmax - xmin) / SCALE_DEG) + 1
-        height = int((ymax - ymin) / SCALE_DEG) + 1
-
-        content = ee.data.computePixels({
-            'expression': composite,
-            'fileFormat': 'GEO_TIFF',
-            'grid': {
-                'crsCode': 'EPSG:4326',
-                'affineTransform': {
-                    'scaleX': SCALE_DEG,
-                    'shearX': 0,
-                    'translateX': xmin,
-                    'shearY': 0,
-                    'scaleY': -SCALE_DEG,
-                    'translateY': ymax,
-                },
-                'dimensions': {
-                    'width': width,
-                    'height': height,
-                },
-            },
-        })
-
-        with open(out_path, 'wb') as f:
-            f.write(content)
-
-        import rasterio
-        with rasterio.open(out_path) as ds:
-            logger.info(
-                'Downloaded Landsat: %s (%d×%d, %.1f MB, %d images → median, harmonize=%s)',
-                out_path, ds.width, ds.height,
-                os.path.getsize(out_path) / 1e6, n_images, harmonize,
-            )
-
+        download_tiled_composite(
+            composite,
+            extent=(xmin, ymin, xmax, ymax),
+            scale_m=SCALE_M,
+            out_path=out_path,
+            n_images=n_images,
+            sensor_label='Landsat',
+        )
         return out_path
 
+    except GEEError:
+        if os.path.exists(out_path):
+            os.remove(out_path)
+        raise
     except Exception as e:
         if os.path.exists(out_path):
             os.remove(out_path)
