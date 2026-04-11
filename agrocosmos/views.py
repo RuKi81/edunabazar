@@ -12,7 +12,19 @@ from django.db.models.functions import Coalesce
 from django.db.models.fields.json import KeyTextTransform
 from django.views.decorators.cache import cache_page
 
-from .models import Region, District, Farmland, VegetationIndex, MonitoringTask, NdviBaseline
+from .models import Region, District, Farmland, VegetationIndex, MonitoringTask, NdviBaseline, SatelliteScene
+
+MODIS_SATELLITES = ('modis_terra', 'modis_aqua')
+RASTER_SATELLITES = ('sentinel2', 'landsat8', 'landsat9')
+
+
+def _satellite_filter(source: str | None) -> dict:
+    """Return a dict suitable for .filter(**...) on VegetationIndex queryset."""
+    if source == 'modis':
+        return {'scene__satellite__in': MODIS_SATELLITES}
+    if source == 'raster':
+        return {'scene__satellite__in': RASTER_SATELLITES}
+    return {}
 
 
 def _get_legacy_user(request):
@@ -28,7 +40,7 @@ def _get_legacy_user(request):
 
 
 def dashboard(request: HttpRequest) -> HttpResponse:
-    """Main Agrocosmos map page."""
+    """Main Agrocosmos map page — MODIS NDVI monitoring."""
     regions = Region.objects.all()
     region_id = request.GET.get('region')
     district_id = request.GET.get('district')
@@ -86,6 +98,42 @@ def dashboard(request: HttpRequest) -> HttpResponse:
         'crop_stats': list(crop_stats),
         'crop_type_labels': dict(Farmland.CropType.choices),
         'years': years,
+        'active_page': 'modis',
+    })
+
+
+def raster_dashboard(request: HttpRequest) -> HttpResponse:
+    """Detailed raster analysis page — Sentinel-2 / Landsat."""
+    regions = Region.objects.all()
+    region_id = request.GET.get('region')
+    district_id = request.GET.get('district')
+
+    districts = District.objects.none()
+    if region_id:
+        try:
+            districts = District.objects.filter(region_id=int(region_id)).order_by('name')
+        except (TypeError, ValueError):
+            pass
+
+    # Available years from raster scenes
+    current_year = date.today().year
+    data_years = (
+        SatelliteScene.objects
+        .filter(satellite__in=RASTER_SATELLITES)
+        .values_list('acquired_date__year', flat=True)
+        .distinct()
+        .order_by('-acquired_date__year')
+    )
+    years = sorted(set(list(data_years) + [current_year]), reverse=True)
+
+    return render(request, 'agrocosmos/raster_dashboard.html', {
+        'legacy_user': _get_legacy_user(request),
+        'regions': regions,
+        'districts': districts,
+        'region_id': region_id or '',
+        'district_id': district_id or '',
+        'years': years,
+        'active_page': 'raster',
     })
 
 
@@ -145,10 +193,11 @@ def api_farmlands(request: HttpRequest) -> JsonResponse:
         return JsonResponse({'type': 'FeatureCollection', 'features': []})
 
     # Get latest NDVI mean per farmland for coloring
+    source = request.GET.get('source')  # 'modis', 'raster', or empty
     latest_ndvi = {}
     ndvi_rows = (
         VegetationIndex.objects
-        .filter(farmland__in=qs, index_type='ndvi')
+        .filter(farmland__in=qs, index_type='ndvi', **_satellite_filter(source))
         .order_by('farmland_id', '-acquired_date')
         .distinct('farmland_id')
         .values('farmland_id', 'mean', 'acquired_date')
@@ -296,9 +345,11 @@ def api_farmland_ndvi(request: HttpRequest) -> JsonResponse:
     except (TypeError, ValueError):
         return JsonResponse({'ok': False, 'error': 'invalid farmland'}, status=400)
 
+    source = request.GET.get('source')  # 'modis', 'raster', or empty
     qs = VegetationIndex.objects.filter(
         farmland_id=fid, index_type='ndvi',
         mean__gte=-1, mean__lte=1,
+        **_satellite_filter(source),
     )
 
     year = request.GET.get('year')
@@ -367,6 +418,8 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
     date_to = request.GET.get('date_to')
     crop_types = request.GET.get('crop_types')  # comma-separated, e.g. 'arable,hayfield'
     fact_isp_filter = request.GET.get('fact_isp')  # 'used', 'unused', or empty for all
+    source = request.GET.get('source')  # 'modis', 'raster', or empty
+    sat_kw = _satellite_filter(source)
 
     # Base queryset
     fl_qs = Farmland.objects.filter(district__region_id=region_id)
@@ -418,6 +471,7 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
     vi_qs = VegetationIndex.objects.filter(
         farmland__in=fl_qs, index_type='ndvi',
         mean__gte=-1, mean__lte=1,          # exclude NaN / Inf
+        **sat_kw,
     )
     if year:
         try:
