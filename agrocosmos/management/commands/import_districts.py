@@ -22,6 +22,8 @@ class Command(BaseCommand):
         parser.add_argument('--code-field', default='CODE', help='Property field for district code')
         parser.add_argument('--encoding', default='utf-8', help='File encoding')
         parser.add_argument('--clear', action='store_true', help='Delete existing districts for this region')
+        parser.add_argument('--geom-only', action='store_true',
+                            help='Only update geometry of existing districts (do not create new, do not touch code)')
 
     def handle(self, *args, **options):
         source = options['source']
@@ -57,6 +59,9 @@ class Command(BaseCommand):
         features = data.get('features', [])
         created = updated = 0
 
+        geom_only = options.get('geom_only', False)
+        skipped = 0
+
         for feat in features:
             props = feat.get('properties', {})
             name = str(props.get(name_field, '')).strip()
@@ -69,17 +74,31 @@ class Command(BaseCommand):
             geom = GEOSGeometry(json.dumps(feat['geometry']), srid=4326)
             geom = self._to_multi(geom)
 
-            obj, is_new = District.objects.update_or_create(
-                region=region,
-                name=name,
-                defaults={'code': code, 'geom': geom},
-            )
-            if is_new:
-                created += 1
+            if geom_only:
+                try:
+                    dist = District.objects.get(region=region, name=name)
+                    dist.geom = geom
+                    dist.save(update_fields=['geom'])
+                    updated += 1
+                    self.stdout.write(f'  Updated geom: {name} (id={dist.pk})')
+                except District.DoesNotExist:
+                    skipped += 1
+                    self.stderr.write(f'  Not found, skipped: {name}')
             else:
-                updated += 1
+                obj, is_new = District.objects.update_or_create(
+                    region=region,
+                    name=name,
+                    defaults={'code': code, 'geom': geom},
+                )
+                if is_new:
+                    created += 1
+                else:
+                    updated += 1
 
-        self.stdout.write(self.style.SUCCESS(f'{region.name}: {created} created, {updated} updated'))
+        msg = f'{region.name}: {created} created, {updated} updated'
+        if skipped:
+            msg += f', {skipped} skipped (not found)'
+        self.stdout.write(self.style.SUCCESS(msg))
 
     def _import_shapefile(self, path, region, options):
         try:
