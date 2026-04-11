@@ -5,7 +5,7 @@ Uses computePixels() with:
 - Auto-tiling to fit 48 MB response limit (~12M pixels at float32)
 - concurrent.futures timeout to prevent indefinite hangs
 
-MAX_TILE_PX = 3000 → each tile ≈ 3000×3000 = 9M pixels ≈ 36 MB (< 48 MB).
+MAX_TILE_PX = 2000 → each tile ≈ 2000×2000 = 4M pixels ≈ 16 MB (< 48 MB).
 """
 import logging
 import math
@@ -16,8 +16,9 @@ import ee
 
 logger = logging.getLogger(__name__)
 
-MAX_TILE_PX = 3000
+MAX_TILE_PX = 2000    # 2000×2000 = 4M pixels × 4 = 16 MB (limit is 48 MB)
 DOWNLOAD_TIMEOUT = 300  # seconds per tile
+MAX_RESPONSE_BYTES = 50_331_648  # GEE computePixels hard limit
 
 
 def tile_extents(xmin, ymin, xmax, ymax, scale_deg, max_px=MAX_TILE_PX):
@@ -44,10 +45,10 @@ def tile_extents(xmin, ymin, xmax, ymax, scale_deg, max_px=MAX_TILE_PX):
             ty1 = min(ty0 + tile_h, ymax)
             tiles.append((tx0, ty0, tx1, ty1))
 
-    logger.info(
-        'Tiling: %d×%d px → %d×%d grid = %d tiles',
-        width_px, height_px, n_cols, n_rows, len(tiles),
-    )
+    msg = (f'Tiling: {width_px}×{height_px} px → '
+           f'{n_cols}×{n_rows} grid = {len(tiles)} tiles')
+    logger.info(msg)
+    print(f'    [tile] {msg}')  # ensure visible in management command stdout
     return tiles
 
 
@@ -68,6 +69,15 @@ def download_tile(composite, tx0, ty0, tx1, ty1, scale_deg,
 
     w = int((tx1 - tx0) / scale_deg) + 1
     h = int((ty1 - ty0) / scale_deg) + 1
+    est_bytes = w * h * 4  # float32
+    print(f'    [tile] downloading {w}×{h} = {w*h:,} px ({est_bytes/1e6:.1f} MB)')
+
+    if est_bytes > MAX_RESPONSE_BYTES:
+        raise GEEError(
+            f'Tile too large: {w}×{h} = {est_bytes/1e6:.1f} MB > '
+            f'{MAX_RESPONSE_BYTES/1e6:.1f} MB limit. '
+            f'This should not happen with tiling enabled.'
+        )
 
     params = {
         'expression': composite,
