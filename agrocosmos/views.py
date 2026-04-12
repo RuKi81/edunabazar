@@ -585,3 +585,56 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
             'usage_summary': usage_summary,
         },
     })
+
+
+# ── Raster tile endpoints ──────────────────────────────────────────
+
+def api_raster_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
+    """Serve NDVI pseudocolor PNG tile from a GeoTIFF composite.
+
+    Query params:
+        sensor: 's2' or 'l8'
+        scope: region/district scope ID, e.g. 'd1' or '37'
+        date: 'YYYY-MM-DD_YYYY-MM-DD'
+    """
+    from .services.raster_tiles import find_raster_path, render_tile
+
+    sensor = request.GET.get('sensor', 's2')
+    scope = request.GET.get('scope', '')
+    date_range = request.GET.get('date', '')
+
+    if not scope or not date_range:
+        return HttpResponse(b'', content_type='image/png', status=204)
+
+    tif_path = find_raster_path(sensor, scope, date_range)
+    if not tif_path:
+        return HttpResponse(b'', content_type='image/png', status=204)
+
+    png_bytes = render_tile(tif_path, z, x, y)
+    if not png_bytes:
+        return HttpResponse(b'', content_type='image/png', status=204)
+
+    resp = HttpResponse(png_bytes, content_type='image/png')
+    resp['Cache-Control'] = 'public, max-age=3600'
+    return resp
+
+
+def api_raster_composites(request: HttpRequest) -> JsonResponse:
+    """List available raster composites for a sensor/scope/year.
+
+    Query params:
+        sensor: 's2' or 'l8'
+        scope: region/district scope ID
+        year: '2025'
+    """
+    from .services.raster_tiles import list_available_composites
+
+    sensor = request.GET.get('sensor', 's2')
+    scope = request.GET.get('scope', '')
+    year = request.GET.get('year', '')
+
+    if not scope or not year:
+        return JsonResponse({'ok': False, 'error': 'scope and year required'}, status=400)
+
+    composites = list_available_composites(sensor, scope, year)
+    return JsonResponse({'ok': True, 'composites': composites})

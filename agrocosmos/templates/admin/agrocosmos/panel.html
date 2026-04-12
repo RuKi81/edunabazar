@@ -152,9 +152,9 @@
     </div>
   </div>
 
-  <!-- ═══ 3. Archive NDVI Download ═══ -->
+  <!-- ═══ 3. Archive NDVI Download (MODIS) ═══ -->
   <div class="agro-section">
-    <h2>📡 Загрузка архивных данных NDVI</h2>
+    <h2>📡 Загрузка архивных данных NDVI (MODIS)</h2>
     <div class="body">
       <form method="post" action="{% url 'admin:agro_run_archive' %}">
         {% csrf_token %}
@@ -176,13 +176,67 @@
               {% endfor %}
             </select>
           </div>
+          <div class="agro-field">
+            <label>Min valid, %</label>
+            <input type="number" name="min_valid" value="50" min="10" max="100" step="5" style="width:70px;">
+          </div>
           <div>
             <button type="submit" class="agro-btn agro-btn--green">Загрузить архив</button>
           </div>
         </div>
         <div class="agro-hint">
-          Скачает MODIS NDVI растры за выбранный год и рассчитает зональную статистику.
+          Скачает MODIS NDVI растры (250м, 16‑дневные композиты) за выбранный год и рассчитает зональную статистику.
+          Min valid — мин. доля валидных пикселей в угодье (по умолчанию 50% для MODIS).
           Процесс ~20 мин в фоне.
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ═══ 3b. Raster NDVI Download (S2 + L8) ═══ -->
+  <div class="agro-section">
+    <h2>🛰️ Загрузка NDVI (Sentinel-2 + Landsat)</h2>
+    <div class="body">
+      <form method="post" action="{% url 'admin:agro_run_raster' %}">
+        {% csrf_token %}
+        <div class="agro-row">
+          <div class="agro-field">
+            <label>Регион</label>
+            <select name="region_id" id="raster-region" required>
+              <option value="">— Выберите —</option>
+              {% for r in regions %}
+                <option value="{{ r.id }}">{{ r.name }} {% if r.farmland_count %}({{ r.farmland_count }} угодий){% endif %}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="agro-field">
+            <label>Район (опц.)</label>
+            <select name="district_id" id="raster-district">
+              <option value="">— Весь регион —</option>
+              {% for d in districts %}
+                <option value="{{ d.id }}" data-region="{{ d.region_id }}">{{ d.name }} ({{ d.region.name }})</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="agro-field">
+            <label>Год</label>
+            <select name="year" required>
+              {% for y in years %}
+                <option value="{{ y }}">{{ y }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="agro-field">
+            <label>Min valid, %</label>
+            <input type="number" name="min_valid" value="70" min="10" max="100" step="5" style="width:70px;">
+          </div>
+          <div>
+            <button type="submit" class="agro-btn" style="background:#1565C0;">Загрузить S2+L8</button>
+          </div>
+        </div>
+        <div class="agro-hint">
+          Скачает S2 (10м, 5‑дн.) и L8/9 (30м, 16‑дн.) композиты и рассчитает статистику.<br>
+          Рекомендуется выбрать район для ускорения. S2 весь регион ~3—6ч, район ~1—2ч.
         </div>
       </form>
     </div>
@@ -325,5 +379,32 @@
     setTimeout(function() { location.reload(); }, 15000);
   }
 })();
+
+// Filter district dropdown by selected region
+(function() {
+  var regionSel = document.getElementById('raster-region');
+  var districtSel = document.getElementById('raster-district');
+  if (!regionSel || !districtSel) return;
+  var allOpts = Array.from(districtSel.options);
+
+  regionSel.addEventListener('change', function() {
+    var rid = this.value;
+    districtSel.innerHTML = '';
+    allOpts.forEach(function(opt) {
+      if (!opt.value || opt.getAttribute('data-region') === rid) {
+        districtSel.appendChild(opt.cloneNode(true));
+      }
+    });
+  });
+  // Trigger initial filter
+  regionSel.dispatchEvent(new Event('change'));
+})();
+
+// Convert min_valid from % to ratio (0-1) on form submit
+document.querySelectorAll('input[name="min_valid"]').forEach(function(input) {
+  input.closest('form').addEventListener('submit', function() {
+    input.value = (parseFloat(input.value) / 100).toFixed(2);
+  });
+});
 </script>
 {% endblock %}

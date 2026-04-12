@@ -213,7 +213,8 @@ class PipelineRun(models.Model):
     class TaskType(models.TextChoices):
         UPLOAD_REGION = 'upload_region', 'Загрузка региона'
         UPLOAD_FARMLANDS = 'upload_farmlands', 'Загрузка угодий'
-        ARCHIVE_NDVI = 'archive_ndvi', 'Архивные данные NDVI'
+        ARCHIVE_NDVI = 'archive_ndvi', 'Архивные данные NDVI (MODIS)'
+        RASTER_NDVI = 'raster_ndvi', 'Растровые данные NDVI (S2/L8)'
         MONITORING = 'monitoring', 'Мониторинг NDVI'
 
     class Status(models.TextChoices):

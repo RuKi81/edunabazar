@@ -277,11 +277,35 @@
           <span style="font-size:11px;"><i class="material-icons" style="font-size:14px; vertical-align:-2px; color:#1565C0;">border_style</i> Границы региона</span>
         </label>
       </div>
-      <div class="agro-cb-row" style="margin-bottom:8px;">
+      <div class="agro-cb-row" style="margin-bottom:2px;">
         <label>
           <input type="checkbox" id="agro-toggle-farmlands" />
           <span style="font-size:11px;"><i class="material-icons" style="font-size:14px; vertical-align:-2px; color:#43A047;">layers</i> Границы угодий</span>
         </label>
+      </div>
+      <div class="agro-cb-row" style="margin-bottom:8px;">
+        <label>
+          <input type="checkbox" id="agro-toggle-raster" />
+          <span style="font-size:11px;"><i class="material-icons" style="font-size:14px; vertical-align:-2px; color:#8E24AA;">grid_on</i> NDVI растр (псевдоцвет)</span>
+        </label>
+      </div>
+
+      <!-- Raster overlay controls -->
+      <div id="raster-controls" style="display:none; margin-bottom:10px; padding:8px; background:rgba(142,36,170,.06); border-radius:4px;">
+        <div style="display:flex; gap:6px; margin-bottom:6px;">
+          <select id="raster-sensor" class="browser-default" style="flex:1; height:28px; font-size:11px;">
+            <option value="s2">Sentinel-2 (10м)</option>
+            <option value="l8">Landsat 8/9 (30м)</option>
+          </select>
+        </div>
+        <select id="raster-date" class="browser-default" style="width:100%; height:28px; font-size:11px;">
+          <option value="">— Выберите композит —</option>
+        </select>
+        <div style="font-size:10px; color:#888; margin-top:4px;" id="raster-info"></div>
+        <div style="margin-top:6px;">
+          <label style="font-size:10px; color:#555;">Прозрачность</label>
+          <input type="range" id="raster-opacity" min="10" max="100" value="70" style="width:100%;">
+        </div>
       </div>
 
       <div style="margin-top: 8px;">
@@ -290,13 +314,26 @@
       </div>
 
       <div class="agro-legend" style="margin-top:8px;">
-        <span style="font-weight:700; color:#555;">NDVI (S2/L8)</span>
+        <span style="font-weight:700; color:#555;">NDVI угодий</span>
         <span><i style="background:#4CAF50;"></i> ≥ 0.6</span>
         <span><i style="background:#8BC34A;"></i> 0.4–0.6</span>
         <span><i style="background:#FFC107;"></i> 0.2–0.4</span>
         <span><i style="background:#FF9800;"></i> 0.1–0.2</span>
         <span><i style="background:#F44336;"></i> &lt; 0.1</span>
         <span><i style="background:#9E9E9E;"></i> Нет данных</span>
+      </div>
+      <div class="agro-legend" id="raster-legend" style="margin-top:6px; display:none;">
+        <span style="font-weight:700; color:#555;">NDVI растр</span>
+        <span><i style="background:#006837;"></i> 0.9–1.0</span>
+        <span><i style="background:#1a9850;"></i> 0.8–0.9</span>
+        <span><i style="background:#66bd63;"></i> 0.7–0.8</span>
+        <span><i style="background:#a6d96a;"></i> 0.6–0.7</span>
+        <span><i style="background:#d9ef8b;"></i> 0.5–0.6</span>
+        <span><i style="background:#fee08b;"></i> 0.4–0.5</span>
+        <span><i style="background:#fdae61;"></i> 0.3–0.4</span>
+        <span><i style="background:#f46d43;"></i> 0.2–0.3</span>
+        <span><i style="background:#d73027;"></i> 0.1–0.2</span>
+        <span><i style="background:#a50026;"></i> 0.0–0.1</span>
       </div>
     </div>
 
@@ -794,6 +831,117 @@
           }
         });
       });
+    });
+
+    /* ── NDVI raster overlay ─────────────────────── */
+    var rasterTileLayer = null;
+    var rasterToggle = document.getElementById('agro-toggle-raster');
+    var rasterControls = document.getElementById('raster-controls');
+    var rasterSensorSel = document.getElementById('raster-sensor');
+    var rasterDateSel = document.getElementById('raster-date');
+    var rasterOpacity = document.getElementById('raster-opacity');
+    var rasterInfo = document.getElementById('raster-info');
+    var rasterLegend = document.getElementById('raster-legend');
+
+    function getRasterScope() {
+      var districtId = districtSel.value;
+      return districtId ? 'd' + districtId : regionSel.value;
+    }
+
+    function loadRasterComposites() {
+      var sensor = rasterSensorSel.value;
+      var scope = getRasterScope();
+      var years = getSelectedYears();
+      if (!scope || !years.length) return;
+
+      rasterDateSel.innerHTML = '<option value="">Загрузка…</option>';
+      rasterInfo.textContent = '';
+
+      // Load composites for all selected years
+      var allComposites = [];
+      var promises = years.map(function (yr) {
+        return fetch('/agrocosmos/api/raster-composites/?sensor=' + sensor + '&scope=' + scope + '&year=' + yr)
+          .then(function (r) { return r.json(); })
+          .then(function (resp) {
+            if (resp.ok && resp.composites) {
+              resp.composites.forEach(function (c) { allComposites.push(c); });
+            }
+          }).catch(function () {});
+      });
+
+      Promise.all(promises).then(function () {
+        rasterDateSel.innerHTML = '<option value="">— Выберите композит —</option>';
+        if (!allComposites.length) {
+          rasterInfo.textContent = 'Нет растров для выбранного сенсора/района/года.';
+          removeRasterLayer();
+          return;
+        }
+        allComposites.sort(function (a, b) { return a.date_from.localeCompare(b.date_from); });
+        allComposites.forEach(function (c) {
+          var opt = document.createElement('option');
+          opt.value = c.date_from + '_' + c.date_to;
+          opt.textContent = c.date_from + ' — ' + c.date_to + ' (' + c.size_mb + ' MB)';
+          rasterDateSel.appendChild(opt);
+        });
+        rasterInfo.textContent = allComposites.length + ' композитов доступно';
+        // Auto-select the latest
+        rasterDateSel.selectedIndex = rasterDateSel.options.length - 1;
+        rasterDateSel.dispatchEvent(new Event('change'));
+      });
+    }
+
+    function addRasterLayer() {
+      removeRasterLayer();
+      var sensor = rasterSensorSel.value;
+      var scope = getRasterScope();
+      var dateRange = rasterDateSel.value;
+      if (!scope || !dateRange) return;
+
+      var opacity = parseInt(rasterOpacity.value) / 100;
+
+      rasterTileLayer = L.tileLayer(
+        '/agrocosmos/api/raster-tile/{z}/{x}/{y}.png?sensor=' + sensor + '&scope=' + scope + '&date=' + dateRange,
+        { opacity: opacity, maxZoom: 18, tileSize: 256, zIndex: 500 }
+      ).addTo(map);
+      rasterLegend.style.display = '';
+    }
+
+    function removeRasterLayer() {
+      if (rasterTileLayer) { map.removeLayer(rasterTileLayer); rasterTileLayer = null; }
+      rasterLegend.style.display = 'none';
+    }
+
+    rasterToggle.addEventListener('change', function () {
+      if (this.checked) {
+        var scope = getRasterScope();
+        if (!scope) { this.checked = false; return; }
+        rasterControls.style.display = '';
+        loadRasterComposites();
+      } else {
+        rasterControls.style.display = 'none';
+        removeRasterLayer();
+      }
+    });
+
+    rasterSensorSel.addEventListener('change', function () {
+      if (rasterToggle.checked) loadRasterComposites();
+    });
+
+    rasterDateSel.addEventListener('change', function () {
+      if (rasterToggle.checked && this.value) addRasterLayer();
+      else removeRasterLayer();
+    });
+
+    rasterOpacity.addEventListener('input', function () {
+      if (rasterTileLayer) rasterTileLayer.setOpacity(parseInt(this.value) / 100);
+    });
+
+    // Reload composites when district/year changes
+    districtSel.addEventListener('change', function () {
+      if (rasterToggle.checked) loadRasterComposites();
+    });
+    yearDropdown.addEventListener('change', function () {
+      if (rasterToggle.checked) loadRasterComposites();
     });
 
     /* ── Auto-trigger ──────────────────────────── */
