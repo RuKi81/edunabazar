@@ -90,22 +90,36 @@ def render_tile(tif_path: str, z: int, x: int, y: int) -> bytes | None:
     try:
         with rasterio.open(tif_path) as ds:
             # Check if tile intersects raster
-            r_bounds = ds.bounds
-            if (tile_xmax <= r_bounds.left or tile_xmin >= r_bounds.right or
-                    tile_ymax <= r_bounds.bottom or tile_ymin >= r_bounds.top):
+            rb = ds.bounds
+            if (tile_xmax <= rb.left or tile_xmin >= rb.right or
+                    tile_ymax <= rb.bottom or tile_ymin >= rb.top):
                 return None
 
-            # Read the raster window that covers the tile
-            window = from_bounds(
-                tile_xmin, tile_ymin, tile_xmax, tile_ymax,
-                transform=ds.transform,
-            )
+            # Clip tile bounds to raster bounds (intersection)
+            ix_min = max(tile_xmin, rb.left)
+            iy_min = max(tile_ymin, rb.bottom)
+            ix_max = min(tile_xmax, rb.right)
+            iy_max = min(tile_ymax, rb.top)
 
-            # Read data at native resolution, then resize
+            # Read only the intersecting window from the raster
+            window = from_bounds(ix_min, iy_min, ix_max, iy_max, transform=ds.transform)
+
+            # Determine how many pixels this intersection occupies in the 256px tile
+            tile_w = tile_xmax - tile_xmin
+            tile_h = tile_ymax - tile_ymin
+            px_left = int(round((ix_min - tile_xmin) / tile_w * TILE_SIZE))
+            px_top = int(round((tile_ymax - iy_max) / tile_h * TILE_SIZE))
+            px_right = int(round((ix_max - tile_xmin) / tile_w * TILE_SIZE))
+            px_bottom = int(round((tile_ymax - iy_min) / tile_h * TILE_SIZE))
+
+            read_w = max(px_right - px_left, 1)
+            read_h = max(px_bottom - px_top, 1)
+
             data = ds.read(
                 1, window=window,
-                out_shape=(TILE_SIZE, TILE_SIZE),
+                out_shape=(read_h, read_w),
                 resampling=rasterio.enums.Resampling.bilinear,
+                boundless=True,
             )
             nodata = ds.nodata
 
@@ -127,10 +141,14 @@ def render_tile(tif_path: str, z: int, x: int, y: int) -> bytes | None:
     indices = (clipped * 255).astype(np.uint8)
     indices[~valid] = 0  # transparent
 
-    # Apply LUT
-    rgba = _LUT[indices]  # shape: (256, 256, 4)
+    # Apply LUT to the read portion
+    rgba_part = _LUT[indices]  # shape: (read_h, read_w, 4)
 
-    img = Image.fromarray(rgba, 'RGBA')
+    # Place into full transparent 256×256 tile
+    tile_rgba = np.zeros((TILE_SIZE, TILE_SIZE, 4), dtype=np.uint8)
+    tile_rgba[px_top:px_top + read_h, px_left:px_left + read_w] = rgba_part
+
+    img = Image.fromarray(tile_rgba, 'RGBA')
     buf = io.BytesIO()
     img.save(buf, format='PNG', optimize=True)
     return buf.getvalue()
