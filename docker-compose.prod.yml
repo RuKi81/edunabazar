@@ -26,6 +26,8 @@ services:
       - ./media:/app/media
       - static_files:/app/staticfiles
       - modis_data:/data/modis
+      - s2_data:/data/s2
+      - landsat_data:/data/landsat
       - ./gee-key.json:/app/gee-key.json:ro
     expose:
       - "8000"
@@ -65,3 +67,5 @@ volumes:
   static_files:
   redis_data:
   modis_data:
+  s2_data:
+  landsat_data:
