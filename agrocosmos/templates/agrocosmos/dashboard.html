@@ -379,8 +379,8 @@
     }).addTo(map);
 
     var satLayer = L.tileLayer(
-      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      { maxZoom: 19, attribution: '&copy; Esri', pane: 'basemapPane' }
+      'https://mt{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+      { maxZoom: 20, subdomains: '0123', attribution: '&copy; Google', pane: 'basemapPane' }
     );
 
     var hybridLabels = L.tileLayer(
@@ -389,8 +389,8 @@
     );
 
     var satLayerHybrid = L.tileLayer(
-      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      { maxZoom: 19, attribution: '&copy; Esri', pane: 'basemapPane' }
+      'https://mt{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+      { maxZoom: 20, subdomains: '0123', attribution: '&copy; Google', pane: 'basemapPane' }
     );
 
     var _activeBase = 'map';
