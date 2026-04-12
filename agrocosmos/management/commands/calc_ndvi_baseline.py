@@ -36,7 +36,7 @@ class Command(BaseCommand):
         self.stdout.write(f'Current year excluded: {current_year}')
 
         # ── Build per-district, per-doy, per-crop_type aggregation ──
-        where = "vi.acquired_date < %s AND vi.mean BETWEEN -1 AND 1"
+        where = "vi.acquired_date < %s AND vi.mean BETWEEN -0.2 AND 1 AND vi.is_anomaly = false"
         params = [date(current_year, 1, 1)]
 
         if region_id:
@@ -49,6 +49,7 @@ class Command(BaseCommand):
                 EXTRACT(doy FROM vi.acquired_date)::int AS doy,
                 ''::varchar                             AS crop_type,
                 AVG(vi.mean)                            AS mean_ndvi,
+                COALESCE(STDDEV_POP(vi.mean), 0)         AS std_ndvi,
                 COUNT(DISTINCT EXTRACT(year FROM vi.acquired_date))::int AS years_count
             FROM agro_vegetation_index vi
             JOIN agro_farmland f ON f.id = vi.farmland_id
@@ -63,6 +64,7 @@ class Command(BaseCommand):
                 EXTRACT(doy FROM vi.acquired_date)::int AS doy,
                 f.crop_type,
                 AVG(vi.mean)                            AS mean_ndvi,
+                COALESCE(STDDEV_POP(vi.mean), 0)         AS std_ndvi,
                 COUNT(DISTINCT EXTRACT(year FROM vi.acquired_date))::int AS years_count
             FROM agro_vegetation_index vi
             JOIN agro_farmland f ON f.id = vi.farmland_id
@@ -80,7 +82,7 @@ class Command(BaseCommand):
         if dry_run:
             for r in rows[:20]:
                 self.stdout.write(f'  district={r[0]} doy={r[1]} crop={r[2]!r} '
-                                  f'ndvi={r[3]:.4f} years={r[4]}')
+                                  f'ndvi={r[3]:.4f} std={r[4]:.4f} years={r[5]}')
             if len(rows) > 20:
                 self.stdout.write(f'  ... and {len(rows) - 20} more')
             return
@@ -92,16 +94,17 @@ class Command(BaseCommand):
         # ── Upsert into agro_ndvi_baseline ──
         upsert_sql = """
             INSERT INTO agro_ndvi_baseline
-                (district_id, day_of_year, crop_type, mean_ndvi, years_count, updated_at)
-            VALUES (%s, %s, %s, %s, %s, NOW())
+                (district_id, day_of_year, crop_type, mean_ndvi, std_ndvi, years_count, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (district_id, day_of_year, crop_type)
             DO UPDATE SET
                 mean_ndvi   = EXCLUDED.mean_ndvi,
+                std_ndvi    = EXCLUDED.std_ndvi,
                 years_count = EXCLUDED.years_count,
                 updated_at  = NOW()
         """
 
-        batch = [(r[0], r[1], r[2], round(r[3], 6), r[4]) for r in rows]
+        batch = [(r[0], r[1], r[2], round(r[3], 6), round(r[4], 6), r[5]) for r in rows]
 
         with connection.cursor() as cur:
             cur.executemany(upsert_sql, batch)
