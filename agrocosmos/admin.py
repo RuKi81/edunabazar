@@ -8,8 +8,8 @@ from django.utils import timezone
 from django.utils.html import format_html
 
 from .models import (
-    Region, District, Farmland, SatelliteScene, VegetationIndex,
-    MonitoringTask, PipelineRun,
+    District, Farmland, MonitoringTask, PipelineRun,
+    Region, SatelliteScene, VegetationIndex,
 )
 
 import logging
@@ -130,6 +130,9 @@ class AgrocosmosAdminSite:
             path('agrocosmos/run-archive/',
                  admin.site.admin_view(run_archive_view),
                  name='agro_run_archive'),
+            path('agrocosmos/run-raster/',
+                 admin.site.admin_view(run_raster_view),
+                 name='agro_run_raster'),
             path('agrocosmos/start-monitoring/',
                  admin.site.admin_view(start_monitoring_view),
                  name='agro_start_monitoring'),
@@ -156,6 +159,7 @@ def agro_panel_view(request):
     regions = Region.objects.annotate(
         farmland_count=Count('districts__farmlands'),
     )
+    districts = District.objects.select_related('region').order_by('region__name', 'name')
     tasks = MonitoringTask.objects.select_related('region').all()[:20]
     pipeline_runs = PipelineRun.objects.select_related('region').all()[:30]
     current_year = date.today().year
@@ -165,6 +169,7 @@ def agro_panel_view(request):
         **admin.site.each_context(request),
         'title': 'Агрокосмос — Управление',
         'regions': regions,
+        'districts': districts,
         'tasks': tasks,
         'pipeline_runs': pipeline_runs,
         'years': years,
@@ -262,7 +267,7 @@ def upload_farmlands_view(request):
     return redirect('admin:agro_panel')
 
 
-def _run_modis_bg(region_id, year, run_id=None):
+def _run_modis_bg(region_id, year, run_id=None, min_valid=0.5):
     """Run modis_ndvi command in background thread."""
     try:
         from django.core.management import call_command
@@ -272,6 +277,7 @@ def _run_modis_bg(region_id, year, run_id=None):
             'modis_ndvi',
             region_id=region_id,
             year=year,
+            min_valid_ratio=min_valid,
             stdout=out,
             stderr=out,
         )
@@ -360,19 +366,131 @@ def run_archive_view(request):
         description=f'{region.name}, {year} год',
     )
 
+    min_valid = float(request.POST.get('min_valid', 0.5))
+
     t = threading.Thread(
         target=_run_modis_bg,
-        args=(int(region_id), year, run.pk),
+        args=(int(region_id), year, run.pk, min_valid),
         daemon=True,
     )
     t.start()
 
     messages.success(
         request,
-        f'Загрузка архивных данных NDVI запущена: {region.name}, {year}. '
-        f'Процесс выполняется в фоне (~20 мин).'
+        f'Загрузка архивных данных NDVI запущена: {region.name}, {year} '
+        f'(min_valid={min_valid:.0%}). Процесс выполняется в фоне (~20 мин).'
     )
     return redirect('admin:agro_panel')
+
+
+def _run_raster_bg(region_id, year, run_id=None, district_id=None, min_valid=0.7):
+    """Run fetch_raster_ndvi for S2 + L8 in background thread."""
+    try:
+        from django.core.management import call_command
+        from io import StringIO
+
+        total_records = 0
+        all_log = ''
+
+        for sensor in ('s2', 'l8'):
+            out = StringIO()
+            kwargs = {
+                'sensor': sensor,
+                'year': year,
+                'min_valid_ratio': min_valid,
+                'stdout': out,
+                'stderr': out,
+            }
+            if district_id:
+                kwargs['district_id'] = district_id
+            else:
+                kwargs['region_id'] = region_id
+
+            call_command('fetch_raster_ndvi', **kwargs)
+            log_text = out.getvalue()
+            all_log += f'\n=== {sensor.upper()} ===\n{log_text}'
+
+            for line in log_text.splitlines():
+                if 'records saved' in line.lower():
+                    try:
+                        n = int(''.join(c for c in line.split('records saved')[0].split()[-1] if c.isdigit()))
+                        total_records += n
+                    except (ValueError, IndexError):
+                        pass
+
+        logger.info('raster_ndvi done: region=%s year=%s records=%d', region_id, year, total_records)
+
+        if run_id:
+            try:
+                run = PipelineRun.objects.get(pk=run_id)
+                run.status = 'completed'
+                run.log = all_log[-8000:]
+                run.records_count = total_records
+                run.finished_at = timezone.now()
+                run.save()
+            except PipelineRun.DoesNotExist:
+                pass
+    except Exception as e:
+        logger.error('raster_ndvi error: %s', e)
+        if run_id:
+            try:
+                run = PipelineRun.objects.get(pk=run_id)
+                run.status = 'failed'
+                run.log = str(e)
+                run.finished_at = timezone.now()
+                run.save()
+            except PipelineRun.DoesNotExist:
+                pass
+
+
+def run_raster_view(request):
+    """Trigger S2+L8 NDVI download for a region/district + year."""
+    if request.method != 'POST':
+        return redirect('admin:agro_panel')
+
+    region_id = request.POST.get('region_id')
+    district_id = request.POST.get('district_id')
+    year = request.POST.get('year')
+    min_valid = float(request.POST.get('min_valid', 0.7))
+
+    if not region_id or not year:
+        messages.error(request, 'Укажите регион и год')
+        return redirect('admin:agro_panel')
+
+    region = Region.objects.get(pk=int(region_id))
+    year = int(year)
+
+    district_name = ''
+    did = None
+    if district_id:
+        try:
+            did = int(district_id)
+            d = District.objects.get(pk=did)
+            district_name = f', {d.name}'
+        except (TypeError, ValueError, District.DoesNotExist):
+            did = None
+
+    run = PipelineRun.objects.create(
+        task_type='raster_ndvi',
+        region=region,
+        year=year,
+        description=f'{region.name}{district_name}, {year} год (S2+L8, valid≥{min_valid:.0%})',
+    )
+
+    t = threading.Thread(
+        target=_run_raster_bg,
+        args=(int(region_id), year, run.pk, did, min_valid),
+        daemon=True,
+    )
+    t.start()
+
+    messages.success(
+        request,
+        f'Загрузка S2+L8 NDVI запущена: {region.name}{district_name}, {year} '
+        f'(min_valid={min_valid:.0%}). Процесс в фоне (~1-3 ч для S2).'
+    )
+    return redirect('admin:agro_panel')
+
 
 
 def start_monitoring_view(request):
