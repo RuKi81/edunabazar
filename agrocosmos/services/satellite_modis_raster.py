@@ -106,11 +106,19 @@ def download_composite(region_geom_extent, region_id, date_from, date_to,
             return None
 
         # Quality-filter + scale NDVI
+        # SummaryQA: 0=good, 1=marginal, 2=snow/ice, 3=cloudy
+        # DetailedQA bits 0-1: VI quality (00=highest, 01=good)
+        # DetailedQA bits 6-7: Aerosol quantity (00=low, 01=avg, 11=high)
         def _process(image):
             ndvi = image.select('NDVI').multiply(0.0001).rename('NDVI')
             qa = image.select('SummaryQA')
             good = qa.lte(1)  # 0=good, 1=marginal
-            return ndvi.updateMask(good)
+            # Additional: reject high aerosol via DetailedQA
+            dqa = image.select('DetailedQA')
+            vi_quality = dqa.bitwiseAnd(3)       # bits 0-1
+            aerosol = dqa.rightShift(6).bitwiseAnd(3)  # bits 6-7
+            strict = good.And(vi_quality.lte(1)).And(aerosol.neq(3))
+            return ndvi.updateMask(strict)
 
         ndvi_col = modis.map(_process)
 

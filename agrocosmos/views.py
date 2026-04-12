@@ -7,7 +7,7 @@ from django.shortcuts import render
 from django.contrib.gis.db.models.functions import AsGeoJSON
 from datetime import date, timedelta
 
-from django.db.models import Count, Sum, Avg, Q, Value, CharField
+from django.db.models import Count, Sum, Avg, F, Q, Value, CharField, Case, When, FloatField
 from django.db.models.functions import Coalesce
 from django.db.models.fields.json import KeyTextTransform
 from django.views.decorators.cache import cache_page
@@ -470,7 +470,8 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
 
     vi_qs = VegetationIndex.objects.filter(
         farmland__in=fl_qs, index_type='ndvi',
-        mean__gte=-1, mean__lte=1,          # exclude NaN / Inf
+        mean__gte=-0.2, mean__lte=1,         # physical NDVI range
+        is_anomaly=False,                     # exclude detected spikes
         **sat_kw,
     )
     if year:
@@ -485,48 +486,59 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
 
     crop_labels = dict(Farmland.CropType.choices)
 
-    # Stats by crop type (average of all periods)
+    # Stats by crop type (area-weighted average of all periods)
     by_crop = (
         vi_qs
         .values('farmland__crop_type')
         .annotate(
             count=Count('farmland_id', distinct=True),
-            mean_ndvi=Avg('mean'),
+            _sum_ndvi_area=Sum(F('mean') * F('farmland__area_ha')),
+            _sum_area=Sum('farmland__area_ha'),
         )
-        .order_by('-mean_ndvi')
+        .order_by('farmland__crop_type')
     )
     by_crop_list = []
     for row in by_crop:
         ct = row['farmland__crop_type']
+        s_area = row['_sum_area'] or 0
+        weighted = (row['_sum_ndvi_area'] / s_area) if s_area else None
         by_crop_list.append({
             'crop_type': ct,
             'label': crop_labels.get(ct, ct),
             'count': row['count'],
-            'mean_ndvi': _safe_round(row['mean_ndvi']),
+            'mean_ndvi': _safe_round(weighted),
         })
+    by_crop_list.sort(key=lambda r: r['mean_ndvi'] or 0, reverse=True)
 
-    # Stats by period (time series, aggregated across all farmlands)
+    # Stats by period (time series, area-weighted across all farmlands)
     by_period = (
         vi_qs
         .values('acquired_date')
         .annotate(
-            mean_ndvi=Avg('mean'),
+            _sum_ndvi_area=Sum(F('mean') * F('farmland__area_ha')),
+            _sum_area=Sum('farmland__area_ha'),
             count=Count('id'),
         )
         .order_by('acquired_date')
     )
     by_period_list = []
     for row in by_period:
+        s_area = row['_sum_area'] or 0
+        weighted = (row['_sum_ndvi_area'] / s_area) if s_area else None
         by_period_list.append({
             'date': str(row['acquired_date']),
-            'mean_ndvi': _safe_round(row['mean_ndvi']),
+            'mean_ndvi': _safe_round(weighted),
             'count': row['count'],
         })
 
-    # Summary
+    # Summary (area-weighted)
     total_fl = fl_qs.count()
     with_ndvi = vi_qs.values('farmland_id').distinct().count()
-    avg = vi_qs.aggregate(avg=Avg('mean'))['avg']
+    _agg = vi_qs.aggregate(
+        _s=Sum(F('mean') * F('farmland__area_ha')),
+        _a=Sum('farmland__area_ha'),
+    )
+    avg = (_agg['_s'] / _agg['_a']) if _agg['_a'] else None
 
     # Farmland summary by crop type
     fl_summary_list = []
@@ -553,10 +565,11 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
     baseline_agg = (
         baseline_qs
         .values('day_of_year')
-        .annotate(mean_ndvi=Avg('mean_ndvi'))
+        .annotate(mean_ndvi=Avg('mean_ndvi'), std_ndvi=Avg('std_ndvi'))
         .order_by('day_of_year')
     )
     baseline_list = []
+    baseline_lookup = {}  # doy → (mean, std) for z-score
     for row in baseline_agg:
         doy = row['day_of_year']
         # Convert day-of-year to MM-DD
@@ -565,10 +578,27 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
             mm_dd = d.strftime('%m-%d')
         except Exception:
             mm_dd = f'{doy:03d}'
+        bl_mean = row['mean_ndvi'] or 0
+        bl_std = row['std_ndvi'] or 0
         baseline_list.append({
             'date': mm_dd,
-            'mean_ndvi': _safe_round(row['mean_ndvi']),
+            'mean_ndvi': _safe_round(bl_mean),
+            'std_ndvi': _safe_round(bl_std),
         })
+        baseline_lookup[doy] = (bl_mean, bl_std)
+
+    # Enrich by_period with z-score relative to baseline
+    for item in by_period_list:
+        try:
+            d = date.fromisoformat(item['date'])
+            doy = d.timetuple().tm_yday
+            bl_mean, bl_std = baseline_lookup.get(doy, (None, None))
+            if bl_mean is not None and bl_std and bl_std > 0.01 and item['mean_ndvi'] is not None:
+                item['z_score'] = _safe_round((item['mean_ndvi'] - bl_mean) / bl_std)
+            else:
+                item['z_score'] = None
+        except Exception:
+            item['z_score'] = None
 
     return JsonResponse({
         'ok': True,

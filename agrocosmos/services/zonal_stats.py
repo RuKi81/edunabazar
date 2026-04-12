@@ -110,11 +110,13 @@ def compute_zonal_stats(tif_path, farmland_geometries, min_valid_ratio=0.5,
             transform = ds.transform
             nodata = ds.nodata
 
-        # Build valid mask
+        # Build valid mask (nodata + physical NDVI range)
         if nodata is not None and not np.isnan(nodata):
             valid_mask = ndvi != nodata
         else:
             valid_mask = ~np.isnan(ndvi)
+        # Reject physically impossible values
+        valid_mask &= (ndvi >= -0.2) & (ndvi <= 1.0)
 
         total_fl = len(farmland_geometries)
         results = {}

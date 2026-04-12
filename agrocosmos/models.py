@@ -125,6 +125,9 @@ class VegetationIndex(models.Model):
     pixel_count = models.IntegerField(default=0, verbose_name='Кол-во пикселей')
     valid_pixel_count = models.IntegerField(default=0, verbose_name='Валидных пикселей')
 
+    is_anomaly = models.BooleanField(default=False, verbose_name='Аномалия (выброс)')
+    mean_smooth = models.FloatField(null=True, blank=True, verbose_name='NDVI сглаженное')
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -140,6 +143,40 @@ class VegetationIndex(models.Model):
 
     def __str__(self):
         return f'{self.index_type.upper()} {self.acquired_date} → {self.mean:.3f}'
+
+
+class FarmlandPhenology(models.Model):
+    """Фенологические метрики по угодью на сезон (из сглаженного ряда NDVI)."""
+
+    class Source(models.TextChoices):
+        MODIS = 'modis', 'MODIS'
+        RASTER = 'raster', 'S2/L8'
+
+    farmland = models.ForeignKey(Farmland, on_delete=models.CASCADE, related_name='phenology')
+    year = models.IntegerField(verbose_name='Год')
+    source = models.CharField(max_length=10, choices=Source.choices, default=Source.MODIS, verbose_name='Источник')
+
+    sos_date = models.DateField(null=True, blank=True, verbose_name='Начало сезона (SOS)')
+    eos_date = models.DateField(null=True, blank=True, verbose_name='Конец сезона (EOS)')
+    pos_date = models.DateField(null=True, blank=True, verbose_name='Пик сезона (POS)')
+    max_ndvi = models.FloatField(null=True, blank=True, verbose_name='Макс. NDVI')
+    los_days = models.IntegerField(null=True, blank=True, verbose_name='Длит. сезона (дней)')
+    total_ndvi = models.FloatField(null=True, blank=True, verbose_name='Интеграл NDVI (TI)')
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'agro_farmland_phenology'
+        ordering = ['-year']
+        verbose_name = 'Фенология угодья'
+        verbose_name_plural = 'Фенология угодий'
+        unique_together = [('farmland', 'year', 'source')]
+        indexes = [
+            models.Index(fields=['farmland', 'year']),
+        ]
+
+    def __str__(self):
+        return f'Phenology {self.farmland_id} {self.year} ({self.source})'
 
 
 class MonitoringTask(models.Model):
@@ -185,6 +222,7 @@ class NdviBaseline(models.Model):
     district = models.ForeignKey(District, on_delete=models.CASCADE, related_name='ndvi_baselines')
     day_of_year = models.SmallIntegerField(verbose_name='День года (1‑366)')
     mean_ndvi = models.FloatField(verbose_name='Среднее NDVI')
+    std_ndvi = models.FloatField(default=0, verbose_name='Ст. отклонение NDVI')
     years_count = models.SmallIntegerField(default=0, verbose_name='Кол-во лет')
     crop_type = models.CharField(
         max_length=20,
