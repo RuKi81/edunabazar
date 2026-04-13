@@ -13,9 +13,13 @@ Usage:
     python manage.py ndvi_postprocess --region-id 37 --year 2024 --source raster
     python manage.py ndvi_postprocess --region-id 37  # all years
 """
+import time
+from itertools import groupby
+from operator import itemgetter
+
 import numpy as np
 from django.core.management.base import BaseCommand
-from django.db.models import Q
+from django.db import connection
 
 from agrocosmos.models import Farmland, VegetationIndex
 
@@ -30,7 +34,52 @@ SG_POLYORDER = 3
 MODIS_SATELLITES = ('modis_terra', 'modis_aqua')
 RASTER_SATELLITES = ('sentinel2', 'landsat8', 'landsat9')
 
-BATCH_SIZE = 500        # bulk_update batch
+DB_BATCH = 5000  # raw SQL update batch
+
+
+def _process_series(pks, vals, threshold):
+    """Spike detection + Savitzky-Golay for one farmland. Returns list of (pk, is_anomaly, mean_smooth)."""
+    from scipy.signal import savgol_filter
+
+    n = len(vals)
+    # --- Spike detection via rolling median ---
+    is_spike = np.zeros(n, dtype=bool)
+    for j in range(n):
+        lo = max(0, j - ROLLING_WINDOW)
+        hi = min(n, j + ROLLING_WINDOW + 1)
+        local_median = np.nanmedian(vals[lo:hi])
+        if abs(vals[j] - local_median) > threshold:
+            is_spike[j] = True
+
+    # --- Savitzky-Golay smoothing on clean values ---
+    clean_vals = vals.copy()
+    clean_vals[is_spike] = np.nan
+
+    nans = np.isnan(clean_vals)
+    if nans.all():
+        smoothed = np.full(n, np.nan)
+    else:
+        if nans.any():
+            good = ~nans
+            xp = np.where(good)[0]
+            fp = clean_vals[good]
+            clean_vals = np.interp(np.arange(n), xp, fp)
+
+        win = min(SG_WINDOW, n)
+        if win % 2 == 0:
+            win -= 1
+        if win < 3:
+            smoothed = clean_vals
+        else:
+            poly = min(SG_POLYORDER, win - 1)
+            smoothed = savgol_filter(clean_vals, win, poly)
+            smoothed = np.clip(smoothed, -0.2, 1.0)
+
+    results = []
+    for j, pk in enumerate(pks):
+        s = None if np.isnan(smoothed[j]) else round(float(smoothed[j]), 4)
+        results.append((pk, bool(is_spike[j]), s))
+    return results, int(is_spike.sum())
 
 
 class Command(BaseCommand):
@@ -45,125 +94,109 @@ class Command(BaseCommand):
                             help=f'Spike threshold (default: {SPIKE_THRESHOLD})')
 
     def handle(self, *args, **options):
-        from scipy.signal import savgol_filter
-
         region_id = options['region_id']
         year = options.get('year')
         source = options.get('source')
         threshold = options['threshold']
 
-        # Satellite filter
-        sat_kw = {}
+        # Build raw SQL to load all records in ONE query, sorted for groupby
+        where_parts = [
+            "vi.index_type = 'ndvi'",
+            "f.district_id IN (SELECT id FROM agro_district WHERE region_id = %s)",
+        ]
+        params = [region_id]
+
         if source == 'modis':
-            sat_kw = {'scene__satellite__in': MODIS_SATELLITES}
+            where_parts.append("sc.satellite IN ('modis_terra', 'modis_aqua')")
         elif source == 'raster':
-            sat_kw = {'scene__satellite__in': RASTER_SATELLITES}
+            where_parts.append("sc.satellite IN ('sentinel2', 'landsat8', 'landsat9')")
 
-        # Get farmland IDs in region
-        fl_ids = list(
-            Farmland.objects
-            .filter(district__region_id=region_id)
-            .values_list('id', flat=True)
-        )
-        self.stdout.write(f'Region {region_id}: {len(fl_ids)} farmlands')
-
-        # Base queryset
-        vi_base = VegetationIndex.objects.filter(
-            farmland_id__in=fl_ids,
-            index_type='ndvi',
-            **sat_kw,
-        )
         if year:
-            vi_base = vi_base.filter(acquired_date__year=year)
+            where_parts.append("EXTRACT(year FROM vi.acquired_date) = %s")
+            params.append(year)
 
-        total_records = vi_base.count()
-        self.stdout.write(f'Total VI records: {total_records}')
+        where_clause = " AND ".join(where_parts)
 
-        if total_records == 0:
+        sql = f"""
+            SELECT vi.id, vi.farmland_id, vi.mean
+            FROM agro_vegetation_index vi
+            JOIN agro_farmland f ON f.id = vi.farmland_id
+            JOIN agro_satellite_scene sc ON sc.id = vi.scene_id
+            WHERE {where_clause}
+            ORDER BY vi.farmland_id, vi.acquired_date
+        """
+
+        self.stdout.write(f'Loading records from DB...')
+        t0 = time.time()
+
+        with connection.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()  # (vi_id, farmland_id, mean)
+
+        elapsed = time.time() - t0
+        self.stdout.write(f'Loaded {len(rows)} records in {elapsed:.1f}s')
+
+        if not rows:
             return
 
-        # Process per farmland
+        # Group by farmland_id and process
         anomalies_total = 0
         smoothed_total = 0
-        to_update = []
+        update_batch = []  # [(pk, is_anomaly_bool, mean_smooth_float_or_None), ...]
+        fl_count = 0
 
-        for i, fl_id in enumerate(fl_ids):
-            records = list(
-                vi_base
-                .filter(farmland_id=fl_id)
-                .order_by('acquired_date')
-                .values_list('pk', 'mean', named=False)
-            )
+        for fl_id, group in groupby(rows, key=itemgetter(1)):
+            records = list(group)
             if len(records) < 3:
                 continue
 
             pks = [r[0] for r in records]
-            vals = np.array([r[1] for r in records], dtype=np.float64)
-            n = len(vals)
+            vals = np.array([r[2] for r in records], dtype=np.float64)
 
-            # --- Spike detection via rolling median ---
-            is_spike = np.zeros(n, dtype=bool)
-            for j in range(n):
-                lo = max(0, j - ROLLING_WINDOW)
-                hi = min(n, j + ROLLING_WINDOW + 1)
-                local_median = np.nanmedian(vals[lo:hi])
-                if abs(vals[j] - local_median) > threshold:
-                    is_spike[j] = True
+            results, n_anom = _process_series(pks, vals, threshold)
+            anomalies_total += n_anom
+            smoothed_total += len(results)
+            update_batch.extend(results)
 
-            anomalies_total += int(is_spike.sum())
+            fl_count += 1
 
-            # --- Savitzky-Golay smoothing on clean values ---
-            clean_vals = vals.copy()
-            clean_vals[is_spike] = np.nan
-
-            # Interpolate NaN gaps for smoothing
-            nans = np.isnan(clean_vals)
-            if nans.all():
-                # All anomalies — skip smoothing
-                smoothed = np.full(n, np.nan)
-            else:
-                if nans.any():
-                    # Linear interpolation of gaps
-                    good = ~nans
-                    xp = np.where(good)[0]
-                    fp = clean_vals[good]
-                    clean_vals = np.interp(np.arange(n), xp, fp)
-
-                win = min(SG_WINDOW, n)
-                if win % 2 == 0:
-                    win -= 1
-                if win < 3:
-                    smoothed = clean_vals
-                else:
-                    poly = min(SG_POLYORDER, win - 1)
-                    smoothed = savgol_filter(clean_vals, win, poly)
-                    smoothed = np.clip(smoothed, -0.2, 1.0)
-
-            # --- Prepare bulk update ---
-            for j, pk in enumerate(pks):
-                obj = VegetationIndex(pk=pk)
-                obj.is_anomaly = bool(is_spike[j])
-                obj.mean_smooth = round(float(smoothed[j]), 4) if not np.isnan(smoothed[j]) else None
-                to_update.append(obj)
-                smoothed_total += 1
-
-            # Flush batch
-            if len(to_update) >= BATCH_SIZE:
-                VegetationIndex.objects.bulk_update(
-                    to_update, ['is_anomaly', 'mean_smooth'], batch_size=BATCH_SIZE
-                )
-                to_update = []
-
-            if (i + 1) % 10000 == 0:
-                self.stdout.write(f'  [{i+1}/{len(fl_ids)}] farmlands processed')
+            # Flush batch via raw SQL for speed
+            if len(update_batch) >= DB_BATCH:
+                _flush_updates(update_batch)
+                update_batch = []
+                self.stdout.write(f'  {smoothed_total} records processed, {fl_count} farmlands...')
 
         # Final flush
-        if to_update:
-            VegetationIndex.objects.bulk_update(
-                to_update, ['is_anomaly', 'mean_smooth'], batch_size=BATCH_SIZE
-            )
+        if update_batch:
+            _flush_updates(update_batch)
 
         self.stdout.write(
             f'\nDone: {smoothed_total} records smoothed, '
-            f'{anomalies_total} anomalies detected'
+            f'{anomalies_total} anomalies detected, '
+            f'{fl_count} farmlands'
         )
+
+
+def _flush_updates(batch):
+    """Bulk update is_anomaly + mean_smooth via raw SQL with unnest for speed."""
+    if not batch:
+        return
+
+    pks = [r[0] for r in batch]
+    anomalies = [r[1] for r in batch]
+    smooths = [r[2] for r in batch]
+
+    sql = """
+        UPDATE agro_vegetation_index AS vi SET
+            is_anomaly  = data.is_anomaly,
+            mean_smooth = data.mean_smooth
+        FROM (
+            SELECT
+                unnest(%s::bigint[])  AS id,
+                unnest(%s::boolean[]) AS is_anomaly,
+                unnest(%s::float8[])  AS mean_smooth
+        ) AS data
+        WHERE vi.id = data.id
+    """
+    with connection.cursor() as cur:
+        cur.execute(sql, [pks, anomalies, smooths])
