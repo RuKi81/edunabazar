@@ -340,6 +340,23 @@
         <canvas id="ndvi-region-chart" style="max-height:200px;"></canvas>
       </div>
 
+      <!-- Phenology info panel -->
+      <div id="phenology-panel" style="display:none; padding:10px 12px; border-top:1px solid rgba(0,0,0,.08);">
+        <h3 style="font-size:13px; font-weight:700; margin:0 0 6px 0;">
+          <i class="material-icons" style="font-size:16px; vertical-align:-3px; color:#4CAF50;">eco</i> Фенология
+        </h3>
+        <div id="phenology-summary" style="font-size:12px;">
+          <div class="agro-stat"><span>Угодий с данными</span><span class="val" id="ph-count">—</span></div>
+          <div class="agro-stat"><span>🌱 Начало сезона (SOS)</span><span class="val" id="ph-sos">—</span></div>
+          <div class="agro-stat"><span>🏔️ Пик сезона (POS)</span><span class="val" id="ph-pos">—</span></div>
+          <div class="agro-stat"><span>🍂 Конец сезона (EOS)</span><span class="val" id="ph-eos">—</span></div>
+          <div class="agro-stat"><span>📏 Длительность сезона</span><span class="val" id="ph-los">—</span></div>
+          <div class="agro-stat"><span>📈 Макс. NDVI</span><span class="val" id="ph-max">—</span></div>
+          <div class="agro-stat"><span>📊 Средн. NDVI</span><span class="val" id="ph-mean">—</span></div>
+          <div class="agro-stat"><span>∫ Интеграл NDVI</span><span class="val" id="ph-ti">—</span></div>
+        </div>
+      </div>
+
       <!-- Single farmland NDVI chart -->
       <div id="ndvi-panel" style="display:none; padding:12px; border-top:1px solid rgba(0,0,0,.08);">
         <h3 id="ndvi-title" style="font-size:13px; font-weight:700; margin:0 0 6px 0;">Динамика NDVI</h3>
@@ -362,6 +379,7 @@
   <script src="https://unpkg.com/leaflet.vectorgrid@1.3.0/dist/Leaflet.VectorGrid.bundled.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.1.0/dist/chartjs-plugin-annotation.min.js"></script>
   <script>
   (function () {
     var SOURCE = 'modis';  // Filter API calls to MODIS data only
@@ -830,6 +848,9 @@
 
       // Multi-year regional chart
       loadMultiYearChart(regionId, districtId, years);
+
+      // Phenology panel
+      loadPhenology(regionId, districtId, years[0]);
     }
 
     function onCropTypeChange() {
@@ -916,11 +937,30 @@
 
         var labels = Array.from(allLabels).sort();
 
-        // Add baseline as first dataset (gray dashed)
+        // Add baseline ±σ band (light gray fill) + baseline line
         if (baselineData.length) {
           var blLookup = {};
-          baselineData.forEach(function (b) { blLookup[b.date] = b.mean_ndvi; });
-          var blVals = labels.map(function (l) { return blLookup[l] !== undefined ? blLookup[l] : null; });
+          baselineData.forEach(function (b) { blLookup[b.date] = { mean: b.mean_ndvi, std: b.std_ndvi || 0 }; });
+          var blVals = labels.map(function (l) { return blLookup[l] ? blLookup[l].mean : null; });
+          var blUpper = labels.map(function (l) { return blLookup[l] ? Math.min(blLookup[l].mean + blLookup[l].std, 1.0) : null; });
+          var blLower = labels.map(function (l) { return blLookup[l] ? Math.max(blLookup[l].mean - blLookup[l].std, 0) : null; });
+
+          // Upper bound (invisible line, fill target for band)
+          datasets.push({
+            label: 'Baseline +σ',
+            data: blUpper,
+            borderColor: 'transparent',
+            backgroundColor: 'rgba(158,158,158,0.15)',
+            borderWidth: 0,
+            fill: '+1',  // fill down to next dataset (baseline mean)
+            pointRadius: 0,
+            tension: 0.3,
+            spanGaps: true,
+            order: 12,
+            hidden: false
+          });
+
+          // Baseline mean (gray dashed)
           datasets.push({
             label: 'Среднее (архив)',
             data: blVals,
@@ -932,14 +972,49 @@
             pointRadius: 0,
             tension: 0.3,
             spanGaps: true,
-            order: 10
+            order: 11
+          });
+
+          // Lower bound (invisible line, fill target for band)
+          datasets.push({
+            label: 'Baseline -σ',
+            data: blLower,
+            borderColor: 'transparent',
+            backgroundColor: 'rgba(158,158,158,0.15)',
+            borderWidth: 0,
+            fill: '-1',  // fill up to previous dataset (baseline mean)
+            pointRadius: 0,
+            tension: 0.3,
+            spanGaps: true,
+            order: 12,
+            hidden: false
           });
         }
 
+        // z-score lookup for tooltip
+        var zScoreLookup = {};
         results.forEach(function (res, idx) {
           var lookup = {};
-          res.data.forEach(function (d) { lookup[d.date.substring(5)] = d.mean_ndvi; });
+          var zLookup = {};
+          res.data.forEach(function (d) {
+            var key = d.date.substring(5);
+            lookup[key] = d.mean_ndvi;
+            zLookup[key] = d.z_score;
+          });
+          zScoreLookup[res.year] = zLookup;
           var vals = labels.map(function (l) { return lookup[l] !== undefined ? lookup[l] : null; });
+
+          // Point colors by z-score: red < -2, orange < -1, green normal, blue > 1
+          var ptColors = labels.map(function (l) {
+            var z = zLookup[l];
+            if (z === null || z === undefined) return yearColors[idx % yearColors.length];
+            if (z < -2) return '#D32F2F';
+            if (z < -1) return '#FF9800';
+            if (z > 2) return '#1565C0';
+            if (z > 1) return '#42A5F5';
+            return yearColors[idx % yearColors.length];
+          });
+
           datasets.push({
             label: res.year,
             data: vals,
@@ -947,13 +1022,16 @@
             backgroundColor: 'transparent',
             borderWidth: 2,
             fill: false,
-            pointRadius: 2,
+            pointRadius: 3,
+            pointBackgroundColor: ptColors,
+            pointBorderColor: ptColors,
             tension: 0.3,
             spanGaps: true
           });
         });
 
-        if (datasets.length <= (baselineData.length ? 1 : 0)) { wrap.style.display = 'none'; return; }
+        var blDsCount = baselineData.length ? 3 : 0;  // upper + mean + lower
+        if (datasets.length <= blDsCount) { wrap.style.display = 'none'; return; }
 
         var showLegend = years.length > 1 || baselineData.length > 0;
         if (regionNdviChart) regionNdviChart.destroy();
@@ -966,7 +1044,33 @@
             plugins: {
               legend: {
                 display: showLegend,
-                labels: { boxWidth: 14, font: { size: 11 } }
+                labels: {
+                  boxWidth: 14, font: { size: 11 },
+                  filter: function (item) {
+                    // Hide ±σ datasets from legend
+                    return item.text.indexOf('Baseline') !== 0;
+                  }
+                }
+              },
+              tooltip: {
+                callbacks: {
+                  afterLabel: function (ctx) {
+                    // Show z-score in tooltip for year datasets
+                    var yr = ctx.dataset.label;
+                    var lbl = labels[ctx.dataIndex];
+                    if (zScoreLookup[yr] && zScoreLookup[yr][lbl] !== null && zScoreLookup[yr][lbl] !== undefined) {
+                      var z = zScoreLookup[yr][lbl];
+                      var status = '';
+                      if (z < -2) status = ' ⚠ сильная засуха';
+                      else if (z < -1) status = ' ↓ ниже нормы';
+                      else if (z > 2) status = ' ↑↑ значительно выше';
+                      else if (z > 1) status = ' ↑ выше нормы';
+                      else status = ' ✓ норма';
+                      return 'z-score: ' + z.toFixed(2) + status;
+                    }
+                    return '';
+                  }
+                }
               }
             },
             scales: {
@@ -976,6 +1080,72 @@
           }
         });
       });
+    }
+
+    /* ── Phenology loading + annotation ──────────── */
+    var _phenoAnnotations = {};  // stored for chart re-render
+
+    function loadPhenology(regionId, districtId, year) {
+      var panel = document.getElementById('phenology-panel');
+      if (!regionId || !year) { panel.style.display = 'none'; return; }
+
+      var url = '/agrocosmos/api/phenology/?region=' + regionId + '&year=' + year + '&source=' + SOURCE;
+      if (districtId) url += '&district=' + districtId;
+
+      fetch(url)
+        .then(function (r) { return r.json(); })
+        .then(function (resp) {
+          if (!resp.ok || !resp.phenology || !resp.phenology.count) {
+            panel.style.display = 'none';
+            _phenoAnnotations = {};
+            return;
+          }
+          var p = resp.phenology;
+          panel.style.display = 'block';
+
+          document.getElementById('ph-count').textContent = p.count.toLocaleString('ru');
+          document.getElementById('ph-sos').textContent = p.avg_sos ? p.avg_sos.substring(5) : '—';
+          document.getElementById('ph-pos').textContent = p.avg_pos ? p.avg_pos.substring(5) : '—';
+          document.getElementById('ph-eos').textContent = p.avg_eos ? p.avg_eos.substring(5) : '—';
+          document.getElementById('ph-los').textContent = p.avg_los_days ? p.avg_los_days + ' дн.' : '—';
+          document.getElementById('ph-max').textContent = p.avg_max_ndvi !== null ? p.avg_max_ndvi : '—';
+          document.getElementById('ph-mean').textContent = p.avg_mean_ndvi !== null ? p.avg_mean_ndvi : '—';
+          document.getElementById('ph-ti').textContent = p.avg_total_ndvi !== null ? p.avg_total_ndvi : '—';
+
+          // Build annotation lines for SOS/EOS/POS on the chart
+          _phenoAnnotations = {};
+          if (p.avg_sos) {
+            _phenoAnnotations.sosBand = {
+              type: 'line', scaleID: 'x', value: p.avg_sos.substring(5),
+              borderColor: '#4CAF50', borderWidth: 2, borderDash: [4, 2],
+              label: { display: true, content: 'SOS', position: 'start', font: { size: 9 }, backgroundColor: 'rgba(76,175,80,0.7)' }
+            };
+          }
+          if (p.avg_pos) {
+            _phenoAnnotations.posBand = {
+              type: 'line', scaleID: 'x', value: p.avg_pos.substring(5),
+              borderColor: '#FF9800', borderWidth: 2, borderDash: [4, 2],
+              label: { display: true, content: 'POS', position: 'start', font: { size: 9 }, backgroundColor: 'rgba(255,152,0,0.7)' }
+            };
+          }
+          if (p.avg_eos) {
+            _phenoAnnotations.eosBand = {
+              type: 'line', scaleID: 'x', value: p.avg_eos.substring(5),
+              borderColor: '#F44336', borderWidth: 2, borderDash: [4, 2],
+              label: { display: true, content: 'EOS', position: 'start', font: { size: 9 }, backgroundColor: 'rgba(244,67,54,0.7)' }
+            };
+          }
+
+          // Apply annotations to existing chart if available
+          if (regionNdviChart) {
+            regionNdviChart.options.plugins.annotation = { annotations: _phenoAnnotations };
+            regionNdviChart.update();
+          }
+        })
+        .catch(function (err) {
+          console.error('Phenology fetch error:', err);
+          panel.style.display = 'none';
+        });
     }
 
     /* ── NDVI chart (single farmland, multi-year) ── */
