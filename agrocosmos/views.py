@@ -8,7 +8,7 @@ from django.contrib.gis.db.models.functions import AsGeoJSON
 from datetime import date, timedelta
 
 from django.db.models import Count, Sum, Avg, F, Q, Value, CharField, Case, When, FloatField
-from django.db.models.functions import Coalesce, ExtractDayOfYear
+from django.db.models.functions import Coalesce, Extract
 from django.db.models.fields.json import KeyTextTransform
 from django.views.decorators.cache import cache_page
 
@@ -710,9 +710,9 @@ def api_phenology(request: HttpRequest) -> JsonResponse:
 
     # Average SOS/EOS/POS as day-of-year
     date_agg = qs.aggregate(
-        avg_sos=Avg(ExtractDayOfYear('sos_date')),
-        avg_eos=Avg(ExtractDayOfYear('eos_date')),
-        avg_pos=Avg(ExtractDayOfYear('pos_date')),
+        avg_sos=Avg(Extract('sos_date', 'doy')),
+        avg_eos=Avg(Extract('eos_date', 'doy')),
+        avg_pos=Avg(Extract('pos_date', 'doy')),
     )
 
     def doy_to_date(doy_val, yr):
@@ -732,8 +732,8 @@ def api_phenology(request: HttpRequest) -> JsonResponse:
             avg_max_ndvi=Avg('max_ndvi'),
             avg_mean_ndvi=Avg('mean_ndvi'),
             avg_los=Avg('los_days'),
-            avg_sos=Avg(ExtractDayOfYear('sos_date')),
-            avg_eos=Avg(ExtractDayOfYear('eos_date')),
+            avg_sos=Avg(Extract('sos_date', 'doy')),
+            avg_eos=Avg(Extract('eos_date', 'doy')),
         )
         .order_by('farmland__district__name')
     )
