@@ -75,6 +75,18 @@ class Command(BaseCommand):
             ORDER BY vi.farmland_id, vi.acquired_date
         """
 
+        # Delete stale records first — ensures only valid phenology remains
+        with connection.cursor() as cur:
+            cur.execute("""
+                DELETE FROM agro_farmland_phenology p
+                USING agro_farmland f, agro_district d
+                WHERE p.farmland_id = f.id AND f.district_id = d.id
+                  AND d.region_id = %s AND p.year = %s AND p.source = %s
+            """, [region_id, year, source])
+            deleted = cur.rowcount
+        if deleted:
+            self.stdout.write(f'Deleted {deleted} old phenology records')
+
         self.stdout.write(f'Loading smoothed NDVI for region {region_id}, year {year}, source {source}...')
         t0 = time.time()
 
