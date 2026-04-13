@@ -26,11 +26,13 @@ from django.db import connection
 
 SOS_EOS_RATIO = 0.30   # 30% of amplitude above baseline (stricter)
 BASE_NDVI = 0.20       # winter dormant NDVI for Crimea (wheat, evergreens)
-MIN_DOY_SOS = 60       # earliest SOS = ~March 1
-MAX_DOY_SOS = 180      # latest  SOS = ~June 29
-MIN_DOY_EOS = 213      # earliest EOS = ~August 1
-MAX_DOY_EOS = 335      # latest  EOS = ~December 1
-MAX_LOS_DAYS = 250     # max growing season length
+MIN_DOY_SOS = 32       # earliest SOS = ~February 1 (winter wheat green-up)
+MAX_DOY_SOS = 152      # latest  SOS = ~June 1
+MIN_DOY_EOS = 152      # earliest EOS = ~June 1
+MAX_DOY_EOS = 305      # latest  EOS = ~November 1
+MIN_DOY_POS = 60       # earliest POS = ~March 1
+MAX_DOY_POS = 244      # latest  POS = ~September 1 (spring peak, NOT autumn)
+MAX_LOS_DAYS = 210     # max growing season length (~7 months)
 
 DB_BATCH = 2000
 
@@ -173,18 +175,17 @@ def _compute_phenology(dates, vals):
     """
     doys = [d.timetuple().tm_yday for d in dates]
 
-    # Find POS only within the plausible growing window (Apr–Oct)
+    # Find POS only within the spring/summer window (Mar–Sep)
+    # This prevents selecting the autumn re-greening peak (bimodal winter-wheat pattern)
     best_idx = None
     best_val = -1
     for j in range(len(vals)):
-        if 91 <= doys[j] <= 305 and vals[j] > best_val:  # Apr 1 – Nov 1
+        if MIN_DOY_POS <= doys[j] <= MAX_DOY_POS and vals[j] > best_val:
             best_val = vals[j]
             best_idx = j
 
     if best_idx is None:
-        # fallback: global max
-        best_idx = int(np.argmax(vals))
-        best_val = float(vals[best_idx])
+        return None  # no observations in the growing window
 
     max_ndvi = float(best_val)
     pos_date = dates[best_idx]
