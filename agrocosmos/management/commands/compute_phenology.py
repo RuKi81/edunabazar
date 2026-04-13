@@ -24,8 +24,13 @@ import numpy as np
 from django.core.management.base import BaseCommand
 from django.db import connection
 
-SOS_EOS_RATIO = 0.20   # 20% of amplitude above baseline
-BASE_NDVI = 0.10       # assumed dormant/bare NDVI
+SOS_EOS_RATIO = 0.30   # 30% of amplitude above baseline (stricter)
+BASE_NDVI = 0.20       # winter dormant NDVI for Crimea (wheat, evergreens)
+MIN_DOY_SOS = 60       # earliest SOS = ~March 1
+MAX_DOY_SOS = 180      # latest  SOS = ~June 29
+MIN_DOY_EOS = 213      # earliest EOS = ~August 1
+MAX_DOY_EOS = 335      # latest  EOS = ~December 1
+MAX_LOS_DAYS = 250     # max growing season length
 
 DB_BATCH = 2000
 
@@ -149,31 +154,46 @@ def _flush_phenology(batch):
 
 def _compute_phenology(dates, vals):
     """
-    Threshold-based phenology extraction.
+    Threshold-based phenology extraction with calendar window constraints
+    tuned for Crimea / southern temperate agroclimatic zone.
 
     Returns dict with sos, eos, pos, max_ndvi, mean_ndvi, los, ti or None.
     """
-    max_idx = int(np.argmax(vals))
-    max_ndvi = float(vals[max_idx])
-    pos_date = dates[max_idx]
+    doys = [d.timetuple().tm_yday for d in dates]
+
+    # Find POS only within the plausible growing window (Apr–Oct)
+    best_idx = None
+    best_val = -1
+    for j in range(len(vals)):
+        if 91 <= doys[j] <= 305 and vals[j] > best_val:  # Apr 1 – Nov 1
+            best_val = vals[j]
+            best_idx = j
+
+    if best_idx is None:
+        # fallback: global max
+        best_idx = int(np.argmax(vals))
+        best_val = float(vals[best_idx])
+
+    max_ndvi = float(best_val)
+    pos_date = dates[best_idx]
 
     amplitude = max_ndvi - BASE_NDVI
-    if amplitude < 0.1:
+    if amplitude < 0.10:
         return None  # no real vegetation signal
 
     threshold = BASE_NDVI + SOS_EOS_RATIO * amplitude
 
-    # SOS: first crossing above threshold (search from left to peak)
+    # SOS: first crossing above threshold, constrained to [MIN_DOY_SOS, POS]
     sos_date = None
-    for j in range(max_idx + 1):
-        if vals[j] >= threshold:
+    for j in range(best_idx + 1):
+        if doys[j] >= MIN_DOY_SOS and vals[j] >= threshold:
             sos_date = dates[j]
             break
 
-    # EOS: last crossing above threshold (search from right to peak)
+    # EOS: last crossing above threshold, constrained to [POS, MAX_DOY_EOS]
     eos_date = None
-    for j in range(len(vals) - 1, max_idx - 1, -1):
-        if vals[j] >= threshold:
+    for j in range(len(vals) - 1, best_idx - 1, -1):
+        if doys[j] <= MAX_DOY_EOS and vals[j] >= threshold:
             eos_date = dates[j]
             break
 
@@ -181,8 +201,8 @@ def _compute_phenology(dates, vals):
         return None
 
     los = (eos_date - sos_date).days
-    if los < 30:
-        return None  # too short
+    if los < 30 or los > MAX_LOS_DAYS:
+        return None  # unrealistic season length
 
     # Collect values within the growing season (SOS..EOS)
     season_vals = []
