@@ -8,11 +8,11 @@ from django.contrib.gis.db.models.functions import AsGeoJSON
 from datetime import date, timedelta
 
 from django.db.models import Count, Sum, Avg, F, Q, Value, CharField, Case, When, FloatField
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, ExtractDayOfYear
 from django.db.models.fields.json import KeyTextTransform
 from django.views.decorators.cache import cache_page
 
-from .models import Region, District, Farmland, VegetationIndex, MonitoringTask, NdviBaseline, SatelliteScene
+from .models import Region, District, Farmland, FarmlandPhenology, VegetationIndex, MonitoringTask, NdviBaseline, SatelliteScene
 
 MODIS_SATELLITES = ('modis_terra', 'modis_aqua')
 RASTER_SATELLITES = ('sentinel2', 'landsat8', 'landsat9')
@@ -668,3 +668,100 @@ def api_raster_composites(request: HttpRequest) -> JsonResponse:
 
     composites = list_available_composites(sensor, scope, year)
     return JsonResponse({'ok': True, 'composites': composites})
+
+
+# ── Phenology endpoint ───────────────────────────────────────────
+
+def api_phenology(request: HttpRequest) -> JsonResponse:
+    """Phenological metrics aggregated per district or region.
+
+    Query params:
+        region: region_id (required)
+        year: year (required)
+        district: optional district_id
+        source: 'modis' (default) or 'raster'
+    """
+    region_id = request.GET.get('region')
+    year = request.GET.get('year')
+    district_id = request.GET.get('district')
+    source = request.GET.get('source', 'modis')
+
+    if not region_id or not year:
+        return JsonResponse({'ok': False, 'error': 'region and year required'}, status=400)
+
+    qs = FarmlandPhenology.objects.filter(
+        farmland__district__region_id=region_id,
+        year=int(year),
+        source=source,
+    )
+    if district_id:
+        try:
+            qs = qs.filter(farmland__district_id=int(district_id))
+        except (TypeError, ValueError):
+            pass
+
+    agg = qs.aggregate(
+        count=Count('id'),
+        avg_max_ndvi=Avg('max_ndvi'),
+        avg_mean_ndvi=Avg('mean_ndvi'),
+        avg_los=Avg('los_days'),
+        avg_ti=Avg('total_ndvi'),
+    )
+
+    # Average SOS/EOS/POS as day-of-year
+    date_agg = qs.aggregate(
+        avg_sos=Avg(ExtractDayOfYear('sos_date')),
+        avg_eos=Avg(ExtractDayOfYear('eos_date')),
+        avg_pos=Avg(ExtractDayOfYear('pos_date')),
+    )
+
+    def doy_to_date(doy_val, yr):
+        if doy_val is None:
+            return None
+        try:
+            d = date(int(yr), 1, 1) + timedelta(days=int(round(doy_val)) - 1)
+            return d.isoformat()
+        except Exception:
+            return None
+
+    # Per-district breakdown
+    by_district = (
+        qs.values('farmland__district_id', 'farmland__district__name')
+        .annotate(
+            count=Count('id'),
+            avg_max_ndvi=Avg('max_ndvi'),
+            avg_mean_ndvi=Avg('mean_ndvi'),
+            avg_los=Avg('los_days'),
+            avg_sos=Avg(ExtractDayOfYear('sos_date')),
+            avg_eos=Avg(ExtractDayOfYear('eos_date')),
+        )
+        .order_by('farmland__district__name')
+    )
+
+    districts_list = []
+    for row in by_district:
+        districts_list.append({
+            'district_id': row['farmland__district_id'],
+            'district': row['farmland__district__name'],
+            'count': row['count'],
+            'avg_max_ndvi': _safe_round(row['avg_max_ndvi']),
+            'avg_mean_ndvi': _safe_round(row['avg_mean_ndvi']),
+            'avg_los': round(row['avg_los']) if row['avg_los'] else None,
+            'avg_sos': doy_to_date(row['avg_sos'], year),
+            'avg_eos': doy_to_date(row['avg_eos'], year),
+        })
+
+    return JsonResponse({
+        'ok': True,
+        'phenology': {
+            'count': agg['count'],
+            'avg_max_ndvi': _safe_round(agg['avg_max_ndvi']),
+            'avg_mean_ndvi': _safe_round(agg['avg_mean_ndvi']),
+            'avg_los_days': round(agg['avg_los']) if agg['avg_los'] else None,
+            'avg_total_ndvi': _safe_round(agg['avg_ti']),
+            'avg_sos': doy_to_date(date_agg['avg_sos'], year),
+            'avg_eos': doy_to_date(date_agg['avg_eos'], year),
+            'avg_pos': doy_to_date(date_agg['avg_pos'], year),
+            'by_district': districts_list,
+        }
+    })

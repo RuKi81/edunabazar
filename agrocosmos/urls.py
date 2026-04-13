@@ -14,4 +14,5 @@ urlpatterns = [
     path('api/ndvi-stats/', views.api_ndvi_stats, name='api_ndvi_stats'),
     path('api/raster-tile/<int:z>/<int:x>/<int:y>.png', views.api_raster_tile, name='api_raster_tile'),
     path('api/raster-composites/', views.api_raster_composites, name='api_raster_composites'),
+    path('api/phenology/', views.api_phenology, name='api_phenology'),
 ]
