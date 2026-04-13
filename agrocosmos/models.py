@@ -160,6 +160,7 @@ class FarmlandPhenology(models.Model):
     eos_date = models.DateField(null=True, blank=True, verbose_name='Конец сезона (EOS)')
     pos_date = models.DateField(null=True, blank=True, verbose_name='Пик сезона (POS)')
     max_ndvi = models.FloatField(null=True, blank=True, verbose_name='Макс. NDVI')
+    mean_ndvi = models.FloatField(null=True, blank=True, verbose_name='Средн. NDVI за сезон')
     los_days = models.IntegerField(null=True, blank=True, verbose_name='Длит. сезона (дней)')
     total_ndvi = models.FloatField(null=True, blank=True, verbose_name='Интеграл NDVI (TI)')
 

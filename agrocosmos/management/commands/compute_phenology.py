@@ -1,5 +1,5 @@
 """
-Compute phenological metrics (SOS, EOS, POS, LOS, MaxNDVI, TI) from smoothed NDVI.
+Compute phenological metrics (SOS, EOS, POS, LOS, MaxNDVI, MeanNDVI, TI) from smoothed NDVI.
 
 Requires ndvi_postprocess to be run first (populates mean_smooth).
 
@@ -9,26 +9,25 @@ Algorithm (threshold-based, Jönsson & Eklundh, 2002 / TIMESAT):
 - POS = date of maximum smoothed NDVI
 - LOS = EOS - SOS (days)
 - MaxNDVI = peak smoothed value
+- MeanNDVI = average smoothed NDVI during SOS..EOS
 - TI = trapezoidal integral of NDVI from SOS to EOS
 
 Usage:
-    python manage.py compute_phenology --region-id 37 --year 2024
-    python manage.py compute_phenology --region-id 37 --year 2024 --source modis
+    python manage.py compute_phenology --region-id 37 --year 2025
+    python manage.py compute_phenology --region-id 37 --year 2025 --source modis
 """
+import time
+from itertools import groupby
+from operator import itemgetter
+
 import numpy as np
-from datetime import date, timedelta
-
 from django.core.management.base import BaseCommand
-
-from agrocosmos.models import Farmland, FarmlandPhenology, VegetationIndex
+from django.db import connection
 
 SOS_EOS_RATIO = 0.20   # 20% of amplitude above baseline
 BASE_NDVI = 0.10       # assumed dormant/bare NDVI
 
-MODIS_SATELLITES = ('modis_terra', 'modis_aqua')
-RASTER_SATELLITES = ('sentinel2', 'landsat8', 'landsat9')
-
-BATCH_SIZE = 2000
+DB_BATCH = 2000
 
 
 class Command(BaseCommand):
@@ -45,93 +44,114 @@ class Command(BaseCommand):
         year = options['year']
         source = options['source']
 
-        sat_kw = {}
+        # Build single SQL to load all smoothed series at once
+        where_parts = [
+            "vi.index_type = 'ndvi'",
+            "vi.is_anomaly = false",
+            "vi.mean_smooth IS NOT NULL",
+            "f.district_id IN (SELECT id FROM agro_district WHERE region_id = %s)",
+            "EXTRACT(year FROM vi.acquired_date) = %s",
+        ]
+        params = [region_id, year]
+
         if source == 'modis':
-            sat_kw = {'scene__satellite__in': MODIS_SATELLITES}
+            where_parts.append("sc.satellite IN ('modis_terra', 'modis_aqua')")
         else:
-            sat_kw = {'scene__satellite__in': RASTER_SATELLITES}
+            where_parts.append("sc.satellite IN ('sentinel2', 'landsat8', 'landsat9')")
 
-        fl_ids = list(
-            Farmland.objects
-            .filter(district__region_id=region_id)
-            .values_list('id', flat=True)
-        )
-        self.stdout.write(f'Region {region_id}, year {year}, source {source}: {len(fl_ids)} farmlands')
+        where_clause = " AND ".join(where_parts)
 
+        sql = f"""
+            SELECT vi.farmland_id, vi.acquired_date, vi.mean_smooth
+            FROM agro_vegetation_index vi
+            JOIN agro_farmland f ON f.id = vi.farmland_id
+            JOIN agro_satellite_scene sc ON sc.id = vi.scene_id
+            WHERE {where_clause}
+            ORDER BY vi.farmland_id, vi.acquired_date
+        """
+
+        self.stdout.write(f'Loading smoothed NDVI for region {region_id}, year {year}, source {source}...')
+        t0 = time.time()
+
+        with connection.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()  # (farmland_id, acquired_date, mean_smooth)
+
+        elapsed = time.time() - t0
+        self.stdout.write(f'Loaded {len(rows)} records in {elapsed:.1f}s')
+
+        if not rows:
+            return
+
+        # Group by farmland_id and compute phenology
         created = 0
         skipped = 0
-        to_save = []
+        batch = []  # (fl_id, year, source, sos, eos, pos, max, mean, los, ti)
 
-        for i, fl_id in enumerate(fl_ids):
-            records = list(
-                VegetationIndex.objects
-                .filter(
-                    farmland_id=fl_id,
-                    index_type='ndvi',
-                    acquired_date__year=year,
-                    is_anomaly=False,
-                    mean_smooth__isnull=False,
-                    **sat_kw,
-                )
-                .order_by('acquired_date')
-                .values_list('acquired_date', 'mean_smooth', named=False)
-            )
-
+        for fl_id, group in groupby(rows, key=itemgetter(0)):
+            records = list(group)
             if len(records) < 5:
                 skipped += 1
                 continue
 
-            dates = [r[0] for r in records]
-            vals = np.array([r[1] for r in records], dtype=np.float64)
+            dates = [r[1] for r in records]
+            vals = np.array([r[2] for r in records], dtype=np.float64)
 
             pheno = _compute_phenology(dates, vals)
             if pheno is None:
                 skipped += 1
                 continue
 
-            to_save.append(FarmlandPhenology(
-                farmland_id=fl_id,
-                year=year,
-                source=source,
-                sos_date=pheno['sos'],
-                eos_date=pheno['eos'],
-                pos_date=pheno['pos'],
-                max_ndvi=pheno['max_ndvi'],
-                los_days=pheno['los'],
-                total_ndvi=pheno['ti'],
+            batch.append((
+                fl_id, year, source,
+                pheno['sos'], pheno['eos'], pheno['pos'],
+                pheno['max_ndvi'], pheno['mean_ndvi'],
+                pheno['los'], pheno['ti'],
             ))
             created += 1
 
-            if len(to_save) >= BATCH_SIZE:
-                FarmlandPhenology.objects.bulk_create(
-                    to_save, batch_size=BATCH_SIZE,
-                    update_conflicts=True,
-                    unique_fields=['farmland', 'year', 'source'],
-                    update_fields=['sos_date', 'eos_date', 'pos_date',
-                                   'max_ndvi', 'los_days', 'total_ndvi'],
-                )
-                to_save = []
+            if len(batch) >= DB_BATCH:
+                _flush_phenology(batch)
+                batch = []
+                self.stdout.write(f'  {created} phenology records saved...')
 
-            if (i + 1) % 10000 == 0:
-                self.stdout.write(f'  [{i+1}/{len(fl_ids)}]')
+        if batch:
+            _flush_phenology(batch)
 
-        if to_save:
-            FarmlandPhenology.objects.bulk_create(
-                to_save, batch_size=BATCH_SIZE,
-                update_conflicts=True,
-                unique_fields=['farmland', 'year', 'source'],
-                update_fields=['sos_date', 'eos_date', 'pos_date',
-                               'max_ndvi', 'los_days', 'total_ndvi'],
-            )
+        self.stdout.write(
+            f'\nDone: {created} phenology records, {skipped} skipped'
+        )
 
-        self.stdout.write(f'\nDone: {created} phenology records, {skipped} skipped')
+
+def _flush_phenology(batch):
+    """Upsert phenology records via raw SQL for speed."""
+    if not batch:
+        return
+
+    sql = """
+        INSERT INTO agro_farmland_phenology
+            (farmland_id, year, source, sos_date, eos_date, pos_date,
+             max_ndvi, mean_ndvi, los_days, total_ndvi, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+        ON CONFLICT (farmland_id, year, source)
+        DO UPDATE SET
+            sos_date   = EXCLUDED.sos_date,
+            eos_date   = EXCLUDED.eos_date,
+            pos_date   = EXCLUDED.pos_date,
+            max_ndvi   = EXCLUDED.max_ndvi,
+            mean_ndvi  = EXCLUDED.mean_ndvi,
+            los_days   = EXCLUDED.los_days,
+            total_ndvi = EXCLUDED.total_ndvi
+    """
+    with connection.cursor() as cur:
+        cur.executemany(sql, batch)
 
 
 def _compute_phenology(dates, vals):
     """
     Threshold-based phenology extraction.
 
-    Returns dict with sos, eos, pos, max_ndvi, los, ti or None.
+    Returns dict with sos, eos, pos, max_ndvi, mean_ndvi, los, ti or None.
     """
     max_idx = int(np.argmax(vals))
     max_ndvi = float(vals[max_idx])
@@ -164,18 +184,24 @@ def _compute_phenology(dates, vals):
     if los < 30:
         return None  # too short
 
-    # Trapezoidal integral (NDVI × days) from SOS to EOS
+    # Collect values within the growing season (SOS..EOS)
+    season_vals = []
     ti = 0.0
-    for j in range(len(dates) - 1):
-        if dates[j] >= sos_date and dates[j + 1] <= eos_date:
+    for j in range(len(dates)):
+        if sos_date <= dates[j] <= eos_date:
+            season_vals.append(vals[j])
+        if j < len(dates) - 1 and dates[j] >= sos_date and dates[j + 1] <= eos_date:
             dt = (dates[j + 1] - dates[j]).days
             ti += 0.5 * (vals[j] + vals[j + 1]) * dt
+
+    mean_ndvi = float(np.mean(season_vals)) if season_vals else None
 
     return {
         'sos': sos_date,
         'eos': eos_date,
         'pos': pos_date,
         'max_ndvi': round(max_ndvi, 4),
+        'mean_ndvi': round(mean_ndvi, 4) if mean_ndvi is not None else None,
         'los': los,
         'ti': round(ti, 2),
     }
