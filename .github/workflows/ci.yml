@@ -130,5 +130,5 @@ jobs:
             docker compose -f docker-compose.prod.yml exec -T web python manage.py migrate --noinput
             docker compose -f docker-compose.prod.yml exec -T web python manage.py collectstatic --noinput
             docker image prune -f
-            # Setup cron for daily news fetch at 07:00 Moscow time (= 04:00 UTC)
-            ( crontab -l 2>/dev/null | grep -v 'fetch_news' | grep -v 'CRON_TZ' | grep -v 'PATH=.*local' ; printf 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n0 4 * * * cd /opt/edunabazar && docker compose -f docker-compose.prod.yml exec -T web python manage.py fetch_news --count 3 >> /var/log/fetch_news.log 2>&1\n' ) | crontab -
+            # Setup cron jobs
+            ( crontab -l 2>/dev/null | grep -v 'fetch_news' | grep -v 'check_monitoring' | grep -v 'CRON_TZ' | grep -v 'PATH=.*local' ; printf 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n# Daily news fetch at 07:00 Moscow (04:00 UTC)\n0 4 * * * cd /opt/edunabazar && docker compose -f docker-compose.prod.yml exec -T web python manage.py fetch_news --count 3 >> /var/log/fetch_news.log 2>&1\n# Daily MODIS monitoring check at 09:00 Moscow (06:00 UTC)\n0 6 * * * cd /opt/edunabazar && docker compose -f docker-compose.prod.yml exec -T web python manage.py check_monitoring >> /var/log/check_monitoring.log 2>&1\n' ) | crontab -
