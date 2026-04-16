@@ -1,0 +1,344 @@
+{% extends 'legacy/base.html' %}
+{% load static %}
+
+{% block title %}Отчёт по региону — MODIS NDVI{% endblock %}
+
+{% block head %}
+  <style>
+    .report-wrap {
+      max-width: 1100px; margin: 24px auto; padding: 0 20px;
+      font-family: 'Segoe UI', Roboto, Arial, sans-serif;
+    }
+    .report-header {
+      text-align: center; margin-bottom: 28px; padding-bottom: 16px;
+      border-bottom: 2px solid #2e7d32;
+    }
+    .report-header h1 { font-size: 22px; font-weight: 700; color: #1b5e20; margin: 0 0 6px 0; }
+    .report-header .subtitle { font-size: 14px; color: #555; }
+
+    .report-controls {
+      display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+      margin-bottom: 20px; padding: 12px 16px;
+      background: #f5f9f5; border-radius: 8px; border: 1px solid #c8e6c9;
+    }
+    .report-controls label { font-size: 13px; font-weight: 600; color: #333; }
+    .report-controls select {
+      height: 34px; padding: 0 8px; border: 1px solid #ccc; border-radius: 4px;
+      font-size: 13px; background: #fff;
+    }
+    .report-controls .btn-generate {
+      padding: 7px 20px; background: #2e7d32; color: #fff; border: none;
+      border-radius: 4px; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .report-controls .btn-generate:hover { background: #1b5e20; }
+    .btn-print {
+      padding: 7px 16px; background: #1565C0; color: #fff; border: none;
+      border-radius: 4px; font-size: 13px; font-weight: 600; cursor: pointer;
+      margin-left: auto;
+    }
+    .btn-print:hover { background: #0d47a1; }
+
+    .report-summary {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px; margin-bottom: 24px;
+    }
+    .summary-card {
+      background: #fff; border: 1px solid #e0e0e0; border-radius: 8px;
+      padding: 14px; text-align: center;
+    }
+    .summary-card .val { font-size: 24px; font-weight: 700; color: #2e7d32; }
+    .summary-card .lbl { font-size: 12px; color: #666; margin-top: 4px; }
+
+    .district-section {
+      background: #fff; border: 1px solid #e0e0e0; border-radius: 8px;
+      margin-bottom: 20px; overflow: hidden; page-break-inside: avoid;
+    }
+    .district-header {
+      display: flex; align-items: center; gap: 12px;
+      padding: 14px 18px; background: #f5f9f5; border-bottom: 1px solid #e0e0e0;
+    }
+    .district-header h2 { font-size: 16px; font-weight: 700; color: #1b5e20; margin: 0; flex: 1; }
+    .district-badge {
+      padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; color: #fff;
+    }
+    .badge-good { background: #4CAF50; }
+    .badge-moderate { background: #FF9800; }
+    .badge-low { background: #F44336; }
+    .badge-nodata { background: #9E9E9E; }
+    .district-body { padding: 16px 18px; }
+    .district-desc {
+      font-size: 13px; color: #333; margin-bottom: 12px; line-height: 1.5;
+    }
+    .district-desc .ndvi-val { font-weight: 700; }
+    .district-desc .z-info { font-style: italic; color: #666; }
+    .district-chart-wrap { height: 180px; position: relative; }
+
+    .report-loader {
+      text-align: center; padding: 40px; font-size: 15px; color: #777;
+    }
+    .report-loader.hidden { display: none; }
+
+    #report-content.hidden { display: none; }
+
+    .report-nav {
+      display: flex; gap: 0; margin-bottom: 16px;
+      border: 1px solid rgba(0,0,0,.12); border-radius: 6px; overflow: hidden;
+    }
+    .report-nav a {
+      flex: 1; text-align: center; padding: 8px 4px; font-size: 12px; font-weight: 600;
+      color: #555; text-decoration: none; background: #fafafa;
+      transition: background .15s, color .15s;
+    }
+    .report-nav a:hover { background: #e8f5e9; }
+    .report-nav a.active { background: #2e7d32; color: #fff; }
+
+    @media print {
+      .report-controls, .btn-print, .report-nav, nav, footer, .hide-on-med-and-down, .hide-on-large-only { display: none !important; }
+      .report-wrap { max-width: 100%; margin: 0; padding: 0 10px; }
+      .district-section { break-inside: avoid; }
+    }
+  </style>
+{% endblock %}
+
+{% block content %}
+<div class="report-wrap">
+  <div class="report-nav">
+    <a href="{% url 'agrocosmos:dashboard' %}">
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">timeline</i> Карта MODIS
+    </a>
+    <a href="{% url 'agrocosmos:report_region' %}" class="{% if active_page == 'report_region' %}active{% endif %}">
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">assessment</i> Отчёт по региону
+    </a>
+    <a href="{% url 'agrocosmos:report_district' %}" class="{% if active_page == 'report_district' %}active{% endif %}">
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">description</i> Отчёт по району
+    </a>
+  </div>
+
+  <div class="report-header">
+    <h1><i class="material-icons" style="font-size:24px; vertical-align:-4px; color:#2e7d32;">satellite_alt</i> Отчёт по состоянию вегетации (MODIS NDVI)</h1>
+    <div class="subtitle">Уровень региона — динамика NDVI по районам</div>
+  </div>
+
+  <div class="report-controls">
+    <label>Регион:</label>
+    <select id="rpt-region">
+      <option value="">— Выберите —</option>
+      {% for r in regions %}
+        <option value="{{ r.id }}" {% if region_id|stringformat:'s' == r.id|stringformat:'s' %}selected{% endif %}>{{ r.name }}</option>
+      {% endfor %}
+    </select>
+    <label>Год:</label>
+    <select id="rpt-year">
+      {% for y in years %}
+        <option value="{{ y }}" {% if year|stringformat:'s' == y|stringformat:'s' %}selected{% endif %}>{{ y }}</option>
+      {% endfor %}
+    </select>
+    <button class="btn-generate" id="btn-generate">Сформировать</button>
+    <button class="btn-print" id="btn-print" onclick="window.print()">🖨️ Печать</button>
+  </div>
+
+  <div class="report-loader hidden" id="rpt-loader">
+    <i class="material-icons" style="font-size:36px; color:#2e7d32; animation: spin 1s linear infinite;">autorenew</i>
+    <div style="margin-top:8px;">Формирование отчёта…</div>
+    <style>@keyframes spin { 100% { transform: rotate(360deg); } }</style>
+  </div>
+
+  <div id="report-content" class="hidden">
+    <div class="report-summary" id="rpt-summary"></div>
+    <div id="rpt-districts"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block site_footer %}{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script>
+(function () {
+  var regionSel = document.getElementById('rpt-region');
+  var yearSel = document.getElementById('rpt-year');
+  var btnGen = document.getElementById('btn-generate');
+  var loader = document.getElementById('rpt-loader');
+  var content = document.getElementById('report-content');
+  var summaryEl = document.getElementById('rpt-summary');
+  var districtsEl = document.getElementById('rpt-districts');
+
+  var districtCharts = [];
+
+  var districtColors = [
+    '#2e7d32','#1565C0','#E65100','#6A1B9A','#C62828','#00838F',
+    '#4E342E','#283593','#558B2F','#AD1457','#00695C','#4527A0',
+    '#BF360C','#1B5E20','#0D47A1','#F57F17','#880E4F','#006064'
+  ];
+
+  function ndviBadgeClass(ndvi) {
+    if (ndvi === null || ndvi === undefined) return 'badge-nodata';
+    if (ndvi >= 0.4) return 'badge-good';
+    if (ndvi >= 0.2) return 'badge-moderate';
+    return 'badge-low';
+  }
+
+  function destroyCharts() {
+    districtCharts.forEach(function (c) { c.destroy(); });
+    districtCharts = [];
+  }
+
+  function generate() {
+    var regionId = regionSel.value;
+    var year = yearSel.value;
+    if (!regionId) { alert('Выберите регион'); return; }
+
+    loader.classList.remove('hidden');
+    content.classList.add('hidden');
+    destroyCharts();
+
+    fetch('/agrocosmos/api/report/region/?region=' + regionId + '&year=' + year)
+      .then(function (r) { return r.json(); })
+      .then(function (resp) {
+        loader.classList.add('hidden');
+        if (!resp.ok) {
+          alert('Ошибка: ' + (resp.error || 'неизвестная'));
+          return;
+        }
+        content.classList.remove('hidden');
+        renderReport(resp);
+      })
+      .catch(function (err) {
+        loader.classList.add('hidden');
+        console.error(err);
+        alert('Ошибка загрузки данных');
+      });
+  }
+
+  function renderReport(resp) {
+    var region = resp.region;
+    var year = resp.year;
+    var districts = resp.districts;
+
+    // Summary cards
+    var withData = districts.filter(function (d) { return d.series.length > 0; });
+    var totalDistricts = districts.length;
+    var avgNdvi = 0;
+    if (withData.length) {
+      var sum = 0;
+      withData.forEach(function (d) { if (d.latest_ndvi) sum += d.latest_ndvi; });
+      avgNdvi = (sum / withData.length).toFixed(3);
+    }
+
+    summaryEl.innerHTML =
+      '<div class="summary-card"><div class="val">' + region.name + '</div><div class="lbl">Регион</div></div>' +
+      '<div class="summary-card"><div class="val">' + year + '</div><div class="lbl">Год</div></div>' +
+      '<div class="summary-card"><div class="val">' + totalDistricts + '</div><div class="lbl">Всего районов</div></div>' +
+      '<div class="summary-card"><div class="val">' + withData.length + '</div><div class="lbl">С данными NDVI</div></div>' +
+      '<div class="summary-card"><div class="val">' + avgNdvi + '</div><div class="lbl">Средн. NDVI (последн.)</div></div>';
+
+    // District sections
+    var html = '';
+    districts.forEach(function (d, idx) {
+      var badgeCls = ndviBadgeClass(d.latest_ndvi);
+      var ndviStr = d.latest_ndvi !== null ? d.latest_ndvi.toFixed(3) : '—';
+      var dateStr = d.latest_date ? d.latest_date : '';
+      var zStr = '';
+      if (d.latest_z_score !== null && d.latest_z_score !== undefined) {
+        var zSign = d.latest_z_score >= 0 ? '+' : '';
+        zStr = ' (z-score: ' + zSign + d.latest_z_score.toFixed(2) + ')';
+      }
+
+      html += '<div class="district-section">'
+        + '<div class="district-header">'
+        + '<h2>' + (idx + 1) + '. ' + esc(d.district_name) + '</h2>'
+        + '<span class="district-badge ' + badgeCls + '">' + esc(d.assessment) + '</span>'
+        + '</div>'
+        + '<div class="district-body">'
+        + '<div class="district-desc">'
+        + 'NDVI на ' + esc(dateStr) + ': <span class="ndvi-val">' + ndviStr + '</span>'
+        + '<span class="z-info">' + esc(zStr) + '</span>. '
+        + esc(d.assessment) + '.'
+        + '</div>';
+
+      if (d.series.length) {
+        html += '<div class="district-chart-wrap"><canvas id="chart-d-' + d.district_id + '"></canvas></div>';
+      } else {
+        html += '<div style="color:#999; font-size:13px; padding:12px 0;">Нет данных NDVI за выбранный период</div>';
+      }
+
+      html += '</div></div>';
+    });
+
+    districtsEl.innerHTML = html;
+
+    // Render charts
+    districts.forEach(function (d, idx) {
+      if (!d.series.length) return;
+      var labels = d.series.map(function (s) { return s.date.substring(5); });
+      var vals = d.series.map(function (s) { return s.mean_ndvi; });
+      var ptColors = d.series.map(function (s) {
+        if (s.z_score !== null && s.z_score !== undefined) {
+          if (s.z_score < -2) return '#D32F2F';
+          if (s.z_score < -1) return '#FF9800';
+          if (s.z_score > 2) return '#1565C0';
+          if (s.z_score > 1) return '#42A5F5';
+        }
+        return districtColors[idx % districtColors.length];
+      });
+
+      var ctx = document.getElementById('chart-d-' + d.district_id);
+      if (!ctx) return;
+
+      var chart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: d.district_name,
+            data: vals,
+            borderColor: districtColors[idx % districtColors.length],
+            backgroundColor: 'transparent',
+            borderWidth: 2,
+            fill: false,
+            pointRadius: 3,
+            pointBackgroundColor: ptColors,
+            pointBorderColor: ptColors,
+            tension: 0.3,
+            spanGaps: true,
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                afterLabel: function (ctx) {
+                  var s = d.series[ctx.dataIndex];
+                  if (s && s.z_score !== null && s.z_score !== undefined) {
+                    return 'z-score: ' + s.z_score.toFixed(2);
+                  }
+                  return '';
+                }
+              }
+            }
+          },
+          scales: {
+            x: { ticks: { font: { size: 9 }, maxRotation: 45 } },
+            y: { min: 0, max: 1, ticks: { font: { size: 10 } } }
+          }
+        }
+      });
+      districtCharts.push(chart);
+    });
+  }
+
+  function esc(s) { return (s || '').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  btnGen.addEventListener('click', generate);
+
+  // Auto-generate if params are present
+  if (regionSel.value) {
+    generate();
+  }
+})();
+</script>
+{% endblock %}
