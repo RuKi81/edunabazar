@@ -1,0 +1,463 @@
+{% extends 'legacy/base.html' %}
+{% load static %}
+
+{% block title %}Отчёт по району — MODIS NDVI{% endblock %}
+
+{% block head %}
+  <style>
+    .report-wrap {
+      max-width: 1100px; margin: 24px auto; padding: 0 20px;
+      font-family: 'Segoe UI', Roboto, Arial, sans-serif;
+    }
+    .report-header {
+      text-align: center; margin-bottom: 28px; padding-bottom: 16px;
+      border-bottom: 2px solid #1565C0;
+    }
+    .report-header h1 { font-size: 22px; font-weight: 700; color: #0d47a1; margin: 0 0 6px 0; }
+    .report-header .subtitle { font-size: 14px; color: #555; }
+
+    .report-controls {
+      display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+      margin-bottom: 20px; padding: 12px 16px;
+      background: #e8eaf6; border-radius: 8px; border: 1px solid #c5cae9;
+    }
+    .report-controls label { font-size: 13px; font-weight: 600; color: #333; }
+    .report-controls select {
+      height: 34px; padding: 0 8px; border: 1px solid #ccc; border-radius: 4px;
+      font-size: 13px; background: #fff;
+    }
+    .report-controls .btn-generate {
+      padding: 7px 20px; background: #1565C0; color: #fff; border: none;
+      border-radius: 4px; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .report-controls .btn-generate:hover { background: #0d47a1; }
+    .btn-print {
+      padding: 7px 16px; background: #2e7d32; color: #fff; border: none;
+      border-radius: 4px; font-size: 13px; font-weight: 600; cursor: pointer;
+      margin-left: auto;
+    }
+    .btn-print:hover { background: #1b5e20; }
+
+    .report-summary {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px; margin-bottom: 24px;
+    }
+    .summary-card {
+      background: #fff; border: 1px solid #e0e0e0; border-radius: 8px;
+      padding: 14px; text-align: center;
+    }
+    .summary-card .val { font-size: 22px; font-weight: 700; color: #1565C0; }
+    .summary-card .lbl { font-size: 12px; color: #666; margin-top: 4px; }
+
+    .overall-chart-section {
+      background: #fff; border: 1px solid #e0e0e0; border-radius: 8px;
+      padding: 18px; margin-bottom: 24px;
+    }
+    .overall-chart-section h2 {
+      font-size: 16px; font-weight: 700; color: #1b5e20; margin: 0 0 12px 0;
+    }
+    .overall-chart-wrap { height: 220px; position: relative; }
+
+    .crop-section {
+      background: #fff; border: 1px solid #e0e0e0; border-radius: 8px;
+      margin-bottom: 20px; overflow: hidden; page-break-inside: avoid;
+    }
+    .crop-header {
+      display: flex; align-items: center; gap: 12px;
+      padding: 14px 18px; border-bottom: 1px solid #e0e0e0;
+    }
+    .crop-icon {
+      width: 40px; height: 40px; border-radius: 6px; display: flex;
+      align-items: center; justify-content: center; font-size: 22px; color: #fff;
+    }
+    .crop-icon-arable { background: #8BC34A; }
+    .crop-icon-hayfield { background: #FFC107; }
+    .crop-icon-pasture { background: #FF9800; }
+    .crop-icon-perennial { background: #4CAF50; }
+    .crop-icon-other { background: #9E9E9E; }
+    .crop-title { flex: 1; }
+    .crop-title h3 { font-size: 16px; font-weight: 700; color: #333; margin: 0; }
+    .crop-title .crop-meta { font-size: 12px; color: #666; margin-top: 2px; }
+    .crop-badge {
+      padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; color: #fff;
+    }
+    .badge-good { background: #4CAF50; }
+    .badge-moderate { background: #FF9800; }
+    .badge-low { background: #F44336; }
+    .badge-nodata { background: #9E9E9E; }
+    .crop-body { padding: 16px 18px; }
+    .crop-stats {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 8px; margin-bottom: 14px;
+    }
+    .crop-stat {
+      background: #f9f9f9; border-radius: 6px; padding: 8px 10px; text-align: center;
+    }
+    .crop-stat .sv { font-size: 16px; font-weight: 700; color: #333; }
+    .crop-stat .sl { font-size: 10px; color: #888; margin-top: 2px; }
+    .crop-chart-wrap { height: 170px; position: relative; }
+
+    .pheno-row {
+      display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;
+      padding-top: 10px; border-top: 1px solid #f0f0f0;
+    }
+    .pheno-tag {
+      font-size: 11px; background: #e8f5e9; padding: 3px 8px; border-radius: 4px; color: #2e7d32;
+    }
+
+    .report-loader {
+      text-align: center; padding: 40px; font-size: 15px; color: #777;
+    }
+    .report-loader.hidden { display: none; }
+    #report-content.hidden { display: none; }
+
+    .report-nav {
+      display: flex; gap: 0; margin-bottom: 16px;
+      border: 1px solid rgba(0,0,0,.12); border-radius: 6px; overflow: hidden;
+    }
+    .report-nav a {
+      flex: 1; text-align: center; padding: 8px 4px; font-size: 12px; font-weight: 600;
+      color: #555; text-decoration: none; background: #fafafa;
+      transition: background .15s, color .15s;
+    }
+    .report-nav a:hover { background: #e8f5e9; }
+    .report-nav a.active { background: #2e7d32; color: #fff; }
+
+    @media print {
+      .report-controls, .btn-print, .report-nav, nav, footer, .hide-on-med-and-down, .hide-on-large-only { display: none !important; }
+      .report-wrap { max-width: 100%; margin: 0; padding: 0 10px; }
+      .crop-section { break-inside: avoid; }
+    }
+  </style>
+{% endblock %}
+
+{% block content %}
+<div class="report-wrap">
+  <div class="report-nav">
+    <a href="{% url 'agrocosmos:dashboard' %}">
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">timeline</i> Карта MODIS
+    </a>
+    <a href="{% url 'agrocosmos:report_region' %}" class="{% if active_page == 'report_region' %}active{% endif %}">
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">assessment</i> Отчёт по региону
+    </a>
+    <a href="{% url 'agrocosmos:report_district' %}" class="{% if active_page == 'report_district' %}active{% endif %}">
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">description</i> Отчёт по району
+    </a>
+  </div>
+
+  <div class="report-header">
+    <h1><i class="material-icons" style="font-size:24px; vertical-align:-4px; color:#1565C0;">description</i> Отчёт по состоянию угодий (MODIS NDVI)</h1>
+    <div class="subtitle">Уровень района — оценка по видам угодий</div>
+  </div>
+
+  <div class="report-controls">
+    <label>Регион:</label>
+    <select id="rpt-region">
+      <option value="">— Выберите —</option>
+      {% for r in regions %}
+        <option value="{{ r.id }}" {% if region_id|stringformat:'s' == r.id|stringformat:'s' %}selected{% endif %}>{{ r.name }}</option>
+      {% endfor %}
+    </select>
+    <label>Район:</label>
+    <select id="rpt-district">
+      <option value="">— Выберите —</option>
+      {% for d in districts %}
+        <option value="{{ d.id }}" {% if district_id|stringformat:'s' == d.id|stringformat:'s' %}selected{% endif %}>{{ d.name }}</option>
+      {% endfor %}
+    </select>
+    <label>Год:</label>
+    <select id="rpt-year">
+      {% for y in years %}
+        <option value="{{ y }}" {% if year|stringformat:'s' == y|stringformat:'s' %}selected{% endif %}>{{ y }}</option>
+      {% endfor %}
+    </select>
+    <button class="btn-generate" id="btn-generate">Сформировать</button>
+    <button class="btn-print" onclick="window.print()">🖨️ Печать</button>
+  </div>
+
+  <div class="report-loader hidden" id="rpt-loader">
+    <i class="material-icons" style="font-size:36px; color:#1565C0; animation: spin 1s linear infinite;">autorenew</i>
+    <div style="margin-top:8px;">Формирование отчёта…</div>
+    <style>@keyframes spin { 100% { transform: rotate(360deg); } }</style>
+  </div>
+
+  <div id="report-content" class="hidden">
+    <div class="report-summary" id="rpt-summary"></div>
+    <div class="overall-chart-section" id="overall-section" style="display:none;">
+      <h2><i class="material-icons" style="font-size:18px; vertical-align:-3px; color:#2e7d32;">show_chart</i> Общая динамика NDVI по району</h2>
+      <div class="overall-chart-wrap"><canvas id="chart-overall"></canvas></div>
+    </div>
+    <div id="rpt-crops"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block site_footer %}{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script>
+(function () {
+  var regionSel = document.getElementById('rpt-region');
+  var districtSel = document.getElementById('rpt-district');
+  var yearSel = document.getElementById('rpt-year');
+  var btnGen = document.getElementById('btn-generate');
+  var loader = document.getElementById('rpt-loader');
+  var content = document.getElementById('report-content');
+  var summaryEl = document.getElementById('rpt-summary');
+  var cropsEl = document.getElementById('rpt-crops');
+
+  var allCharts = [];
+
+  var cropColors = {
+    arable: '#8BC34A', hayfield: '#FFC107', pasture: '#FF9800',
+    perennial: '#4CAF50', other: '#9E9E9E'
+  };
+  var cropIcons = {
+    arable: '🌾', hayfield: '🌿', pasture: '🐄', perennial: '🌳', other: '📐'
+  };
+
+  // Load districts when region changes
+  regionSel.addEventListener('change', function () {
+    var regionId = this.value;
+    districtSel.innerHTML = '<option value="">— Выберите —</option>';
+    if (!regionId) return;
+    fetch('/agrocosmos/api/districts/?region=' + regionId)
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data.features) return;
+        data.features.forEach(function (f) {
+          var opt = document.createElement('option');
+          opt.value = f.properties.id;
+          opt.textContent = f.properties.name;
+          districtSel.appendChild(opt);
+        });
+      });
+  });
+
+  function ndviBadgeClass(ndvi) {
+    if (ndvi === null || ndvi === undefined) return 'badge-nodata';
+    if (ndvi >= 0.4) return 'badge-good';
+    if (ndvi >= 0.2) return 'badge-moderate';
+    return 'badge-low';
+  }
+
+  function destroyCharts() {
+    allCharts.forEach(function (c) { c.destroy(); });
+    allCharts = [];
+  }
+
+  function generate() {
+    var districtId = districtSel.value;
+    var year = yearSel.value;
+    if (!districtId) { alert('Выберите район'); return; }
+
+    loader.classList.remove('hidden');
+    content.classList.add('hidden');
+    destroyCharts();
+
+    fetch('/agrocosmos/api/report/district/?district=' + districtId + '&year=' + year)
+      .then(function (r) { return r.json(); })
+      .then(function (resp) {
+        loader.classList.add('hidden');
+        if (!resp.ok) {
+          alert('Ошибка: ' + (resp.error || 'неизвестная'));
+          return;
+        }
+        content.classList.remove('hidden');
+        renderReport(resp);
+      })
+      .catch(function (err) {
+        loader.classList.add('hidden');
+        console.error(err);
+        alert('Ошибка загрузки данных');
+      });
+  }
+
+  function renderReport(resp) {
+    var district = resp.district;
+    var region = resp.region;
+    var year = resp.year;
+    var crops = resp.crop_types;
+    var overall = resp.overall_series;
+
+    // Summary
+    var totalFl = 0, totalArea = 0;
+    crops.forEach(function (c) { totalFl += c.count; totalArea += c.area_ha; });
+
+    summaryEl.innerHTML =
+      '<div class="summary-card"><div class="val">' + esc(district.name) + '</div><div class="lbl">' + esc(region.name) + '</div></div>' +
+      '<div class="summary-card"><div class="val">' + year + '</div><div class="lbl">Год</div></div>' +
+      '<div class="summary-card"><div class="val">' + totalFl.toLocaleString('ru') + '</div><div class="lbl">Угодий</div></div>' +
+      '<div class="summary-card"><div class="val">' + totalArea.toLocaleString('ru', {maximumFractionDigits:1}) + '</div><div class="lbl">Площадь, га</div></div>' +
+      '<div class="summary-card"><div class="val">' + crops.length + '</div><div class="lbl">Видов угодий</div></div>';
+
+    // Overall chart
+    var overallSection = document.getElementById('overall-section');
+    if (overall && overall.length) {
+      overallSection.style.display = 'block';
+      var oLabels = overall.map(function (s) { return s.date.substring(5); });
+      var oVals = overall.map(function (s) { return s.mean_ndvi; });
+
+      // Also build datasets for each crop type overlay
+      var datasets = [{
+        label: 'Все угодья',
+        data: oVals,
+        borderColor: '#333',
+        backgroundColor: 'transparent',
+        borderWidth: 2.5,
+        fill: false,
+        pointRadius: 3,
+        tension: 0.3,
+        spanGaps: true,
+      }];
+
+      // Collect all dates across all crop types
+      var allDatesSet = new Set(oLabels);
+      crops.forEach(function (c) {
+        c.series.forEach(function (s) { allDatesSet.add(s.date.substring(5)); });
+      });
+      var allDates = Array.from(allDatesSet).sort();
+
+      // Rebuild overall vals aligned to allDates
+      var oLookup = {};
+      overall.forEach(function (s) { oLookup[s.date.substring(5)] = s.mean_ndvi; });
+      datasets[0].data = allDates.map(function (d) { return oLookup[d] !== undefined ? oLookup[d] : null; });
+
+      crops.forEach(function (c) {
+        var lookup = {};
+        c.series.forEach(function (s) { lookup[s.date.substring(5)] = s.mean_ndvi; });
+        datasets.push({
+          label: c.label,
+          data: allDates.map(function (d) { return lookup[d] !== undefined ? lookup[d] : null; }),
+          borderColor: cropColors[c.crop_type] || '#999',
+          backgroundColor: 'transparent',
+          borderWidth: 1.5,
+          borderDash: [4, 2],
+          fill: false,
+          pointRadius: 2,
+          tension: 0.3,
+          spanGaps: true,
+        });
+      });
+
+      var overallChart = new Chart(document.getElementById('chart-overall'), {
+        type: 'line',
+        data: { labels: allDates, datasets: datasets },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: true, labels: { boxWidth: 14, font: { size: 11 } } }
+          },
+          scales: {
+            x: { ticks: { font: { size: 9 }, maxRotation: 45 } },
+            y: { min: 0, max: 1, ticks: { font: { size: 10 } } }
+          }
+        }
+      });
+      allCharts.push(overallChart);
+    } else {
+      overallSection.style.display = 'none';
+    }
+
+    // Crop type sections
+    var html = '';
+    crops.forEach(function (c, idx) {
+      var badgeCls = ndviBadgeClass(c.latest_ndvi);
+      var ndviStr = c.latest_ndvi !== null ? c.latest_ndvi.toFixed(3) : '—';
+      var dateStr = c.latest_date || '';
+      var icon = cropIcons[c.crop_type] || '📐';
+
+      html += '<div class="crop-section">'
+        + '<div class="crop-header">'
+        + '<div class="crop-icon crop-icon-' + c.crop_type + '">' + icon + '</div>'
+        + '<div class="crop-title">'
+        + '<h3>' + esc(c.label) + '</h3>'
+        + '<div class="crop-meta">' + c.count.toLocaleString('ru') + ' угодий · ' + c.area_ha.toLocaleString('ru', {maximumFractionDigits:1}) + ' га</div>'
+        + '</div>'
+        + '<span class="crop-badge ' + badgeCls + '">' + esc(c.assessment) + '</span>'
+        + '</div>'
+        + '<div class="crop-body">'
+        + '<div class="crop-stats">'
+        + '<div class="crop-stat"><div class="sv">' + ndviStr + '</div><div class="sl">Последн. NDVI</div></div>'
+        + '<div class="crop-stat"><div class="sv">' + esc(dateStr) + '</div><div class="sl">Дата</div></div>'
+        + '<div class="crop-stat"><div class="sv">' + (c.latest_z_score !== null && c.latest_z_score !== undefined ? (c.latest_z_score >= 0 ? '+' : '') + c.latest_z_score.toFixed(2) : '—') + '</div><div class="sl">z-score</div></div>'
+        + '<div class="crop-stat"><div class="sv">' + c.count.toLocaleString('ru') + '</div><div class="sl">Кол-во угодий</div></div>'
+        + '<div class="crop-stat"><div class="sv">' + c.area_ha.toLocaleString('ru', {maximumFractionDigits:1}) + '</div><div class="sl">Площадь, га</div></div>'
+        + '</div>';
+
+      if (c.series.length) {
+        html += '<div class="crop-chart-wrap"><canvas id="chart-crop-' + idx + '"></canvas></div>';
+      } else {
+        html += '<div style="color:#999; font-size:13px; padding:8px 0;">Нет данных NDVI</div>';
+      }
+
+      // Phenology
+      if (c.phenology) {
+        var p = c.phenology;
+        html += '<div class="pheno-row">';
+        if (p.avg_sos) html += '<span class="pheno-tag">🌱 SOS: ' + esc(p.avg_sos) + '</span>';
+        if (p.avg_pos) html += '<span class="pheno-tag">🏔️ POS: ' + esc(p.avg_pos) + '</span>';
+        if (p.avg_eos) html += '<span class="pheno-tag">🍂 EOS: ' + esc(p.avg_eos) + '</span>';
+        if (p.avg_los) html += '<span class="pheno-tag">📏 Сезон: ' + p.avg_los + ' дн.</span>';
+        if (p.avg_max_ndvi) html += '<span class="pheno-tag">📈 Макс: ' + p.avg_max_ndvi + '</span>';
+        if (p.avg_mean_ndvi) html += '<span class="pheno-tag">📊 Средн: ' + p.avg_mean_ndvi + '</span>';
+        html += '</div>';
+      }
+
+      html += '</div></div>';
+    });
+
+    cropsEl.innerHTML = html;
+
+    // Render per-crop charts
+    crops.forEach(function (c, idx) {
+      if (!c.series.length) return;
+      var labels = c.series.map(function (s) { return s.date.substring(5); });
+      var vals = c.series.map(function (s) { return s.mean_ndvi; });
+
+      var ctx = document.getElementById('chart-crop-' + idx);
+      if (!ctx) return;
+
+      var chart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: c.label,
+            data: vals,
+            borderColor: cropColors[c.crop_type] || '#999',
+            backgroundColor: (cropColors[c.crop_type] || '#999') + '22',
+            borderWidth: 2,
+            fill: true,
+            pointRadius: 3,
+            tension: 0.3,
+            spanGaps: true,
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { font: { size: 9 }, maxRotation: 45 } },
+            y: { min: 0, max: 1, ticks: { font: { size: 10 } } }
+          }
+        }
+      });
+      allCharts.push(chart);
+    });
+  }
+
+  function esc(s) { return (s || '').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  btnGen.addEventListener('click', generate);
+
+  // Auto-generate if params are present
+  if (districtSel.value) {
+    generate();
+  }
+})();
+</script>
+{% endblock %}

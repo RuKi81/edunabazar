@@ -230,6 +230,9 @@
         <a href="{% url 'agrocosmos:raster_dashboard' %}" class="{% if active_page == 'raster' %}active{% endif %}">
           <i class="material-icons" style="font-size:14px; vertical-align:-2px;">satellite</i> Sentinel / Landsat
         </a>
+        <a href="{% url 'agrocosmos:report_region' %}" class="{% if active_page == 'report_region' %}active{% endif %}">
+          <i class="material-icons" style="font-size:14px; vertical-align:-2px;">assessment</i> Отчёты
+        </a>
       </div>
 
       <select id="agro-region" class="browser-default agro-ui__select">
@@ -332,6 +335,27 @@
     <!-- ── Right sidebar: cards + charts ── -->
     <div class="agro-ui__right">
       <div id="agro-list"></div>
+
+      <!-- Report buttons -->
+      <div id="report-buttons" style="padding:10px 12px; border-top:1px solid rgba(0,0,0,.08);">
+        <div style="font-size:12px; font-weight:700; color:#333; margin-bottom:8px;">
+          <i class="material-icons" style="font-size:15px; vertical-align:-3px; color:#2e7d32;">assessment</i> Отчётные формы
+        </div>
+        <a id="btn-report-region" href="{% url 'agrocosmos:report_region' %}"
+           style="display:block; text-align:center; padding:8px 0; margin-bottom:6px;
+                  background:#2e7d32; color:#fff; border-radius:5px; font-size:12px;
+                  font-weight:600; text-decoration:none; transition:background .15s;"
+           onmouseover="this.style.background='#1b5e20'" onmouseout="this.style.background='#2e7d32'">
+          <i class="material-icons" style="font-size:14px; vertical-align:-2px;">map</i> Отчёт по региону
+        </a>
+        <a id="btn-report-district" href="{% url 'agrocosmos:report_district' %}"
+           style="display:block; text-align:center; padding:8px 0;
+                  background:#1565C0; color:#fff; border-radius:5px; font-size:12px;
+                  font-weight:600; text-decoration:none; transition:background .15s;"
+           onmouseover="this.style.background='#0d47a1'" onmouseout="this.style.background='#1565C0'">
+          <i class="material-icons" style="font-size:14px; vertical-align:-2px;">description</i> Отчёт по району
+        </a>
+      </div>
 
       <!-- Regional NDVI chart -->
       <div id="ndvi-region-chart-wrap" style="display:none; padding:12px; border-top:1px solid rgba(0,0,0,.08);">
@@ -1224,6 +1248,25 @@
     if (regionSel.value) {
       regionSel.dispatchEvent(new Event('change'));
     }
+
+    /* ── Report button links (pass current selection) ── */
+    (function () {
+      var btnRegion = document.getElementById('btn-report-region');
+      var btnDistrict = document.getElementById('btn-report-district');
+      function updateReportLinks() {
+        var rid = regionSel.value;
+        var did = districtSel.value;
+        var yr = getSelectedYears()[0] || '';
+        btnRegion.href = '{% url "agrocosmos:report_region" %}' + (rid ? '?region=' + rid + '&year=' + yr : '');
+        btnDistrict.href = '{% url "agrocosmos:report_district" %}' + (rid ? '?region=' + rid + (did ? '&district=' + did : '') + '&year=' + yr : '');
+      }
+      regionSel.addEventListener('change', updateReportLinks);
+      districtSel.addEventListener('change', updateReportLinks);
+      document.querySelectorAll('.agro-year-cb').forEach(function (cb) {
+        cb.addEventListener('change', updateReportLinks);
+      });
+      updateReportLinks();
+    })();
 
     /* ── Sidebar collapse toggles ───────────────── */
     (function () {

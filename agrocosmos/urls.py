@@ -6,6 +6,8 @@ app_name = 'agrocosmos'
 urlpatterns = [
     path('', views.dashboard, name='dashboard'),
     path('raster/', views.raster_dashboard, name='raster_dashboard'),
+    path('report/region/', views.report_region, name='report_region'),
+    path('report/district/', views.report_district, name='report_district'),
     path('api/regions/', views.api_regions, name='api_regions'),
     path('api/districts/', views.api_districts, name='api_districts'),
     path('api/farmlands/', views.api_farmlands, name='api_farmlands'),
@@ -15,4 +17,6 @@ urlpatterns = [
     path('api/raster-tile/<int:z>/<int:x>/<int:y>.png', views.api_raster_tile, name='api_raster_tile'),
     path('api/raster-composites/', views.api_raster_composites, name='api_raster_composites'),
     path('api/phenology/', views.api_phenology, name='api_phenology'),
+    path('api/report/region/', views.api_report_region, name='api_report_region'),
+    path('api/report/district/', views.api_report_district, name='api_report_district'),
 ]
