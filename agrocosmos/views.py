@@ -884,6 +884,20 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
             district_data[did]['latest_date'] = str(d)
             district_data[did]['latest_z_score'] = z_score
 
+    # Build baseline series per district: list of {doy, mean_ndvi, std_ndvi}
+    baseline_series = {}
+    for did, doy_map in bl_lookup.items():
+        bl_list = []
+        for doy in sorted(doy_map.keys()):
+            m, s = doy_map[doy]
+            d_date = date(year, 1, 1) + timedelta(days=doy - 1)
+            bl_list.append({
+                'date': str(d_date),
+                'mean_ndvi': _safe_round(m),
+                'std_ndvi': _safe_round(s),
+            })
+        baseline_series[did] = bl_list
+
     # Add assessment text
     result = []
     for d in districts:
@@ -896,6 +910,7 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
             'latest_z_score': None,
         })
         dd['assessment'] = _ndvi_assessment(dd.get('latest_ndvi'), dd.get('latest_z_score'))
+        dd['baseline'] = baseline_series.get(d.pk, [])
         result.append(dd)
 
     return JsonResponse({
@@ -986,13 +1001,18 @@ def api_report_district(request: HttpRequest) -> JsonResponse:
             'mean_ndvi': _safe_round(weighted),
         })
 
-    # Baseline for the district
-    baseline_qs = NdviBaseline.objects.filter(
-        district=district, crop_type='',
-    ).values('day_of_year', 'mean_ndvi', 'std_ndvi').order_by('day_of_year')
-    bl_lookup = {}
-    for b in baseline_qs:
-        bl_lookup[b['day_of_year']] = (b['mean_ndvi'], b['std_ndvi'])
+    # Baseline for the district (all crop types + per crop type)
+    all_bl_qs = NdviBaseline.objects.filter(
+        district=district,
+    ).values('day_of_year', 'mean_ndvi', 'std_ndvi', 'crop_type').order_by('crop_type', 'day_of_year')
+    bl_lookup = {}        # overall: doy → (mean, std)
+    bl_by_crop = {}       # crop_type → {doy: (mean, std)}
+    for b in all_bl_qs:
+        ct = b['crop_type']
+        if ct == '':
+            bl_lookup[b['day_of_year']] = (b['mean_ndvi'], b['std_ndvi'])
+        else:
+            bl_by_crop.setdefault(ct, {})[b['day_of_year']] = (b['mean_ndvi'], b['std_ndvi'])
 
     # Build per-crop data
     crop_data = {}
@@ -1087,8 +1107,26 @@ def api_report_district(request: HttpRequest) -> JsonResponse:
             'avg_eos': _doy_to_str(p['avg_eos']),
             'avg_pos': _doy_to_str(p['avg_pos']),
         }
+    # Build baseline series helper
+    def _bl_to_series(doy_map):
+        bl_list = []
+        for doy in sorted(doy_map.keys()):
+            m, s = doy_map[doy]
+            d_date = date(year, 1, 1) + timedelta(days=doy - 1)
+            bl_list.append({
+                'date': str(d_date),
+                'mean_ndvi': _safe_round(m),
+                'std_ndvi': _safe_round(s),
+            })
+        return bl_list
+
+    overall_baseline = _bl_to_series(bl_lookup)
+
     for cd in result:
         cd['phenology'] = pheno_map.get(cd['crop_type'])
+        # Per-crop baseline; fallback to overall
+        crop_bl = bl_by_crop.get(cd['crop_type'], bl_lookup)
+        cd['baseline'] = _bl_to_series(crop_bl) if isinstance(crop_bl, dict) else []
 
     return JsonResponse({
         'ok': True,
@@ -1096,6 +1134,7 @@ def api_report_district(request: HttpRequest) -> JsonResponse:
         'region': {'id': district.region.pk, 'name': district.region.name},
         'year': year,
         'overall_series': overall_series,
+        'overall_baseline': overall_baseline,
         'crop_types': result,
     })
 

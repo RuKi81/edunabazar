@@ -209,6 +209,20 @@
 
   var allCharts = [];
 
+  function buildBaselineDatasets(baseline, labels) {
+    if (!baseline || !baseline.length) return [];
+    var blLookup = {};
+    baseline.forEach(function (b) { blLookup[b.date.substring(5)] = b; });
+    var blVals  = labels.map(function (l) { var b = blLookup[l]; return b ? b.mean_ndvi : null; });
+    var blUpper = labels.map(function (l) { var b = blLookup[l]; return b ? Math.min((b.mean_ndvi || 0) + (b.std_ndvi || 0), 1.0) : null; });
+    var blLower = labels.map(function (l) { var b = blLookup[l]; return b ? Math.max((b.mean_ndvi || 0) - (b.std_ndvi || 0), 0) : null; });
+    return [
+      { label: '±σ (верх)', data: blUpper, borderColor: 'transparent', backgroundColor: 'rgba(158,158,158,0.18)', borderWidth: 0, fill: '+1', pointRadius: 0, tension: 0.3, spanGaps: true, order: 12 },
+      { label: 'Среднее многолетнее', data: blVals, borderColor: '#9E9E9E', backgroundColor: 'transparent', borderWidth: 2, borderDash: [6, 4], fill: false, pointRadius: 0, tension: 0.3, spanGaps: true, order: 11 },
+      { label: '±σ (низ)', data: blLower, borderColor: 'transparent', backgroundColor: 'rgba(158,158,158,0.18)', borderWidth: 0, fill: '-1', pointRadius: 0, tension: 0.3, spanGaps: true, order: 12 }
+    ];
+  }
+
   var cropColors = {
     arable: '#8BC34A', hayfield: '#FFC107', pasture: '#FF9800',
     perennial: '#4CAF50', other: '#9E9E9E'
@@ -294,15 +308,28 @@
 
     // Overall chart
     var overallSection = document.getElementById('overall-section');
+    var overallBaseline = resp.overall_baseline || [];
     if (overall && overall.length) {
       overallSection.style.display = 'block';
-      var oLabels = overall.map(function (s) { return s.date.substring(5); });
-      var oVals = overall.map(function (s) { return s.mean_ndvi; });
 
-      // Also build datasets for each crop type overlay
-      var datasets = [{
+      // Collect all dates across data + baseline + crop types
+      var allDatesSet = new Set();
+      overall.forEach(function (s) { allDatesSet.add(s.date.substring(5)); });
+      overallBaseline.forEach(function (b) { allDatesSet.add(b.date.substring(5)); });
+      crops.forEach(function (c) {
+        c.series.forEach(function (s) { allDatesSet.add(s.date.substring(5)); });
+      });
+      var allDates = Array.from(allDatesSet).sort();
+
+      // Baseline datasets first (gray band behind everything)
+      var datasets = buildBaselineDatasets(overallBaseline, allDates);
+
+      // Overall data line
+      var oLookup = {};
+      overall.forEach(function (s) { oLookup[s.date.substring(5)] = s.mean_ndvi; });
+      datasets.push({
         label: 'Все угодья',
-        data: oVals,
+        data: allDates.map(function (d) { return oLookup[d] !== undefined ? oLookup[d] : null; }),
         borderColor: '#333',
         backgroundColor: 'transparent',
         borderWidth: 2.5,
@@ -310,20 +337,9 @@
         pointRadius: 3,
         tension: 0.3,
         spanGaps: true,
-      }];
-
-      // Collect all dates across all crop types
-      var allDatesSet = new Set(oLabels);
-      crops.forEach(function (c) {
-        c.series.forEach(function (s) { allDatesSet.add(s.date.substring(5)); });
       });
-      var allDates = Array.from(allDatesSet).sort();
 
-      // Rebuild overall vals aligned to allDates
-      var oLookup = {};
-      overall.forEach(function (s) { oLookup[s.date.substring(5)] = s.mean_ndvi; });
-      datasets[0].data = allDates.map(function (d) { return oLookup[d] !== undefined ? oLookup[d] : null; });
-
+      // Per-crop overlay lines
       crops.forEach(function (c) {
         var lookup = {};
         c.series.forEach(function (s) { lookup[s.date.substring(5)] = s.mean_ndvi; });
@@ -348,7 +364,13 @@
           responsive: true,
           maintainAspectRatio: false,
           plugins: {
-            legend: { display: true, labels: { boxWidth: 14, font: { size: 11 } } }
+            legend: {
+              display: true,
+              labels: {
+                boxWidth: 14, font: { size: 11 },
+                filter: function (item) { return item.text.indexOf('±σ') < 0; }
+              }
+            }
           },
           scales: {
             x: { ticks: { font: { size: 9 }, maxRotation: 45 } },
@@ -414,32 +436,53 @@
     // Render per-crop charts
     crops.forEach(function (c, idx) {
       if (!c.series.length) return;
-      var labels = c.series.map(function (s) { return s.date.substring(5); });
-      var vals = c.series.map(function (s) { return s.mean_ndvi; });
+      var cropBaseline = c.baseline || [];
+
+      // Merge data + baseline dates
+      var cropDatesSet = new Set();
+      c.series.forEach(function (s) { cropDatesSet.add(s.date.substring(5)); });
+      cropBaseline.forEach(function (b) { cropDatesSet.add(b.date.substring(5)); });
+      var labels = Array.from(cropDatesSet).sort();
+
+      var dataLookup = {};
+      c.series.forEach(function (s) { dataLookup[s.date.substring(5)] = s.mean_ndvi; });
+      var vals = labels.map(function (l) { return dataLookup[l] !== undefined ? dataLookup[l] : null; });
+
+      // Baseline band + mean
+      var datasets = buildBaselineDatasets(cropBaseline, labels);
+
+      // Data line
+      datasets.push({
+        label: c.label,
+        data: vals,
+        borderColor: cropColors[c.crop_type] || '#999',
+        backgroundColor: (cropColors[c.crop_type] || '#999') + '22',
+        borderWidth: 2,
+        fill: false,
+        pointRadius: 3,
+        tension: 0.3,
+        spanGaps: true,
+      });
 
       var ctx = document.getElementById('chart-crop-' + idx);
       if (!ctx) return;
 
+      var hasBaseline = cropBaseline.length > 0;
       var chart = new Chart(ctx, {
         type: 'line',
-        data: {
-          labels: labels,
-          datasets: [{
-            label: c.label,
-            data: vals,
-            borderColor: cropColors[c.crop_type] || '#999',
-            backgroundColor: (cropColors[c.crop_type] || '#999') + '22',
-            borderWidth: 2,
-            fill: true,
-            pointRadius: 3,
-            tension: 0.3,
-            spanGaps: true,
-          }]
-        },
+        data: { labels: labels, datasets: datasets },
         options: {
           responsive: true,
           maintainAspectRatio: false,
-          plugins: { legend: { display: false } },
+          plugins: {
+            legend: {
+              display: hasBaseline,
+              labels: {
+                boxWidth: 14, font: { size: 10 },
+                filter: function (item) { return item.text.indexOf('±σ') < 0; }
+              }
+            }
+          },
           scales: {
             x: { ticks: { font: { size: 9 }, maxRotation: 45 } },
             y: { min: 0, max: 1, ticks: { font: { size: 10 } } }
