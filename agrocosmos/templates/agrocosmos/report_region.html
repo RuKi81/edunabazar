@@ -166,6 +166,60 @@
 
   var districtCharts = [];
 
+  /**
+   * Build Chart.js datasets for baseline mean line + ±σ gray band.
+   * @param {Array} baseline - [{date, mean_ndvi, std_ndvi}, ...]
+   * @param {Array} labels   - sorted MM-DD label array
+   * @returns {Array} datasets (upper σ band, mean line, lower σ band)
+   */
+  function buildBaselineDatasets(baseline, labels) {
+    if (!baseline || !baseline.length) return [];
+    var blLookup = {};
+    baseline.forEach(function (b) { blLookup[b.date.substring(5)] = b; });
+    var blVals  = labels.map(function (l) { var b = blLookup[l]; return b ? b.mean_ndvi : null; });
+    var blUpper = labels.map(function (l) { var b = blLookup[l]; return b ? Math.min((b.mean_ndvi || 0) + (b.std_ndvi || 0), 1.0) : null; });
+    var blLower = labels.map(function (l) { var b = blLookup[l]; return b ? Math.max((b.mean_ndvi || 0) - (b.std_ndvi || 0), 0) : null; });
+    return [
+      {
+        label: '±σ (верх)',
+        data: blUpper,
+        borderColor: 'transparent',
+        backgroundColor: 'rgba(158,158,158,0.18)',
+        borderWidth: 0,
+        fill: '+1',
+        pointRadius: 0,
+        tension: 0.3,
+        spanGaps: true,
+        order: 12
+      },
+      {
+        label: 'Среднее многолетнее',
+        data: blVals,
+        borderColor: '#9E9E9E',
+        backgroundColor: 'transparent',
+        borderWidth: 2,
+        borderDash: [6, 4],
+        fill: false,
+        pointRadius: 0,
+        tension: 0.3,
+        spanGaps: true,
+        order: 11
+      },
+      {
+        label: '±σ (низ)',
+        data: blLower,
+        borderColor: 'transparent',
+        backgroundColor: 'rgba(158,158,158,0.18)',
+        borderWidth: 0,
+        fill: '-1',
+        pointRadius: 0,
+        tension: 0.3,
+        spanGaps: true,
+        order: 12
+      }
+    ];
+  }
+
   var districtColors = [
     '#2e7d32','#1565C0','#E65100','#6A1B9A','#C62828','#00838F',
     '#4E342E','#283593','#558B2F','#AD1457','#00695C','#4527A0',
@@ -271,10 +325,21 @@
     // Render charts
     districts.forEach(function (d, idx) {
       if (!d.series.length) return;
-      var labels = d.series.map(function (s) { return s.date.substring(5); });
-      var vals = d.series.map(function (s) { return s.mean_ndvi; });
-      var ptColors = d.series.map(function (s) {
-        if (s.z_score !== null && s.z_score !== undefined) {
+
+      // Merge data dates + baseline dates into a single sorted label array
+      var allDatesSet = new Set();
+      d.series.forEach(function (s) { allDatesSet.add(s.date.substring(5)); });
+      var baseline = d.baseline || [];
+      baseline.forEach(function (b) { allDatesSet.add(b.date.substring(5)); });
+      var labels = Array.from(allDatesSet).sort();
+
+      // Map data values to merged labels
+      var dataLookup = {};
+      d.series.forEach(function (s) { dataLookup[s.date.substring(5)] = s; });
+      var vals = labels.map(function (l) { var e = dataLookup[l]; return e ? e.mean_ndvi : null; });
+      var ptColors = labels.map(function (l) {
+        var s = dataLookup[l];
+        if (s && s.z_score !== null && s.z_score !== undefined) {
           if (s.z_score < -2) return '#D32F2F';
           if (s.z_score < -1) return '#FF9800';
           if (s.z_score > 2) return '#1565C0';
@@ -283,36 +348,47 @@
         return districtColors[idx % districtColors.length];
       });
 
+      // Build baseline datasets (gray band ±σ + dashed mean line)
+      var datasets = buildBaselineDatasets(baseline, labels);
+
+      // Main data line
+      datasets.push({
+        label: d.district_name,
+        data: vals,
+        borderColor: districtColors[idx % districtColors.length],
+        backgroundColor: 'transparent',
+        borderWidth: 2,
+        fill: false,
+        pointRadius: 3,
+        pointBackgroundColor: ptColors,
+        pointBorderColor: ptColors,
+        tension: 0.3,
+        spanGaps: true,
+      });
+
       var ctx = document.getElementById('chart-d-' + d.district_id);
       if (!ctx) return;
 
+      var hasBaseline = baseline.length > 0;
       var chart = new Chart(ctx, {
         type: 'line',
-        data: {
-          labels: labels,
-          datasets: [{
-            label: d.district_name,
-            data: vals,
-            borderColor: districtColors[idx % districtColors.length],
-            backgroundColor: 'transparent',
-            borderWidth: 2,
-            fill: false,
-            pointRadius: 3,
-            pointBackgroundColor: ptColors,
-            pointBorderColor: ptColors,
-            tension: 0.3,
-            spanGaps: true,
-          }]
-        },
+        data: { labels: labels, datasets: datasets },
         options: {
           responsive: true,
           maintainAspectRatio: false,
           plugins: {
-            legend: { display: false },
+            legend: {
+              display: hasBaseline,
+              labels: {
+                boxWidth: 14, font: { size: 10 },
+                filter: function (item) { return item.text.indexOf('±σ') < 0; }
+              }
+            },
             tooltip: {
               callbacks: {
                 afterLabel: function (ctx) {
-                  var s = d.series[ctx.dataIndex];
+                  var lbl = labels[ctx.dataIndex];
+                  var s = dataLookup[lbl];
                   if (s && s.z_score !== null && s.z_score !== undefined) {
                     return 'z-score: ' + s.z_score.toFixed(2);
                   }
