@@ -156,7 +156,7 @@
 
   <div class="report-controls">
     <label>Регион:</label>
-    <select id="rpt-region">
+    <select id="rpt-region" class="browser-default">
       <option value="">— Выберите регион —</option>
       {% for r in regions %}
         <option value="{{ r.id }}" {% if region_id|stringformat:'s' == r.id|stringformat:'s' %}selected{% endif %}>{{ r.name }}</option>
@@ -164,7 +164,7 @@
     </select>
 
     <label>Район:</label>
-    <select id="rpt-district">
+    <select id="rpt-district" class="browser-default">
       <option value="">— Выберите район —</option>
       {% for d in districts %}
         <option value="{{ d.id }}" {% if district_id|stringformat:'s' == d.id|stringformat:'s' %}selected{% endif %}>{{ d.name }}</option>
@@ -172,7 +172,7 @@
     </select>
 
     <label>Год:</label>
-    <select id="rpt-year">
+    <select id="rpt-year" class="browser-default">
       {% for y in years %}
         <option value="{{ y }}" {% if year|stringformat:'s' == y|stringformat:'s' %}selected{% endif %}>{{ y }}</option>
       {% endfor %}
