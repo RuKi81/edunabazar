@@ -4,6 +4,7 @@
 {% block title %}Отчёт по району — MODIS NDVI{% endblock %}
 
 {% block head %}
+  <link rel="stylesheet" href="{% static 'legacy/css/leaflet.css' %}" />
   <style>
     /* Hide main site logo on agrocosmos pages */
     .brand-logo, .brand-logo__img, .sidenav-logo { display: none !important; }
@@ -100,6 +101,40 @@
     .crop-stat .sl { font-size: 10px; color: #888; margin-top: 2px; }
     .crop-chart-wrap { height: 170px; position: relative; }
 
+    /* Map selector */
+    .map-selector {
+      margin-bottom: 16px; border: 1px solid #c5cae9; border-radius: 8px;
+      overflow: hidden; background: #fff;
+    }
+    .map-selector-header {
+      padding: 10px 16px; background: #e8eaf6; border-bottom: 1px solid #c5cae9;
+      font-size: 13px; font-weight: 700; color: #1565C0;
+    }
+    .map-selector-body { display: flex; gap: 0; min-height: 340px; }
+    .map-selector-map { flex: 1; min-height: 340px; z-index: 0; }
+    .map-selector-info {
+      width: 260px; padding: 14px 16px; border-left: 1px solid #e0e0e0;
+      font-size: 13px; color: #333;
+    }
+    .map-selector-info .sel-label { font-size: 11px; color: #888; margin-bottom: 4px; }
+    .map-selector-info .sel-value {
+      font-size: 15px; font-weight: 700; color: #1565C0; margin-bottom: 12px;
+      min-height: 22px;
+    }
+    .map-selector-info .sel-hint {
+      font-size: 11px; color: #999; line-height: 1.5;
+    }
+    .map-step-label {
+      font-size: 11px; font-weight: 700; color: #fff; background: #1565C0;
+      display: inline-block; padding: 2px 8px; border-radius: 10px; margin-bottom: 4px;
+    }
+    .map-step-label.done { background: #4CAF50; }
+    @media (max-width: 700px) {
+      .map-selector-body { flex-direction: column; }
+      .map-selector-info { width: 100%; border-left: none; border-top: 1px solid #e0e0e0; }
+    }
+    @media print { .map-selector { display: none !important; } }
+
     .pheno-row {
       display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;
       padding-top: 10px; border-top: 1px solid #f0f0f0;
@@ -153,29 +188,42 @@
     <div class="subtitle">Уровень района — оценка по видам угодий</div>
   </div>
 
-  <div class="report-controls">
-    <label>Регион:</label>
-    <select id="rpt-region">
-      <option value="">— Выберите —</option>
-      {% for r in regions %}
-        <option value="{{ r.id }}" {% if region_id|stringformat:'s' == r.id|stringformat:'s' %}selected{% endif %}>{{ r.name }}</option>
-      {% endfor %}
-    </select>
-    <label>Район:</label>
-    <select id="rpt-district">
-      <option value="">— Выберите —</option>
-      {% for d in districts %}
-        <option value="{{ d.id }}" {% if district_id|stringformat:'s' == d.id|stringformat:'s' %}selected{% endif %}>{{ d.name }}</option>
-      {% endfor %}
-    </select>
-    <label>Год:</label>
-    <select id="rpt-year">
-      {% for y in years %}
-        <option value="{{ y }}" {% if year|stringformat:'s' == y|stringformat:'s' %}selected{% endif %}>{{ y }}</option>
-      {% endfor %}
-    </select>
-    <button class="btn-generate" id="btn-generate">Сформировать</button>
-    <button class="btn-print" onclick="window.print()">🖨️ Печать</button>
+  <div class="map-selector">
+    <div class="map-selector-header"><i class="material-icons" style="font-size:16px; vertical-align:-3px;">map</i> Выберите регион и район на карте</div>
+    <div class="map-selector-body">
+      <div class="map-selector-map" id="sel-map"></div>
+      <div class="map-selector-info">
+        <span class="map-step-label" id="step1-label">Шаг 1</span>
+        <div class="sel-label">Регион</div>
+        <div class="sel-value" id="sel-region-name">—</div>
+        <select id="rpt-region" style="width:100%; height:32px; margin:0 0 12px 0; font-size:13px; border:1px solid #ccc; border-radius:4px; padding:0 8px;">
+          <option value="">— Из списка —</option>
+          {% for r in regions %}
+            <option value="{{ r.id }}" {% if region_id|stringformat:'s' == r.id|stringformat:'s' %}selected{% endif %}>{{ r.name }}</option>
+          {% endfor %}
+        </select>
+
+        <span class="map-step-label" id="step2-label">Шаг 2</span>
+        <div class="sel-label">Район</div>
+        <div class="sel-value" id="sel-district-name">—</div>
+        <select id="rpt-district" style="width:100%; height:32px; margin:0 0 12px 0; font-size:13px; border:1px solid #ccc; border-radius:4px; padding:0 8px;">
+          <option value="">— Из списка —</option>
+          {% for d in districts %}
+            <option value="{{ d.id }}" {% if district_id|stringformat:'s' == d.id|stringformat:'s' %}selected{% endif %}>{{ d.name }}</option>
+          {% endfor %}
+        </select>
+
+        <label style="font-size:12px; font-weight:600; color:#555;">Год:</label>
+        <select id="rpt-year" style="width:100%; height:32px; margin:6px 0 12px 0; font-size:13px; border:1px solid #ccc; border-radius:4px; padding:0 8px;">
+          {% for y in years %}
+            <option value="{{ y }}" {% if year|stringformat:'s' == y|stringformat:'s' %}selected{% endif %}>{{ y }}</option>
+          {% endfor %}
+        </select>
+        <button class="btn-generate" id="btn-generate" style="width:100%; margin-bottom:6px;">Сформировать</button>
+        <button class="btn-print" onclick="window.print()" style="width:100%;">🖨️ Печать</button>
+        <div class="sel-hint" style="margin-top:8px;">Кликните регион, затем район на карте. Или используйте выпадающие списки.</div>
+      </div>
+    </div>
   </div>
 
   <div class="report-loader hidden" id="rpt-loader">
@@ -198,6 +246,7 @@
 {% block site_footer %}{% endblock %}
 
 {% block scripts %}
+<script src="{% static 'legacy/js/leaflet.js' %}"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <script>
 (function () {
@@ -209,6 +258,10 @@
   var content = document.getElementById('report-content');
   var summaryEl = document.getElementById('rpt-summary');
   var cropsEl = document.getElementById('rpt-crops');
+  var selRegionName = document.getElementById('sel-region-name');
+  var selDistrictName = document.getElementById('sel-district-name');
+  var step1Label = document.getElementById('step1-label');
+  var step2Label = document.getElementById('step2-label');
 
   var allCharts = [];
 
@@ -234,22 +287,159 @@
     arable: '🌾', hayfield: '🌿', pasture: '🐄', perennial: '🌳', other: '📐'
   };
 
-  // Load districts when region changes
-  regionSel.addEventListener('change', function () {
-    var regionId = this.value;
-    districtSel.innerHTML = '<option value="">— Выберите —</option>';
-    if (!regionId) return;
+  /* ── Mini-map for region + district selection ──── */
+  var selMap = L.map('sel-map', { scrollWheelZoom: true, zoomControl: true }).setView([45.3, 68.0], 5);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+    maxZoom: 18, attribution: '&copy; OSM &copy; CARTO'
+  }).addTo(selMap);
+
+  var regionLayers = {};  // id → layer
+  var districtLayers = {}; // id → layer
+  var regionGeoGroup = null;
+  var districtGeoGroup = null;
+  var selectedRegionLayer = null;
+  var selectedDistrictLayer = null;
+  var currentRegionId = null;
+
+  var regionDefault = { color: '#1565C0', weight: 2, fillColor: '#64B5F6', fillOpacity: 0.15 };
+  var regionHover   = { color: '#1565C0', weight: 2, fillColor: '#90CAF9', fillOpacity: 0.35 };
+  var regionActive  = { color: '#0d47a1', weight: 3, fillColor: '#42A5F5', fillOpacity: 0.40 };
+  var distDefault    = { color: '#2e7d32', weight: 1.5, fillColor: '#A5D6A7', fillOpacity: 0.15 };
+  var distHover      = { color: '#2e7d32', weight: 2, fillColor: '#81C784', fillOpacity: 0.35 };
+  var distActive     = { color: '#1b5e20', weight: 3, fillColor: '#66BB6A', fillOpacity: 0.45 };
+
+  // Load regions on map
+  fetch('/agrocosmos/api/regions/')
+    .then(function (r) { return r.json(); })
+    .then(function (geojson) {
+      regionGeoGroup = L.geoJSON(geojson, {
+        style: regionDefault,
+        onEachFeature: function (feature, layer) {
+          var rid = feature.properties.id;
+          regionLayers[rid] = layer;
+          layer.bindTooltip(feature.properties.name, { sticky: true });
+          layer.on('mouseover', function () { if (selectedRegionLayer !== layer) layer.setStyle(regionHover); });
+          layer.on('mouseout',  function () { if (selectedRegionLayer !== layer) layer.setStyle(regionDefault); });
+          layer.on('click', function () { selectRegionOnMap(rid, feature.properties.name); });
+        }
+      }).addTo(selMap);
+
+      var allBounds = L.geoJSON(geojson).getBounds();
+      if (allBounds.isValid()) selMap.fitBounds(allBounds, { padding: [20, 20] });
+
+      // If pre-selected
+      if (regionSel.value) {
+        var opt = regionSel.options[regionSel.selectedIndex];
+        selectRegionOnMap(parseInt(regionSel.value), opt ? opt.textContent.trim() : '');
+      }
+    });
+
+  function selectRegionOnMap(rid, name) {
+    // Reset previous region
+    if (selectedRegionLayer) selectedRegionLayer.setStyle(regionDefault);
+    selectedRegionLayer = regionLayers[rid] || null;
+    if (selectedRegionLayer) {
+      selectedRegionLayer.setStyle(regionActive);
+      selMap.fitBounds(selectedRegionLayer.getBounds(), { padding: [30, 30], maxZoom: 10 });
+    }
+    regionSel.value = rid;
+    selRegionName.textContent = name || '—';
+    step1Label.classList.add('done');
+    currentRegionId = rid;
+
+    // Reset district
+    selectedDistrictLayer = null;
+    selDistrictName.textContent = '—';
+    step2Label.classList.remove('done');
+
+    // Load districts for this region
+    loadDistrictsOnMap(rid);
+  }
+
+  function loadDistrictsOnMap(regionId) {
+    // Clear old district layer
+    if (districtGeoGroup) { selMap.removeLayer(districtGeoGroup); districtGeoGroup = null; }
+    districtLayers = {};
+    districtSel.innerHTML = '<option value="">— Из списка —</option>';
+
     fetch('/agrocosmos/api/districts/?region=' + regionId)
       .then(function (r) { return r.json(); })
-      .then(function (data) {
-        if (!data.features) return;
-        data.features.forEach(function (f) {
+      .then(function (geojson) {
+        if (!geojson.features || !geojson.features.length) return;
+
+        // Populate select
+        geojson.features.forEach(function (f) {
           var opt = document.createElement('option');
           opt.value = f.properties.id;
           opt.textContent = f.properties.name;
           districtSel.appendChild(opt);
         });
+
+        // Add to map
+        districtGeoGroup = L.geoJSON(geojson, {
+          style: distDefault,
+          onEachFeature: function (feature, layer) {
+            var did = feature.properties.id;
+            districtLayers[did] = layer;
+            layer.bindTooltip(feature.properties.name, { sticky: true });
+            layer.on('mouseover', function () { if (selectedDistrictLayer !== layer) layer.setStyle(distHover); });
+            layer.on('mouseout',  function () { if (selectedDistrictLayer !== layer) layer.setStyle(distDefault); });
+            layer.on('click', function () { selectDistrictOnMap(did, feature.properties.name); });
+          }
+        }).addTo(selMap);
+
+        selMap.fitBounds(districtGeoGroup.getBounds(), { padding: [30, 30] });
+
+        // If district pre-selected
+        if (districtSel.value && districtLayers[parseInt(districtSel.value)]) {
+          var dopt = districtSel.options[districtSel.selectedIndex];
+          selectDistrictOnMap(parseInt(districtSel.value), dopt ? dopt.textContent.trim() : '');
+        }
       });
+  }
+
+  function selectDistrictOnMap(did, name) {
+    if (selectedDistrictLayer) selectedDistrictLayer.setStyle(distDefault);
+    selectedDistrictLayer = districtLayers[did] || null;
+    if (selectedDistrictLayer) {
+      selectedDistrictLayer.setStyle(distActive);
+      selMap.fitBounds(selectedDistrictLayer.getBounds(), { padding: [30, 30] });
+    }
+    districtSel.value = did;
+    selDistrictName.textContent = name || '—';
+    step2Label.classList.add('done');
+  }
+
+  // Sync map when select changes
+  regionSel.addEventListener('change', function () {
+    var rid = parseInt(this.value);
+    var opt = this.options[this.selectedIndex];
+    if (rid && regionLayers[rid]) {
+      selectRegionOnMap(rid, opt ? opt.textContent.trim() : '');
+    } else {
+      if (selectedRegionLayer) selectedRegionLayer.setStyle(regionDefault);
+      selectedRegionLayer = null;
+      selRegionName.textContent = '—';
+      step1Label.classList.remove('done');
+      if (districtGeoGroup) { selMap.removeLayer(districtGeoGroup); districtGeoGroup = null; }
+      districtLayers = {};
+      districtSel.innerHTML = '<option value="">— Из списка —</option>';
+      selDistrictName.textContent = '—';
+      step2Label.classList.remove('done');
+    }
+  });
+
+  districtSel.addEventListener('change', function () {
+    var did = parseInt(this.value);
+    var opt = this.options[this.selectedIndex];
+    if (did && districtLayers[did]) {
+      selectDistrictOnMap(did, opt ? opt.textContent.trim() : '');
+    } else {
+      if (selectedDistrictLayer) selectedDistrictLayer.setStyle(distDefault);
+      selectedDistrictLayer = null;
+      selDistrictName.textContent = '—';
+      step2Label.classList.remove('done');
+    }
   });
 
   function ndviBadgeClass(ndvi) {
