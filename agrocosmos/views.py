@@ -1140,9 +1140,10 @@ def api_report_district(request: HttpRequest) -> JsonResponse:
 
 
 def report_region(request: HttpRequest) -> HttpResponse:
-    """Region-level MODIS NDVI report page."""
+    """Unified MODIS NDVI report page (region or district level)."""
     regions = Region.objects.all()
     region_id = request.GET.get('region')
+    district_id = request.GET.get('district')
     year = request.GET.get('year')
 
     current_year = date.today().year
@@ -1167,6 +1168,7 @@ def report_region(request: HttpRequest) -> HttpResponse:
         'regions': regions,
         'districts': districts,
         'region_id': region_id or '',
+        'district_id': district_id or '',
         'year': year or str(current_year),
         'years': years,
         'active_page': 'report_region',
@@ -1174,7 +1176,7 @@ def report_region(request: HttpRequest) -> HttpResponse:
 
 
 def report_district(request: HttpRequest) -> HttpResponse:
-    """District-level MODIS NDVI report page."""
+    """MODIS NDVI report page — district level."""
     regions = Region.objects.all()
     region_id = request.GET.get('region')
     district_id = request.GET.get('district')
