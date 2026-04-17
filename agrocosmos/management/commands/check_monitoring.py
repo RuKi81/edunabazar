@@ -130,18 +130,18 @@ class Command(BaseCommand):
                 elapsed = time.time() - t0
                 log_text = out.getvalue()
 
-                # Update task
-                task.last_check = timezone.now()
-                task.last_date_to = next_to
-
                 # Parse records count
+                records_saved = 0
                 for line in log_text.splitlines():
                     if 'Records saved:' in line:
                         try:
-                            n = int(line.split('Records saved:')[1].strip())
-                            task.records_total += n
+                            records_saved = int(line.split('Records saved:')[1].strip())
                         except (ValueError, IndexError):
                             pass
+
+                # Update task
+                task.last_check = timezone.now()
+                task.records_total += records_saved
 
                 # Append to log (keep last 10K chars)
                 entry = f'\n[{timezone.now():%Y-%m-%d %H:%M}] {next_from}..{next_to}: '
@@ -150,16 +150,26 @@ class Command(BaseCommand):
                         entry += line.strip() + ' '
                 task.log = (task.log + entry)[-10000:]
 
+                # Only advance last_date_to if data was actually saved;
+                # if 0 records — data likely not available yet, retry next time
+                if records_saved > 0:
+                    task.last_date_to = next_to
+                    periods_done += 1
+                    self.stdout.write(
+                        f'    → {records_saved} records in {elapsed:.0f}s (period {periods_done})'
+                    )
+                else:
+                    self.stdout.write(
+                        f'    → 0 records in {elapsed:.0f}s — no data yet, stop.'
+                    )
+                    task.save()
+                    break
+
                 # Check if year is now complete
                 if next_to >= year_end:
                     task.status = 'completed'
 
                 task.save()
-                periods_done += 1
-
-                self.stdout.write(
-                    f'    → Done in {elapsed:.0f}s (period {periods_done})'
-                )
 
                 if next_to >= year_end:
                     break
