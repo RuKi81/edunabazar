@@ -69,11 +69,11 @@ def _month_chunks(date_from, date_to):
 
 
 def _biweekly_chunks(date_from, date_to):
-    """Split date range into 16-day periods (matches MODIS MOD13Q1 cadence)."""
+    """Split date range into 8-day periods (Terra+Aqua offset gives ~8-day cadence)."""
     chunks = []
     cursor = date_from
     while cursor <= date_to:
-        end = min(cursor + timedelta(days=15), date_to)
+        end = min(cursor + timedelta(days=7), date_to)
         chunks.append((cursor, end))
         cursor = end + timedelta(days=1)
     return chunks

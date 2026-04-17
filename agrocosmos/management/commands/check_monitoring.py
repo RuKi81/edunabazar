@@ -84,7 +84,7 @@ class Command(BaseCommand):
             else:
                 next_from = year_start
 
-            next_to = min(next_from + timedelta(days=15), year_end)
+            next_to = min(next_from + timedelta(days=7), year_end)
 
             # Don't process future dates
             if next_from > today and not force:
