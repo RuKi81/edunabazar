@@ -913,11 +913,51 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
         dd['baseline'] = baseline_series.get(d.pk, [])
         result.append(dd)
 
+    # Region-level overall NDVI series (area-weighted across ALL districts)
+    region_overall_qs = (
+        vi_qs
+        .values('acquired_date')
+        .annotate(
+            _sum_ndvi_area=Sum(F('mean') * F('farmland__area_ha')),
+            _sum_area=Sum('farmland__area_ha'),
+        )
+        .order_by('acquired_date')
+    )
+    region_overall = []
+    for row in region_overall_qs:
+        s_area = row['_sum_area'] or 0
+        weighted = (row['_sum_ndvi_area'] / s_area) if s_area else None
+        region_overall.append({
+            'date': str(row['acquired_date']),
+            'mean_ndvi': _safe_round(weighted),
+        })
+
+    # Region-level baseline (average district baselines per DOY)
+    region_bl_qs = (
+        NdviBaseline.objects.filter(
+            district__region_id=region_id,
+            crop_type='',
+        )
+        .values('day_of_year')
+        .annotate(avg_mean=Avg('mean_ndvi'), avg_std=Avg('std_ndvi'))
+        .order_by('day_of_year')
+    )
+    region_baseline = []
+    for b in region_bl_qs:
+        d_date = date(year, 1, 1) + timedelta(days=b['day_of_year'] - 1)
+        region_baseline.append({
+            'date': str(d_date),
+            'mean_ndvi': _safe_round(b['avg_mean']),
+            'std_ndvi': _safe_round(b['avg_std']),
+        })
+
     return JsonResponse({
         'ok': True,
         'region': {'id': region.pk, 'name': region.name},
         'year': year,
         'districts': result,
+        'region_overall_series': region_overall,
+        'region_baseline': region_baseline,
     })
 
 
