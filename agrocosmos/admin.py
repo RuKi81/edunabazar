@@ -124,6 +124,9 @@ class AgrocosmosAdminSite:
             path('agrocosmos/upload-region/',
                  admin.site.admin_view(upload_region_view),
                  name='agro_upload_region'),
+            path('agrocosmos/upload-districts/',
+                 admin.site.admin_view(upload_districts_view),
+                 name='agro_upload_districts'),
             path('agrocosmos/upload-farmlands/',
                  admin.site.admin_view(upload_farmlands_view),
                  name='agro_upload_farmlands'),
@@ -136,6 +139,9 @@ class AgrocosmosAdminSite:
             path('agrocosmos/start-monitoring/',
                  admin.site.admin_view(start_monitoring_view),
                  name='agro_start_monitoring'),
+            path('agrocosmos/force-check/',
+                 admin.site.admin_view(force_check_monitoring_view),
+                 name='agro_force_check'),
         ]
 
 
@@ -207,6 +213,51 @@ def upload_region_view(request):
         run.finished_at = timezone.now()
         run.save()
         messages.success(request, f'Регионы: {created} создано, {updated} обновлено.')
+        for e in errors[:5]:
+            messages.warning(request, e)
+    except Exception as e:
+        run.status = 'failed'
+        run.log = str(e)
+        run.finished_at = timezone.now()
+        run.save()
+        messages.error(request, f'Ошибка импорта: {e}')
+
+    return redirect('admin:agro_panel')
+
+
+def upload_districts_view(request):
+    """Upload district boundaries (SHP/GeoJSON)."""
+    if request.method != 'POST':
+        return redirect('admin:agro_panel')
+
+    from .services.import_vector import import_district_vector
+
+    file = request.FILES.get('file')
+    region_id = request.POST.get('region_id')
+    if not file or not region_id:
+        messages.error(request, 'Укажите файл и регион')
+        return redirect('admin:agro_panel')
+
+    region = Region.objects.get(pk=int(region_id))
+    run = PipelineRun.objects.create(
+        task_type='upload_districts',
+        region=region,
+        description=f'Файл: {file.name}',
+    )
+
+    try:
+        name_field = request.POST.get('name_field', 'NAME')
+        code_field = request.POST.get('code_field', 'CODE')
+        created, updated, errors = import_district_vector(
+            file, int(region_id),
+            name_field=name_field, code_field=code_field,
+        )
+        run.status = 'completed'
+        run.records_count = created + updated
+        run.log = f'Создано: {created}, обновлено: {updated}\n' + '\n'.join(errors[:10])
+        run.finished_at = timezone.now()
+        run.save()
+        messages.success(request, f'Районы: {created} создано, {updated} обновлено.')
         for e in errors[:5]:
             messages.warning(request, e)
     except Exception as e:
@@ -491,6 +542,29 @@ def run_raster_view(request):
     )
     return redirect('admin:agro_panel')
 
+
+def force_check_monitoring_view(request):
+    """Force-run check_monitoring for all active tasks."""
+    if request.method != 'POST':
+        return redirect('admin:agro_panel')
+
+    run = PipelineRun.objects.create(
+        task_type='monitoring',
+        description='Принудительная проверка мониторинга',
+    )
+
+    t = threading.Thread(
+        target=_run_check_monitoring_bg,
+        args=(run.pk,),
+        daemon=True,
+    )
+    t.start()
+
+    messages.success(
+        request,
+        'Принудительная проверка мониторинга запущена в фоне.'
+    )
+    return redirect('admin:agro_panel')
 
 
 def start_monitoring_view(request):

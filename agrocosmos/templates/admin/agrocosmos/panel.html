@@ -95,6 +95,43 @@
     </div>
   </div>
 
+  <!-- ═══ 1b. Upload District Vector ═══ -->
+  <div class="agro-section">
+    <h2>📂 Загрузка границ районов</h2>
+    <div class="body">
+      <form method="post" action="{% url 'admin:agro_upload_districts' %}" enctype="multipart/form-data">
+        {% csrf_token %}
+        <div class="agro-row">
+          <div class="agro-field">
+            <label>Регион</label>
+            <select name="region_id" required>
+              <option value="">— Выберите —</option>
+              {% for r in regions %}
+                <option value="{{ r.id }}">{{ r.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="agro-field">
+            <label>Файл (ZIP с .shp или .geojson)</label>
+            <input type="file" name="file" accept=".zip,.geojson,.json" required>
+          </div>
+          <div class="agro-field">
+            <label>Поле имени</label>
+            <input type="text" name="name_field" value="NAME" size="12">
+          </div>
+          <div class="agro-field">
+            <label>Поле кода</label>
+            <input type="text" name="code_field" value="CODE" size="12">
+          </div>
+          <div>
+            <button type="submit" class="agro-btn">Загрузить районы</button>
+          </div>
+        </div>
+        <div class="agro-hint">Формат: Shapefile в ZIP-архиве или GeoJSON. Районы будут привязаны к выбранному региону.</div>
+      </form>
+    </div>
+  </div>
+
   <!-- ═══ 2. Upload Farmland Vector ═══ -->
   <div class="agro-section">
     <h2>🌾 Загрузка границ угодий</h2>
@@ -312,6 +349,11 @@
       {% else %}
         <p style="color:#888; font-size:13px;">Нет активных задач мониторинга</p>
       {% endif %}
+      <form method="post" action="{% url 'admin:agro_force_check' %}" style="margin-top:12px;">
+        {% csrf_token %}
+        <button type="submit" class="agro-btn agro-btn--orange">⚡ Принудительная проверка данных</button>
+        <span class="agro-hint" style="margin-left:8px;">Запустит check_monitoring для всех активных задач (проверка и скачивание новых данных)</span>
+      </form>
     </div>
   </div>
 

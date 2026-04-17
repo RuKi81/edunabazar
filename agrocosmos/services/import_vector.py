@@ -155,6 +155,97 @@ def _import_region_shp(path, name_field, code_field, encoding):
     return created, updated, errors
 
 
+def import_district_vector(uploaded_file, region_id, name_field='NAME',
+                           code_field='CODE', encoding='utf-8'):
+    """
+    Import district boundaries from uploaded file.
+    Returns: (created, updated, errors_list)
+    """
+    region = Region.objects.get(pk=region_id)
+    fname = uploaded_file.name.lower()
+
+    if fname.endswith('.zip'):
+        shp_path, tmp_dir = _extract_shp_from_zip(uploaded_file)
+        try:
+            return _import_district_shp(shp_path, region, name_field, code_field, encoding)
+        finally:
+            import shutil
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+    elif fname.endswith(('.geojson', '.json')):
+        path = _save_uploaded_file(uploaded_file)
+        try:
+            return _import_district_geojson(path, region, name_field, code_field, encoding)
+        finally:
+            os.unlink(path)
+    else:
+        return 0, 0, ['Неподдерживаемый формат. Используйте ZIP (с .shp) или GeoJSON.']
+
+
+def _import_district_geojson(path, region, name_field, code_field, encoding):
+    with open(path, 'r', encoding=encoding) as f:
+        data = json.load(f)
+
+    features = data.get('features', [])
+    created = updated = 0
+    errors = []
+
+    for feat in features:
+        props = feat.get('properties', {})
+        name = str(props.get(name_field, '')).strip()
+        code = str(props.get(code_field, '')).strip()
+        if not name:
+            errors.append(f'Пропущен объект без имени: {props}')
+            continue
+        try:
+            geom = GEOSGeometry(json.dumps(feat['geometry']), srid=4326)
+            geom = _to_multi(geom)
+            obj, is_new = District.objects.update_or_create(
+                region=region,
+                code=code or f'auto_{name[:20]}',
+                defaults={'name': name, 'geom': geom},
+            )
+            if is_new:
+                created += 1
+            else:
+                updated += 1
+        except Exception as e:
+            errors.append(f'{name}: {e}')
+
+    return created, updated, errors
+
+
+def _import_district_shp(path, region, name_field, code_field, encoding):
+    from django.contrib.gis.gdal import DataSource
+    ds = DataSource(path, encoding=encoding)
+    layer = ds[0]
+    created = updated = 0
+    errors = []
+
+    for feat in layer:
+        name = str(feat.get(name_field)).strip()
+        code = str(feat.get(code_field)).strip()
+        if not name:
+            continue
+        try:
+            geom = GEOSGeometry(feat.geom.wkt, srid=feat.geom.srid or 4326)
+            if geom.srid != 4326:
+                geom.transform(4326)
+            geom = _to_multi(geom)
+            obj, is_new = District.objects.update_or_create(
+                region=region,
+                code=code or f'auto_{name[:20]}',
+                defaults={'name': name, 'geom': geom},
+            )
+            if is_new:
+                created += 1
+            else:
+                updated += 1
+        except Exception as e:
+            errors.append(f'{name}: {e}')
+
+    return created, updated, errors
+
+
 def import_farmland_vector(uploaded_file, region_id,
                            crop_type_field='LAND_TYPE',
                            area_field='AREA_HA',
