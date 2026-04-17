@@ -363,13 +363,13 @@ def _run_modis_bg(region_id, year, run_id=None, min_valid=0.5):
                 pass
 
 
-def _run_check_monitoring_bg(run_id=None):
+def _run_check_monitoring_bg(run_id=None, force=False):
     """Run check_monitoring management command in background thread."""
     from django.core.management import call_command
     from io import StringIO
     try:
         out = StringIO()
-        call_command('check_monitoring', stdout=out, stderr=out)
+        call_command('check_monitoring', force=force, stdout=out, stderr=out)
         log_text = out.getvalue()
         logger.info('check_monitoring done: %s', log_text[-2000:])
 
@@ -556,13 +556,14 @@ def force_check_monitoring_view(request):
     t = threading.Thread(
         target=_run_check_monitoring_bg,
         args=(run.pk,),
+        kwargs={'force': True},
         daemon=True,
     )
     t.start()
 
     messages.success(
         request,
-        'Принудительная проверка мониторинга запущена в фоне.'
+        'Принудительная проверка мониторинга запущена в фоне (--force).'
     )
     return redirect('admin:agro_panel')
 
