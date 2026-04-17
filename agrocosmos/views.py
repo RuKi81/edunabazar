@@ -1128,6 +1128,32 @@ def api_report_district(request: HttpRequest) -> JsonResponse:
         crop_bl = bl_by_crop.get(cd['crop_type'], bl_lookup)
         cd['baseline'] = _bl_to_series(crop_bl) if isinstance(crop_bl, dict) else []
 
+    # Region-level overall NDVI series (area-weighted across ALL districts)
+    region_overall_qs = (
+        VegetationIndex.objects.filter(
+            farmland__district__region=district.region,
+            index_type='ndvi',
+            acquired_date__year=year,
+            is_anomaly=False,
+            mean__gte=-0.2, mean__lte=1,
+            scene__satellite__in=MODIS_SATELLITES,
+        )
+        .values('acquired_date')
+        .annotate(
+            _sum_ndvi_area=Sum(F('mean') * F('farmland__area_ha')),
+            _sum_area=Sum('farmland__area_ha'),
+        )
+        .order_by('acquired_date')
+    )
+    region_overall = []
+    for row in region_overall_qs:
+        s_area = row['_sum_area'] or 0
+        weighted = (row['_sum_ndvi_area'] / s_area) if s_area else None
+        region_overall.append({
+            'date': str(row['acquired_date']),
+            'mean_ndvi': _safe_round(weighted),
+        })
+
     return JsonResponse({
         'ok': True,
         'district': {'id': district.pk, 'name': district.name},
@@ -1135,6 +1161,7 @@ def api_report_district(request: HttpRequest) -> JsonResponse:
         'year': year,
         'overall_series': overall_series,
         'overall_baseline': overall_baseline,
+        'region_overall_series': region_overall,
         'crop_types': result,
     })
 

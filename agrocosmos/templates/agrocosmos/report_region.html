@@ -34,12 +34,24 @@
       border-radius: 4px; font-size: 13px; font-weight: 600; cursor: pointer;
     }
     .report-controls .btn-generate:hover { background: #1b5e20; }
-    .btn-print {
-      padding: 7px 16px; background: #1565C0; color: #fff; border: none;
-      border-radius: 4px; font-size: 13px; font-weight: 600; cursor: pointer;
-      margin-left: auto;
+    .report-actions {
+      display: flex; gap: 6px; align-items: center; margin-left: auto;
     }
-    .btn-print:hover { background: #0d47a1; }
+    .action-btn {
+      width: 34px; height: 34px; border-radius: 4px; border: 1px solid #ccc;
+      background: #fff; cursor: pointer; display: inline-flex;
+      align-items: center; justify-content: center; color: #555;
+      text-decoration: none; transition: background .15s; padding: 0;
+    }
+    .action-btn:hover { background: #e8f5e9; }
+    .action-btn i { font-size: 18px; }
+    .action-btn svg { width: 18px; height: 18px; }
+    .copied-toast {
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+      background: #333; color: #fff; padding: 8px 20px; border-radius: 4px;
+      font-size: 13px; z-index: 9999; opacity: 0; transition: opacity .3s;
+    }
+    .copied-toast.show { opacity: 1; }
 
     .report-summary {
       display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -76,6 +88,13 @@
     .district-desc .z-info { font-style: italic; color: #666; }
     .district-chart-wrap { height: 180px; position: relative; }
 
+    #rpt-districts {
+      display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px;
+    }
+    #rpt-districts .district-section { margin-bottom: 0; }
+    @media (max-width: 900px) {
+      #rpt-districts { grid-template-columns: 1fr; }
+    }
 
     .report-loader {
       text-align: center; padding: 40px; font-size: 15px; color: #777;
@@ -97,7 +116,9 @@
     .report-nav a.active { background: #2e7d32; color: #fff; }
 
     @media print {
-      .report-controls, .btn-print, .report-nav, nav, footer, .hide-on-med-and-down, .hide-on-large-only { display: none !important; }
+      .report-controls, .report-actions, .copied-toast, .report-nav, nav, footer, .hide-on-med-and-down, .hide-on-large-only { display: none !important; }
+      #rpt-districts { grid-template-columns: repeat(2, 1fr); }
+      #rpt-districts .district-section { break-inside: avoid; }
       .report-wrap { max-width: 100%; margin: 0; padding: 0 10px; }
       .district-section { break-inside: avoid; }
     }
@@ -140,8 +161,15 @@
     </select>
 
     <button class="btn-generate" id="btn-generate">Сформировать отчёт</button>
-    <button class="btn-print" onclick="window.print()">🖨️ Печать</button>
+    <div class="report-actions">
+      <button class="action-btn" onclick="window.print()" title="Печать"><i class="material-icons">print</i></button>
+      <button class="action-btn" id="btn-copy" title="Скопировать ссылку"><i class="material-icons">content_copy</i></button>
+      <button class="action-btn" id="btn-email" title="Отправить по Email"><i class="material-icons">email</i></button>
+      <a class="action-btn" id="btn-tg" href="#" target="_blank" title="Telegram"><svg viewBox="0 0 24 24" fill="#0088cc"><path d="M9.78 18.65l.28-4.23 7.68-6.92c.34-.31-.07-.46-.52-.19L7.74 13.3 3.64 12c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3l-2.72 12.81c-.19.91-.74 1.13-1.5.71L12.6 16.3l-1.99 1.93c-.23.23-.42.42-.83.42z"/></svg></a>
+      <a class="action-btn" id="btn-max" href="#" target="_blank" title="MAX" style="font-weight:800; font-size:11px; color:#7B1FA2;">MAX</a>
+    </div>
   </div>
+  <div class="copied-toast" id="copied-toast">Ссылка скопирована!</div>
 
   <div class="report-loader hidden" id="rpt-loader">
     <i class="material-icons" style="font-size:36px; color:#2e7d32; animation: spin 1s linear infinite;">autorenew</i>
@@ -172,12 +200,37 @@
 
   var districtCharts = [];
 
-  /**
-   * Build Chart.js datasets for baseline mean line + ±σ gray band.
-   * @param {Array} baseline - [{date, mean_ndvi, std_ndvi}, ...]
-   * @param {Array} labels   - sorted MM-DD label array
-   * @returns {Array} datasets (upper σ band, mean line, lower σ band)
-   */
+  /* ── Shareable URL ── */
+  function updateUrl() {
+    var params = new URLSearchParams();
+    if (regionSel.value) params.set('region', regionSel.value);
+    if (yearSel.value) params.set('year', yearSel.value);
+    history.replaceState(null, '', location.pathname + '?' + params.toString());
+  }
+  function getShareUrl() { return location.href; }
+  function getShareText() {
+    var opt = regionSel.options[regionSel.selectedIndex];
+    return 'Отчёт NDVI: ' + (opt ? opt.textContent.trim() : '') + ', ' + yearSel.value + ' г.';
+  }
+  document.getElementById('btn-copy').addEventListener('click', function () {
+    navigator.clipboard.writeText(getShareUrl()).then(function () {
+      var toast = document.getElementById('copied-toast');
+      toast.classList.add('show');
+      setTimeout(function () { toast.classList.remove('show'); }, 2000);
+    });
+  });
+  document.getElementById('btn-email').addEventListener('click', function () {
+    location.href = 'mailto:?subject=' + encodeURIComponent(getShareText()) + '&body=' + encodeURIComponent(getShareUrl());
+  });
+  document.getElementById('btn-tg').addEventListener('click', function (e) {
+    e.preventDefault();
+    window.open('https://t.me/share/url?url=' + encodeURIComponent(getShareUrl()) + '&text=' + encodeURIComponent(getShareText()), '_blank');
+  });
+  document.getElementById('btn-max').addEventListener('click', function (e) {
+    e.preventDefault();
+    window.open('https://vk.com/share.php?url=' + encodeURIComponent(getShareUrl()) + '&title=' + encodeURIComponent(getShareText()), '_blank');
+  });
+
   function buildBaselineDatasets(baseline, labels) {
     if (!baseline || !baseline.length) return [];
     var blLookup = {};
@@ -248,6 +301,7 @@
     var regionId = regionSel.value;
     var year = yearSel.value;
     if (!regionId) { alert('Выберите регион'); return; }
+    updateUrl();
 
     loader.classList.remove('hidden');
     content.classList.add('hidden');
@@ -386,7 +440,7 @@
             legend: {
               display: hasBaseline,
               labels: {
-                boxWidth: 14, font: { size: 10 },
+                usePointStyle: true, pointStyle: 'line', boxWidth: 30, font: { size: 10 },
                 filter: function (item) { return item.text.indexOf('±σ') < 0; }
               }
             },

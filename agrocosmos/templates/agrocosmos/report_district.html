@@ -34,12 +34,24 @@
       border-radius: 4px; font-size: 13px; font-weight: 600; cursor: pointer;
     }
     .report-controls .btn-generate:hover { background: #0d47a1; }
-    .btn-print {
-      padding: 7px 16px; background: #2e7d32; color: #fff; border: none;
-      border-radius: 4px; font-size: 13px; font-weight: 600; cursor: pointer;
-      margin-left: auto;
+    .report-actions {
+      display: flex; gap: 6px; align-items: center; margin-left: auto;
     }
-    .btn-print:hover { background: #1b5e20; }
+    .action-btn {
+      width: 34px; height: 34px; border-radius: 4px; border: 1px solid #ccc;
+      background: #fff; cursor: pointer; display: inline-flex;
+      align-items: center; justify-content: center; color: #555;
+      text-decoration: none; transition: background .15s; padding: 0;
+    }
+    .action-btn:hover { background: #e8eaf6; }
+    .action-btn i { font-size: 18px; }
+    .action-btn svg { width: 18px; height: 18px; }
+    .copied-toast {
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+      background: #333; color: #fff; padding: 8px 20px; border-radius: 4px;
+      font-size: 13px; z-index: 9999; opacity: 0; transition: opacity .3s;
+    }
+    .copied-toast.show { opacity: 1; }
 
     .report-summary {
       display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -100,6 +112,13 @@
     .crop-stat .sl { font-size: 10px; color: #888; margin-top: 2px; }
     .crop-chart-wrap { height: 170px; position: relative; }
 
+    #rpt-crops {
+      display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px;
+    }
+    #rpt-crops .crop-section { margin-bottom: 0; }
+    @media (max-width: 900px) {
+      #rpt-crops { grid-template-columns: 1fr; }
+    }
 
     .pheno-row {
       display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;
@@ -128,9 +147,10 @@
     .report-nav a.active { background: #2e7d32; color: #fff; }
 
     @media print {
-      .report-controls, .btn-print, .report-nav, nav, footer, .hide-on-med-and-down, .hide-on-large-only { display: none !important; }
+      .report-controls, .report-actions, .copied-toast, .report-nav, nav, footer, .hide-on-med-and-down, .hide-on-large-only { display: none !important; }
       .report-wrap { max-width: 100%; margin: 0; padding: 0 10px; }
-      .crop-section { break-inside: avoid; }
+      #rpt-crops { grid-template-columns: repeat(2, 1fr); }
+      #rpt-crops .crop-section, .crop-section { break-inside: avoid; }
     }
   </style>
 {% endblock %}
@@ -179,8 +199,15 @@
     </select>
 
     <button class="btn-generate" id="btn-generate">Сформировать отчёт</button>
-    <button class="btn-print" onclick="window.print()">🖨️ Печать</button>
+    <div class="report-actions">
+      <button class="action-btn" onclick="window.print()" title="Печать"><i class="material-icons">print</i></button>
+      <button class="action-btn" id="btn-copy" title="Скопировать ссылку"><i class="material-icons">content_copy</i></button>
+      <button class="action-btn" id="btn-email" title="Отправить по Email"><i class="material-icons">email</i></button>
+      <a class="action-btn" id="btn-tg" href="#" target="_blank" title="Telegram"><svg viewBox="0 0 24 24" fill="#0088cc"><path d="M9.78 18.65l.28-4.23 7.68-6.92c.34-.31-.07-.46-.52-.19L7.74 13.3 3.64 12c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3l-2.72 12.81c-.19.91-.74 1.13-1.5.71L12.6 16.3l-1.99 1.93c-.23.23-.42.42-.83.42z"/></svg></a>
+      <a class="action-btn" id="btn-max" href="#" target="_blank" title="MAX" style="font-weight:800; font-size:11px; color:#7B1FA2;">MAX</a>
+    </div>
   </div>
+  <div class="copied-toast" id="copied-toast">Ссылка скопирована!</div>
 
   <div class="report-loader hidden" id="rpt-loader">
     <i class="material-icons" style="font-size:36px; color:#1565C0; animation: spin 1s linear infinite;">autorenew</i>
@@ -190,8 +217,12 @@
 
   <div id="report-content" class="hidden">
     <div class="report-summary" id="rpt-summary"></div>
+    <div class="overall-chart-section" id="region-section" style="display:none;">
+      <h2><i class="material-icons" style="font-size:18px; vertical-align:-3px; color:#6A1B9A;">public</i> <span id="region-chart-title">Общий индекс NDVI по региону</span></h2>
+      <div class="overall-chart-wrap"><canvas id="chart-region"></canvas></div>
+    </div>
     <div class="overall-chart-section" id="overall-section" style="display:none;">
-      <h2><i class="material-icons" style="font-size:18px; vertical-align:-3px; color:#2e7d32;">show_chart</i> Общая динамика NDVI по району</h2>
+      <h2><i class="material-icons" style="font-size:18px; vertical-align:-3px; color:#2e7d32;">show_chart</i> Динамика NDVI по району</h2>
       <div class="overall-chart-wrap"><canvas id="chart-overall"></canvas></div>
     </div>
     <div id="rpt-crops"></div>
@@ -215,6 +246,39 @@
   var cropsEl = document.getElementById('rpt-crops');
 
   var allCharts = [];
+
+  /* ── Shareable URL ── */
+  function updateUrl() {
+    var params = new URLSearchParams();
+    if (regionSel.value) params.set('region', regionSel.value);
+    if (districtSel.value) params.set('district', districtSel.value);
+    if (yearSel.value) params.set('year', yearSel.value);
+    history.replaceState(null, '', location.pathname + '?' + params.toString());
+  }
+  function getShareUrl() { return location.href; }
+  function getShareText() {
+    var dOpt = districtSel.options[districtSel.selectedIndex];
+    var rOpt = regionSel.options[regionSel.selectedIndex];
+    return 'Отчёт NDVI: ' + (dOpt ? dOpt.textContent.trim() : '') + ' (' + (rOpt ? rOpt.textContent.trim() : '') + '), ' + yearSel.value + ' г.';
+  }
+  document.getElementById('btn-copy').addEventListener('click', function () {
+    navigator.clipboard.writeText(getShareUrl()).then(function () {
+      var toast = document.getElementById('copied-toast');
+      toast.classList.add('show');
+      setTimeout(function () { toast.classList.remove('show'); }, 2000);
+    });
+  });
+  document.getElementById('btn-email').addEventListener('click', function () {
+    location.href = 'mailto:?subject=' + encodeURIComponent(getShareText()) + '&body=' + encodeURIComponent(getShareUrl());
+  });
+  document.getElementById('btn-tg').addEventListener('click', function (e) {
+    e.preventDefault();
+    window.open('https://t.me/share/url?url=' + encodeURIComponent(getShareUrl()) + '&text=' + encodeURIComponent(getShareText()), '_blank');
+  });
+  document.getElementById('btn-max').addEventListener('click', function (e) {
+    e.preventDefault();
+    window.open('https://vk.com/share.php?url=' + encodeURIComponent(getShareUrl()) + '&title=' + encodeURIComponent(getShareText()), '_blank');
+  });
 
   function buildBaselineDatasets(baseline, labels) {
     if (!baseline || !baseline.length) return [];
@@ -277,6 +341,7 @@
     var districtId = districtSel.value;
     var year = yearSel.value;
     if (!districtId) { alert('Выберите район'); return; }
+    updateUrl();
 
     loader.classList.remove('hidden');
     content.classList.add('hidden');
@@ -318,82 +383,68 @@
       '<div class="summary-card"><div class="val">' + totalArea.toLocaleString('ru', {maximumFractionDigits:1}) + '</div><div class="lbl">Площадь, га</div></div>' +
       '<div class="summary-card"><div class="val">' + crops.length + '</div><div class="lbl">Видов угодий</div></div>';
 
-    // Overall chart
+    // Region-level overall chart (first)
+    var regionSection = document.getElementById('region-section');
+    var regionOverall = resp.region_overall_series || [];
+    if (regionOverall.length) {
+      regionSection.style.display = 'block';
+      document.getElementById('region-chart-title').textContent = 'Общий индекс NDVI по региону: ' + esc(region.name);
+      var rDatesSet = new Set();
+      regionOverall.forEach(function (s) { rDatesSet.add(s.date.substring(5)); });
+      overall.forEach(function (s) { rDatesSet.add(s.date.substring(5)); });
+      var rDates = Array.from(rDatesSet).sort();
+      var rLookup = {};
+      regionOverall.forEach(function (s) { rLookup[s.date.substring(5)] = s.mean_ndvi; });
+      var dLookup = {};
+      overall.forEach(function (s) { dLookup[s.date.substring(5)] = s.mean_ndvi; });
+      var rChart = new Chart(document.getElementById('chart-region'), {
+        type: 'line',
+        data: {
+          labels: rDates,
+          datasets: [
+            { label: esc(region.name) + ' (регион)', data: rDates.map(function (d) { return rLookup[d] !== undefined ? rLookup[d] : null; }), borderColor: '#6A1B9A', backgroundColor: 'transparent', borderWidth: 2.5, fill: false, pointRadius: 3, tension: 0.3, spanGaps: true },
+            { label: esc(district.name) + ' (район)', data: rDates.map(function (d) { return dLookup[d] !== undefined ? dLookup[d] : null; }), borderColor: '#1565C0', backgroundColor: 'transparent', borderWidth: 2, borderDash: [5, 3], fill: false, pointRadius: 2, tension: 0.3, spanGaps: true }
+          ]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: true, labels: { usePointStyle: true, pointStyle: 'line', boxWidth: 30, font: { size: 11 } } } },
+          scales: { x: { ticks: { font: { size: 9 }, maxRotation: 45 } }, y: { min: 0, max: 1, ticks: { font: { size: 10 } } } }
+        }
+      });
+      allCharts.push(rChart);
+    } else { regionSection.style.display = 'none'; }
+
+    // District overall chart
     var overallSection = document.getElementById('overall-section');
     var overallBaseline = resp.overall_baseline || [];
     if (overall && overall.length) {
       overallSection.style.display = 'block';
-
-      // Collect all dates across data + baseline + crop types
       var allDatesSet = new Set();
       overall.forEach(function (s) { allDatesSet.add(s.date.substring(5)); });
       overallBaseline.forEach(function (b) { allDatesSet.add(b.date.substring(5)); });
-      crops.forEach(function (c) {
-        c.series.forEach(function (s) { allDatesSet.add(s.date.substring(5)); });
-      });
+      crops.forEach(function (c) { c.series.forEach(function (s) { allDatesSet.add(s.date.substring(5)); }); });
       var allDates = Array.from(allDatesSet).sort();
-
-      // Baseline datasets first (gray band behind everything)
       var datasets = buildBaselineDatasets(overallBaseline, allDates);
-
-      // Overall data line
       var oLookup = {};
       overall.forEach(function (s) { oLookup[s.date.substring(5)] = s.mean_ndvi; });
-      datasets.push({
-        label: 'Все угодья',
-        data: allDates.map(function (d) { return oLookup[d] !== undefined ? oLookup[d] : null; }),
-        borderColor: '#333',
-        backgroundColor: 'transparent',
-        borderWidth: 2.5,
-        fill: false,
-        pointRadius: 3,
-        tension: 0.3,
-        spanGaps: true,
-      });
-
-      // Per-crop overlay lines
+      datasets.push({ label: 'Все угодья', data: allDates.map(function (d) { return oLookup[d] !== undefined ? oLookup[d] : null; }), borderColor: '#333', backgroundColor: 'transparent', borderWidth: 2.5, fill: false, pointRadius: 3, tension: 0.3, spanGaps: true });
       crops.forEach(function (c) {
         var lookup = {};
         c.series.forEach(function (s) { lookup[s.date.substring(5)] = s.mean_ndvi; });
-        datasets.push({
-          label: c.label,
-          data: allDates.map(function (d) { return lookup[d] !== undefined ? lookup[d] : null; }),
-          borderColor: cropColors[c.crop_type] || '#999',
-          backgroundColor: 'transparent',
-          borderWidth: 1.5,
-          borderDash: [4, 2],
-          fill: false,
-          pointRadius: 2,
-          tension: 0.3,
-          spanGaps: true,
-        });
+        datasets.push({ label: c.label, data: allDates.map(function (d) { return lookup[d] !== undefined ? lookup[d] : null; }), borderColor: cropColors[c.crop_type] || '#999', backgroundColor: 'transparent', borderWidth: 1.5, borderDash: [4, 2], fill: false, pointRadius: 2, tension: 0.3, spanGaps: true });
       });
-
       var overallChart = new Chart(document.getElementById('chart-overall'), {
         type: 'line',
         data: { labels: allDates, datasets: datasets },
         options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {
-            legend: {
-              display: true,
-              labels: {
-                boxWidth: 14, font: { size: 11 },
-                filter: function (item) { return item.text.indexOf('±σ') < 0; }
-              }
-            }
-          },
-          scales: {
-            x: { ticks: { font: { size: 9 }, maxRotation: 45 } },
-            y: { min: 0, max: 1, ticks: { font: { size: 10 } } }
-          }
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: true, labels: { usePointStyle: true, pointStyle: 'line', boxWidth: 30, font: { size: 11 }, filter: function (item) { return item.text.indexOf('±σ') < 0; } } } },
+          scales: { x: { ticks: { font: { size: 9 }, maxRotation: 45 } }, y: { min: 0, max: 1, ticks: { font: { size: 10 } } } }
         }
       });
       allCharts.push(overallChart);
-    } else {
-      overallSection.style.display = 'none';
-    }
+    } else { overallSection.style.display = 'none'; }
 
     // Crop type sections
     var html = '';
@@ -490,7 +541,7 @@
             legend: {
               display: hasBaseline,
               labels: {
-                boxWidth: 14, font: { size: 10 },
+                usePointStyle: true, pointStyle: 'line', boxWidth: 30, font: { size: 10 },
                 filter: function (item) { return item.text.indexOf('±σ') < 0; }
               }
             }
