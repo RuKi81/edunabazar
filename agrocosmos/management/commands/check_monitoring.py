@@ -86,14 +86,14 @@ class Command(BaseCommand):
 
             next_to = min(next_from + timedelta(days=7), year_end)
 
-            # Don't process future dates
-            if next_from > today and not force:
+            # Don't process future dates (even with --force)
+            if next_from > today:
                 self.stdout.write(
                     f'  [{region.name} {year}] Next period {next_from} is in the future. Stop.'
                 )
                 break
 
-            # Check if data should be available
+            # Check if data should be available (--force skips this check)
             data_available_date = next_to + timedelta(days=AVAILABILITY_LAG_DAYS)
             if today < data_available_date and not force:
                 self.stdout.write(
