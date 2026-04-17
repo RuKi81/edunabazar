@@ -179,6 +179,10 @@
 
   <div id="report-content" class="hidden">
     <div class="report-summary" id="rpt-summary"></div>
+    <div class="overall-chart-section" id="region-overall-section" style="display:none; margin-bottom:20px; background:#fff; border:1px solid #e0e0e0; border-radius:8px; padding:16px 18px;">
+      <h2 style="font-size:15px; font-weight:700; margin:0 0 10px 0;"><i class="material-icons" style="font-size:18px; vertical-align:-3px; color:#6A1B9A;">public</i> <span id="region-chart-title">Общий индекс NDVI по региону</span></h2>
+      <div style="height:220px; position:relative;"><canvas id="chart-region-overall"></canvas></div>
+    </div>
     <div id="rpt-districts"></div>
   </div>
 </div>
@@ -329,6 +333,8 @@
     var region = resp.region;
     var year = resp.year;
     var districts = resp.districts;
+    var regionOverall = resp.region_overall_series || [];
+    var regionBaseline = resp.region_baseline || [];
 
     // Summary cards
     var withData = districts.filter(function (d) { return d.series.length > 0; });
@@ -346,6 +352,44 @@
       '<div class="summary-card"><div class="val">' + totalDistricts + '</div><div class="lbl">Всего районов</div></div>' +
       '<div class="summary-card"><div class="val">' + withData.length + '</div><div class="lbl">С данными NDVI</div></div>' +
       '<div class="summary-card"><div class="val">' + avgNdvi + '</div><div class="lbl">Средн. NDVI (последн.)</div></div>';
+
+    // Region-level overall chart with baseline
+    var regionSection = document.getElementById('region-overall-section');
+    if (regionOverall.length) {
+      regionSection.style.display = 'block';
+      document.getElementById('region-chart-title').textContent = 'Среднее многолетнее и текущее значение NDVI: ' + esc(region.name);
+      var rDatesSet = new Set();
+      regionOverall.forEach(function (s) { rDatesSet.add(s.date.substring(5)); });
+      regionBaseline.forEach(function (b) { rDatesSet.add(b.date.substring(5)); });
+      var rLabels = Array.from(rDatesSet).sort();
+
+      var datasets = buildBaselineDatasets(regionBaseline, rLabels);
+      var rLookup = {};
+      regionOverall.forEach(function (s) { rLookup[s.date.substring(5)] = s.mean_ndvi; });
+      datasets.push({
+        label: esc(region.name) + ' (' + year + ')',
+        data: rLabels.map(function (d) { return rLookup[d] !== undefined ? rLookup[d] : null; }),
+        borderColor: '#6A1B9A', backgroundColor: 'transparent',
+        borderWidth: 2.5, fill: false, pointRadius: 3, tension: 0.3, spanGaps: true
+      });
+      var rChart = new Chart(document.getElementById('chart-region-overall'), {
+        type: 'line',
+        data: { labels: rLabels, datasets: datasets },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: {
+            legend: { display: true, labels: { usePointStyle: true, pointStyle: 'line', boxWidth: 30, font: { size: 11 }, filter: function (item) { return item.text.indexOf('±σ') < 0; } } }
+          },
+          scales: {
+            x: { ticks: { font: { size: 9 }, maxRotation: 45 } },
+            y: { min: 0, max: 1, ticks: { font: { size: 10 } } }
+          }
+        }
+      });
+      districtCharts.push(rChart);
+    } else {
+      regionSection.style.display = 'none';
+    }
 
     // District sections
     var html = '';
