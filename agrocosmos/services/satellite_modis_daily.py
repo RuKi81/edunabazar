@@ -68,6 +68,30 @@ def _raster_path(region_id, date_from, date_to):
     return str(d / fname)
 
 
+def _build_state_mask(ga_image):
+    """
+    Build a clear-sky mask from MOD09GA/MYD09GA state_1km band.
+
+    state_1km bit fields:
+        bits 0-1: cloud state (00=clear, 01=cloudy, 10=mixed, 11=not set)
+        bit 2:    cloud shadow (1=yes)
+        bit 10:   internal cloud algorithm flag (1=cloud)
+        bit 13:   cirrus detected (1=yes)
+
+    Returns ee.Image with 1=clear, 0=cloudy/shadow/cirrus.
+    """
+    state = ga_image.select('state_1km')
+    # bits 0-1: cloud state, only accept 00 (clear)
+    clear = state.bitwiseAnd(3).eq(0)
+    # bit 2: cloud shadow
+    no_shadow = state.bitwiseAnd(1 << 2).eq(0)
+    # bit 10: internal cloud flag
+    no_cloud_internal = state.bitwiseAnd(1 << 10).eq(0)
+    # bit 13: cirrus
+    no_cirrus = state.bitwiseAnd(1 << 13).eq(0)
+    return clear.And(no_shadow).And(no_cloud_internal).And(no_cirrus)
+
+
 def download_composite(region_geom_extent, region_id, date_from, date_to,
                        overwrite=False):
     """
@@ -104,52 +128,81 @@ def download_composite(region_geom_extent, region_id, date_from, date_to,
 
     try:
         # Terra + Aqua daily surface reflectance, 250m
-        terra = (ee.ImageCollection('MODIS/061/MOD09GQ')
-                 .filterDate(date_from_str, date_to_str)
-                 .filterBounds(aoi))
-        aqua = (ee.ImageCollection('MODIS/061/MYD09GQ')
-                .filterDate(date_from_str, date_to_str)
-                .filterBounds(aoi))
-        merged = terra.merge(aqua)
+        terra_gq = (ee.ImageCollection('MODIS/061/MOD09GQ')
+                    .filterDate(date_from_str, date_to_str)
+                    .filterBounds(aoi))
+        aqua_gq = (ee.ImageCollection('MODIS/061/MYD09GQ')
+                   .filterDate(date_from_str, date_to_str)
+                   .filterBounds(aoi))
+        merged = terra_gq.merge(aqua_gq)
 
         n_images = merged.size().getInfo()
         if n_images == 0:
             logger.info('No MODIS daily images for %s..%s', date_from_str, date_to_str)
             return None
 
+        # Companion 1km products for detailed cloud mask (state_1km band)
+        terra_ga = (ee.ImageCollection('MODIS/061/MOD09GA')
+                    .filterDate(date_from_str, date_to_str)
+                    .filterBounds(aoi)
+                    .select(['state_1km']))
+        aqua_ga = (ee.ImageCollection('MODIS/061/MYD09GA')
+                   .filterDate(date_from_str, date_to_str)
+                   .filterBounds(aoi)
+                   .select(['state_1km']))
+        merged_ga = terra_ga.merge(aqua_ga)
+
         logger.info(
-            'MODIS daily: %d images for %s..%s',
+            'MODIS daily: %d GQ images for %s..%s',
             n_images, date_from_str, date_to_str,
         )
 
         def _compute_ndvi(image):
-            """Compute NDVI from surface reflectance with QC mask."""
+            """Compute NDVI with enhanced cloud mask (QC_250m + state_1km)."""
             # Scale factor for MOD09GQ: 0.0001
             red = image.select('sur_refl_b01').multiply(0.0001)
             nir = image.select('sur_refl_b02').multiply(0.0001)
 
-            # QC_250m band — bits 0-1: MODLAND QA
-            #   00 = corrected product produced at ideal quality
-            #   01 = corrected product produced at less than ideal quality
-            #   10 = not produced due to cloud
-            #   11 = not produced for other reason
+            # --- Mask 1: QC_250m (basic quality) ---
+            # bits 0-1: 00=ideal, 01=good, 10=cloud, 11=other
             qc = image.select('QC_250m')
-            good_quality = qc.bitwiseAnd(3).lte(1)  # 00 or 01
+            good_quality = qc.bitwiseAnd(3).lte(1)
 
-            # Additional: reject negative reflectance (sensor errors)
+            # --- Mask 2: state_1km from companion MOD09GA/MYD09GA ---
+            # Join by date: find matching GA image for this GQ image
+            img_date = image.date()
+            ga_img = merged_ga.filterDate(
+                img_date, img_date.advance(1, 'day')
+            ).first()
+
+            # state_1km bit fields:
+            #   bits 0-1: cloud state (00=clear, 01=cloudy, 10=mixed)
+            #   bit 2:    cloud shadow (1=yes)
+            #   bit 10:   internal cloud flag (1=cloud)
+            #   bit 13:   cirrus detected (1=yes)
+            state_mask = ee.Algorithms.If(
+                ga_img,
+                _build_state_mask(ee.Image(ga_img)),
+                ee.Image.constant(1),  # if no GA image, don't mask
+            )
+            state_mask = ee.Image(state_mask).rename('state_mask')
+
+            # Additional: reject invalid reflectance
             valid_red = red.gte(0).And(red.lte(1))
             valid_nir = nir.gte(0).And(nir.lte(1))
 
             ndvi = nir.subtract(red).divide(nir.add(red))
 
-            # Mask: good QC + valid reflectance + physical NDVI range
-            mask = good_quality.And(valid_red).And(valid_nir)
+            # Combined mask: QC + state_1km + valid reflectance
+            mask = good_quality.And(valid_red).And(valid_nir).And(state_mask)
             return ndvi.updateMask(mask).rename('NDVI').toFloat()
 
         ndvi_col = merged.map(_compute_ndvi)
 
-        # Median composite — reduces cloud/noise contamination
-        composite = ndvi_col.median().rename('NDVI').toFloat()
+        # qualityMosaic: pick the greenest (highest NDVI) pixel across dates.
+        # Better than median for cloud removal — clouds always reduce NDVI,
+        # so the greenest pixel is most likely cloud-free.
+        composite = ndvi_col.qualityMosaic('NDVI').rename('NDVI').toFloat()
 
         # Download as GeoTIFF via computePixels
         content = ee.data.computePixels({
