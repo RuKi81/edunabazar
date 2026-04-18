@@ -14,7 +14,7 @@ from django.views.decorators.cache import cache_page
 
 from .models import Region, District, Farmland, FarmlandPhenology, VegetationIndex, MonitoringTask, NdviBaseline, SatelliteScene
 
-MODIS_SATELLITES = ('modis_terra', 'modis_aqua')
+MODIS_SATELLITES = ('modis_terra', 'modis_aqua', 'modis_daily')
 RASTER_SATELLITES = ('sentinel2', 'landsat8', 'landsat9')
 
 

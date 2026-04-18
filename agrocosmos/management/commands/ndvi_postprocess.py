@@ -31,7 +31,7 @@ ROLLING_WINDOW = 3      # half-window for rolling median (±3 points)
 SG_WINDOW = 5           # must be odd, ≥ 5 for cubic
 SG_POLYORDER = 3
 
-MODIS_SATELLITES = ('modis_terra', 'modis_aqua')
+MODIS_SATELLITES = ('modis_terra', 'modis_aqua', 'modis_daily')
 RASTER_SATELLITES = ('sentinel2', 'landsat8', 'landsat9')
 
 DB_BATCH = 5000  # raw SQL update batch
@@ -107,7 +107,7 @@ class Command(BaseCommand):
         params = [region_id]
 
         if source == 'modis':
-            where_parts.append("sc.satellite IN ('modis_terra', 'modis_aqua')")
+            where_parts.append("sc.satellite IN ('modis_terra', 'modis_aqua', 'modis_daily')")
         elif source == 'raster':
             where_parts.append("sc.satellite IN ('sentinel2', 'landsat8', 'landsat9')")
 
