@@ -69,11 +69,11 @@ def _month_chunks(date_from, date_to):
 
 
 def _biweekly_chunks(date_from, date_to):
-    """Split date range into 8-day periods (Terra+Aqua offset gives ~8-day cadence)."""
+    """Split date range into 5-day periods (Terra+Aqua offset gives ~5-day cadence)."""
     chunks = []
     cursor = date_from
     while cursor <= date_to:
-        end = min(cursor + timedelta(days=7), date_to)
+        end = min(cursor + timedelta(days=4), date_to)
         chunks.append((cursor, end))
         cursor = end + timedelta(days=1)
     return chunks
