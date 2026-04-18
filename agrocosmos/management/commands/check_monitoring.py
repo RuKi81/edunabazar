@@ -31,8 +31,8 @@ logger = logging.getLogger('agrocosmos')
 # --- Pipeline switch ---
 # 'modis_daily'  = MOD09GQ+MYD09GQ daily reflectance (1-2 day lag, manual NDVI)
 # 'modis_ndvi'   = MOD13Q1+MYD13Q1 16-day composites (2-3 week lag, NASA NDVI)
-NDVI_COMMAND = 'modis_daily'
-AVAILABILITY_LAG_DAYS = 2  # MOD09GQ published ~1-2 days after acquisition
+NDVI_COMMAND = 'modis_ndvi'
+AVAILABILITY_LAG_DAYS = 5  # MOD13Q1 composites available ~5 days after period ends
 
 
 class Command(BaseCommand):
