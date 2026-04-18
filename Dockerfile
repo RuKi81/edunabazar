@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         gdal-bin libgdal-dev libgeos-dev \
-        gcc g++ gfortran pkg-config && \
+        gcc g++ gfortran pkg-config libopenblas-dev && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
