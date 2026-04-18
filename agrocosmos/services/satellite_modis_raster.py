@@ -35,11 +35,11 @@ RASTER_DIR = os.environ.get(
 
 def _biweekly_chunks(date_from, date_to):
     """
-    Split date range into 5-day periods aligned to Jan 1 of the year.
+    Split date range into 8-day periods aligned to Jan 1 of the year.
 
-    Using 5-day windows gives ~73 composites/year. Terra (MOD13Q1) and
-    Aqua (MYD13Q1) composites are offset by 8 days, so a 5-day window
-    often captures data from at least one sensor.
+    Using 8-day windows matches the Terra/Aqua composite cadence:
+    Terra (MOD13Q1) and Aqua (MYD13Q1) composites are offset by 8 days,
+    so an 8-day window typically captures data from one or both sensors.
 
     Anchoring to Jan 1 ensures that any --date-from value produces the
     same chunk boundaries, preventing duplicate records when re-running
@@ -50,7 +50,7 @@ def _biweekly_chunks(date_from, date_to):
     chunks = []
     cursor = epoch
     while cursor <= date_to:
-        end = cursor + timedelta(days=4)
+        end = cursor + timedelta(days=7)
         # Only include chunks that overlap with [date_from, date_to]
         if end >= date_from:
             chunks.append((max(cursor, date_from), min(end, date_to)))
