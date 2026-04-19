@@ -32,7 +32,7 @@ logger = logging.getLogger('agrocosmos')
 # 'modis_daily'  = MOD09GQ+MYD09GQ daily reflectance (1-2 day lag, manual NDVI)
 # 'modis_ndvi'   = MOD13Q1+MYD13Q1 16-day composites (2-3 week lag, NASA NDVI)
 NDVI_COMMAND = 'modis_ndvi'
-AVAILABILITY_LAG_DAYS = 5  # MOD13Q1 composites available ~5 days after period ends
+AVAILABILITY_LAG_DAYS = 7  # MOD13Q1 composites available ~7 days after period ends
 
 
 class Command(BaseCommand):
@@ -92,7 +92,7 @@ class Command(BaseCommand):
             else:
                 next_from = year_start
 
-            next_to = min(next_from + timedelta(days=7), year_end)
+            next_to = min(next_from + timedelta(days=15), year_end)
 
             # Don't process future dates (even with --force)
             if next_from > today:
