@@ -600,12 +600,24 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
         except Exception:
             item['z_score'] = None
 
+    # For MODIS 16-day composites: expose the end date of the last chunk
+    # so the frontend can draw a dashed "coverage" extension line.
+    # mid_date = chunk_start + 7 days, chunk_end = chunk_start + 15 = mid + 8
+    last_period_end = None
+    if source == 'modis' and by_period_list:
+        try:
+            last_mid = date.fromisoformat(by_period_list[-1]['date'])
+            last_period_end = str(last_mid + timedelta(days=8))
+        except Exception:
+            pass
+
     return JsonResponse({
         'ok': True,
         'stats': {
             'by_crop_type': by_crop_list,
             'by_period': by_period_list,
             'baseline': baseline_list,
+            'last_period_end': last_period_end,
             'summary': {
                 'total_farmlands': total_fl,
                 'with_ndvi': with_ndvi,
