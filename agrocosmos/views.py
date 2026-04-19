@@ -963,6 +963,15 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
             'std_ndvi': _safe_round(b['avg_std']),
         })
 
+    # last_period_end for dashed extension line (MODIS 16-day: mid + 8 days)
+    last_period_end = None
+    if region_overall:
+        try:
+            last_mid = date.fromisoformat(region_overall[-1]['date'])
+            last_period_end = str(last_mid + timedelta(days=8))
+        except Exception:
+            pass
+
     return JsonResponse({
         'ok': True,
         'region': {'id': region.pk, 'name': region.name},
@@ -970,6 +979,7 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
         'districts': result,
         'region_overall_series': region_overall,
         'region_baseline': region_baseline,
+        'last_period_end': last_period_end,
     })
 
 
