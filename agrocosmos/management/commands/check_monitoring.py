@@ -86,9 +86,13 @@ class Command(BaseCommand):
         # Process ALL available periods in one run (catch-up from year start)
         periods_done = 0
         while True:
-            # Next period to process
+            # Next period to process — aligned to 16-day grid from Jan 1
+            # (must match _biweekly_chunks in satellite_modis_raster.py)
             if task.last_date_to:
-                next_from = task.last_date_to + timedelta(days=1)
+                # Find which 16-day chunk last_date_to falls in, then advance
+                days_since = (task.last_date_to - year_start).days
+                current_chunk_idx = days_since // 16
+                next_from = year_start + timedelta(days=(current_chunk_idx + 1) * 16)
             else:
                 next_from = year_start
 
