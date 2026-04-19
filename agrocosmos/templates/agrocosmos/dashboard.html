@@ -1204,7 +1204,7 @@
       var promises = years.map(function (yr) {
         return fetch('/agrocosmos/api/farmland/ndvi/?farmland=' + fid + '&year=' + yr + '&source=' + SOURCE)
           .then(function (r) { return r.json(); })
-          .then(function (resp) { return { year: yr, data: (resp.ok ? resp.data : []) }; });
+          .then(function (resp) { return { year: yr, data: (resp.ok ? resp.data : []), lastPeriodEnd: resp.last_period_end || null }; });
       });
 
       Promise.all(promises).then(function (results) {
@@ -1237,6 +1237,25 @@
           });
         });
 
+        // Dashed extension line for farmland chart (MODIS only)
+        results.forEach(function (res, idx) {
+          if (!res.lastPeriodEnd || !res.data.length) return;
+          var endMmDd = res.lastPeriodEnd.substring(5);
+          var lastEntry = res.data[res.data.length - 1];
+          var lastMmDd = lastEntry.date.substring(5);
+          var lastNdvi = lastEntry.mean;
+          if (!lastNdvi || endMmDd <= lastMmDd) return;
+          if (labels.indexOf(endMmDd) === -1) { labels.push(endMmDd); labels.sort(); }
+          datasets.push({
+            label: res.year + ' (период)',
+            data: labels.map(function (l) { return (l === lastMmDd || l === endMmDd) ? lastNdvi : null; }),
+            borderColor: yearColors[idx % yearColors.length],
+            backgroundColor: 'transparent',
+            borderWidth: 2, borderDash: [6, 4], fill: false,
+            pointRadius: 0, tension: 0, spanGaps: true, order: 10
+          });
+        });
+
         if (ndviChart) ndviChart.destroy();
         ndviChart = new Chart(document.getElementById('ndvi-chart'), {
           type: 'line',
@@ -1247,7 +1266,7 @@
             plugins: {
               legend: {
                 display: years.length > 1,
-                labels: { boxWidth: 14, font: { size: 11 } }
+                labels: { boxWidth: 14, font: { size: 11 }, filter: function (item) { return item.text.indexOf('(период)') < 0; } }
               }
             },
             scales: {

@@ -371,7 +371,16 @@ def api_farmland_ndvi(request: HttpRequest) -> JsonResponse:
             'max': _safe_round(r['max_val']),
             'median': _safe_round(r['median']),
         })
-    return JsonResponse({'ok': True, 'data': data})
+    # last_period_end for MODIS dashed extension line
+    last_period_end = None
+    if source == 'modis' and data:
+        try:
+            last_mid = date.fromisoformat(data[-1]['date'])
+            last_period_end = str(last_mid + timedelta(days=8))
+        except Exception:
+            pass
+
+    return JsonResponse({'ok': True, 'data': data, 'last_period_end': last_period_end})
 
 
 def _safe_round(val, precision=4):
@@ -1216,6 +1225,15 @@ def api_report_district(request: HttpRequest) -> JsonResponse:
             'mean_ndvi': _safe_round(weighted),
         })
 
+    # last_period_end for dashed extension line (MODIS 16-day: mid + 8 days)
+    last_period_end = None
+    if overall_series:
+        try:
+            last_mid = date.fromisoformat(overall_series[-1]['date'])
+            last_period_end = str(last_mid + timedelta(days=8))
+        except Exception:
+            pass
+
     return JsonResponse({
         'ok': True,
         'district': {'id': district.pk, 'name': district.name},
@@ -1225,6 +1243,7 @@ def api_report_district(request: HttpRequest) -> JsonResponse:
         'overall_baseline': overall_baseline,
         'region_overall_series': region_overall,
         'crop_types': result,
+        'last_period_end': last_period_end,
     })
 
 
