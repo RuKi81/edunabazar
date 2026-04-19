@@ -372,13 +372,33 @@
         borderColor: '#6A1B9A', backgroundColor: 'transparent',
         borderWidth: 2.5, fill: false, pointRadius: 3, tension: 0.3, spanGaps: true
       });
+
+      // Dashed extension line to period end
+      var lastPeriodEnd = resp.last_period_end;
+      if (lastPeriodEnd && regionOverall.length) {
+        var endMmDd = lastPeriodEnd.substring(5);
+        var lastEntry = regionOverall[regionOverall.length - 1];
+        var lastMmDd = lastEntry.date.substring(5);
+        var lastNdvi = lastEntry.mean_ndvi;
+        if (lastNdvi && endMmDd > lastMmDd) {
+          if (rLabels.indexOf(endMmDd) === -1) { rLabels.push(endMmDd); rLabels.sort(); }
+          datasets.push({
+            label: '(период)',
+            data: rLabels.map(function (l) { return (l === lastMmDd || l === endMmDd) ? lastNdvi : null; }),
+            borderColor: '#6A1B9A', backgroundColor: 'transparent',
+            borderWidth: 2, borderDash: [6, 4], fill: false,
+            pointRadius: 0, tension: 0, spanGaps: true, order: 10
+          });
+        }
+      }
+
       var rChart = new Chart(document.getElementById('chart-region-overall'), {
         type: 'line',
         data: { labels: rLabels, datasets: datasets },
         options: {
           responsive: true, maintainAspectRatio: false,
           plugins: {
-            legend: { display: true, labels: { usePointStyle: true, pointStyle: 'line', boxWidth: 30, font: { size: 11 }, filter: function (item) { return item.text.indexOf('±σ') < 0; } } }
+            legend: { display: true, labels: { usePointStyle: true, pointStyle: 'line', boxWidth: 30, font: { size: 11 }, filter: function (item) { return item.text.indexOf('±σ') < 0 && item.text.indexOf('(период)') < 0; } } }
           },
           scales: {
             x: { ticks: { font: { size: 9 }, maxRotation: 45 } },
