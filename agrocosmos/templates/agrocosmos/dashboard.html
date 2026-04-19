@@ -913,11 +913,12 @@
           return {
             year: yr,
             data: (resp.ok && resp.stats) ? resp.stats.by_period : [],
-            baseline: (resp.ok && resp.stats && resp.stats.baseline) ? resp.stats.baseline : []
+            baseline: (resp.ok && resp.stats && resp.stats.baseline) ? resp.stats.baseline : [],
+            lastPeriodEnd: (resp.ok && resp.stats) ? resp.stats.last_period_end : null
           };
         }).catch(function (err) {
           console.error('MultiYear fetch error year=' + yr, err);
-          return { year: yr, data: [], baseline: [] };
+          return { year: yr, data: [], baseline: [], lastPeriodEnd: null };
         });
       });
 
@@ -1033,6 +1034,41 @@
           });
         });
 
+        // Dashed extension line: from last data point to period end (MODIS only)
+        results.forEach(function (res, idx) {
+          if (!res.lastPeriodEnd || !res.data.length) return;
+          var endMmDd = res.lastPeriodEnd.substring(5);  // MM-DD
+          var lastEntry = res.data[res.data.length - 1];
+          var lastMmDd = lastEntry.date.substring(5);
+          var lastNdvi = lastEntry.mean_ndvi;
+          if (!lastNdvi || endMmDd <= lastMmDd) return;
+
+          // Ensure the end label exists
+          if (labels.indexOf(endMmDd) === -1) {
+            labels.push(endMmDd);
+            labels.sort();
+          }
+
+          // Build sparse array: only two points (last data + period end)
+          var extVals = labels.map(function (l) {
+            if (l === lastMmDd || l === endMmDd) return lastNdvi;
+            return null;
+          });
+          datasets.push({
+            label: res.year + ' (период)',
+            data: extVals,
+            borderColor: yearColors[idx % yearColors.length],
+            backgroundColor: 'transparent',
+            borderWidth: 2,
+            borderDash: [6, 4],
+            fill: false,
+            pointRadius: 0,
+            tension: 0,
+            spanGaps: true,
+            order: 10
+          });
+        });
+
         var blDsCount = baselineData.length ? 3 : 0;  // upper + mean + lower
         if (datasets.length <= blDsCount) { wrap.style.display = 'none'; return; }
 
@@ -1050,8 +1086,8 @@
                 labels: {
                   boxWidth: 14, font: { size: 11 },
                   filter: function (item) {
-                    // Hide ±σ datasets from legend
-                    return item.text.indexOf('Baseline') !== 0;
+                    // Hide ±σ datasets and period extension from legend
+                    return item.text.indexOf('Baseline') !== 0 && item.text.indexOf('(период)') === -1;
                   }
                 }
               },
