@@ -397,18 +397,31 @@
       regionOverall.forEach(function (s) { rLookup[s.date.substring(5)] = s.mean_ndvi; });
       var dLookup = {};
       overall.forEach(function (s) { dLookup[s.date.substring(5)] = s.mean_ndvi; });
+      // Dashed extension for region chart
+      var lastPeriodEnd = resp.last_period_end;
+      var rDatasets = [
+        { label: esc(region.name) + ' (регион)', data: rDates.map(function (d) { return rLookup[d] !== undefined ? rLookup[d] : null; }), borderColor: '#6A1B9A', backgroundColor: 'transparent', borderWidth: 2.5, fill: false, pointRadius: 3, tension: 0.3, spanGaps: true },
+        { label: esc(district.name) + ' (район)', data: rDates.map(function (d) { return dLookup[d] !== undefined ? dLookup[d] : null; }), borderColor: '#1565C0', backgroundColor: 'transparent', borderWidth: 2, borderDash: [5, 3], fill: false, pointRadius: 2, tension: 0.3, spanGaps: true }
+      ];
+      if (lastPeriodEnd && regionOverall.length) {
+        var rEndMmDd = lastPeriodEnd.substring(5);
+        var rLastEntry = regionOverall[regionOverall.length - 1];
+        var rLastMmDd = rLastEntry.date.substring(5);
+        var rLastNdvi = rLastEntry.mean_ndvi;
+        if (rLastNdvi && rEndMmDd > rLastMmDd) {
+          if (rDates.indexOf(rEndMmDd) === -1) { rDates.push(rEndMmDd); rDates.sort(); }
+          rDatasets.push({ label: '(период)', data: rDates.map(function (l) { return (l === rLastMmDd || l === rEndMmDd) ? rLastNdvi : null; }), borderColor: '#6A1B9A', backgroundColor: 'transparent', borderWidth: 2, borderDash: [6, 4], fill: false, pointRadius: 0, tension: 0, spanGaps: true, order: 10 });
+        }
+      }
       var rChart = new Chart(document.getElementById('chart-region'), {
         type: 'line',
         data: {
           labels: rDates,
-          datasets: [
-            { label: esc(region.name) + ' (регион)', data: rDates.map(function (d) { return rLookup[d] !== undefined ? rLookup[d] : null; }), borderColor: '#6A1B9A', backgroundColor: 'transparent', borderWidth: 2.5, fill: false, pointRadius: 3, tension: 0.3, spanGaps: true },
-            { label: esc(district.name) + ' (район)', data: rDates.map(function (d) { return dLookup[d] !== undefined ? dLookup[d] : null; }), borderColor: '#1565C0', backgroundColor: 'transparent', borderWidth: 2, borderDash: [5, 3], fill: false, pointRadius: 2, tension: 0.3, spanGaps: true }
-          ]
+          datasets: rDatasets
         },
         options: {
           responsive: true, maintainAspectRatio: false,
-          plugins: { legend: { display: true, labels: { usePointStyle: true, pointStyle: 'line', boxWidth: 30, font: { size: 11 } } } },
+          plugins: { legend: { display: true, labels: { usePointStyle: true, pointStyle: 'line', boxWidth: 30, font: { size: 11 }, filter: function (item) { return item.text.indexOf('(период)') < 0; } } } },
           scales: { x: { ticks: { font: { size: 9 }, maxRotation: 45 } }, y: { min: 0, max: 1, ticks: { font: { size: 10 } } } }
         }
       });
@@ -434,12 +447,23 @@
         c.series.forEach(function (s) { lookup[s.date.substring(5)] = s.mean_ndvi; });
         datasets.push({ label: c.label, data: allDates.map(function (d) { return lookup[d] !== undefined ? lookup[d] : null; }), borderColor: cropColors[c.crop_type] || '#999', backgroundColor: 'transparent', borderWidth: 1.5, borderDash: [4, 2], fill: false, pointRadius: 2, tension: 0.3, spanGaps: true });
       });
+      // Dashed extension for overall chart
+      if (lastPeriodEnd && overall.length) {
+        var oEndMmDd = lastPeriodEnd.substring(5);
+        var oLastEntry = overall[overall.length - 1];
+        var oLastMmDd = oLastEntry.date.substring(5);
+        var oLastNdvi = oLastEntry.mean_ndvi;
+        if (oLastNdvi && oEndMmDd > oLastMmDd) {
+          if (allDates.indexOf(oEndMmDd) === -1) { allDates.push(oEndMmDd); allDates.sort(); }
+          datasets.push({ label: '(период)', data: allDates.map(function (l) { return (l === oLastMmDd || l === oEndMmDd) ? oLastNdvi : null; }), borderColor: '#333', backgroundColor: 'transparent', borderWidth: 2, borderDash: [6, 4], fill: false, pointRadius: 0, tension: 0, spanGaps: true, order: 10 });
+        }
+      }
       var overallChart = new Chart(document.getElementById('chart-overall'), {
         type: 'line',
         data: { labels: allDates, datasets: datasets },
         options: {
           responsive: true, maintainAspectRatio: false,
-          plugins: { legend: { display: true, labels: { usePointStyle: true, pointStyle: 'line', boxWidth: 30, font: { size: 11 }, filter: function (item) { return item.text.indexOf('±σ') < 0; } } } },
+          plugins: { legend: { display: true, labels: { usePointStyle: true, pointStyle: 'line', boxWidth: 30, font: { size: 11 }, filter: function (item) { return item.text.indexOf('±σ') < 0 && item.text.indexOf('(период)') < 0; } } } },
           scales: { x: { ticks: { font: { size: 9 }, maxRotation: 45 } }, y: { min: 0, max: 1, ticks: { font: { size: 10 } } } }
         }
       });
@@ -515,17 +539,30 @@
       var datasets = buildBaselineDatasets(cropBaseline, labels);
 
       // Data line
+      var cColor = cropColors[c.crop_type] || '#999';
       datasets.push({
         label: c.label,
         data: vals,
-        borderColor: cropColors[c.crop_type] || '#999',
-        backgroundColor: (cropColors[c.crop_type] || '#999') + '22',
+        borderColor: cColor,
+        backgroundColor: cColor + '22',
         borderWidth: 2,
         fill: false,
         pointRadius: 3,
         tension: 0.3,
         spanGaps: true,
       });
+
+      // Dashed extension for crop chart
+      if (lastPeriodEnd && c.series.length) {
+        var cEndMmDd = lastPeriodEnd.substring(5);
+        var cLastEntry = c.series[c.series.length - 1];
+        var cLastMmDd = cLastEntry.date.substring(5);
+        var cLastNdvi = cLastEntry.mean_ndvi;
+        if (cLastNdvi && cEndMmDd > cLastMmDd) {
+          if (labels.indexOf(cEndMmDd) === -1) { labels.push(cEndMmDd); labels.sort(); }
+          datasets.push({ label: '(период)', data: labels.map(function (l) { return (l === cLastMmDd || l === cEndMmDd) ? cLastNdvi : null; }), borderColor: cColor, backgroundColor: 'transparent', borderWidth: 2, borderDash: [6, 4], fill: false, pointRadius: 0, tension: 0, spanGaps: true, order: 10 });
+        }
+      }
 
       var ctx = document.getElementById('chart-crop-' + idx);
       if (!ctx) return;
@@ -542,7 +579,7 @@
               display: hasBaseline,
               labels: {
                 usePointStyle: true, pointStyle: 'line', boxWidth: 30, font: { size: 10 },
-                filter: function (item) { return item.text.indexOf('±σ') < 0; }
+                filter: function (item) { return item.text.indexOf('±σ') < 0 && item.text.indexOf('(период)') < 0; }
               }
             }
           },

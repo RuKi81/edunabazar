@@ -476,10 +476,11 @@
       var datasets = buildBaselineDatasets(baseline, labels);
 
       // Main data line
+      var dColor = districtColors[idx % districtColors.length];
       datasets.push({
         label: d.district_name,
         data: vals,
-        borderColor: districtColors[idx % districtColors.length],
+        borderColor: dColor,
         backgroundColor: 'transparent',
         borderWidth: 2,
         fill: false,
@@ -489,6 +490,24 @@
         tension: 0.3,
         spanGaps: true,
       });
+
+      // Dashed extension line to period end (per district)
+      if (lastPeriodEnd && d.series.length) {
+        var dEndMmDd = lastPeriodEnd.substring(5);
+        var dLastEntry = d.series[d.series.length - 1];
+        var dLastMmDd = dLastEntry.date.substring(5);
+        var dLastNdvi = dLastEntry.mean_ndvi;
+        if (dLastNdvi && dEndMmDd > dLastMmDd) {
+          if (labels.indexOf(dEndMmDd) === -1) { labels.push(dEndMmDd); labels.sort(); }
+          datasets.push({
+            label: '(период)',
+            data: labels.map(function (l) { return (l === dLastMmDd || l === dEndMmDd) ? dLastNdvi : null; }),
+            borderColor: dColor, backgroundColor: 'transparent',
+            borderWidth: 2, borderDash: [6, 4], fill: false,
+            pointRadius: 0, tension: 0, spanGaps: true, order: 10
+          });
+        }
+      }
 
       var ctx = document.getElementById('chart-d-' + d.district_id);
       if (!ctx) return;
@@ -505,7 +524,7 @@
               display: hasBaseline,
               labels: {
                 usePointStyle: true, pointStyle: 'line', boxWidth: 30, font: { size: 10 },
-                filter: function (item) { return item.text.indexOf('±σ') < 0; }
+                filter: function (item) { return item.text.indexOf('±σ') < 0 && item.text.indexOf('(период)') < 0; }
               }
             },
             tooltip: {
