@@ -97,6 +97,11 @@ class SatelliteScene(models.Model):
         ordering = ['-acquired_date']
         verbose_name = 'Снимок'
         verbose_name_plural = 'Снимки'
+        indexes = [
+            # Speeds up JOIN ... WHERE satellite IN (...) used in every
+            # dashboard/report query that distinguishes MODIS vs raster sources.
+            models.Index(fields=['satellite', 'acquired_date'], name='scene_sat_date_idx'),
+        ]
 
     def __str__(self):
         return f'{self.get_satellite_display()} {self.acquired_date} ({self.scene_id})'
@@ -139,6 +144,15 @@ class VegetationIndex(models.Model):
         indexes = [
             models.Index(fields=['farmland', 'index_type', 'acquired_date']),
             models.Index(fields=['acquired_date', 'index_type']),
+            # Partial index covering the hot dashboard/report path:
+            # WHERE index_type='ndvi' AND is_anomaly=false, grouped by date/farmland.
+            # ~95% of rows satisfy is_anomaly=false, so the partial index
+            # is roughly the same size as a full one but skips the filter step.
+            models.Index(
+                fields=['farmland', 'acquired_date'],
+                condition=models.Q(index_type='ndvi', is_anomaly=False),
+                name='vi_ndvi_active_idx',
+            ),
         ]
 
     def __str__(self):
