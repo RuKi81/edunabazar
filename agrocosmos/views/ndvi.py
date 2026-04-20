@@ -10,9 +10,10 @@ from django.http import HttpRequest, JsonResponse
 from ..models import (
     Farmland, FarmlandPhenology, NdviBaseline, VegetationIndex,
 )
-from ._helpers import _satellite_filter, _safe_round
+from ._helpers import _satellite_filter, _safe_round, rate_limit
 
 
+@rate_limit('60/m')
 def api_farmland_ndvi(request: HttpRequest) -> JsonResponse:
     """NDVI time series for a single farmland. Optional ?year=2025 filter."""
     farmland_id = request.GET.get('farmland')
@@ -61,6 +62,7 @@ def api_farmland_ndvi(request: HttpRequest) -> JsonResponse:
     return JsonResponse({'ok': True, 'data': data, 'last_period_end': last_period_end})
 
 
+@rate_limit('30/m')
 def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
     """
     Aggregated NDVI statistics by crop type for a region/district and period.
@@ -304,6 +306,7 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
     })
 
 
+@rate_limit('30/m')
 def api_phenology(request: HttpRequest) -> JsonResponse:
     """Phenological metrics aggregated per district or region.
 

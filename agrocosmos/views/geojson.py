@@ -5,7 +5,7 @@ from django.contrib.gis.db.models.functions import AsGeoJSON
 from django.http import HttpRequest, JsonResponse
 
 from ..models import Region, District, Farmland, VegetationIndex
-from ._helpers import _satellite_filter
+from ._helpers import _satellite_filter, rate_limit
 
 
 def api_regions(request: HttpRequest) -> JsonResponse:
@@ -50,6 +50,7 @@ def api_districts(request: HttpRequest) -> JsonResponse:
     return JsonResponse({'type': 'FeatureCollection', 'features': features})
 
 
+@rate_limit('60/m')
 def api_farmlands(request: HttpRequest) -> JsonResponse:
     """GeoJSON farmlands for a single district. For region overview use MVT tiles."""
     district_id = request.GET.get('district')

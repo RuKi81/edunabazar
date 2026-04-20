@@ -6,6 +6,8 @@ from django.db import connection
 from django.http import HttpRequest, HttpResponse
 from django.views.decorators.cache import cache_page
 
+from ._helpers import rate_limit
+
 
 def _tile_bbox(z, x, y):
     """Convert tile coords to EPSG:3857 bounding box."""
@@ -26,6 +28,7 @@ def _tile_bbox(z, x, y):
     return xmin, ymin, xmax, ymax
 
 
+@rate_limit('300/m', binary=True)
 @cache_page(60 * 10)  # 10 min in Redis
 def api_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
     """Mapbox Vector Tile (MVT) endpoint for farmland polygons.
@@ -104,6 +107,7 @@ def api_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
     return resp
 
 
+@rate_limit('300/m', binary=True)
 def api_raster_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
     """Serve NDVI pseudocolor PNG tile from a GeoTIFF composite.
 
