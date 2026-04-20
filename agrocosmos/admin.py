@@ -434,8 +434,13 @@ def run_archive_view(request):
     return redirect('admin:agro_panel')
 
 
-def _run_raster_bg(region_id, year, run_id=None, district_id=None, min_valid=0.7):
-    """Run fetch_raster_ndvi for S2 + L8 in background thread."""
+def _run_raster_bg(region_id, year, run_id=None, district_id=None,
+                   min_valid=0.7, overwrite=False, rebuild_fusion=True):
+    """Run fetch_raster_ndvi for S2 + L8 in background thread.
+
+    When ``rebuild_fusion`` is True, chains ``compute_fused_ndvi`` and
+    ``ndvi_postprocess`` after the S2+L8 downloads complete.
+    """
     try:
         from django.core.management import call_command
         from io import StringIO
@@ -449,6 +454,7 @@ def _run_raster_bg(region_id, year, run_id=None, district_id=None, min_valid=0.7
                 'sensor': sensor,
                 'year': year,
                 'min_valid_ratio': min_valid,
+                'overwrite': overwrite,
                 'stdout': out,
                 'stderr': out,
             }
@@ -470,6 +476,40 @@ def _run_raster_bg(region_id, year, run_id=None, district_id=None, min_valid=0.7
                         pass
 
         logger.info('raster_ndvi done: region=%s year=%s records=%d', region_id, year, total_records)
+
+        # ── Optional: rebuild HLS fusion + postprocess ──
+        if rebuild_fusion:
+            fusion_kwargs = {
+                'year': year,
+                'overwrite': True,
+                'stdout': (fout := StringIO()),
+                'stderr': fout,
+            }
+            if district_id:
+                fusion_kwargs['district_id'] = district_id
+            else:
+                fusion_kwargs['region_id'] = region_id
+            try:
+                call_command('compute_fused_ndvi', **fusion_kwargs)
+                all_log += f'\n=== FUSION ===\n{fout.getvalue()}'
+            except Exception as fe:
+                all_log += f'\n=== FUSION ERROR ===\n{fe}'
+                logger.error('compute_fused_ndvi error: %s', fe)
+
+            # postprocess always needs region_id
+            post_kwargs = {
+                'region_id': region_id,
+                'year': year,
+                'source': 'fused',
+                'stdout': (pout := StringIO()),
+                'stderr': pout,
+            }
+            try:
+                call_command('ndvi_postprocess', **post_kwargs)
+                all_log += f'\n=== POSTPROCESS ===\n{pout.getvalue()}'
+            except Exception as pe:
+                all_log += f'\n=== POSTPROCESS ERROR ===\n{pe}'
+                logger.error('ndvi_postprocess error: %s', pe)
 
         if run_id:
             try:
@@ -503,6 +543,8 @@ def run_raster_view(request):
     district_id = request.POST.get('district_id')
     year = request.POST.get('year')
     min_valid = float(request.POST.get('min_valid', 0.7))
+    overwrite = request.POST.get('overwrite') == '1'
+    rebuild_fusion = request.POST.get('rebuild_fusion') == '1'
 
     if not region_id or not year:
         messages.error(request, 'Укажите регион и год')
@@ -521,16 +563,27 @@ def run_raster_view(request):
         except (TypeError, ValueError, District.DoesNotExist):
             did = None
 
+    flags = []
+    if overwrite:
+        flags.append('overwrite')
+    if rebuild_fusion:
+        flags.append('+fusion')
+    flags_s = f' [{", ".join(flags)}]' if flags else ''
+
     run = PipelineRun.objects.create(
         task_type='raster_ndvi',
         region=region,
         year=year,
-        description=f'{region.name}{district_name}, {year} год (S2+L8, valid≥{min_valid:.0%})',
+        description=(
+            f'{region.name}{district_name}, {year} год '
+            f'(S2+L8, valid≥{min_valid:.0%}){flags_s}'
+        ),
     )
 
     t = threading.Thread(
         target=_run_raster_bg,
         args=(int(region_id), year, run.pk, did, min_valid),
+        kwargs={'overwrite': overwrite, 'rebuild_fusion': rebuild_fusion},
         daemon=True,
     )
     t.start()
@@ -538,7 +591,7 @@ def run_raster_view(request):
     messages.success(
         request,
         f'Загрузка S2+L8 NDVI запущена: {region.name}{district_name}, {year} '
-        f'(min_valid={min_valid:.0%}). Процесс в фоне (~1-3 ч для S2).'
+        f'(min_valid={min_valid:.0%}){flags_s}. Процесс в фоне (~1-3 ч для S2).'
     )
     return redirect('admin:agro_panel')
 
