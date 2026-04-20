@@ -192,6 +192,7 @@
 
 {% block scripts %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="{% static 'agrocosmos/js/ndvi_chart.js' %}"></script>
 <script>
 (function () {
   var regionSel = document.getElementById('rpt-region');
@@ -235,53 +236,7 @@
     window.open('https://vk.com/share.php?url=' + encodeURIComponent(getShareUrl()) + '&title=' + encodeURIComponent(getShareText()), '_blank');
   });
 
-  function buildBaselineDatasets(baseline, labels) {
-    if (!baseline || !baseline.length) return [];
-    var blLookup = {};
-    baseline.forEach(function (b) { blLookup[b.date.substring(5)] = b; });
-    var blVals  = labels.map(function (l) { var b = blLookup[l]; return b ? b.mean_ndvi : null; });
-    var blUpper = labels.map(function (l) { var b = blLookup[l]; return b ? Math.min((b.mean_ndvi || 0) + (b.std_ndvi || 0), 1.0) : null; });
-    var blLower = labels.map(function (l) { var b = blLookup[l]; return b ? Math.max((b.mean_ndvi || 0) - (b.std_ndvi || 0), 0) : null; });
-    return [
-      {
-        label: '±σ (верх)',
-        data: blUpper,
-        borderColor: 'transparent',
-        backgroundColor: 'rgba(158,158,158,0.18)',
-        borderWidth: 0,
-        fill: '+1',
-        pointRadius: 0,
-        tension: 0.3,
-        spanGaps: true,
-        order: 12
-      },
-      {
-        label: 'Среднее многолетнее',
-        data: blVals,
-        borderColor: '#9E9E9E',
-        backgroundColor: 'transparent',
-        borderWidth: 2,
-        borderDash: [6, 4],
-        fill: false,
-        pointRadius: 0,
-        tension: 0.3,
-        spanGaps: true,
-        order: 11
-      },
-      {
-        label: '±σ (низ)',
-        data: blLower,
-        borderColor: 'transparent',
-        backgroundColor: 'rgba(158,158,158,0.18)',
-        borderWidth: 0,
-        fill: '-1',
-        pointRadius: 0,
-        tension: 0.3,
-        spanGaps: true,
-        order: 12
-      }
-    ];
-  }
+  var buildBaselineDatasets = window.NdviChart.buildBaselineDatasets;
 
   var districtColors = [
     '#2e7d32','#1565C0','#E65100','#6A1B9A','#C62828','#00838F',
@@ -373,24 +328,12 @@
         borderWidth: 2.5, fill: false, pointRadius: 3, tension: 0.3, spanGaps: true
       });
 
-      // Dashed extension line to period end
       var lastPeriodEnd = resp.last_period_end;
-      if (lastPeriodEnd && regionOverall.length) {
-        var endMmDd = lastPeriodEnd.substring(5);
-        var lastEntry = regionOverall[regionOverall.length - 1];
-        var lastMmDd = lastEntry.date.substring(5);
-        var lastNdvi = lastEntry.mean_ndvi;
-        if (lastNdvi && endMmDd > lastMmDd) {
-          if (rLabels.indexOf(endMmDd) === -1) { rLabels.push(endMmDd); rLabels.sort(); }
-          datasets.push({
-            label: '(период)',
-            data: rLabels.map(function (l) { return (l === lastMmDd || l === endMmDd) ? lastNdvi : null; }),
-            borderColor: '#6A1B9A', backgroundColor: 'transparent',
-            borderWidth: 2, borderDash: [6, 4], fill: false,
-            pointRadius: 0, tension: 0, spanGaps: true, order: 10
-          });
-        }
-      }
+      NdviChart.pushExtensionLine({
+        datasets: datasets, labels: rLabels,
+        series: regionOverall, lastPeriodEnd: lastPeriodEnd,
+        color: '#6A1B9A',
+      });
 
       var rChart = new Chart(document.getElementById('chart-region-overall'), {
         type: 'line',
@@ -398,7 +341,7 @@
         options: {
           responsive: true, maintainAspectRatio: false,
           plugins: {
-            legend: { display: true, labels: { usePointStyle: true, pointStyle: 'line', boxWidth: 30, font: { size: 11 }, filter: function (item) { return item.text.indexOf('±σ') < 0 && item.text.indexOf('(период)') < 0; } } }
+            legend: { display: true, labels: { usePointStyle: true, pointStyle: 'line', boxWidth: 30, font: { size: 11 }, filter: NdviChart.legendFilter } }
           },
           scales: {
             x: { ticks: { font: { size: 9 }, maxRotation: 45 } },
@@ -491,23 +434,11 @@
         spanGaps: true,
       });
 
-      // Dashed extension line to period end (per district)
-      if (lastPeriodEnd && d.series.length) {
-        var dEndMmDd = lastPeriodEnd.substring(5);
-        var dLastEntry = d.series[d.series.length - 1];
-        var dLastMmDd = dLastEntry.date.substring(5);
-        var dLastNdvi = dLastEntry.mean_ndvi;
-        if (dLastNdvi && dEndMmDd > dLastMmDd) {
-          if (labels.indexOf(dEndMmDd) === -1) { labels.push(dEndMmDd); labels.sort(); }
-          datasets.push({
-            label: '(период)',
-            data: labels.map(function (l) { return (l === dLastMmDd || l === dEndMmDd) ? dLastNdvi : null; }),
-            borderColor: dColor, backgroundColor: 'transparent',
-            borderWidth: 2, borderDash: [6, 4], fill: false,
-            pointRadius: 0, tension: 0, spanGaps: true, order: 10
-          });
-        }
-      }
+      NdviChart.pushExtensionLine({
+        datasets: datasets, labels: labels,
+        series: d.series, lastPeriodEnd: lastPeriodEnd,
+        color: dColor,
+      });
 
       var ctx = document.getElementById('chart-d-' + d.district_id);
       if (!ctx) return;
@@ -524,7 +455,7 @@
               display: hasBaseline,
               labels: {
                 usePointStyle: true, pointStyle: 'line', boxWidth: 30, font: { size: 10 },
-                filter: function (item) { return item.text.indexOf('±σ') < 0 && item.text.indexOf('(период)') < 0; }
+                filter: NdviChart.legendFilter
               }
             },
             tooltip: {

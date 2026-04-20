@@ -383,6 +383,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.1.0/dist/chartjs-plugin-annotation.min.js"></script>
+  <script src="{% static 'agrocosmos/js/ndvi_chart.js' %}"></script>
   <script>
   (function () {
     var SOURCE = 'modis';  // Filter API calls to MODIS data only
@@ -1036,36 +1037,11 @@
 
         // Dashed extension line: from last data point to period end (MODIS only)
         results.forEach(function (res, idx) {
-          if (!res.lastPeriodEnd || !res.data.length) return;
-          var endMmDd = res.lastPeriodEnd.substring(5);  // MM-DD
-          var lastEntry = res.data[res.data.length - 1];
-          var lastMmDd = lastEntry.date.substring(5);
-          var lastNdvi = lastEntry.mean_ndvi;
-          if (!lastNdvi || endMmDd <= lastMmDd) return;
-
-          // Ensure the end label exists
-          if (labels.indexOf(endMmDd) === -1) {
-            labels.push(endMmDd);
-            labels.sort();
-          }
-
-          // Build sparse array: only two points (last data + period end)
-          var extVals = labels.map(function (l) {
-            if (l === lastMmDd || l === endMmDd) return lastNdvi;
-            return null;
-          });
-          datasets.push({
+          NdviChart.pushExtensionLine({
+            datasets: datasets, labels: labels,
+            series: res.data, lastPeriodEnd: res.lastPeriodEnd,
+            color: yearColors[idx % yearColors.length],
             label: res.year + ' (период)',
-            data: extVals,
-            borderColor: yearColors[idx % yearColors.length],
-            backgroundColor: 'transparent',
-            borderWidth: 2,
-            borderDash: [6, 4],
-            fill: false,
-            pointRadius: 0,
-            tension: 0,
-            spanGaps: true,
-            order: 10
           });
         });
 
@@ -1239,20 +1215,12 @@
 
         // Dashed extension line for farmland chart (MODIS only)
         results.forEach(function (res, idx) {
-          if (!res.lastPeriodEnd || !res.data.length) return;
-          var endMmDd = res.lastPeriodEnd.substring(5);
-          var lastEntry = res.data[res.data.length - 1];
-          var lastMmDd = lastEntry.date.substring(5);
-          var lastNdvi = lastEntry.mean;
-          if (!lastNdvi || endMmDd <= lastMmDd) return;
-          if (labels.indexOf(endMmDd) === -1) { labels.push(endMmDd); labels.sort(); }
-          datasets.push({
+          NdviChart.pushExtensionLine({
+            datasets: datasets, labels: labels,
+            series: res.data, lastPeriodEnd: res.lastPeriodEnd,
+            color: yearColors[idx % yearColors.length],
+            valueKey: 'mean',
             label: res.year + ' (период)',
-            data: labels.map(function (l) { return (l === lastMmDd || l === endMmDd) ? lastNdvi : null; }),
-            borderColor: yearColors[idx % yearColors.length],
-            backgroundColor: 'transparent',
-            borderWidth: 2, borderDash: [6, 4], fill: false,
-            pointRadius: 0, tension: 0, spanGaps: true, order: 10
           });
         });
 
