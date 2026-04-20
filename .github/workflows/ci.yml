@@ -94,7 +94,7 @@ jobs:
         run: python manage.py check --deploy --fail-level WARNING 2>&1 || true
 
       - name: Run tests
-        run: python manage.py test legacy --verbosity=2
+        run: python manage.py test legacy agrocosmos --verbosity=2
 
   docker-build:
     name: Docker build check
@@ -125,7 +125,7 @@ jobs:
             cd /opt/edunabazar
             git fetch origin
             git reset --hard origin/main
-            docker compose -f docker-compose.prod.yml build --no-cache web
+            docker compose -f docker-compose.prod.yml build web
             docker compose -f docker-compose.prod.yml up -d
             docker compose -f docker-compose.prod.yml exec -T web python manage.py migrate --noinput
             docker compose -f docker-compose.prod.yml exec -T web python manage.py collectstatic --noinput
