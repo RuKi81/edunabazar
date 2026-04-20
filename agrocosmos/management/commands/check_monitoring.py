@@ -34,6 +34,37 @@ logger = logging.getLogger('agrocosmos')
 NDVI_COMMAND = 'modis_ndvi'
 AVAILABILITY_LAG_DAYS = 7  # MOD13Q1 composites available ~7 days after period ends
 
+CHUNK_DAYS = 16  # MOD13Q1 composite cadence
+
+
+def _next_aligned_period(last_date_to, year):
+    """
+    Compute the next 16-day processing window aligned to Jan 1 of ``year``.
+
+    Must match the grid used by ``_biweekly_chunks`` in
+    ``satellite_modis_raster.py`` (both anchored to Jan 1).
+
+    Args:
+        last_date_to: last processed period end (``date`` or ``None``)
+        year: int, the monitoring year
+
+    Returns:
+        tuple (next_from, next_to) of ``date`` objects.
+    """
+    year_start = date(year, 1, 1)
+    year_end = date(year, 12, 31)
+
+    if last_date_to:
+        # Find which 16-day chunk last_date_to falls in, then advance to the next.
+        days_since = (last_date_to - year_start).days
+        current_chunk_idx = days_since // CHUNK_DAYS
+        next_from = year_start + timedelta(days=(current_chunk_idx + 1) * CHUNK_DAYS)
+    else:
+        next_from = year_start
+
+    next_to = min(next_from + timedelta(days=CHUNK_DAYS - 1), year_end)
+    return next_from, next_to
+
 
 class Command(BaseCommand):
     help = 'Check active monitoring tasks and fetch new NDVI data'
@@ -70,8 +101,6 @@ class Command(BaseCommand):
         region = task.region
         year = task.year
 
-        # Determine the year boundaries
-        year_start = date(year, 1, 1)
         year_end = date(year, 12, 31)
 
         # If we've already completed the year, mark as completed
@@ -86,17 +115,7 @@ class Command(BaseCommand):
         # Process ALL available periods in one run (catch-up from year start)
         periods_done = 0
         while True:
-            # Next period to process — aligned to 16-day grid from Jan 1
-            # (must match _biweekly_chunks in satellite_modis_raster.py)
-            if task.last_date_to:
-                # Find which 16-day chunk last_date_to falls in, then advance
-                days_since = (task.last_date_to - year_start).days
-                current_chunk_idx = days_since // 16
-                next_from = year_start + timedelta(days=(current_chunk_idx + 1) * 16)
-            else:
-                next_from = year_start
-
-            next_to = min(next_from + timedelta(days=15), year_end)
+            next_from, next_to = _next_aligned_period(task.last_date_to, year)
 
             # Don't process future dates (even with --force)
             if next_from > today:
