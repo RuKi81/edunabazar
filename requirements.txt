@@ -8,6 +8,7 @@ tzdata>=2025.1
 requests>=2.31.0
 feedparser>=6.0.0
 django-redis>=5.4.0
+django-ratelimit>=4.1.0
 openpyxl>=3.1.0
 earthengine-api>=1.4.0
 numpy>=2.1

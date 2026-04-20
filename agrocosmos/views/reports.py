@@ -8,7 +8,7 @@ from django.http import HttpRequest, JsonResponse
 from ..models import (
     Region, District, Farmland, FarmlandPhenology, NdviBaseline, VegetationIndex,
 )
-from ._helpers import MODIS_SATELLITES, _safe_round
+from ._helpers import MODIS_SATELLITES, _safe_round, rate_limit
 
 
 def _ndvi_assessment(mean_ndvi, z_score=None):
@@ -33,6 +33,7 @@ def _ndvi_assessment(mean_ndvi, z_score=None):
     return 'Вегетация практически отсутствует'
 
 
+@rate_limit('30/m')
 def api_report_region(request: HttpRequest) -> JsonResponse:
     """Data for region-level MODIS report: NDVI time series per district.
 
@@ -213,6 +214,7 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
     })
 
 
+@rate_limit('30/m')
 def api_report_district(request: HttpRequest) -> JsonResponse:
     """Data for district-level MODIS report: NDVI stats by crop type.
 
