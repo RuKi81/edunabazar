@@ -11,6 +11,7 @@ Usage:
     python manage.py ndvi_postprocess --region-id 37 --year 2024
     python manage.py ndvi_postprocess --region-id 37 --year 2024 --source modis
     python manage.py ndvi_postprocess --region-id 37 --year 2024 --source raster
+    python manage.py ndvi_postprocess --region-id 37 --year 2024 --source fused
     python manage.py ndvi_postprocess --region-id 37  # all years
 """
 import time
@@ -33,6 +34,7 @@ SG_POLYORDER = 3
 
 MODIS_SATELLITES = ('modis_terra', 'modis_aqua')
 RASTER_SATELLITES = ('sentinel2', 'landsat8', 'landsat9')
+FUSED_SATELLITES = ('hls_fused',)
 
 DB_BATCH = 5000  # raw SQL update batch
 
@@ -88,7 +90,8 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument('--region-id', type=int, required=True)
         parser.add_argument('--year', type=int, help='Year (optional, processes all years if omitted)')
-        parser.add_argument('--source', type=str, choices=['modis', 'raster'],
+        parser.add_argument('--source', type=str,
+                            choices=['modis', 'raster', 'fused'],
                             help='Filter by satellite source')
         parser.add_argument('--threshold', type=float, default=SPIKE_THRESHOLD,
                             help=f'Spike threshold (default: {SPIKE_THRESHOLD})')
@@ -110,6 +113,8 @@ class Command(BaseCommand):
             where_parts.append("sc.satellite IN ('modis_terra', 'modis_aqua')")
         elif source == 'raster':
             where_parts.append("sc.satellite IN ('sentinel2', 'landsat8', 'landsat9')")
+        elif source == 'fused':
+            where_parts.append("sc.satellite IN ('hls_fused')")
 
         if year:
             where_parts.append("EXTRACT(year FROM vi.acquired_date) = %s")
