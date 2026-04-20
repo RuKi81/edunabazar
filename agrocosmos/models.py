@@ -81,6 +81,7 @@ class SatelliteScene(models.Model):
         LANDSAT9 = 'landsat9', 'Landsat 9'
         MODIS_TERRA = 'modis_terra', 'MODIS Terra'
         MODIS_AQUA = 'modis_aqua', 'MODIS Aqua'
+        HLS_FUSED = 'hls_fused', 'HLS Fused (S2+L)'
 
     satellite = models.CharField(max_length=20, choices=Satellite.choices, verbose_name='Спутник')
     scene_id = models.CharField(max_length=255, unique=True, verbose_name='ID снимка')

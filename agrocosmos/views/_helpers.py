@@ -8,6 +8,7 @@ from django_ratelimit.decorators import ratelimit
 
 MODIS_SATELLITES = ('modis_terra', 'modis_aqua')
 RASTER_SATELLITES = ('sentinel2', 'landsat8', 'landsat9')
+FUSED_SATELLITES = ('hls_fused',)
 
 
 def rate_limit(rate, binary=False):
@@ -45,6 +46,8 @@ def _satellite_filter(source):
         return {'scene__satellite__in': MODIS_SATELLITES}
     if source == 'raster':
         return {'scene__satellite__in': RASTER_SATELLITES}
+    if source == 'fused':
+        return {'scene__satellite__in': FUSED_SATELLITES}
     return {}
 
 
