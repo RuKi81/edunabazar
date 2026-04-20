@@ -6,7 +6,13 @@ then delegates zonal statistics to the shared zonal_stats module.
 
 Approach:
 - 16-day median composites (Landsat revisit = 16 days, L8+L9 combined = 8 days)
-- Cloud mask via QA_PIXEL band (bit 3 = cloud, bit 4 = cloud shadow)
+- QA_PIXEL mask (Collection 2 Level 2):
+    bit 1 — dilated cloud (halo around thick clouds)
+    bit 2 — cirrus (high-confidence)
+    bit 3 — cloud
+    bit 4 — cloud shadow
+    bit 5 — snow / ice
+  Plus QA_RADSAT band: reject radiometrically saturated pixels.
 - NDVI = (SR_B5 - SR_B4) / (SR_B5 + SR_B4)  — Collection 2, Level 2
 - Harmonization to S2-equivalent NDVI: NDVI_h = 0.9589 * NDVI_L + 0.0029
   (Roy et al., 2016, doi:10.1016/j.rse.2015.12.024)
@@ -130,15 +136,25 @@ def download_composite(region_geom_extent, region_id, date_from, date_to,
             return None
 
         def _add_ndvi(image):
-            # QA_PIXEL: bit 3 = cloud, bit 4 = cloud shadow
+            # QA_PIXEL bits (Collection 2 Level 2):
+            #   1 — dilated cloud, 2 — cirrus, 3 — cloud,
+            #   4 — cloud shadow, 5 — snow/ice
             qa = image.select('QA_PIXEL')
-            cloud_mask = (qa.bitwiseAnd(1 << 3).eq(0)
-                          .And(qa.bitwiseAnd(1 << 4).eq(0)))
+            bad_bits = (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5)
+            clean_qa = qa.bitwiseAnd(bad_bits).eq(0)
 
-            # Scale factors for Collection 2 Level 2
+            # QA_RADSAT: any bit set ⇒ radiometric saturation in some band ⇒ reject
+            radsat = image.select('QA_RADSAT')
+            no_saturation = radsat.eq(0)
+
+            mask = clean_qa.And(no_saturation)
+
+            # Scale factors for Collection 2 Level 2 (Level-2 SR units are
+            # rescaled integers). Note: NDVI is a ratio so scaling cancels,
+            # but we keep the transform for physical consistency.
             sr = image.select(['SR_B4', 'SR_B5']).multiply(0.0000275).add(-0.2)
             ndvi = sr.normalizedDifference(['SR_B5', 'SR_B4']).rename('NDVI')
-            return ndvi.updateMask(cloud_mask)
+            return ndvi.updateMask(mask)
 
         ndvi_col = merged.map(_add_ndvi)
         composite = ndvi_col.median().rename('NDVI').toFloat()
