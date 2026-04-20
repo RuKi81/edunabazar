@@ -62,7 +62,7 @@ class Command(BaseCommand):
         params = [region_id, year]
 
         if source == 'modis':
-            where_parts.append("sc.satellite IN ('modis_terra', 'modis_aqua', 'modis_daily')")
+            where_parts.append("sc.satellite IN ('modis_terra', 'modis_aqua')")
         else:
             where_parts.append("sc.satellite IN ('sentinel2', 'landsat8', 'landsat9')")
 

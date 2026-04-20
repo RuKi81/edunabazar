@@ -1,19 +1,17 @@
 """
-Check active monitoring tasks and run NDVI pipeline for new 5-day periods.
+Check active monitoring tasks and run NDVI pipeline for new 16-day periods.
 
 Designed to be called daily via cron/systemd timer:
     docker compose exec -T web python manage.py check_monitoring
 
 Logic:
 - For each MonitoringTask with status='active':
-  1. Determine the next 5-day period to process
+  1. Determine the next 16-day period to process
   2. If today >= next period end + lag (data available), run pipeline
   3. Update task.last_date_to and task.last_check
 
-Pipeline switch:
-    Currently uses 'modis_daily' (MOD09GQ+MYD09GQ, 1-2 day lag).
-    To revert to old pipeline, change NDVI_COMMAND to 'modis_ndvi'
-    and AVAILABILITY_LAG_DAYS to 7.
+Pipeline: ``modis_ndvi`` (MOD13Q1+MYD13Q1 16-day composites, ~7 day lag
+after the compositing window ends).
 """
 import logging
 import time
@@ -28,9 +26,6 @@ from agrocosmos.models import MonitoringTask
 
 logger = logging.getLogger('agrocosmos')
 
-# --- Pipeline switch ---
-# 'modis_daily'  = MOD09GQ+MYD09GQ daily reflectance (1-2 day lag, manual NDVI)
-# 'modis_ndvi'   = MOD13Q1+MYD13Q1 16-day composites (2-3 week lag, NASA NDVI)
 NDVI_COMMAND = 'modis_ndvi'
 AVAILABILITY_LAG_DAYS = 7  # MOD13Q1 composites available ~7 days after period ends
 
