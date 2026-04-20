@@ -58,9 +58,10 @@ class NextAlignedPeriodTests(SimpleTestCase):
     # ── Year-end clamping ──────────────────────────────────────────
 
     def test_last_chunk_end_is_clamped_to_dec_31(self):
-        # Chunk idx 22 would be Dec 17..Jan 1 (2027), must clamp to Dec 31.
-        nf, nt = _next_aligned_period(date(2026, 12, 16), 2026)
-        self.assertEqual(nf, date(2026, 12, 17))
+        # Chunk idx 22 starts Dec 19 (Jan 1 + 352d) and would end Jan 3 (2027);
+        # it must clamp to Dec 31.
+        nf, nt = _next_aligned_period(date(2026, 12, 18), 2026)
+        self.assertEqual(nf, date(2026, 12, 19))
         self.assertEqual(nt, date(2026, 12, 31))
 
     # ── Consistency with the compositor's grid ─────────────────────
