@@ -1,9 +1,11 @@
 """Report API endpoints: region-level and district-level MODIS NDVI reports."""
+from collections import defaultdict
 from datetime import date, timedelta
 
-from django.db.models import Avg, Count, F, Sum
+from django.db.models import Avg, Count, Sum
 from django.db.models.functions import Extract
 from django.http import HttpRequest, JsonResponse
+from django.views.decorators.cache import cache_page
 
 from ..models import (
     Region, District, Farmland, FarmlandPhenology, NdviBaseline, VegetationIndex,
@@ -34,6 +36,7 @@ def _ndvi_assessment(mean_ndvi, z_score=None):
 
 
 @rate_limit('30/m')
+@cache_page(60 * 5)
 def api_report_region(request: HttpRequest) -> JsonResponse:
     """Data for region-level MODIS report: NDVI time series per district.
 
@@ -58,8 +61,11 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
         return JsonResponse({'ok': False, 'error': 'region not found'}, status=404)
 
     districts = District.objects.filter(region=region).order_by('name')
+    district_names = {d.pk: d.name for d in districts}
 
-    # NDVI time series per district (area-weighted mean per date)
+    # NDVI time series per district (area-weighted mean per date).
+    # Single-pass aggregation: fetch raw rows once, build both the
+    # per-district series and the region-wide overall series in Python.
     vi_qs = VegetationIndex.objects.filter(
         farmland__district__region_id=region_id,
         index_type='ndvi',
@@ -67,18 +73,26 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
         is_anomaly=False,
         mean__gte=-0.2, mean__lte=1,
         scene__satellite__in=MODIS_SATELLITES,
+    ).values_list(
+        'acquired_date', 'mean', 'farmland__district_id', 'farmland__area_ha',
     )
 
-    by_district_date = (
-        vi_qs
-        .values('farmland__district_id', 'farmland__district__name', 'acquired_date')
-        .annotate(
-            _sum_ndvi_area=Sum(F('mean') * F('farmland__area_ha')),
-            _sum_area=Sum('farmland__area_ha'),
-            count=Count('id'),
-        )
-        .order_by('farmland__district_id', 'acquired_date')
-    )
+    per_district_date = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0})
+    per_region_date = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0})
+
+    for acq_date, mean_v, did, area_ha in vi_qs.iterator(chunk_size=5000):
+        if mean_v is None or area_ha is None:
+            continue
+        area_f = float(area_ha)
+        ndvi_area = float(mean_v) * area_f
+
+        dd = per_district_date[(did, acq_date)]
+        dd['sum_ndvi_area'] += ndvi_area
+        dd['sum_area'] += area_f
+
+        rd = per_region_date[acq_date]
+        rd['sum_ndvi_area'] += ndvi_area
+        rd['sum_area'] += area_f
 
     # Baseline lookup: district_id → {doy: (mean, std)}
     baseline_qs = NdviBaseline.objects.filter(
@@ -91,17 +105,13 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
             b['mean_ndvi'], b['std_ndvi']
         )
 
-    # Build per-district data
+    # Build per-district data, sorted chronologically
     district_data = {}
-    for row in by_district_date:
-        did = row['farmland__district_id']
-        dname = row['farmland__district__name']
-        s_area = row['_sum_area'] or 0
-        weighted = (row['_sum_ndvi_area'] / s_area) if s_area else None
-        d = row['acquired_date']
+    for (did, d), acc in sorted(per_district_date.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+        s_area = acc['sum_area']
+        weighted = (acc['sum_ndvi_area'] / s_area) if s_area else None
         doy = d.timetuple().tm_yday
 
-        # z-score
         bl_mean, bl_std = bl_lookup.get(did, {}).get(doy, (None, None))
         z_score = None
         if bl_mean is not None and bl_std and bl_std > 0.01 and weighted is not None:
@@ -110,7 +120,7 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
         if did not in district_data:
             district_data[did] = {
                 'district_id': did,
-                'district_name': dname,
+                'district_name': district_names.get(did, ''),
                 'series': [],
                 'latest_ndvi': None,
                 'latest_date': None,
@@ -121,13 +131,12 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
             'mean_ndvi': _safe_round(weighted),
             'z_score': z_score,
         })
-        # Track latest
         if district_data[did]['latest_date'] is None or d > date.fromisoformat(district_data[did]['latest_date']):
             district_data[did]['latest_ndvi'] = _safe_round(weighted)
             district_data[did]['latest_date'] = str(d)
             district_data[did]['latest_z_score'] = z_score
 
-    # Build baseline series per district: list of {doy, mean_ndvi, std_ndvi}
+    # Build baseline series per district
     baseline_series = {}
     for did, doy_map in bl_lookup.items():
         bl_list = []
@@ -156,22 +165,14 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
         dd['baseline'] = baseline_series.get(d.pk, [])
         result.append(dd)
 
-    # Region-level overall NDVI series (area-weighted across ALL districts)
-    region_overall_qs = (
-        vi_qs
-        .values('acquired_date')
-        .annotate(
-            _sum_ndvi_area=Sum(F('mean') * F('farmland__area_ha')),
-            _sum_area=Sum('farmland__area_ha'),
-        )
-        .order_by('acquired_date')
-    )
+    # Region-level overall NDVI series (built in the same single pass above)
     region_overall = []
-    for row in region_overall_qs:
-        s_area = row['_sum_area'] or 0
-        weighted = (row['_sum_ndvi_area'] / s_area) if s_area else None
+    for acq_date in sorted(per_region_date.keys()):
+        acc = per_region_date[acq_date]
+        s_area = acc['sum_area']
+        weighted = (acc['sum_ndvi_area'] / s_area) if s_area else None
         region_overall.append({
-            'date': str(row['acquired_date']),
+            'date': str(acq_date),
             'mean_ndvi': _safe_round(weighted),
         })
 
@@ -215,6 +216,7 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
 
 
 @rate_limit('30/m')
+@cache_page(60 * 5)
 def api_report_district(request: HttpRequest) -> JsonResponse:
     """Data for district-level MODIS report: NDVI stats by crop type.
 
@@ -254,44 +256,41 @@ def api_report_district(request: HttpRequest) -> JsonResponse:
             'area_ha': round(row['total_area'] or 0, 1),
         }
 
-    # NDVI time series by crop type (area-weighted)
-    vi_qs = VegetationIndex.objects.filter(
+    # NDVI time series by crop type AND overall (area-weighted).
+    # Single fetch + single Python pass replaces two heavy GROUP BY queries.
+    vi_rows = VegetationIndex.objects.filter(
         farmland__district=district,
         index_type='ndvi',
         acquired_date__year=year,
         is_anomaly=False,
         mean__gte=-0.2, mean__lte=1,
         scene__satellite__in=MODIS_SATELLITES,
-    )
+    ).values_list('acquired_date', 'mean', 'farmland__crop_type', 'farmland__area_ha')
 
-    by_crop_date = (
-        vi_qs
-        .values('farmland__crop_type', 'acquired_date')
-        .annotate(
-            _sum_ndvi_area=Sum(F('mean') * F('farmland__area_ha')),
-            _sum_area=Sum('farmland__area_ha'),
-            count=Count('id'),
-        )
-        .order_by('farmland__crop_type', 'acquired_date')
-    )
+    per_crop_date = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0})
+    per_overall_date = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0})
 
-    # Overall time series (all crop types combined, area-weighted)
-    overall_by_date = (
-        vi_qs
-        .values('acquired_date')
-        .annotate(
-            _sum_ndvi_area=Sum(F('mean') * F('farmland__area_ha')),
-            _sum_area=Sum('farmland__area_ha'),
-            count=Count('id'),
-        )
-        .order_by('acquired_date')
-    )
+    for acq_date, mean_v, ct, area_ha in vi_rows.iterator(chunk_size=5000):
+        if mean_v is None or area_ha is None:
+            continue
+        area_f = float(area_ha)
+        ndvi_area = float(mean_v) * area_f
+
+        cd = per_crop_date[(ct, acq_date)]
+        cd['sum_ndvi_area'] += ndvi_area
+        cd['sum_area'] += area_f
+
+        od = per_overall_date[acq_date]
+        od['sum_ndvi_area'] += ndvi_area
+        od['sum_area'] += area_f
+
     overall_series = []
-    for row in overall_by_date:
-        s_area = row['_sum_area'] or 0
-        weighted = (row['_sum_ndvi_area'] / s_area) if s_area else None
+    for acq_date in sorted(per_overall_date.keys()):
+        acc = per_overall_date[acq_date]
+        s_area = acc['sum_area']
+        weighted = (acc['sum_ndvi_area'] / s_area) if s_area else None
         overall_series.append({
-            'date': str(row['acquired_date']),
+            'date': str(acq_date),
             'mean_ndvi': _safe_round(weighted),
         })
 
@@ -308,13 +307,11 @@ def api_report_district(request: HttpRequest) -> JsonResponse:
         else:
             bl_by_crop.setdefault(ct, {})[b['day_of_year']] = (b['mean_ndvi'], b['std_ndvi'])
 
-    # Build per-crop data
+    # Build per-crop data (iterate in (crop_type, date) order)
     crop_data = {}
-    for row in by_crop_date:
-        ct = row['farmland__crop_type']
-        s_area = row['_sum_area'] or 0
-        weighted = (row['_sum_ndvi_area'] / s_area) if s_area else None
-        d = row['acquired_date']
+    for (ct, d), acc in sorted(per_crop_date.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+        s_area = acc['sum_area']
+        weighted = (acc['sum_ndvi_area'] / s_area) if s_area else None
 
         if ct not in crop_data:
             crop_data[ct] = {
@@ -425,29 +422,33 @@ def api_report_district(request: HttpRequest) -> JsonResponse:
         crop_bl = bl_by_crop.get(cd['crop_type'], bl_lookup)
         cd['baseline'] = _bl_to_series(crop_bl) if isinstance(crop_bl, dict) else []
 
-    # Region-level overall NDVI series (area-weighted across ALL districts)
-    region_overall_qs = (
-        VegetationIndex.objects.filter(
-            farmland__district__region=district.region,
-            index_type='ndvi',
-            acquired_date__year=year,
-            is_anomaly=False,
-            mean__gte=-0.2, mean__lte=1,
-            scene__satellite__in=MODIS_SATELLITES,
-        )
-        .values('acquired_date')
-        .annotate(
-            _sum_ndvi_area=Sum(F('mean') * F('farmland__area_ha')),
-            _sum_area=Sum('farmland__area_ha'),
-        )
-        .order_by('acquired_date')
-    )
+    # Region-level overall NDVI series (area-weighted across ALL districts).
+    # Same single-pass optimisation as above.
+    region_rows = VegetationIndex.objects.filter(
+        farmland__district__region=district.region,
+        index_type='ndvi',
+        acquired_date__year=year,
+        is_anomaly=False,
+        mean__gte=-0.2, mean__lte=1,
+        scene__satellite__in=MODIS_SATELLITES,
+    ).values_list('acquired_date', 'mean', 'farmland__area_ha')
+
+    region_by_date = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0})
+    for acq_date, mean_v, area_ha in region_rows.iterator(chunk_size=5000):
+        if mean_v is None or area_ha is None:
+            continue
+        area_f = float(area_ha)
+        acc = region_by_date[acq_date]
+        acc['sum_ndvi_area'] += float(mean_v) * area_f
+        acc['sum_area'] += area_f
+
     region_overall = []
-    for row in region_overall_qs:
-        s_area = row['_sum_area'] or 0
-        weighted = (row['_sum_ndvi_area'] / s_area) if s_area else None
+    for acq_date in sorted(region_by_date.keys()):
+        acc = region_by_date[acq_date]
+        s_area = acc['sum_area']
+        weighted = (acc['sum_ndvi_area'] / s_area) if s_area else None
         region_overall.append({
-            'date': str(row['acquired_date']),
+            'date': str(acq_date),
             'mean_ndvi': _safe_round(weighted),
         })
 
