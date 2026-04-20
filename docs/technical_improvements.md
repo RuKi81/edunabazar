@@ -135,7 +135,7 @@ NDVI_fused = (NDVI_s2 × N_valid_s2 + NDVI_l8 × N_valid_l8) / (N_valid_s2 + N_v
 
 Это подход HLS (Harmonized Landsat Sentinel) от NASA.
 
-**Статус**: [ ] Не реализовано
+**Статус**: [x] Реализовано — команда `compute_fused_ndvi`, satellite=`hls_fused`, API `source=fused`
 
 ---
 
@@ -209,7 +209,7 @@ NDVI_fused = (NDVI_s2 × N_valid_s2 + NDVI_l8 × N_valid_l8) / (N_valid_s2 + N_v
 | 3 | Улучшенная маска L8 (2.2) | Низкая | Среднее | [ ] |
 | 4 | s2cloudless вместо SCL (2.1) | Низкая | Высокое | [ ] |
 | 5 | Фильтрация аномалий (1.3) | Средняя | Высокое | [x] |
-| 6 | S2+L8 data fusion (2.3) | Средняя | Высокое | [ ] |
+| 6 | S2+L8 data fusion (2.3) | Средняя | Высокое | [x] |
 | 7 | Временна́я интерполяция (1.1) | Средняя | Высокое | [x] |
 | 8 | Фенологические метрики (1.4) | Средняя | Высокое | [x] |
 | 9 | Baseline + z-score (1.5) | Средняя | Высокое | [x] |

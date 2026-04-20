@@ -126,10 +126,14 @@ NDVI time series одного поля.
 - `date_from`, `date_to` (опциональные) — ISO-даты
 - `crop_types` (опциональный) — comma-separated, например `arable,hayfield`
 - `fact_isp` (опциональный) — `used` / `unused`
-- `source` (опциональный) — `modis` / `raster`
+- `source` (опциональный) — `modis` / `raster` / `fused`
 
 **Лимит:** 30 req/min / IP.
 **Cache:** 5 мин Redis (ключ варьируется по полному URL со query string).
+
+> **`source=fused`** возвращает HLS-style объединённый ряд Sentinel-2 +
+> Landsat (см. ниже раздел «HLS Fusion»). Требует предварительного
+> прогона `compute_fused_ndvi`.
 
 > **Производительность:** cold ~30s для крупного региона (2M+ VI-строк), warm <10ms.
 > Реализация делает **один** `SELECT … JOIN` и агрегирует результат в Python
@@ -237,3 +241,77 @@ ssh root@10.0.0.10 "docker exec edunabazar-redis-1 redis-cli FLUSHDB"
 - `idx_vi_ndvi_farm_date` — partial на `VegetationIndex(farmland_id, acquired_date)`
   WHERE `index_type='ndvi' AND is_anomaly=false`
 - `idx_scene_sat_date` — composite на `SatelliteScene(satellite, acquired_date)`
+
+---
+
+## HLS Fusion (Sentinel-2 + Landsat)
+
+**Задача.** Закрыть пропуски в S2-ряде (5-дневный cadence) наблюдениями
+Landsat 8/9 (16-дневный cadence, уже гармонизированный к S2-шкале
+через Roy et al. 2016). Подход по мотивам NASA HLS (Harmonized Landsat
+Sentinel).
+
+**Команда:** `python manage.py compute_fused_ndvi --region-id <id> --year <y> [--overwrite]`
+
+### Алгоритм
+
+1. **Один SELECT** над `VegetationIndex` с фильтром
+   `scene.satellite IN ('sentinel2', 'landsat8')` для указанной
+   `(region, year)`.
+2. **Группировка в памяти:** per-farmland — два списка `s2` и `l`
+   (каждый элемент: `date, mean, valid_pixel_count`).
+3. **Fusion:**
+   - Для каждой S2-точки ищется **ближайшая** Landsat-запись в пределах
+     `±8 дней`. Если есть — взвешенное среднее:
+     `fused_mean = (s2.m * s2.n + l.m * l.n) / (s2.n + l.n)`.
+   - Landsat-записи, **не попавшие** в ±8 дней ни от одной S2-точки,
+     добавляются как самостоятельные fused-точки (gap-fill при долгих
+     облачных периодах).
+4. **Запись в БД:**
+   - `SatelliteScene` — один на `(district, acquired_date)`, `satellite='hls_fused'`.
+   - `VegetationIndex` — один на `(farmland, scene)`, `mean=fused_mean`,
+     `valid_pixel_count = s2.n + l.n`.
+
+### Параметры
+
+| Параметр | Значение | Комментарий |
+|---|---|---|
+| Grid | S2-native (5 дней) | Плотный таймлайн |
+| L pairing window | ±8 дней от центра S2 | Landsat revisit = 16 дней ⇒ окно покрывает половину цикла |
+| Весы | `valid_pixel_count` | Пропорционально информативности (S2 10м ≫ L 30м по числу пикселей) |
+| Валидация | Наследуется от источников | `min_valid_ratio=0.70` уже отработал в `zonal_stats` |
+
+### Использование
+
+```bash
+# Собрать fused-ряд по региону за год
+python manage.py compute_fused_ndvi --region-id 37 --year 2025
+
+# Пересобрать (удалить старые записи и сделать заново)
+python manage.py compute_fused_ndvi --region-id 37 --year 2025 --overwrite
+
+# Dry-run: проверить сколько точек получится, без записи в БД
+python manage.py compute_fused_ndvi --region-id 37 --year 2025 --dry-run
+
+# Только один район
+python manage.py compute_fused_ndvi --district-id 5 --year 2025
+```
+
+После прогона fused-ряд доступен в API:
+
+```
+GET /agrocosmos/api/ndvi-stats/?region=37&year=2025&source=fused
+GET /agrocosmos/api/farmland/ndvi/?farmland=123&source=fused
+```
+
+### Идемпотентность
+
+- Без `--overwrite`: `bulk_create(update_conflicts=True)` по
+  `unique_fields=['farmland','scene','index_type']` — повторный прогон
+  обновляет значения, не дублируя строки.
+- С `--overwrite`: удаляются все `hls_fused` VI-записи и orphan-scene'ы
+  за целевой `(region/district, year)`, затем строится заново.
+
+Логирование каждого запуска — в `PipelineRun` (`task_type='raster_ndvi'`,
+`description` содержит scope, `records_count` — число записанных VI,
+`log` — traceback при ошибке).
