@@ -2,7 +2,10 @@
 
 > **Репозиторий:** <https://github.com/RuKi81/edunabazar>
 > **Домен:** edunabazar.ru / www.edunabazar.ru
-> **Дата:** 2026-04-03
+> **Дата:** 2026-04-20
+
+> См. также: [`README.md`](./README.md) (overview, quick start) ·
+> [`docs/AGROCOSMOS_API.md`](./docs/AGROCOSMOS_API.md) (API reference)
 
 ---
 
@@ -103,9 +106,17 @@ edunabazar/
 │
 ├── agrocosmos/              # Приложение «Агрокосмос» (ГИС + спутники)
 │   ├── models.py            # Region, District, Farmland, SatelliteScene,
-│   │                        #   VegetationIndex (NDVI, EVI, MSAVI, NDWI, NDMI)
-│   ├── views.py
+│   │                        #   VegetationIndex, NdviBaseline, FarmlandPhenology
+│   ├── views/               # Views-пакет (разделён по доменам)
+│   │   ├── __init__.py      #   — re-export для обратной совместимости
+│   │   ├── _helpers.py      #   — константы, rate_limit, satellite_filter
+│   │   ├── pages.py         #   — HTML-страницы (dashboard, report_*)
+│   │   ├── geojson.py       #   — GeoJSON endpoints (regions/districts/farmlands)
+│   │   ├── tiles.py         #   — MVT + raster PNG tiles
+│   │   ├── ndvi.py          #   — NDVI time series, stats, phenology
+│   │   └── reports.py       #   — данные для отчётов region/district
 │   ├── services/
+│   ├── static/agrocosmos/js/ndvi_chart.js  # Общий helper для Chart.js
 │   ├── templates/agrocosmos/
 │   └── management/commands/
 │
@@ -369,3 +380,98 @@ docker compose exec web python manage.py migrate
 | `/opt/edunabazar-db/.env` | VM2 | Переменные БД |
 | `/mnt/nas/pg_backups/` | VM2 | Бэкапы БД |
 | `/var/log/pg_backup.log` | VM2 | Лог бэкапов |
+
+---
+
+## 14. Производительность и надёжность (Агрокосмос)
+
+### 14.1 Rate limiting
+
+Все публичные API-endpoint'ы модуля Агрокосмос защищены IP-based
+rate-limiting'ом через `django-ratelimit` с Redis-backed счётчиком
+(общий между gunicorn-воркерами).
+
+Декоратор `rate_limit` реализован в `agrocosmos/views/_helpers.py`:
+
+| Endpoint | Лимит | Тип 429 ответа |
+|---|---|---|
+| `/api/farmlands/` | 60/m | JSON |
+| `/api/farmland/ndvi/` | 60/m | JSON |
+| `/api/ndvi-stats/` | 30/m | JSON |
+| `/api/phenology/` | 30/m | JSON |
+| `/api/report/region/` | 30/m | JSON |
+| `/api/report/district/` | 30/m | JSON |
+| `/api/tiles/{z}/{x}/{y}.pbf` | 300/m | HTTP (без тела) |
+| `/api/raster-tile/{z}/{x}/{y}.png` | 300/m | HTTP (без тела) |
+
+Для тайлов возвращается пустой 429 без JSON-тела — карта-библиотеки
+(MapLibre/Leaflet) его корректно обрабатывают как отсутствие тайла.
+
+### 14.2 Redis-кеш `cache_page`
+
+Тяжёлые агрегаты кешируются по полному URL на 5 минут (варьируется по
+query-string, т.е. `?region=37&year=2025` и `?region=37&year=2024` —
+разные записи):
+
+| Endpoint | TTL |
+|---|---|
+| `/api/ndvi-stats/` | 5 мин |
+| `/api/report/region/` | 5 мин |
+| `/api/report/district/` | 5 мин |
+| `/api/tiles/{z}/{x}/{y}.pbf` | 10 мин |
+
+**Производительность (регион Оренбургская область, 2025, ~2M VI-строк):**
+
+| Endpoint | Cold (БД) | Warm (Redis) |
+|---|---|---|
+| `api_ndvi_stats` | ~37s | <10ms |
+| `api_report_region` | ~15s | <10ms |
+| `api_report_district` | ~22s | <10ms |
+
+Инвалидация кеша после NDVI-pipeline (ручная):
+
+```bash
+ssh root@10.0.0.10 "docker exec edunabazar-redis-1 redis-cli FLUSHDB"
+```
+
+> ⚠️ `FLUSHDB` убивает и сессии — пользователи разлогинятся. Для
+> точечной инвалидации планируется `cache.delete_pattern()` по префиксам.
+
+### 14.3 Оптимизация агрегатов (single-pass Python)
+
+Endpoint'ы с агрегатами раньше делали 3–4 отдельных `GROUP BY` по одному
+и тому же огромному JOIN — `VegetationIndex × Farmland`. Это повторно
+сканировало миллионы строк 3–4 раза.
+
+Рефактор: один `SELECT … VALUES_LIST()` стримит все нужные поля
+(`iterator(chunk_size=5000)`), а затем Python-loop строит все агрегаты
+за один проход. Код — в `agrocosmos/views/ndvi.py` и `reports.py`,
+метка `Single-pass aggregation`.
+
+Эффект: ~50% снижение cold-time (72s → 37s для `api_ndvi_stats`).
+
+### 14.4 Индексы БД (миграция `0015_perf_indexes`)
+
+| Индекс | Таблица | Определение |
+|---|---|---|
+| `idx_vi_ndvi_farm_date` | `agro_vegetation_index` | Partial на `(farmland_id, acquired_date)` WHERE `index_type='ndvi' AND is_anomaly=false` |
+| `idx_scene_sat_date` | `agro_satellite_scene` | Composite на `(satellite, acquired_date)` |
+
+Partial-индекс выигрывает за счёт того, что в реальной выборке
+практически всегда фигурируют условия `index_type='ndvi'` и
+`is_anomaly=false` — отфильтрованный срез получается в разы меньше
+полной таблицы.
+
+### 14.5 Мониторинг (TODO)
+
+Ещё не настроено:
+
+- **Sentry** — error tracking и performance monitoring (backlog)
+- **Uptime-мониторинг** внешним сервисом (UptimeRobot / Better Uptime)
+- **Alert'ы на 5xx** и медленные endpoint'ы (>5s p95)
+
+Пока используется:
+
+- `/healthz` — health-check (проверяется docker compose healthcheck)
+- `docker logs -f edunabazar-web-1` — ручная диагностика
+- `docker logs -f edunabazar-nginx-1` — access log
