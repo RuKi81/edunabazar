@@ -271,9 +271,23 @@
             <button type="submit" class="agro-btn" style="background:#1565C0;">Загрузить S2+L8</button>
           </div>
         </div>
+        <div class="agro-row" style="margin-top:8px;">
+          <label style="margin-right:18px;">
+            <input type="checkbox" name="overwrite" value="1">
+            Перекачать растры (overwrite) — нужно после обновления масок
+          </label>
+          <label>
+            <input type="checkbox" name="rebuild_fusion" value="1" checked>
+            Пересобрать HLS fusion + postprocess после загрузки
+          </label>
+        </div>
         <div class="agro-hint">
           Скачает S2 (10м, 5‑дн.) и L8/9 (30м, 16‑дн.) композиты и рассчитает статистику.<br>
-          Рекомендуется выбрать район для ускорения. S2 весь регион ~3—6ч, район ~1—2ч.
+          Рекомендуется выбрать район для ускорения. S2 весь регион ~3—6ч, район ~1—2ч.<br>
+          <b>Overwrite</b>: удалит существующие TIFF и перекачает (применяет новые QA-маски).<br>
+          <b>Rebuild fusion</b>: после S2+L8 автоматически запустит
+          <code>compute_fused_ndvi --overwrite</code> и
+          <code>ndvi_postprocess --source fused</code>.
         </div>
       </form>
     </div>
