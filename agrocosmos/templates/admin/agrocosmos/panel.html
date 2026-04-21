@@ -387,6 +387,7 @@
               <th>Записей</th>
               <th>Начало</th>
               <th>Длительность</th>
+              <th>PID / heartbeat</th>
             </tr>
           </thead>
           <tbody>
@@ -400,10 +401,14 @@
               <td>{{ run.records_count }}</td>
               <td>{{ run.started_at|date:"d.m.Y H:i" }}</td>
               <td>{{ run.duration }}</td>
+              <td style="font-size:11px; color:#666;">
+                {% if run.pid %}pid={{ run.pid }}<br>{% endif %}
+                {% if run.heartbeat_at %}hb {{ run.heartbeat_at|date:"H:i:s" }}{% else %}—{% endif %}
+              </td>
             </tr>
             {% if run.log %}
             <tr>
-              <td colspan="8">
+              <td colspan="9">
                 <div class="agro-collapse-toggle" onclick="this.nextElementSibling.classList.toggle('open')">
                   ▸ <span style="font-size:11px; color:#417690;">Показать лог</span>
                 </div>

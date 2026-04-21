@@ -1,6 +1,13 @@
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
 import threading
 from datetime import date
+from pathlib import Path
 
+from django.conf import settings
 from django.contrib import admin, messages
 from django.shortcuts import redirect, render
 from django.urls import path
@@ -142,6 +149,9 @@ class AgrocosmosAdminSite:
             path('agrocosmos/force-check/',
                  admin.site.admin_view(force_check_monitoring_view),
                  name='agro_force_check'),
+            path('agrocosmos/run-status/<int:run_id>/',
+                 admin.site.admin_view(run_status_view),
+                 name='agro_run_status'),
         ]
 
 
@@ -434,104 +444,74 @@ def run_archive_view(request):
     return redirect('admin:agro_panel')
 
 
-def _run_raster_bg(region_id, year, run_id=None, district_id=None,
-                   min_valid=0.7, overwrite=False, rebuild_fusion=True):
-    """Run fetch_raster_ndvi for S2 + L8 in background thread.
+def _pipeline_log_dir() -> Path:
+    """Directory for per-run log files; created if missing."""
+    base = Path(getattr(settings, 'BASE_DIR', '.'))
+    d = base / 'logs' / 'pipeline'
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
-    When ``rebuild_fusion`` is True, chains ``compute_fused_ndvi`` and
-    ``ndvi_postprocess`` after the S2+L8 downloads complete.
+
+def _launch_ndvi_pipeline_detached(
+    *, run_id: int, region_id: int, district_id: int | None, year: int,
+    min_valid: float, overwrite: bool, rebuild_fusion: bool,
+) -> tuple[int, str]:
+    """Spawn ``run_ndvi_pipeline`` as a fully detached child process.
+
+    Returns ``(pid, log_file_path)``. The child survives gunicorn worker
+    recycling because we start it in a new session (POSIX) / new process
+    group (Windows) with stdio redirected to a file on disk.
     """
+    log_dir = _pipeline_log_dir()
+    log_path = log_dir / f'run_{run_id}.log'
+
+    cmd = [
+        sys.executable, 'manage.py', 'run_ndvi_pipeline',
+        '--run-id', str(run_id),
+        '--year', str(year),
+        '--min-valid', f'{min_valid:.3f}',
+    ]
+    if district_id:
+        cmd += ['--district-id', str(district_id)]
+    else:
+        cmd += ['--region-id', str(region_id)]
+    if overwrite:
+        cmd.append('--overwrite')
+    if rebuild_fusion:
+        cmd.append('--fusion')
+
+    env = os.environ.copy()
+    env.setdefault('PYTHONUNBUFFERED', '1')
+
+    # Detach: new session/group so SIGHUP from gunicorn doesn't kill us.
+    popen_kwargs: dict = {
+        'cwd': str(getattr(settings, 'BASE_DIR', '.')),
+        'env': env,
+        'stdin': subprocess.DEVNULL,
+        'close_fds': True,
+    }
+    if os.name == 'posix':
+        popen_kwargs['start_new_session'] = True
+    else:   # Windows
+        popen_kwargs['creationflags'] = (
+            getattr(subprocess, 'DETACHED_PROCESS', 0x00000008) |
+            getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0x00000200)
+        )
+
+    log_f = open(log_path, 'ab', buffering=0)
     try:
-        from django.core.management import call_command
-        from io import StringIO
+        proc = subprocess.Popen(
+            cmd, stdout=log_f, stderr=subprocess.STDOUT, **popen_kwargs,
+        )
+    finally:
+        # The child inherits the fd; we can safely close ours.
+        log_f.close()
 
-        total_records = 0
-        all_log = ''
-
-        for sensor in ('s2', 'l8'):
-            out = StringIO()
-            kwargs = {
-                'sensor': sensor,
-                'year': year,
-                'min_valid_ratio': min_valid,
-                'overwrite': overwrite,
-                'stdout': out,
-                'stderr': out,
-            }
-            if district_id:
-                kwargs['district_id'] = district_id
-            else:
-                kwargs['region_id'] = region_id
-
-            call_command('fetch_raster_ndvi', **kwargs)
-            log_text = out.getvalue()
-            all_log += f'\n=== {sensor.upper()} ===\n{log_text}'
-
-            for line in log_text.splitlines():
-                if 'records saved' in line.lower():
-                    try:
-                        n = int(''.join(c for c in line.split('records saved')[0].split()[-1] if c.isdigit()))
-                        total_records += n
-                    except (ValueError, IndexError):
-                        pass
-
-        logger.info('raster_ndvi done: region=%s year=%s records=%d', region_id, year, total_records)
-
-        # ── Optional: rebuild HLS fusion + postprocess ──
-        if rebuild_fusion:
-            fusion_kwargs = {
-                'year': year,
-                'overwrite': True,
-                'stdout': (fout := StringIO()),
-                'stderr': fout,
-            }
-            if district_id:
-                fusion_kwargs['district_id'] = district_id
-            else:
-                fusion_kwargs['region_id'] = region_id
-            try:
-                call_command('compute_fused_ndvi', **fusion_kwargs)
-                all_log += f'\n=== FUSION ===\n{fout.getvalue()}'
-            except Exception as fe:
-                all_log += f'\n=== FUSION ERROR ===\n{fe}'
-                logger.error('compute_fused_ndvi error: %s', fe)
-
-            # postprocess always needs region_id
-            post_kwargs = {
-                'region_id': region_id,
-                'year': year,
-                'source': 'fused',
-                'stdout': (pout := StringIO()),
-                'stderr': pout,
-            }
-            try:
-                call_command('ndvi_postprocess', **post_kwargs)
-                all_log += f'\n=== POSTPROCESS ===\n{pout.getvalue()}'
-            except Exception as pe:
-                all_log += f'\n=== POSTPROCESS ERROR ===\n{pe}'
-                logger.error('ndvi_postprocess error: %s', pe)
-
-        if run_id:
-            try:
-                run = PipelineRun.objects.get(pk=run_id)
-                run.status = 'completed'
-                run.log = all_log[-8000:]
-                run.records_count = total_records
-                run.finished_at = timezone.now()
-                run.save()
-            except PipelineRun.DoesNotExist:
-                pass
-    except Exception as e:
-        logger.error('raster_ndvi error: %s', e)
-        if run_id:
-            try:
-                run = PipelineRun.objects.get(pk=run_id)
-                run.status = 'failed'
-                run.log = str(e)
-                run.finished_at = timezone.now()
-                run.save()
-            except PipelineRun.DoesNotExist:
-                pass
+    logger.info(
+        'NDVI pipeline detached: run_id=%s pid=%s log=%s',
+        run_id, proc.pid, log_path,
+    )
+    return proc.pid, str(log_path)
 
 
 def run_raster_view(request):
@@ -574,26 +554,84 @@ def run_raster_view(request):
         task_type='raster_ndvi',
         region=region,
         year=year,
+        status='running',
         description=(
             f'{region.name}{district_name}, {year} год '
             f'(S2+L8, valid≥{min_valid:.0%}){flags_s}'
         ),
     )
 
-    t = threading.Thread(
-        target=_run_raster_bg,
-        args=(int(region_id), year, run.pk, did, min_valid),
-        kwargs={'overwrite': overwrite, 'rebuild_fusion': rebuild_fusion},
-        daemon=True,
-    )
-    t.start()
+    try:
+        pid, log_path = _launch_ndvi_pipeline_detached(
+            run_id=run.pk, region_id=int(region_id), district_id=did,
+            year=year, min_valid=min_valid,
+            overwrite=overwrite, rebuild_fusion=rebuild_fusion,
+        )
+        run.pid = pid
+        run.log_file = log_path
+        run.heartbeat_at = timezone.now()
+        run.save(update_fields=['pid', 'log_file', 'heartbeat_at'])
+    except Exception as exc:
+        logger.exception('failed to launch NDVI pipeline subprocess')
+        run.status = 'failed'
+        run.log = f'Ошибка запуска подпроцесса: {exc}'
+        run.finished_at = timezone.now()
+        run.save()
+        messages.error(request, f'Не удалось запустить пайплайн: {exc}')
+        return redirect('admin:agro_panel')
 
     messages.success(
         request,
-        f'Загрузка S2+L8 NDVI запущена: {region.name}{district_name}, {year} '
-        f'(min_valid={min_valid:.0%}){flags_s}. Процесс в фоне (~1-3 ч для S2).'
+        f'Загрузка S2+L8 NDVI запущена (run #{run.pk}, pid={pid}): '
+        f'{region.name}{district_name}, {year} (min_valid={min_valid:.0%})'
+        f'{flags_s}. Процесс в фоне (~1-3 ч для S2). '
+        f'Обновляйте страницу для прогресса.'
     )
     return redirect('admin:agro_panel')
+
+
+def run_status_view(request, run_id: int):
+    """JSON status + log tail for a single PipelineRun (polled by admin UI)."""
+    from django.http import JsonResponse, Http404
+    try:
+        run = PipelineRun.objects.get(pk=run_id)
+    except PipelineRun.DoesNotExist:
+        raise Http404
+
+    tail = ''
+    if run.log_file:
+        try:
+            with open(run.log_file, 'rb') as f:
+                try:
+                    f.seek(-8192, os.SEEK_END)
+                except OSError:
+                    f.seek(0)
+                tail = f.read().decode('utf-8', errors='replace')
+        except OSError:
+            tail = run.log or ''
+    else:
+        tail = run.log or ''
+
+    alive = False
+    if run.pid and run.status == 'running':
+        try:
+            from agrocosmos.management.commands.cleanup_stale_runs import _pid_alive
+            alive = _pid_alive(run.pid)
+        except Exception:
+            alive = False
+
+    return JsonResponse({
+        'id': run.pk,
+        'status': run.status,
+        'pid': run.pid,
+        'alive': alive,
+        'heartbeat_at': run.heartbeat_at.isoformat() if run.heartbeat_at else None,
+        'started_at': run.started_at.isoformat() if run.started_at else None,
+        'finished_at': run.finished_at.isoformat() if run.finished_at else None,
+        'records_count': run.records_count,
+        'duration': run.duration,
+        'tail': tail[-8000:],
+    })
 
 
 def force_check_monitoring_view(request):
