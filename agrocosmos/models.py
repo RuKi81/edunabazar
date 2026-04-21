@@ -289,6 +289,15 @@ class PipelineRun(models.Model):
     records_count = models.IntegerField(default=0, verbose_name='Записей')
     started_at = models.DateTimeField(auto_now_add=True, verbose_name='Начало')
     finished_at = models.DateTimeField(null=True, blank=True, verbose_name='Окончание')
+    # ── detached subprocess tracking ──
+    pid = models.IntegerField(null=True, blank=True, verbose_name='PID')
+    log_file = models.CharField(
+        max_length=255, blank=True, default='',
+        verbose_name='Путь к файлу лога',
+    )
+    heartbeat_at = models.DateTimeField(
+        null=True, blank=True, verbose_name='Последний heartbeat',
+    )
 
     class Meta:
         db_table = 'agro_pipeline_run'
