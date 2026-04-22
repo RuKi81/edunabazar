@@ -1289,7 +1289,14 @@
     });
 
     /* ── Active farmland (id currently shown in the NDVI chart) ─────── */
-    var _activeFarmland = '{{ farmland_id|escapejs }}' || null;
+    // INITIAL_FARMLAND is the value taken from the URL at page-load time and
+    // is **immutable**. `_activeFarmland` is the live value that gets reset
+    // to null whenever the user changes region/district (the old id is
+    // meaningless in a new scope). We need the immutable copy because
+    // `regionSel.dispatchEvent('change')` fires synchronously and wipes
+    // `_activeFarmland` before the auto-open block below runs.
+    var INITIAL_FARMLAND = '{{ farmland_id|escapejs }}' || null;
+    var _activeFarmland = INITIAL_FARMLAND;
 
     /* ── URL + tab/report link state sync ───────────────────────────── */
     //
@@ -1357,13 +1364,16 @@
     }
 
     /* ── Auto-open NDVI chart if ?farmland=X is in URL ── */
-    if (_activeFarmland) {
+    // Use INITIAL_FARMLAND (captured before region dispatch), not
+    // `_activeFarmland` — the region-change listener above has just nulled
+    // the live value.
+    if (INITIAL_FARMLAND) {
       // Wait for async bootstrap (MVT tiles, sidebar list). A short delay is
       // enough — the click handler below only needs the chart canvas + API.
       setTimeout(function () {
         var synth = document.createElement('a');
         synth.className = 'ndvi-link';
-        synth.setAttribute('data-id', _activeFarmland);
+        synth.setAttribute('data-id', INITIAL_FARMLAND);
         synth.setAttribute('data-district', '');
         synth.style.display = 'none';
         document.body.appendChild(synth);
