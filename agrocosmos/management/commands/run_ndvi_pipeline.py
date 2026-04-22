@@ -41,6 +41,42 @@ HEARTBEAT_INTERVAL_SEC = 30
 LOG_MAX_DB_CHARS = 16000   # store tail of this size in PipelineRun.log
 
 
+class _TeeStream:
+    """Forward every write to real stdout *and* a StringIO buffer.
+
+    Lets sub-commands stream their output into ``logs/pipeline/run_<id>.log``
+    in real time (so ``tail -f`` works), while we retain a copy for parsing
+    ``N records saved`` lines and storing a tail in the DB.
+    """
+
+    def __init__(self, capture: StringIO, live_sink=None):
+        self._capture = capture
+        self._live = live_sink if live_sink is not None else sys.stdout
+
+    def write(self, s):
+        try:
+            self._live.write(s)
+            self._live.flush()
+        except Exception:
+            pass
+        self._capture.write(s)
+        return len(s)
+
+    def flush(self):
+        try:
+            self._live.flush()
+        except Exception:
+            pass
+
+    # Django's OutputWrapper sometimes probes for isatty / encoding.
+    def isatty(self):
+        return False
+
+    @property
+    def encoding(self):
+        return getattr(self._live, 'encoding', 'utf-8')
+
+
 class _Stopwatch:
     def __init__(self):
         self.t0 = time.time()
@@ -144,34 +180,41 @@ class Command(BaseCommand):
 
     # ------------------------------------------------------------------ stages
 
+    def _run_subcommand(self, name: str, **kwargs) -> str:
+        """Run a Django mgmt command with live streaming to stdout + capture.
+
+        Returns the captured text so caller can parse progress markers.
+        """
+        capture = StringIO()
+        tee = _TeeStream(capture)
+        kwargs['stdout'] = tee
+        kwargs['stderr'] = tee
+        call_command(name, **kwargs)
+        text = capture.getvalue()
+        # Keep a copy of sub-command output for the DB tail too.
+        for line in text.splitlines():
+            self._log_lines.append(line)
+        return text
+
     def _stage_raster(self, sensor: str, *, region_id, district_id, year,
                       min_valid, overwrite) -> int:
         self._log(f'─── stage: fetch_raster_ndvi --sensor {sensor} ───')
-        out = StringIO()
         kwargs = {
             'sensor': sensor,
             'year': year,
             'min_valid_ratio': min_valid,
             'overwrite': overwrite,
-            'stdout': out,
-            'stderr': out,
         }
         if district_id:
             kwargs['district_id'] = district_id
         else:
             kwargs['region_id'] = region_id
 
-        call_command('fetch_raster_ndvi', **kwargs)
-        text = out.getvalue()
-        # include raw command output in our log
-        for line in text.splitlines():
-            self._log_lines.append(line)
+        text = self._run_subcommand('fetch_raster_ndvi', **kwargs)
 
-        # parse "N records saved"
         records = 0
         for line in text.splitlines():
-            low = line.lower()
-            if 'records saved' in low:
+            if 'records saved' in line.lower():
                 try:
                     token = line.split('records saved')[0].split()[-1]
                     records += int(''.join(c for c in token if c.isdigit()) or 0)
@@ -183,33 +226,21 @@ class Command(BaseCommand):
 
     def _stage_fusion(self, *, region_id, district_id, year) -> None:
         self._log('─── stage: compute_fused_ndvi --overwrite ───')
-        out = StringIO()
-        kwargs = {
-            'year': year,
-            'overwrite': True,
-            'stdout': out,
-            'stderr': out,
-        }
+        kwargs = {'year': year, 'overwrite': True}
         if district_id:
             kwargs['district_id'] = district_id
         else:
             kwargs['region_id'] = region_id
-        call_command('compute_fused_ndvi', **kwargs)
-        for line in out.getvalue().splitlines():
-            self._log_lines.append(line)
+        self._run_subcommand('compute_fused_ndvi', **kwargs)
         self._log('─── fusion done ───')
         self._flush_log_to_db()
 
     def _stage_postprocess(self, *, region_id, year) -> None:
         self._log('─── stage: ndvi_postprocess --source fused ───')
-        out = StringIO()
-        call_command(
+        self._run_subcommand(
             'ndvi_postprocess',
             region_id=region_id, year=year, source='fused',
-            stdout=out, stderr=out,
         )
-        for line in out.getvalue().splitlines():
-            self._log_lines.append(line)
         self._log('─── postprocess done ───')
         self._flush_log_to_db()
 
