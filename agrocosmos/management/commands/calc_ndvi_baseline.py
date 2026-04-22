@@ -36,7 +36,7 @@ class Command(BaseCommand):
         self.stdout.write(f'Current year excluded: {current_year}')
 
         # ── Build per-district, per-doy, per-crop_type aggregation ──
-        where = "vi.acquired_date < %s AND vi.mean BETWEEN -0.2 AND 1 AND vi.is_anomaly = false"
+        where = "vi.acquired_date < %s AND vi.mean BETWEEN -0.2 AND 1 AND vi.is_outlier = false"
         params = [date(current_year, 1, 1)]
 
         if region_id:

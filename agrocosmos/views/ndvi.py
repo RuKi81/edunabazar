@@ -42,6 +42,7 @@ def api_farmland_ndvi(request: HttpRequest) -> JsonResponse:
 
     rows = qs.order_by('acquired_date').values(
         'acquired_date', 'mean', 'min_val', 'max_val', 'median',
+        'mean_smooth', 'is_outlier',
     )
     data = []
     for r in rows:
@@ -51,6 +52,8 @@ def api_farmland_ndvi(request: HttpRequest) -> JsonResponse:
             'min': _safe_round(r['min_val']),
             'max': _safe_round(r['max_val']),
             'median': _safe_round(r['median']),
+            'mean_smooth': _safe_round(r['mean_smooth']),
+            'is_outlier': bool(r['is_outlier']),
         })
     # last_period_end for MODIS dashed extension line
     last_period_end = None
@@ -151,7 +154,7 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
     vi_qs = VegetationIndex.objects.filter(
         farmland__in=fl_qs, index_type='ndvi',
         mean__gte=-0.2, mean__lte=1,         # physical NDVI range
-        is_anomaly=False,                     # exclude detected spikes
+        is_outlier=False,                     # exclude detected spikes (snow/cloud)
         **sat_kw,
     )
     if year:

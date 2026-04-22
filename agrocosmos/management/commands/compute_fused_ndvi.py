@@ -193,7 +193,7 @@ class Command(BaseCommand):
             scene__satellite__in=SOURCE_SATS,
             index_type='ndvi',
             acquired_date__year=year,
-            is_anomaly=False,
+            is_outlier=False,
             mean__gte=-0.2, mean__lte=1,
         )
         if district:
@@ -331,7 +331,7 @@ class Command(BaseCommand):
                     std_val=0,
                     pixel_count=0,
                     valid_pixel_count=fused_n,
-                    is_anomaly=False,
+                    is_outlier=False,
                 ))
 
         # bulk_create with update_conflicts — same pattern as fetch_raster_ndvi

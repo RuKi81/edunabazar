@@ -70,7 +70,7 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
         farmland__district__region_id=region_id,
         index_type='ndvi',
         acquired_date__year=year,
-        is_anomaly=False,
+        is_outlier=False,
         mean__gte=-0.2, mean__lte=1,
         scene__satellite__in=MODIS_SATELLITES,
     ).values_list(
@@ -262,7 +262,7 @@ def api_report_district(request: HttpRequest) -> JsonResponse:
         farmland__district=district,
         index_type='ndvi',
         acquired_date__year=year,
-        is_anomaly=False,
+        is_outlier=False,
         mean__gte=-0.2, mean__lte=1,
         scene__satellite__in=MODIS_SATELLITES,
     ).values_list('acquired_date', 'mean', 'farmland__crop_type', 'farmland__area_ha')
@@ -428,7 +428,7 @@ def api_report_district(request: HttpRequest) -> JsonResponse:
         farmland__district__region=district.region,
         index_type='ndvi',
         acquired_date__year=year,
-        is_anomaly=False,
+        is_outlier=False,
         mean__gte=-0.2, mean__lte=1,
         scene__satellite__in=MODIS_SATELLITES,
     ).values_list('acquired_date', 'mean', 'farmland__area_ha')

@@ -5,7 +5,7 @@ Runs per-farmland across a region/year. For each farmland:
 1. Load NDVI time series sorted by date
 2. Detect spikes (anomalies) using a rolling-median absolute deviation test
 3. Apply Savitzky-Golay filter to the clean series
-4. Save is_anomaly and mean_smooth back to DB
+4. Save is_outlier and mean_smooth back to DB
 
 Usage:
     python manage.py ndvi_postprocess --region-id 37 --year 2024
@@ -40,7 +40,7 @@ DB_BATCH = 5000  # raw SQL update batch
 
 
 def _process_series(pks, vals, threshold):
-    """Spike detection + Savitzky-Golay for one farmland. Returns list of (pk, is_anomaly, mean_smooth)."""
+    """Spike detection + Savitzky-Golay for one farmland. Returns list of (pk, is_outlier, mean_smooth)."""
     from scipy.signal import savgol_filter
 
     n = len(vals)
@@ -147,7 +147,7 @@ class Command(BaseCommand):
         # Group by farmland_id and process
         anomalies_total = 0
         smoothed_total = 0
-        update_batch = []  # [(pk, is_anomaly_bool, mean_smooth_float_or_None), ...]
+        update_batch = []  # [(pk, is_outlier_bool, mean_smooth_float_or_None), ...]
         fl_count = 0
 
         for fl_id, group in groupby(rows, key=itemgetter(1)):
@@ -183,7 +183,7 @@ class Command(BaseCommand):
 
 
 def _flush_updates(batch):
-    """Bulk update is_anomaly + mean_smooth via raw SQL with unnest for speed."""
+    """Bulk update is_outlier + mean_smooth via raw SQL with unnest for speed."""
     if not batch:
         return
 
@@ -193,12 +193,12 @@ def _flush_updates(batch):
 
     sql = """
         UPDATE agro_vegetation_index AS vi SET
-            is_anomaly  = data.is_anomaly,
+            is_outlier  = data.is_outlier,
             mean_smooth = data.mean_smooth
         FROM (
             SELECT
                 unnest(%s::bigint[])  AS id,
-                unnest(%s::boolean[]) AS is_anomaly,
+                unnest(%s::boolean[]) AS is_outlier,
                 unnest(%s::float8[])  AS mean_smooth
         ) AS data
         WHERE vi.id = data.id
