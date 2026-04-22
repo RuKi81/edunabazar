@@ -91,9 +91,9 @@ class PipelineRunAdmin(admin.ModelAdmin):
 
 @admin.register(MonitoringTask)
 class MonitoringTaskAdmin(admin.ModelAdmin):
-    list_display = ('region', 'year', 'status_badge', 'last_check',
-                    'last_date_to', 'records_total', 'created_at')
-    list_filter = ('status', 'year')
+    list_display = ('task_type', 'region', 'district', 'year', 'status_badge',
+                    'last_check', 'last_date_to', 'records_total', 'created_at')
+    list_filter = ('task_type', 'status', 'year')
     readonly_fields = ('last_check', 'last_date_to', 'records_total', 'log',
                        'created_at', 'updated_at')
     actions = ['pause_tasks', 'resume_tasks']
@@ -146,9 +146,15 @@ class AgrocosmosAdminSite:
             path('agrocosmos/start-monitoring/',
                  admin.site.admin_view(start_monitoring_view),
                  name='agro_start_monitoring'),
+            path('agrocosmos/start-raster-monitoring/',
+                 admin.site.admin_view(start_raster_monitoring_view),
+                 name='agro_start_raster_monitoring'),
             path('agrocosmos/force-check/',
                  admin.site.admin_view(force_check_monitoring_view),
                  name='agro_force_check'),
+            path('agrocosmos/force-check-raster/',
+                 admin.site.admin_view(force_check_raster_monitoring_view),
+                 name='agro_force_check_raster'),
             path('agrocosmos/run-status/<int:run_id>/',
                  admin.site.admin_view(run_status_view),
                  name='agro_run_status'),
@@ -455,6 +461,7 @@ def _pipeline_log_dir() -> Path:
 def _launch_ndvi_pipeline_detached(
     *, run_id: int, region_id: int, district_id: int | None, year: int,
     min_valid: float, overwrite: bool, rebuild_fusion: bool,
+    date_from: str | None = None, date_to: str | None = None,
 ) -> tuple[int, str]:
     """Spawn ``run_ndvi_pipeline`` as a fully detached child process.
 
@@ -479,6 +486,10 @@ def _launch_ndvi_pipeline_detached(
         cmd.append('--overwrite')
     if rebuild_fusion:
         cmd.append('--fusion')
+    if date_from:
+        cmd += ['--date-from', date_from]
+    if date_to:
+        cmd += ['--date-to', date_to]
 
     env = os.environ.copy()
     env.setdefault('PYTHONUNBUFFERED', '1')
@@ -655,6 +666,140 @@ def force_check_monitoring_view(request):
     messages.success(
         request,
         'Принудительная проверка мониторинга запущена в фоне (--force).'
+    )
+    return redirect('admin:agro_panel')
+
+
+def start_raster_monitoring_view(request):
+    """Create a raster (S2+L8) monitoring task and run an initial catch-up."""
+    if request.method != 'POST':
+        return redirect('admin:agro_panel')
+
+    region_id = request.POST.get('region_id')
+    district_id = request.POST.get('district_id')
+    year = request.POST.get('year')
+    min_valid = float(request.POST.get('min_valid', 0.7))
+
+    if not region_id or not year:
+        messages.error(request, 'Укажите регион и год')
+        return redirect('admin:agro_panel')
+
+    region = Region.objects.get(pk=int(region_id))
+    year = int(year)
+
+    district = None
+    did = None
+    if district_id:
+        try:
+            did = int(district_id)
+            district = District.objects.get(pk=did)
+        except (TypeError, ValueError, District.DoesNotExist):
+            did = None
+            district = None
+
+    task, created = MonitoringTask.objects.get_or_create(
+        task_type='raster', region=region, district=district, year=year,
+        defaults={'status': 'active'},
+    )
+    if not created:
+        if task.status != 'active':
+            task.status = 'active'
+            task.save(update_fields=['status'])
+            messages.info(request, f'Мониторинг S2+L8 возобновлён: {task}')
+        else:
+            messages.info(request, f'Мониторинг S2+L8 уже активен: {task}')
+    else:
+        messages.success(request, f'Мониторинг S2+L8 создан: {task}')
+
+    # Initial catch-up: fetch [year_start .. today-7] right now as detached
+    # subprocess via run_ndvi_pipeline. Subsequent updates are handled by
+    # the daily cron `check_raster_monitoring`.
+    from datetime import timedelta
+    today = date.today()
+    year_start = date(year, 1, 1)
+    year_end = date(year, 12, 31)
+    window_from = (task.last_date_to + timedelta(days=1)
+                   if task.last_date_to else year_start)
+    window_to = min(year_end, today - timedelta(days=7))
+
+    if window_to < window_from:
+        messages.info(
+            request,
+            f'Окно пока пустое ({window_from}..{window_to}) — '
+            f'cron добавит данные, когда сцены опубликуют.'
+        )
+        return redirect('admin:agro_panel')
+
+    scope_desc = f'{region.name}' + (f' / {district.name}' if district else '')
+    run = PipelineRun.objects.create(
+        task_type='raster_ndvi',
+        region=region, year=year, status='running',
+        description=(
+            f'[monitor init] {scope_desc}, {year} '
+            f'({window_from}..{window_to}, valid≥{min_valid:.0%})'
+        ),
+    )
+    try:
+        pid, log_path = _launch_ndvi_pipeline_detached(
+            run_id=run.pk, region_id=region.pk, district_id=did,
+            year=year, min_valid=min_valid,
+            overwrite=False, rebuild_fusion=True,
+            date_from=window_from.isoformat(),
+            date_to=window_to.isoformat(),
+        )
+        run.pid = pid
+        run.log_file = log_path
+        run.heartbeat_at = timezone.now()
+        run.save(update_fields=['pid', 'log_file', 'heartbeat_at'])
+        messages.success(
+            request,
+            f'Начальная выкачка S2+L8 запущена (run #{run.pk}, pid={pid}) '
+            f'для окна {window_from}..{window_to}. Дальше cron раз в сутки.'
+        )
+    except Exception as exc:
+        logger.exception('failed to launch initial raster monitoring run')
+        run.status = 'failed'
+        run.log = f'Ошибка запуска подпроцесса: {exc}'
+        run.finished_at = timezone.now()
+        run.save()
+        messages.error(request, f'Не удалось запустить начальную выкачку: {exc}')
+    return redirect('admin:agro_panel')
+
+
+def force_check_raster_monitoring_view(request):
+    """Force-run check_raster_monitoring for all active raster tasks."""
+    if request.method != 'POST':
+        return redirect('admin:agro_panel')
+
+    run = PipelineRun.objects.create(
+        task_type='monitoring',
+        description='Принудительная проверка S2+L8 мониторинга',
+    )
+
+    def _bg(run_id: int):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        try:
+            call_command(
+                'check_raster_monitoring', force=True,
+                stdout=out, stderr=out,
+            )
+            PipelineRun.objects.filter(pk=run_id).update(
+                status='completed', log=out.getvalue()[-8000:],
+                finished_at=timezone.now(),
+            )
+        except Exception as exc:
+            PipelineRun.objects.filter(pk=run_id).update(
+                status='failed',
+                log=(out.getvalue() + f'\nERROR: {exc}')[-8000:],
+                finished_at=timezone.now(),
+            )
+
+    threading.Thread(target=_bg, args=(run.pk,), daemon=True).start()
+    messages.success(
+        request,
+        'Запущена принудительная проверка S2+L8 мониторинга (все активные задачи).'
     )
     return redirect('admin:agro_panel')
 
