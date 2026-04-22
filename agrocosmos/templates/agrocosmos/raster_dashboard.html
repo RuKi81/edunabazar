@@ -985,7 +985,9 @@
     });
 
     /* ── Active farmland (id currently shown in the NDVI chart) ─────── */
-    var _activeFarmland = '{{ farmland_id|escapejs }}' || null;
+    // INITIAL_FARMLAND is immutable; see dashboard.html for rationale.
+    var INITIAL_FARMLAND = '{{ farmland_id|escapejs }}' || null;
+    var _activeFarmland = INITIAL_FARMLAND;
 
     /* ── URL + tab link state sync (see dashboard.html for rationale) ─ */
     var _tabLinks = document.querySelectorAll('.agro-page-tabs a');
@@ -1027,11 +1029,13 @@
     }
 
     /* ── Auto-open NDVI chart if ?farmland=X is in URL ── */
-    if (_activeFarmland) {
+    // Use INITIAL_FARMLAND — `_activeFarmland` was just nulled by the
+    // region-change listener fired via dispatchEvent above.
+    if (INITIAL_FARMLAND) {
       setTimeout(function () {
         var synth = document.createElement('a');
         synth.className = 'ndvi-link';
-        synth.setAttribute('data-id', _activeFarmland);
+        synth.setAttribute('data-id', INITIAL_FARMLAND);
         synth.setAttribute('data-district', '');
         synth.style.display = 'none';
         document.body.appendChild(synth);
