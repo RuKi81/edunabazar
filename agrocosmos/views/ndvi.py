@@ -52,7 +52,7 @@ def api_farmland_ndvi(request: HttpRequest) -> JsonResponse:
             'min': _safe_round(r['min_val']),
             'max': _safe_round(r['max_val']),
             'median': _safe_round(r['median']),
-            'mean_smooth': _safe_round(r['mean_smooth']),
+            'mean_smooth': (None if r['mean_smooth'] is None else _safe_round(r['mean_smooth'])),
             'is_outlier': bool(r['is_outlier']),
         })
     # last_period_end for MODIS dashed extension line
