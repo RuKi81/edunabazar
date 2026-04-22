@@ -264,7 +264,8 @@
              border:1px solid #ccc; border-radius:4px; max-height:180px; overflow-y:auto; z-index:1200; box-shadow:0 2px 8px rgba(0,0,0,.15);">
           {% for y in years %}
           <label style="display:flex; align-items:center; padding:4px 10px; cursor:pointer; font-size:13px; gap:6px;">
-            <input type="checkbox" class="agro-year-cb" value="{{ y }}" {% if forloop.first %}checked{% endif %} />
+            <input type="checkbox" class="agro-year-cb" value="{{ y }}"
+              {% if y in selected_years %}checked{% elif not selected_years and forloop.first %}checked{% endif %} />
             {{ y }}
           </label>
           {% endfor %}
@@ -1174,6 +1175,10 @@
       var fDistrict = e.target.getAttribute('data-district') || '';
       if (!fid) return;
 
+      // Remember the active farmland so URL / tab links reflect it.
+      _activeFarmland = fid;
+      if (typeof window.syncNavState === 'function') window.syncNavState();
+
       var years = getSelectedYears();
       if (!years.length) return;
 
@@ -1283,29 +1288,89 @@
       });
     });
 
+    /* ── Active farmland (id currently shown in the NDVI chart) ─────── */
+    var _activeFarmland = '{{ farmland_id|escapejs }}' || null;
+
+    /* ── URL + tab/report link state sync ───────────────────────────── */
+    //
+    // `syncNavState()` is the single source of truth that:
+    //   1. Rewrites the current page URL so it is shareable (Back/Forward-safe),
+    //   2. Preserves region/district/year (NOT farmland) across page-tab links,
+    //   3. Updates the two "Open report" buttons with the current selection.
+    //
+    // It is invoked on every relevant change (selects, year checkboxes, click
+    // on a field). A single function avoids the 3-block drift we had before.
+    var _btnReportRegion = document.getElementById('btn-report-region');
+    var _btnReportDistrict = document.getElementById('btn-report-district');
+    var _tabLinks = document.querySelectorAll('.agro-page-tabs a');
+
+    function _buildAgroQS(omit) {
+      omit = omit || {};
+      var p = new URLSearchParams();
+      if (!omit.region && regionSel.value) p.set('region', regionSel.value);
+      if (!omit.district && districtSel.value) p.set('district', districtSel.value);
+      if (!omit.year) {
+        var yrs = getSelectedYears();
+        if (yrs.length) p.set('year', yrs.join(','));
+      }
+      if (!omit.farmland && _activeFarmland) p.set('farmland', _activeFarmland);
+      var s = p.toString();
+      return s ? '?' + s : '';
+    }
+
+    function syncNavState() {
+      // 1. Current-page shareable URL (keeps farmland).
+      history.replaceState(null, '', location.pathname + _buildAgroQS());
+      // 2. Page-tab links — preserve selection but DROP farmland (its ID is
+      //    meaningful only on the source dashboard, not in reports).
+      var navQs = _buildAgroQS({ farmland: true });
+      _tabLinks.forEach(function (a) {
+        var base = a.getAttribute('href').split('?')[0];
+        a.href = base + navQs;
+      });
+      // 3. Report-open buttons (single year only — reports accept scalar year).
+      var rid = regionSel.value;
+      var did = districtSel.value;
+      var yr = getSelectedYears()[0] || '';
+      if (_btnReportRegion) {
+        _btnReportRegion.href = '{% url "agrocosmos:report_region" %}'
+          + (rid ? '?region=' + rid + '&year=' + yr : '');
+      }
+      if (_btnReportDistrict) {
+        _btnReportDistrict.href = '{% url "agrocosmos:report_district" %}'
+          + (rid ? '?region=' + rid + (did ? '&district=' + did : '') + '&year=' + yr : '');
+      }
+    }
+    window.syncNavState = syncNavState;  // exposed for click handler below
+
+    // Reset farmland when the scope changes — the old ID is meaningless.
+    regionSel.addEventListener('change', function () { _activeFarmland = null; syncNavState(); });
+    districtSel.addEventListener('change', function () { _activeFarmland = null; syncNavState(); });
+    document.querySelectorAll('.agro-year-cb').forEach(function (cb) {
+      cb.addEventListener('change', syncNavState);
+    });
+    syncNavState();
+
     /* ── Auto-trigger if region pre-selected ─── */
     if (regionSel.value) {
       regionSel.dispatchEvent(new Event('change'));
     }
 
-    /* ── Report button links (pass current selection) ── */
-    (function () {
-      var btnRegion = document.getElementById('btn-report-region');
-      var btnDistrict = document.getElementById('btn-report-district');
-      function updateReportLinks() {
-        var rid = regionSel.value;
-        var did = districtSel.value;
-        var yr = getSelectedYears()[0] || '';
-        btnRegion.href = '{% url "agrocosmos:report_region" %}' + (rid ? '?region=' + rid + '&year=' + yr : '');
-        btnDistrict.href = '{% url "agrocosmos:report_district" %}' + (rid ? '?region=' + rid + (did ? '&district=' + did : '') + '&year=' + yr : '');
-      }
-      regionSel.addEventListener('change', updateReportLinks);
-      districtSel.addEventListener('change', updateReportLinks);
-      document.querySelectorAll('.agro-year-cb').forEach(function (cb) {
-        cb.addEventListener('change', updateReportLinks);
-      });
-      updateReportLinks();
-    })();
+    /* ── Auto-open NDVI chart if ?farmland=X is in URL ── */
+    if (_activeFarmland) {
+      // Wait for async bootstrap (MVT tiles, sidebar list). A short delay is
+      // enough — the click handler below only needs the chart canvas + API.
+      setTimeout(function () {
+        var synth = document.createElement('a');
+        synth.className = 'ndvi-link';
+        synth.setAttribute('data-id', _activeFarmland);
+        synth.setAttribute('data-district', '');
+        synth.style.display = 'none';
+        document.body.appendChild(synth);
+        synth.click();
+        document.body.removeChild(synth);
+      }, 400);
+    }
 
     /* ── Sidebar collapse toggles ───────────────── */
     (function () {

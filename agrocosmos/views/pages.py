@@ -21,11 +21,25 @@ def _get_legacy_user(request):
         return None
 
 
+def _parse_selected_years(raw):
+    """``?year=2024,2025`` → ``{2024, 2025}``. Robust against garbage."""
+    out = set()
+    if not raw:
+        return out
+    for part in str(raw).split(','):
+        part = part.strip()
+        if part.isdigit():
+            out.add(int(part))
+    return out
+
+
 def dashboard(request: HttpRequest) -> HttpResponse:
     """Main Agrocosmos map page — MODIS NDVI monitoring."""
     regions = Region.objects.all()
     region_id = request.GET.get('region')
     district_id = request.GET.get('district')
+    selected_years = _parse_selected_years(request.GET.get('year'))
+    farmland_id = request.GET.get('farmland') or ''
 
     districts = District.objects.none()
     if region_id:
@@ -80,6 +94,8 @@ def dashboard(request: HttpRequest) -> HttpResponse:
         'crop_stats': list(crop_stats),
         'crop_type_labels': dict(Farmland.CropType.choices),
         'years': years,
+        'selected_years': selected_years,
+        'farmland_id': farmland_id,
         'active_page': 'modis',
     })
 
@@ -89,6 +105,8 @@ def raster_dashboard(request: HttpRequest) -> HttpResponse:
     regions = Region.objects.all()
     region_id = request.GET.get('region')
     district_id = request.GET.get('district')
+    selected_years = _parse_selected_years(request.GET.get('year'))
+    farmland_id = request.GET.get('farmland') or ''
 
     districts = District.objects.none()
     if region_id:
@@ -115,6 +133,8 @@ def raster_dashboard(request: HttpRequest) -> HttpResponse:
         'region_id': region_id or '',
         'district_id': district_id or '',
         'years': years,
+        'selected_years': selected_years,
+        'farmland_id': farmland_id,
         'active_page': 'raster',
     })
 

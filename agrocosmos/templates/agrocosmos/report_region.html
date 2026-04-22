@@ -205,13 +205,26 @@
 
   var districtCharts = [];
 
-  /* ── Shareable URL ── */
+  /* ── Shareable URL + cross-page nav tab sync ── */
+  var _tabLinks = document.querySelectorAll('.agro-page-tabs a');
+
   function updateUrl() {
     var params = new URLSearchParams();
     if (regionSel.value) params.set('region', regionSel.value);
     if (yearSel.value) params.set('year', yearSel.value);
-    history.replaceState(null, '', location.pathname + '?' + params.toString());
+    var qs = params.toString();
+    history.replaceState(null, '', location.pathname + (qs ? '?' + qs : ''));
+    // Preserve the selection when the user switches to MODIS / Raster / other
+    // report pages via the top tabs.
+    var tabQs = qs ? '?' + qs : '';
+    _tabLinks.forEach(function (a) {
+      var base = a.getAttribute('href').split('?')[0];
+      a.href = base + tabQs;
+    });
   }
+  regionSel.addEventListener('change', updateUrl);
+  yearSel.addEventListener('change', updateUrl);
+  updateUrl();
   function getShareUrl() { return location.href; }
   function getShareText() {
     var opt = regionSel.options[regionSel.selectedIndex];
