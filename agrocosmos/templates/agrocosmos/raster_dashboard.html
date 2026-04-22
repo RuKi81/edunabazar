@@ -359,6 +359,12 @@
       <!-- Single farmland NDVI chart -->
       <div id="ndvi-panel" style="display:none; padding:12px; border-top:1px solid rgba(0,0,0,.08);">
         <h3 id="ndvi-title" style="font-size:13px; font-weight:700; margin:0 0 6px 0;">Динамика NDVI</h3>
+        <div id="ndvi-empty" style="display:none; padding:14px 12px; font-size:12px; color:#555; background:#fff8e1; border:1px solid #ffecb3; border-radius:4px; line-height:1.4;">
+          Нет данных Sentinel / Landsat по этому угодью для выбранных годов.
+          Попробуйте вкладку <a href="{% url 'agrocosmos:dashboard' %}" style="color:#1565C0; font-weight:600;">MODIS</a>
+          (шире покрытие), выберите другой год, либо убедитесь, что пайплайн
+          <code>run_ndvi_pipeline</code> уже обработал этот период.
+        </div>
         <canvas id="ndvi-chart" style="max-height:200px;"></canvas>
       </div>
     </div>
@@ -800,6 +806,19 @@
         if (fDistrict) titleTxt += ' (' + fDistrict + ')';
         document.getElementById('ndvi-title').textContent = titleTxt;
 
+        // Empty-data guard.
+        var hasData = results.some(function (r) { return r.data && r.data.length > 0; });
+        var emptyEl = document.getElementById('ndvi-empty');
+        var canvasEl = document.getElementById('ndvi-chart');
+        if (!hasData) {
+          if (ndviChart) { ndviChart.destroy(); ndviChart = null; }
+          if (emptyEl) emptyEl.style.display = 'block';
+          if (canvasEl) canvasEl.style.display = 'none';
+          return;
+        }
+        if (emptyEl) emptyEl.style.display = 'none';
+        if (canvasEl) canvasEl.style.display = '';
+
         var allLabels = new Set();
         results.forEach(function (res) {
           res.data.forEach(function (d) { allLabels.add(d.date.substring(5)); });
@@ -1032,6 +1051,12 @@
     // Use INITIAL_FARMLAND — `_activeFarmland` was just nulled by the
     // region-change listener fired via dispatchEvent above.
     if (INITIAL_FARMLAND) {
+      // Auto-enable the farmland vector layer so the map is useful.
+      var _toggFl = document.getElementById('agro-toggle-farmlands');
+      if (_toggFl && !_toggFl.checked) {
+        _toggFl.checked = true;
+        _toggFl.dispatchEvent(new Event('change'));
+      }
       setTimeout(function () {
         var synth = document.createElement('a');
         synth.className = 'ndvi-link';
