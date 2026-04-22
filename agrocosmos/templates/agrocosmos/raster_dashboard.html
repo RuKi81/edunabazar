@@ -270,7 +270,8 @@
              border:1px solid #ccc; border-radius:4px; max-height:180px; overflow-y:auto; z-index:1200; box-shadow:0 2px 8px rgba(0,0,0,.15);">
           {% for y in years %}
           <label style="display:flex; align-items:center; padding:4px 10px; cursor:pointer; font-size:13px; gap:6px;">
-            <input type="checkbox" class="agro-year-cb" value="{{ y }}" {% if forloop.first %}checked{% endif %} />
+            <input type="checkbox" class="agro-year-cb" value="{{ y }}"
+              {% if y in selected_years %}checked{% elif not selected_years and forloop.first %}checked{% endif %} />
             {{ y }}
           </label>
           {% endfor %}
@@ -779,6 +780,10 @@
       var fDistrict = e.target.getAttribute('data-district') || '';
       if (!fid) return;
 
+      // Remember the active farmland so URL / tab links reflect it.
+      _activeFarmland = fid;
+      if (typeof window.syncNavState === 'function') window.syncNavState();
+
       var years = getSelectedYears();
       if (!years.length) return;
 
@@ -979,9 +984,60 @@
       if (rasterToggle.checked) loadRasterComposites();
     });
 
+    /* ── Active farmland (id currently shown in the NDVI chart) ─────── */
+    var _activeFarmland = '{{ farmland_id|escapejs }}' || null;
+
+    /* ── URL + tab link state sync (see dashboard.html for rationale) ─ */
+    var _tabLinks = document.querySelectorAll('.agro-page-tabs a');
+
+    function _buildAgroQS(omit) {
+      omit = omit || {};
+      var p = new URLSearchParams();
+      if (!omit.region && regionSel.value) p.set('region', regionSel.value);
+      if (!omit.district && districtSel.value) p.set('district', districtSel.value);
+      if (!omit.year) {
+        var yrs = getSelectedYears();
+        if (yrs.length) p.set('year', yrs.join(','));
+      }
+      if (!omit.farmland && _activeFarmland) p.set('farmland', _activeFarmland);
+      var s = p.toString();
+      return s ? '?' + s : '';
+    }
+
+    function syncNavState() {
+      history.replaceState(null, '', location.pathname + _buildAgroQS());
+      var navQs = _buildAgroQS({ farmland: true });
+      _tabLinks.forEach(function (a) {
+        var base = a.getAttribute('href').split('?')[0];
+        a.href = base + navQs;
+      });
+    }
+    window.syncNavState = syncNavState;
+
+    regionSel.addEventListener('change', function () { _activeFarmland = null; syncNavState(); });
+    districtSel.addEventListener('change', function () { _activeFarmland = null; syncNavState(); });
+    document.querySelectorAll('.agro-year-cb').forEach(function (cb) {
+      cb.addEventListener('change', syncNavState);
+    });
+    syncNavState();
+
     /* ── Auto-trigger ──────────────────────────── */
     if (regionSel.value) {
       regionSel.dispatchEvent(new Event('change'));
+    }
+
+    /* ── Auto-open NDVI chart if ?farmland=X is in URL ── */
+    if (_activeFarmland) {
+      setTimeout(function () {
+        var synth = document.createElement('a');
+        synth.className = 'ndvi-link';
+        synth.setAttribute('data-id', _activeFarmland);
+        synth.setAttribute('data-district', '');
+        synth.style.display = 'none';
+        document.body.appendChild(synth);
+        synth.click();
+        document.body.removeChild(synth);
+      }, 400);
     }
 
     /* ── Sidebar collapse ──────────────────────── */
