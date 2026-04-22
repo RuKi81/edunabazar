@@ -119,6 +119,7 @@ class Command(BaseCommand):
         super().__init__(*args, **kwargs)
         self._run_id: int | None = None
         self._log_lines: list[str] = []
+        self._log_file_path: str | None = None
         self._hb_stop = threading.Event()
         self._hb_thread: threading.Thread | None = None
         self._total_records = 0
@@ -132,15 +133,41 @@ class Command(BaseCommand):
         print(stamped, flush=True)
         self._log_lines.append(stamped)
 
+    def _read_log_file_tail(self) -> str | None:
+        """Read last LOG_MAX_DB_CHARS bytes from the on-disk pipeline log file.
+
+        The child's stdout/stderr is redirected by the admin launcher to
+        ``logs/pipeline/run_<id>.log``. Reading that file gives us exactly
+        the same stream as ``tail -f``, including live sub-command output.
+        """
+        path = self._log_file_path
+        if not path:
+            return None
+        try:
+            with open(path, 'rb') as f:
+                try:
+                    f.seek(-LOG_MAX_DB_CHARS, os.SEEK_END)
+                    prefix = b'...(truncated)...\n'
+                except OSError:
+                    f.seek(0)
+                    prefix = b''
+                data = prefix + f.read()
+            return data.decode('utf-8', errors='replace')
+        except OSError:
+            return None
+
     def _flush_log_to_db(self, *, final: bool = False) -> None:
-        """Persist the tail of the in-memory log to PipelineRun.log + heartbeat."""
+        """Persist the tail of the live log file to PipelineRun.log + heartbeat."""
         if not self._run_id:
             return
-        joined = '\n'.join(self._log_lines)
-        if len(joined) > LOG_MAX_DB_CHARS:
-            joined = '…(truncated)…\n' + joined[-LOG_MAX_DB_CHARS:]
+        tail = self._read_log_file_tail()
+        if tail is None:
+            # Fallback to in-memory accumulator (e.g. log_file missing)
+            tail = '\n'.join(self._log_lines)
+            if len(tail) > LOG_MAX_DB_CHARS:
+                tail = '...(truncated)...\n' + tail[-LOG_MAX_DB_CHARS:]
         try:
-            fields = {'log': joined, 'heartbeat_at': timezone.now()}
+            fields = {'log': tail, 'heartbeat_at': timezone.now()}
             if final:
                 fields['finished_at'] = timezone.now()
             PipelineRun.objects.filter(pk=self._run_id).update(**fields)
@@ -248,6 +275,15 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         self._run_id = options['run_id']
+        # Pick up the on-disk log file path (set by admin launcher) so the
+        # heartbeat can mirror its tail into PipelineRun.log.
+        try:
+            self._log_file_path = (
+                PipelineRun.objects.filter(pk=self._run_id)
+                .values_list('log_file', flat=True).first() or None
+            )
+        except Exception:
+            self._log_file_path = None
         region_id = options.get('region_id')
         district_id = options.get('district_id')
         year = options['year']
