@@ -196,14 +196,29 @@ class FarmlandPhenology(models.Model):
 
 
 class MonitoringTask(models.Model):
-    """Задача мониторинга NDVI для региона."""
+    """Задача мониторинга NDVI для региона (опционально — конкретного района)."""
 
     class Status(models.TextChoices):
         ACTIVE = 'active', 'Активный'
         PAUSED = 'paused', 'Приостановлен'
         COMPLETED = 'completed', 'Завершён'
 
-    region = models.ForeignKey(Region, on_delete=models.CASCADE, related_name='monitoring_tasks')
+    class TaskType(models.TextChoices):
+        MODIS = 'modis', 'MODIS (16-дн. архив)'
+        RASTER = 'raster', 'Sentinel-2 + Landsat (оперативно)'
+
+    task_type = models.CharField(
+        max_length=20, choices=TaskType.choices,
+        default=TaskType.MODIS, verbose_name='Тип мониторинга',
+    )
+    region = models.ForeignKey(
+        Region, on_delete=models.CASCADE, related_name='monitoring_tasks',
+    )
+    district = models.ForeignKey(
+        District, on_delete=models.CASCADE,
+        related_name='monitoring_tasks', null=True, blank=True,
+        verbose_name='Район (опц.)',
+    )
     year = models.IntegerField(verbose_name='Год')
     status = models.CharField(
         max_length=20, choices=Status.choices,
@@ -222,7 +237,12 @@ class MonitoringTask(models.Model):
     class Meta:
         db_table = 'agro_monitoring_task'
         ordering = ['-created_at']
-        unique_together = [('region', 'year')]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['task_type', 'region', 'district', 'year'],
+                name='uniq_monitoring_task_scope',
+            ),
+        ]
         verbose_name = 'Задача мониторинга'
         verbose_name_plural = 'Задачи мониторинга'
 

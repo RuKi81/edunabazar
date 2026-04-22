@@ -112,6 +112,10 @@ class Command(BaseCommand):
                             help='Skip Sentinel-2 stage')
         parser.add_argument('--skip-l8', action='store_true',
                             help='Skip Landsat stage')
+        parser.add_argument('--date-from', type=str, default=None,
+                            help='Override: fetch only this date window (YYYY-MM-DD)')
+        parser.add_argument('--date-to', type=str, default=None,
+                            help='Override: fetch only this date window (YYYY-MM-DD)')
 
     # ------------------------------------------------------------------ state
 
@@ -224,14 +228,23 @@ class Command(BaseCommand):
         return text
 
     def _stage_raster(self, sensor: str, *, region_id, district_id, year,
-                      min_valid, overwrite) -> int:
-        self._log(f'─── stage: fetch_raster_ndvi --sensor {sensor} ───')
+                      min_valid, overwrite,
+                      date_from: str | None = None,
+                      date_to: str | None = None) -> int:
+        window = f' {date_from}..{date_to}' if date_from or date_to else ''
+        self._log(f'─── stage: fetch_raster_ndvi --sensor {sensor}{window} ───')
         kwargs = {
             'sensor': sensor,
-            'year': year,
             'min_valid_ratio': min_valid,
             'overwrite': overwrite,
         }
+        if date_from or date_to:
+            if date_from:
+                kwargs['date_from'] = date_from
+            if date_to:
+                kwargs['date_to'] = date_to
+        else:
+            kwargs['year'] = year
         if district_id:
             kwargs['district_id'] = district_id
         else:
@@ -292,6 +305,8 @@ class Command(BaseCommand):
         do_fusion = options['fusion']
         skip_s2 = options['skip_s2']
         skip_l8 = options['skip_l8']
+        date_from = options.get('date_from')
+        date_to = options.get('date_to')
 
         # ── Handle SIGTERM / SIGINT: mark failed so we don't leak running ──
         def _on_term(signum, _frame):
@@ -345,6 +360,8 @@ class Command(BaseCommand):
         if do_fusion: flags.append('+fusion')
         if skip_s2:   flags.append('skip-s2')
         if skip_l8:   flags.append('skip-l8')
+        if date_from or date_to:
+            flags.append(f'window={date_from or "…"}..{date_to or "…"}')
         self._log(f'  Flags: [{", ".join(flags) or "none"}]   Min valid: {min_valid:.0%}')
         self._log('═══════════════════════════════════════════════')
 
@@ -354,12 +371,14 @@ class Command(BaseCommand):
                 self._total_records += self._stage_raster(
                     's2', region_id=region_id, district_id=district_id,
                     year=year, min_valid=min_valid, overwrite=overwrite,
+                    date_from=date_from, date_to=date_to,
                 )
 
             if not skip_l8:
                 self._total_records += self._stage_raster(
                     'l8', region_id=region_id, district_id=district_id,
                     year=year, min_valid=min_valid, overwrite=overwrite,
+                    date_from=date_from, date_to=date_to,
                 )
 
             if do_fusion:

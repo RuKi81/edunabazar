@@ -293,9 +293,9 @@
     </div>
   </div>
 
-  <!-- ═══ 4. Start Monitoring ═══ -->
+  <!-- ═══ 4. Start Monitoring (MODIS) ═══ -->
   <div class="agro-section">
-    <h2>🛰️ Постановка на мониторинг</h2>
+    <h2>🛰️ Постановка на мониторинг — MODIS (16-дн. архив)</h2>
     <div class="body">
       <form method="post" action="{% url 'admin:agro_start_monitoring' %}">
         {% csrf_token %}
@@ -318,11 +318,62 @@
             </select>
           </div>
           <div>
-            <button type="submit" class="agro-btn agro-btn--orange">Начать мониторинг</button>
+            <button type="submit" class="agro-btn agro-btn--orange">Начать MODIS мониторинг</button>
           </div>
         </div>
         <div class="agro-hint">
-          Автоматическая проверка новых данных NDVI каждые 2 недели (через cron).
+          MODIS MOD13Q1 / MYD13Q1 — 16-дневные композиты, 250м. Cron добирает новые периоды ежедневно.
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ═══ 4b. Start Monitoring (Sentinel-2 + Landsat) ═══ -->
+  <div class="agro-section">
+    <h2>🛰️ Постановка на мониторинг — Sentinel-2 + Landsat (оперативно)</h2>
+    <div class="body">
+      <form method="post" action="{% url 'admin:agro_start_raster_monitoring' %}">
+        {% csrf_token %}
+        <div class="agro-row">
+          <div class="agro-field">
+            <label>Регион</label>
+            <select name="region_id" id="raster-mon-region" required>
+              <option value="">— Выберите —</option>
+              {% for r in regions %}
+                <option value="{{ r.id }}">{{ r.name }} {% if r.farmland_count %}({{ r.farmland_count }} угодий){% endif %}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="agro-field">
+            <label>Район (опц.)</label>
+            <select name="district_id" id="raster-mon-district">
+              <option value="">— Весь регион —</option>
+              {% for d in districts %}
+                <option value="{{ d.id }}" data-region="{{ d.region_id }}">{{ d.name }} ({{ d.region.name }})</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="agro-field">
+            <label>Год</label>
+            <select name="year" required>
+              {% for y in years %}
+                <option value="{{ y }}" {% if y == current_year %}selected{% endif %}>{{ y }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="agro-field">
+            <label>Min valid, %</label>
+            <input type="number" name="min_valid" value="70" min="10" max="100" step="5" style="width:70px;">
+          </div>
+          <div>
+            <button type="submit" class="agro-btn" style="background:#1565C0;">Начать S2+L8 мониторинг</button>
+          </div>
+        </div>
+        <div class="agro-hint">
+          Создаст задачу (task_type=raster) и сразу запустит начальную выкачку окна
+          <code>[начало_года .. сегодня − 7 дней]</code> через detached-подпроцесс.
+          Далее cron раз в сутки добирает новые сцены S2 (5 дн.) и L8 (16 дн.),
+          обновляя fusion + postprocess.
         </div>
       </form>
     </div>
@@ -336,7 +387,8 @@
         <table class="agro-tasks">
           <thead>
             <tr>
-              <th>Регион</th>
+              <th>Тип</th>
+              <th>Регион / Район</th>
               <th>Год</th>
               <th>Статус</th>
               <th>Последняя проверка</th>
@@ -347,7 +399,8 @@
           <tbody>
             {% for t in tasks %}
             <tr>
-              <td>{{ t.region.name }}</td>
+              <td>{{ t.get_task_type_display }}</td>
+              <td>{{ t.region.name }}{% if t.district %} / {{ t.district.name }}{% endif %}</td>
               <td>{{ t.year }}</td>
               <td><span class="agro-badge agro-badge--{{ t.status }}">{{ t.get_status_display }}</span></td>
               <td>{{ t.last_check|default:"—" }}</td>
@@ -363,11 +416,19 @@
       {% else %}
         <p style="color:#888; font-size:13px;">Нет активных задач мониторинга</p>
       {% endif %}
-      <form method="post" action="{% url 'admin:agro_force_check' %}" style="margin-top:12px;">
-        {% csrf_token %}
-        <button type="submit" class="agro-btn agro-btn--orange">⚡ Принудительная проверка данных</button>
-        <span class="agro-hint" style="margin-left:8px;">Запустит check_monitoring для всех активных задач (проверка и скачивание новых данных)</span>
-      </form>
+      <div style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap;">
+        <form method="post" action="{% url 'admin:agro_force_check' %}">
+          {% csrf_token %}
+          <button type="submit" class="agro-btn agro-btn--orange">⚡ Проверить MODIS</button>
+        </form>
+        <form method="post" action="{% url 'admin:agro_force_check_raster' %}">
+          {% csrf_token %}
+          <button type="submit" class="agro-btn" style="background:#1565C0;">⚡ Проверить S2+L8</button>
+        </form>
+        <span class="agro-hint" style="align-self:center;">
+          Принудительный прогон <code>check_monitoring</code> / <code>check_raster_monitoring</code> (<code>--force</code>).
+        </span>
+      </div>
     </div>
   </div>
 
@@ -441,10 +502,11 @@
   }
 })();
 
-// Filter district dropdown by selected region
-(function() {
-  var regionSel = document.getElementById('raster-region');
-  var districtSel = document.getElementById('raster-district');
+// Filter district dropdown by selected region (per pair)
+[['raster-region', 'raster-district'],
+ ['raster-mon-region', 'raster-mon-district']].forEach(function(pair) {
+  var regionSel = document.getElementById(pair[0]);
+  var districtSel = document.getElementById(pair[1]);
   if (!regionSel || !districtSel) return;
   var allOpts = Array.from(districtSel.options);
 
@@ -457,9 +519,8 @@
       }
     });
   });
-  // Trigger initial filter
   regionSel.dispatchEvent(new Event('change'));
-})();
+});
 
 // Convert min_valid from % to ratio (0-1) on form submit
 document.querySelectorAll('input[name="min_valid"]').forEach(function(input) {
