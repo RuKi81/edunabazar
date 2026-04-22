@@ -54,7 +54,7 @@ class Command(BaseCommand):
         # Build single SQL to load all smoothed series at once
         where_parts = [
             "vi.index_type = 'ndvi'",
-            "vi.is_anomaly = false",
+            "vi.is_outlier = false",
             "vi.mean_smooth IS NOT NULL",
             "f.district_id IN (SELECT id FROM agro_district WHERE region_id = %s)",
             "EXTRACT(year FROM vi.acquired_date) = %s",

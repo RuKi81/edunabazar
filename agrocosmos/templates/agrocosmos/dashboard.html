@@ -1198,19 +1198,56 @@
 
         var datasets = [];
         results.forEach(function (res, idx) {
-          var lookup = {};
-          res.data.forEach(function (d) { lookup[d.date.substring(5)] = d.mean; });
-          var vals = labels.map(function (l) { return lookup[l] !== undefined ? lookup[l] : null; });
+          var color = yearColors[idx % yearColors.length];
+          // Lookup by mm-dd key. Store both raw mean and is_outlier flag.
+          var meanLookup = {};
+          var smoothLookup = {};
+          var outlierLookup = {};
+          res.data.forEach(function (d) {
+            var key = d.date.substring(5);
+            meanLookup[key] = d.mean;
+            smoothLookup[key] = (d.mean_smooth !== undefined ? d.mean_smooth : null);
+            outlierLookup[key] = !!d.is_outlier;
+          });
+          var vals = labels.map(function (l) {
+            return meanLookup[l] !== undefined ? meanLookup[l] : null;
+          });
+          var smoothVals = labels.map(function (l) {
+            return smoothLookup[l] !== undefined ? smoothLookup[l] : null;
+          });
+          // Per-point styling: outliers = semi-transparent + bigger hollow marker.
+          var ptRadii = labels.map(function (l) { return outlierLookup[l] ? 4 : 2; });
+          var ptBg    = labels.map(function (l) { return outlierLookup[l] ? 'rgba(120,120,120,0.25)' : color; });
+          var ptBorder= labels.map(function (l) { return outlierLookup[l] ? 'rgba(120,120,120,0.5)'  : color; });
+
+          // Raw observations (with faded outlier markers).
           datasets.push({
             label: res.year,
             data: vals,
-            borderColor: yearColors[idx % yearColors.length],
+            borderColor: color,
             borderWidth: 2,
             fill: false,
-            pointRadius: 2,
+            pointRadius: ptRadii,
+            pointBackgroundColor: ptBg,
+            pointBorderColor: ptBorder,
             tension: 0.3,
             spanGaps: true
           });
+          // Optional: dashed clean "smoothed" trend so the eye skips spikes.
+          if (smoothVals.some(function (v) { return v !== null; })) {
+            datasets.push({
+              label: res.year + ' (сглаженное)',
+              data: smoothVals,
+              borderColor: color,
+              borderDash: [4, 4],
+              borderWidth: 1.5,
+              fill: false,
+              pointRadius: 0,
+              tension: 0.3,
+              spanGaps: true,
+              order: 20
+            });
+          }
         });
 
         // Dashed extension line for farmland chart (MODIS only)

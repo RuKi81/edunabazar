@@ -454,12 +454,12 @@ Endpoint'ы с агрегатами раньше делали 3–4 отдель
 
 | Индекс | Таблица | Определение |
 |---|---|---|
-| `idx_vi_ndvi_farm_date` | `agro_vegetation_index` | Partial на `(farmland_id, acquired_date)` WHERE `index_type='ndvi' AND is_anomaly=false` |
+| `idx_vi_ndvi_farm_date` | `agro_vegetation_index` | Partial на `(farmland_id, acquired_date)` WHERE `index_type='ndvi' AND is_outlier=false` |
 | `idx_scene_sat_date` | `agro_satellite_scene` | Composite на `(satellite, acquired_date)` |
 
 Partial-индекс выигрывает за счёт того, что в реальной выборке
 практически всегда фигурируют условия `index_type='ndvi'` и
-`is_anomaly=false` — отфильтрованный срез получается в разы меньше
+`is_outlier=false` — отфильтрованный срез получается в разы меньше
 полной таблицы.
 
 ### 14.5 Мониторинг (TODO)

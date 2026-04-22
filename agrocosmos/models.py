@@ -131,7 +131,13 @@ class VegetationIndex(models.Model):
     pixel_count = models.IntegerField(default=0, verbose_name='Кол-во пикселей')
     valid_pixel_count = models.IntegerField(default=0, verbose_name='Валидных пикселей')
 
-    is_anomaly = models.BooleanField(default=False, verbose_name='Аномалия (выброс)')
+    # ``is_outlier`` — spike in the time series (snow, cloud haze, SCL mask
+    # bleed-through). Excluded before Savitzky-Golay smoothing. This is NOT a
+    # biological anomaly — real vegetation alerts live in a separate model.
+    is_outlier = models.BooleanField(
+        default=False,
+        verbose_name='Выброс (снег/облако, исключён из сглаживания)',
+    )
     mean_smooth = models.FloatField(null=True, blank=True, verbose_name='NDVI сглаженное')
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -146,12 +152,12 @@ class VegetationIndex(models.Model):
             models.Index(fields=['farmland', 'index_type', 'acquired_date']),
             models.Index(fields=['acquired_date', 'index_type']),
             # Partial index covering the hot dashboard/report path:
-            # WHERE index_type='ndvi' AND is_anomaly=false, grouped by date/farmland.
-            # ~95% of rows satisfy is_anomaly=false, so the partial index
+            # WHERE index_type='ndvi' AND is_outlier=false, grouped by date/farmland.
+            # ~95% of rows satisfy is_outlier=false, so the partial index
             # is roughly the same size as a full one but skips the filter step.
             models.Index(
                 fields=['farmland', 'acquired_date'],
-                condition=models.Q(index_type='ndvi', is_anomaly=False),
+                condition=models.Q(index_type='ndvi', is_outlier=False),
                 name='vi_ndvi_active_idx',
             ),
         ]

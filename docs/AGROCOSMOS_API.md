@@ -96,7 +96,7 @@ NDVI time series одного поля.
 {
   "ok": true,
   "data": [
-    {"date": "2025-06-10", "mean_ndvi": 0.72, "is_anomaly": false}
+    {"date": "2025-06-10", "mean": 0.72, "mean_smooth": 0.71, "is_outlier": false}
   ],
   "last_period_end": "2025-06-18"
 }
