@@ -344,6 +344,80 @@ class PipelineRun(models.Model):
         return '—'
 
 
+class AgroSubscription(models.Model):
+    """Подписка пользователя кабинета на уведомления по региону/району.
+
+    ``legacy_user_id`` ссылается на ``legacy_user.id`` (unmanaged модель),
+    поэтому хранится как integer без FK-constraint — Django не умеет
+    строить миграции к managed=False моделям.
+
+    Одна подписка охватывает **либо регион целиком** (``district=NULL``),
+    **либо один район** внутри региона (``district`` заполнен,
+    ``region`` — для удобства выборки).
+
+    Флаги:
+        - ``notify_anomalies`` — слать email при появлении/эскалации
+          ``VegetationAlert`` на угодьях в этом scope.
+        - ``notify_updates`` — слать email при появлении свежих
+          ``VegetationIndex`` записей (ежедневный дайджест, см.
+          команду ``send_agrocosmos_updates``).
+    """
+
+    legacy_user_id = models.IntegerField(
+        verbose_name='Пользователь (legacy_user.id)',
+    )
+    region = models.ForeignKey(
+        Region, on_delete=models.CASCADE, null=True, blank=True,
+        related_name='agro_subscriptions',
+        verbose_name='Субъект',
+    )
+    district = models.ForeignKey(
+        District, on_delete=models.CASCADE, null=True, blank=True,
+        related_name='agro_subscriptions',
+        verbose_name='Район',
+    )
+    notify_anomalies = models.BooleanField(
+        default=True, verbose_name='Уведомлять об аномалиях',
+    )
+    notify_updates = models.BooleanField(
+        default=False, verbose_name='Получать уведомления об обновлениях',
+    )
+    last_update_notified_at = models.DateTimeField(
+        null=True, blank=True,
+        verbose_name='Когда последний раз отправлен дайджест обновлений',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'agro_subscription'
+        ordering = ['region__name', 'district__name']
+        verbose_name = 'Подписка на уведомления'
+        verbose_name_plural = 'Подписки на уведомления'
+        constraints = [
+            # A subscription must scope to something.
+            models.CheckConstraint(
+                check=models.Q(region__isnull=False) | models.Q(district__isnull=False),
+                name='agrosub_scope_required',
+            ),
+            # One row per (user, region, district) cell.
+            models.UniqueConstraint(
+                fields=['legacy_user_id', 'region', 'district'],
+                name='agrosub_unique_scope',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['legacy_user_id']),
+            models.Index(fields=['region', 'district']),
+        ]
+
+    def __str__(self):
+        scope = self.district.name if self.district_id else (
+            self.region.name if self.region_id else '—'
+        )
+        return f'user={self.legacy_user_id} / {scope}'
+
+
 class VegetationAlert(models.Model):
     """Предупреждение о проблеме с вегетацией на конкретном угодье.
 

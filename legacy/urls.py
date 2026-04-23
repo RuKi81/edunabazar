@@ -3,6 +3,16 @@ from django.views.generic import RedirectView
 
 from . import views
 
+
+def _import_me_agrocosmos():
+    """Lazy import — agrocosmos app depends on legacy (helpers), so we
+    can't import it at module scope without risking a circular import
+    during Django's ``setup()``.
+    """
+    from agrocosmos.views import me_agrocosmos
+    return me_agrocosmos
+
+
 urlpatterns = [
     path('', views.home, name='home'),
     path('about/', views.about, name='about'),
@@ -43,6 +53,10 @@ urlpatterns = [
     path('logout/', views.legacy_logout, name='legacy_logout'),
     path('me/', views.legacy_me, name='legacy_me'),
     path('me/adverts/bulk/', views.legacy_me_bulk_adverts, name='legacy_me_bulk_adverts'),
+    # Agrocosmos subscriptions — lives here because all /me/* URLs are registered
+    # in legacy.urls; the view itself lives in agrocosmos.views.cabinet.
+    path('me/agrocosmos/', _import_me_agrocosmos(),
+         name='legacy_me_agrocosmos'),
     path('change-password/', views.change_password, name='change_password'),
 
     path('messages/', views.messages_inbox, name='messages_inbox'),

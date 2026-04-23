@@ -39,6 +39,7 @@ from .reports import (
     api_report_district,
     _ndvi_assessment,
 )
+from .cabinet import me_agrocosmos
 
 __all__ = [
     # constants
@@ -54,6 +55,8 @@ __all__ = [
     'api_raster_composites',
     # reports
     'api_report_region', 'api_report_district',
+    # cabinet
+    'me_agrocosmos',
     # private helpers (exported for tests / legacy callers)
     '_satellite_filter', '_safe_round', '_get_legacy_user',
     '_tile_bbox', '_ndvi_assessment',

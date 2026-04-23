@@ -1,0 +1,170 @@
+{% extends 'legacy/base.html' %}
+{% load static %}
+
+{% block title %}Агрокосмос — подписки{% endblock %}
+
+{% block content %}
+<h1 style="margin-bottom: 8px;">🌱 Агрокосмос — подписки на уведомления</h1>
+<p style="color:#616161; margin-top: 0;">
+  Получайте email-уведомления о вегетационных аномалиях и появлении новых
+  данных NDVI по выбранным субъектам и районам.
+</p>
+
+<div style="margin-bottom: 16px;">
+  <a href="{% url 'legacy_me' %}" class="btn-flat">← Профиль</a>
+</div>
+
+{% if messages %}
+  {% for m in messages %}
+    <div class="card-panel" style="padding: 10px;
+      background: {% if m.tags == 'success' %}#e8f5e9{% elif m.tags == 'warning' %}#fff8e1{% else %}#ffebee{% endif %};
+      color: {% if m.tags == 'success' %}#2e7d32{% elif m.tags == 'warning' %}#795548{% else %}#c62828{% endif %};">
+      {{ m }}
+    </div>
+  {% endfor %}
+{% endif %}
+
+<style>
+  .agro-sub-table { width:100%; border-collapse: collapse; font-size: 14px; }
+  .agro-sub-table th, .agro-sub-table td { padding: 8px; border-bottom: 1px solid #eee; text-align: left; }
+  .agro-sub-table th { background: #f5f5f5; font-weight: 600; }
+  .agro-sub-form input[type="checkbox"] { margin-right: 6px; }
+  .agro-sub-form label { display: inline-flex; align-items: center; margin-right: 16px; }
+  .agro-sub-add { background: #f9f9f9; border: 1px solid #ddd; padding: 14px; border-radius: 4px; margin-bottom: 20px; }
+  .agro-sub-add .row { margin-bottom: 8px; }
+  .agro-sub-add select { display: block; }
+  .agro-sub-hint { color:#888; font-size: 12px; }
+</style>
+
+<!-- Add new subscription -->
+<div class="agro-sub-add">
+  <h5 style="margin-top:0;">Добавить подписку</h5>
+  <form method="post" class="agro-sub-form">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="add">
+    <div class="row">
+      <div class="col s12 m6">
+        <label for="add-region" class="active">Субъект</label>
+        <select name="region" id="add-region" class="browser-default">
+          <option value="">— не выбрано —</option>
+          {% for r in regions %}
+            <option value="{{ r.id }}">{{ r.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col s12 m6">
+        <label for="add-district" class="active">Район (необязательно)</label>
+        <select name="district" id="add-district" class="browser-default">
+          <option value="">— весь субъект —</option>
+          {% for d in districts %}
+            <option value="{{ d.id }}" data-region="{{ d.region_id }}">
+              {{ d.name }} ({{ d.region__name }})
+            </option>
+          {% endfor %}
+        </select>
+        <div class="agro-sub-hint">Если не выбрать, подписка на весь субъект.</div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col s12">
+        <label>
+          <input type="checkbox" name="notify_anomalies" value="1" checked class="filled-in">
+          <span>Уведомлять об аномалиях (алерты NDVI)</span>
+        </label>
+        <label style="margin-left: 20px;">
+          <input type="checkbox" name="notify_updates" value="1" class="filled-in">
+          <span>Получать уведомления при обновлении графика</span>
+        </label>
+      </div>
+    </div>
+
+    <button class="btn" type="submit">Добавить</button>
+  </form>
+</div>
+
+<!-- Existing subscriptions -->
+<h5>Мои подписки</h5>
+{% if subscriptions %}
+  <table class="agro-sub-table">
+    <thead>
+      <tr>
+        <th>Scope</th>
+        <th>Аномалии</th>
+        <th>Обновления</th>
+        <th>Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in subscriptions %}
+      <tr>
+        <td>
+          {% if s.district_id %}
+            <strong>{{ s.district.name }}</strong>
+            <span style="color:#888; font-size:12px;">({{ s.district.region.name }})</span>
+          {% else %}
+            <strong>{{ s.region.name }}</strong>
+            <span style="color:#888; font-size:12px;">— весь субъект</span>
+          {% endif %}
+        </td>
+        <td colspan="2">
+          <form method="post" class="agro-sub-form" style="display:flex; gap:8px; align-items:center;">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="update">
+            <input type="hidden" name="subscription_id" value="{{ s.pk }}">
+            <label>
+              <input type="checkbox" name="notify_anomalies" value="1"
+                     {% if s.notify_anomalies %}checked{% endif %} class="filled-in">
+              <span>аномалии</span>
+            </label>
+            <label>
+              <input type="checkbox" name="notify_updates" value="1"
+                     {% if s.notify_updates %}checked{% endif %} class="filled-in">
+              <span>обновления</span>
+            </label>
+            <button class="btn-flat btn-small" type="submit">Сохранить</button>
+          </form>
+        </td>
+        <td>
+          <form method="post" style="display:inline;"
+                onsubmit="return confirm('Удалить подписку?');">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="delete">
+            <input type="hidden" name="subscription_id" value="{{ s.pk }}">
+            <button class="btn-flat btn-small" type="submit" style="color:#c62828;">Удалить</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <p style="color:#888;">У вас пока нет подписок. Добавьте первую выше.</p>
+{% endif %}
+
+<script>
+(function() {
+  // Filter district dropdown by currently selected region.
+  var regionSel = document.getElementById('add-region');
+  var districtSel = document.getElementById('add-district');
+  if (!regionSel || !districtSel) return;
+  var allOpts = Array.from(districtSel.querySelectorAll('option'));
+
+  function filter() {
+    var rid = regionSel.value;
+    districtSel.innerHTML = '';
+    allOpts.forEach(function(opt) {
+      if (!opt.value) {
+        districtSel.appendChild(opt.cloneNode(true));
+        return;
+      }
+      if (!rid || opt.getAttribute('data-region') === rid) {
+        districtSel.appendChild(opt.cloneNode(true));
+      }
+    });
+  }
+  regionSel.addEventListener('change', filter);
+  filter();
+})();
+</script>
+{% endblock %}

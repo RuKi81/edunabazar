@@ -15,7 +15,7 @@ from django.utils import timezone
 from django.utils.html import format_html
 
 from .models import (
-    District, Farmland, GeeApiMetric, MonitoringTask, PipelineRun,
+    AgroSubscription, District, Farmland, GeeApiMetric, MonitoringTask, PipelineRun,
     Region, SatelliteScene, VegetationAlert, VegetationIndex,
 )
 
@@ -82,6 +82,16 @@ class VegetationAlertAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return False  # managed by detect_vegetation_alerts command
+
+
+@admin.register(AgroSubscription)
+class AgroSubscriptionAdmin(admin.ModelAdmin):
+    """User subscriptions for Agrocosmos email notifications."""
+    list_display = ('id', 'legacy_user_id', 'region', 'district',
+                    'notify_anomalies', 'notify_updates', 'last_update_notified_at')
+    list_filter = ('notify_anomalies', 'notify_updates', 'region')
+    search_fields = ('legacy_user_id',)
+    autocomplete_fields = ('region', 'district')
 
 
 @admin.register(GeeApiMetric)
