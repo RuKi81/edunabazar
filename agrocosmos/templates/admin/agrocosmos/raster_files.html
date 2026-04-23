@@ -1,0 +1,126 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block breadcrumbs %}
+  <div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">Главная</a> &rsaquo;
+    <a href="{% url 'admin:agro_panel' %}">Агрокосмос</a> &rsaquo;
+    <a href="{% url 'admin:agro_rasters' %}">Растры</a> &rsaquo;
+    {{ sensor|upper }} / {{ scope }} / {{ year }}
+  </div>
+{% endblock %}
+
+{% block content %}
+<style>
+  .rf-page { max-width: 1200px; }
+  .rf-section { background: #fff; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 20px; overflow: hidden; }
+  .rf-section h2 { background: #417690; color: #fff; margin: 0; padding: 8px 14px; font-size: 14px; font-weight: 600; }
+  .rf-section .body { padding: 16px; }
+  table.rf-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.rf-tbl th, table.rf-tbl td { padding: 5px 8px; border-bottom: 1px solid #eee; text-align: left; }
+  table.rf-tbl th { background: #f5f5f5; font-weight: 600; }
+  table.rf-tbl td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .btn { padding: 6px 12px; border: 1px solid #ccc; border-radius: 3px;
+         background: #f8f8f8; font-size: 13px; cursor: pointer; text-decoration: none; color: #333; }
+  .btn-danger { background: #b91c1c; color: #fff; border-color: #991b1b; }
+  .btn-danger:hover { background: #991b1b; }
+  .rf-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  .rf-pager { display: flex; gap: 6px; align-items: center; font-size: 13px; margin-top: 10px; }
+  .rf-pager a { padding: 4px 8px; border: 1px solid #ccc; border-radius: 3px; text-decoration: none; color: #333; }
+  .rf-pager .current { background: #417690; color: #fff; border-color: #2f5771; padding: 4px 8px; border-radius: 3px; }
+</style>
+
+<div class="rf-page">
+
+<div class="rf-section">
+  <h2>📁 {{ sensor|upper }} / scope={{ scope }} / {{ year }} — {{ total_count }} файлов, {{ total_mb|floatformat:1 }} МБ</h2>
+  <div class="body">
+    {% if page.object_list %}
+    <form method="post" onsubmit="return confirm('Удалить выбранные файлы? Действие необратимо.');">
+      {% csrf_token %}
+      <input type="hidden" name="return_query" value="{{ return_query }}">
+
+      <div class="rf-toolbar">
+        <label><input type="checkbox" id="toggle-all"> выбрать все на странице</label>
+        <label style="margin-left: 12px;">
+          выбрать старше
+          <input type="number" id="older-than-days" min="0" value="365" style="width: 70px;"> дней
+          <button type="button" class="btn" id="apply-age-filter">применить</button>
+        </label>
+        <button type="submit" class="btn btn-danger" style="margin-left: auto;">
+          🗑 Удалить выбранные
+        </button>
+      </div>
+
+      <table class="rf-tbl">
+        <thead>
+          <tr>
+            <th style="width: 30px;"></th>
+            <th>Файл</th>
+            <th>date_from</th>
+            <th>date_to</th>
+            <th class="num">МБ</th>
+            <th class="num">Возраст (дн)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in page.object_list %}
+          <tr>
+            <td><input type="checkbox" name="paths" class="file-chk" value="{{ f.path }}"
+                       data-age="{{ f.age_days|default:0 }}"></td>
+            <td><code style="font-size: 11px;">{{ f.name }}</code></td>
+            <td>{{ f.date_from|default:"—" }}</td>
+            <td>{{ f.date_to|default:"—" }}</td>
+            <td class="num">{{ f.size_mb|floatformat:1 }}</td>
+            <td class="num">{{ f.age_days|default:"—" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      {% if page.paginator.num_pages > 1 %}
+      <div class="rf-pager">
+        страница
+        {% if page.has_previous %}
+          <a href="?sensor={{ sensor }}&scope={{ scope }}&year={{ year }}&page={{ page.previous_page_number }}">← пред</a>
+        {% endif %}
+        <span class="current">{{ page.number }} / {{ page.paginator.num_pages }}</span>
+        {% if page.has_next %}
+          <a href="?sensor={{ sensor }}&scope={{ scope }}&year={{ year }}&page={{ page.next_page_number }}">след →</a>
+        {% endif %}
+        <span style="margin-left: 10px; color: #888;">по 100 на страницу</span>
+      </div>
+      {% endif %}
+    </form>
+    {% else %}
+    <p style="color: #888;">Файлов не найдено.</p>
+    {% endif %}
+  </div>
+</div>
+
+</div>
+
+<script>
+(function() {
+  var toggle = document.getElementById('toggle-all');
+  if (toggle) {
+    toggle.addEventListener('change', function() {
+      document.querySelectorAll('.file-chk').forEach(function(cb) { cb.checked = toggle.checked; });
+    });
+  }
+  var applyBtn = document.getElementById('apply-age-filter');
+  if (applyBtn) {
+    applyBtn.addEventListener('click', function() {
+      var threshold = parseInt(document.getElementById('older-than-days').value, 10);
+      if (isNaN(threshold)) return;
+      document.querySelectorAll('.file-chk').forEach(function(cb) {
+        var age = parseInt(cb.getAttribute('data-age'), 10);
+        cb.checked = !isNaN(age) && age >= threshold;
+      });
+    });
+  }
+})();
+</script>
+{% endblock %}

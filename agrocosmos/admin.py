@@ -175,6 +175,12 @@ class AgrocosmosAdminSite:
             path('agrocosmos/run-status/<int:run_id>/',
                  admin.site.admin_view(run_status_view),
                  name='agro_run_status'),
+            path('agrocosmos/rasters/',
+                 admin.site.admin_view(agro_rasters_view),
+                 name='agro_rasters'),
+            path('agrocosmos/rasters/files/',
+                 admin.site.admin_view(agro_raster_files_view),
+                 name='agro_raster_files'),
         ]
 
 
@@ -703,6 +709,93 @@ def run_status_view(request, run_id: int):
         'records_count': run.records_count,
         'duration': run.duration,
         'tail': tail[-8000:],
+    })
+
+
+# ── Raster storage management ──────────────────────────────────────
+
+def agro_rasters_view(request):
+    """Folder-level summary of on-disk rasters with bulk-delete by folder.
+
+    POST handler: ``folders`` = list of ``sensor:scope:year`` tokens — deletes
+    every file within those folders.  GET renders the summary table.
+    """
+    from .services import raster_storage
+
+    if request.method == 'POST':
+        tokens = request.POST.getlist('folders')
+        paths: list[str] = []
+        for tok in tokens:
+            try:
+                sensor, scope, year = tok.split(':')
+            except ValueError:
+                continue
+            for f in raster_storage.list_files(sensor, scope, year):
+                paths.append(f.path)
+        removed, freed = raster_storage.delete_paths(paths)
+        messages.success(
+            request,
+            f'Удалено файлов: {removed} ({freed/1e6:.1f} МБ) из {len(tokens)} папок.',
+        )
+        return redirect('admin:agro_rasters')
+
+    folders = raster_storage.list_folders()
+    totals = raster_storage.totals_by_sensor()
+    grand_size = sum(t['size_bytes'] for t in totals.values())
+    grand_count = sum(t['count'] for t in totals.values())
+
+    return render(request, 'admin/agrocosmos/rasters.html', {
+        **admin.site.each_context(request),
+        'title': 'Растры — хранилище и очистка',
+        'folders': folders,
+        'totals': totals,
+        'grand_size_gb': round(grand_size / 1e9, 2),
+        'grand_count': grand_count,
+    })
+
+
+def agro_raster_files_view(request):
+    """File-level list for a single folder with checkbox bulk-delete.
+
+    GET params: ``sensor``, ``scope``, ``year``, ``page`` (1-based, 100 per page).
+    POST: ``paths`` = list of absolute file paths to delete.
+    """
+    from django.core.paginator import Paginator
+    from .services import raster_storage
+
+    if request.method == 'POST':
+        paths = request.POST.getlist('paths')
+        removed, freed = raster_storage.delete_paths(paths)
+        messages.success(
+            request,
+            f'Удалено файлов: {removed} ({freed/1e6:.1f} МБ).',
+        )
+        qs = request.POST.get('return_query', '')
+        return redirect(f'{request.path}?{qs}' if qs else 'admin:agro_rasters')
+
+    sensor = request.GET.get('sensor', '')
+    scope = request.GET.get('scope', '')
+    year = request.GET.get('year', '')
+    if sensor not in raster_storage.SENSORS or not scope or not year:
+        messages.error(request, 'Укажите sensor, scope, year в URL.')
+        return redirect('admin:agro_rasters')
+
+    files = raster_storage.list_files(sensor, scope, year)
+    paginator = Paginator(files, 100)
+    page_num = request.GET.get('page') or 1
+    page = paginator.get_page(page_num)
+
+    total_size = sum(f.size_bytes for f in files)
+    return render(request, 'admin/agrocosmos/raster_files.html', {
+        **admin.site.each_context(request),
+        'title': f'Растры — {sensor.upper()} / {scope} / {year}',
+        'sensor': sensor,
+        'scope': scope,
+        'year': year,
+        'page': page,
+        'total_count': len(files),
+        'total_mb': round(total_size / 1e6, 1),
+        'return_query': request.GET.urlencode(),
     })
 
 

@@ -27,26 +27,21 @@ Usage::
     python manage.py cleanup_rasters --sensor s2
     python manage.py cleanup_rasters --dry-run           # list only
 
-Safe to run daily; idempotent.  Wired into CI cron via
-``.github/workflows/ci.yml``.
+Safe to run daily; idempotent.  Typically invoked manually from the
+admin panel at ``/admin/agrocosmos/rasters/`` (preferred) or via SSH
+for ad-hoc cleanup.  No cron wiring — we want visibility before
+deletion.
 """
-import os
-import re
 from datetime import date, timedelta
 from pathlib import Path
 
-from django.conf import settings
 from django.core.management.base import BaseCommand
 
-
-SENSORS = {
-    's2':     {'env': 'S2_RASTER_DIR',      'default': '/data/s2',      'prefix': 's2_ndvi'},
-    'l8':     {'env': 'LANDSAT_RASTER_DIR', 'default': '/data/landsat', 'prefix': 'landsat_ndvi'},
-    'modis':  {'env': 'MODIS_RASTER_DIR',   'default': '/data/modis',   'prefix': 'modis_ndvi'},
-}
-
-# Captures trailing "_YYYY-MM-DD_YYYY-MM-DD" before ".tif".
-_DATE_RE = re.compile(r'_(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})\.tif$')
+from agrocosmos.services.raster_storage import (
+    DATE_RE as _DATE_RE,
+    SENSORS,
+    sensor_root,
+)
 
 
 class Command(BaseCommand):
@@ -81,7 +76,7 @@ class Command(BaseCommand):
 
         for sensor in targets:
             cfg = SENSORS[sensor]
-            root = Path(os.environ.get(cfg['env'], getattr(settings, cfg['env'], cfg['default'])))
+            root = sensor_root(sensor)
             if not root.exists():
                 self.stdout.write(f'  [{sensor}] {root} — not present, skip')
                 continue
