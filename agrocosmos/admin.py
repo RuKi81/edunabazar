@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
 import threading
 from datetime import date
 from pathlib import Path
@@ -578,71 +576,58 @@ def _pipeline_log_dir() -> Path:
     return d
 
 
-def _launch_ndvi_pipeline_detached(
+def _enqueue_ndvi_pipeline(
     *, run_id: int, region_id: int, district_id: int | None, year: int,
     min_valid: float, overwrite: bool, rebuild_fusion: bool,
     date_from: str | None = None, date_to: str | None = None,
-) -> tuple[int, str]:
-    """Spawn ``run_ndvi_pipeline`` as a fully detached child process.
+) -> str:
+    """Build the ``launch_args`` dict for the NDVI worker and create the
+    per-run log file.
 
-    Returns ``(pid, log_file_path)``. The child survives gunicorn worker
-    recycling because we start it in a new session (POSIX) / new process
-    group (Windows) with stdio redirected to a file on disk.
+    The actual pipeline is executed by the separate ``worker`` container
+    (see ``run_ndvi_worker`` management command) — the web process only
+    puts the request into the database and returns. This decouples long
+    pipelines from the web container's lifecycle (deploys, healthcheck
+    restarts, gunicorn recycling).
     """
     log_dir = _pipeline_log_dir()
     log_path = log_dir / f'run_{run_id}.log'
-
-    cmd = [
-        sys.executable, 'manage.py', 'run_ndvi_pipeline',
-        '--run-id', str(run_id),
-        '--year', str(year),
-        '--min-valid', f'{min_valid:.3f}',
-    ]
-    if district_id:
-        cmd += ['--district-id', str(district_id)]
-    else:
-        cmd += ['--region-id', str(region_id)]
-    if overwrite:
-        cmd.append('--overwrite')
-    if rebuild_fusion:
-        cmd.append('--fusion')
-    if date_from:
-        cmd += ['--date-from', date_from]
-    if date_to:
-        cmd += ['--date-to', date_to]
-
-    env = os.environ.copy()
-    env.setdefault('PYTHONUNBUFFERED', '1')
-
-    # Detach: new session/group so SIGHUP from gunicorn doesn't kill us.
-    popen_kwargs: dict = {
-        'cwd': str(getattr(settings, 'BASE_DIR', '.')),
-        'env': env,
-        'stdin': subprocess.DEVNULL,
-        'close_fds': True,
-    }
-    if os.name == 'posix':
-        popen_kwargs['start_new_session'] = True
-    else:   # Windows
-        popen_kwargs['creationflags'] = (
-            getattr(subprocess, 'DETACHED_PROCESS', 0x00000008) |
-            getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0x00000200)
-        )
-
-    log_f = open(log_path, 'ab', buffering=0)
+    # Pre-create the log file so admin polling / tail -f work immediately.
     try:
-        proc = subprocess.Popen(
-            cmd, stdout=log_f, stderr=subprocess.STDOUT, **popen_kwargs,
-        )
-    finally:
-        # The child inherits the fd; we can safely close ours.
-        log_f.close()
+        log_path.touch(exist_ok=True)
+    except OSError:
+        pass
+
+    launch_args: dict = {
+        'year': year,
+        'min_valid': float(f'{min_valid:.3f}'),
+        'overwrite': bool(overwrite),
+        'fusion': bool(rebuild_fusion),
+        'skip_s2': False,
+        'skip_l8': False,
+    }
+    if district_id:
+        launch_args['district_id'] = int(district_id)
+    else:
+        launch_args['region_id'] = int(region_id)
+    if date_from:
+        launch_args['date_from'] = str(date_from)
+    if date_to:
+        launch_args['date_to'] = str(date_to)
+
+    run = PipelineRun.objects.filter(pk=run_id).first()
+    if run is not None:
+        run.status = PipelineRun.Status.QUEUED
+        run.launch_args = launch_args
+        run.log_file = str(log_path)
+        run.heartbeat_at = timezone.now()
+        run.save(update_fields=['status', 'launch_args', 'log_file', 'heartbeat_at'])
 
     logger.info(
-        'NDVI pipeline detached: run_id=%s pid=%s log=%s',
-        run_id, proc.pid, log_path,
+        'NDVI pipeline queued: run_id=%s log=%s args=%s',
+        run_id, log_path, launch_args,
     )
-    return proc.pid, str(log_path)
+    return str(log_path)
 
 
 def run_raster_view(request):
@@ -685,7 +670,7 @@ def run_raster_view(request):
         task_type='raster_ndvi',
         region=region,
         year=year,
-        status='running',
+        status=PipelineRun.Status.QUEUED,
         description=(
             f'{region.name}{district_name}, {year} год '
             f'(S2+L8, valid≥{min_valid:.0%}){flags_s}'
@@ -693,29 +678,25 @@ def run_raster_view(request):
     )
 
     try:
-        pid, log_path = _launch_ndvi_pipeline_detached(
+        log_path = _enqueue_ndvi_pipeline(
             run_id=run.pk, region_id=int(region_id), district_id=did,
             year=year, min_valid=min_valid,
             overwrite=overwrite, rebuild_fusion=rebuild_fusion,
         )
-        run.pid = pid
-        run.log_file = log_path
-        run.heartbeat_at = timezone.now()
-        run.save(update_fields=['pid', 'log_file', 'heartbeat_at'])
     except Exception as exc:
-        logger.exception('failed to launch NDVI pipeline subprocess')
-        run.status = 'failed'
-        run.log = f'Ошибка запуска подпроцесса: {exc}'
+        logger.exception('failed to enqueue NDVI pipeline run')
+        run.status = PipelineRun.Status.FAILED
+        run.log = f'Ошибка постановки в очередь: {exc}'
         run.finished_at = timezone.now()
         run.save()
-        messages.error(request, f'Не удалось запустить пайплайн: {exc}')
+        messages.error(request, f'Не удалось поставить пайплайн в очередь: {exc}')
         return redirect('admin:agro_panel')
 
     messages.success(
         request,
-        f'Загрузка S2+L8 NDVI запущена (run #{run.pk}, pid={pid}): '
+        f'Загрузка S2+L8 NDVI поставлена в очередь (run #{run.pk}): '
         f'{region.name}{district_name}, {year} (min_valid={min_valid:.0%})'
-        f'{flags_s}. Процесс в фоне (~1-3 ч для S2). '
+        f'{flags_s}. Воркер подхватит в течение нескольких секунд. '
         f'Обновляйте страницу для прогресса.'
     )
     return redirect('admin:agro_panel')

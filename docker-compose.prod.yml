@@ -42,6 +42,36 @@ services:
       retries: 3
       start_period: 15s
 
+  # Long-running NDVI pipeline worker.
+  # Lives in its own container so deploys / healthcheck restarts of `web`
+  # don't kill multi-hour S2+L8 downloads. Picks up PipelineRun rows with
+  # status='queued' and runs them via the run_ndvi_pipeline command.
+  worker:
+    build: .
+    restart: always
+    command: ["python", "manage.py", "run_ndvi_worker", "--poll-sec", "5"]
+    env_file:
+      - .env
+    environment:
+      DB_HOST: ${DB_HOST:-10.0.0.11}
+      DB_PORT: ${DB_PORT:-5432}
+      DJANGO_DEBUG: "0"
+      REDIS_URL: redis://redis:6379/0
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./media:/app/media
+      - ./logs:/app/logs
+      - modis_data:/data/modis
+      - s2_data:/data/s2
+      - landsat_data:/data/landsat
+      - ./gee-key.json:/app/gee-key.json:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    # Give the worker a generous grace period for SIGTERM so the inner
+    # pipeline has time to flip its PipelineRun row to 'failed' cleanly.
+    stop_grace_period: 30s
+
   nginx:
     image: nginx:1.27-alpine
     restart: always
