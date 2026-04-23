@@ -193,6 +193,7 @@
             {% endfor %}
             </tbody>
           </table>
+          {% include 'legacy/_cabinet_pagination.html' with page=my_page paginator=my_paginator page_param='page_my' hash_anchor='#adverts' %}
         {% endif %}
         </section>
       {% endif %}
@@ -324,6 +325,7 @@
                 {% endfor %}
                 </tbody>
               </table>
+              {% include 'legacy/_cabinet_pagination.html' with page=admin_page paginator=admin_paginator page_param='page_admin' extra_qs='status='|add:admin_filter_status|add:'&sort='|add:admin_filter_sort|add:'&' hash_anchor='#adverts' %}
             {% endif %}
         </section>
       {% endif %}

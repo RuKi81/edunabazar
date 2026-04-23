@@ -26,9 +26,9 @@
     .agro-scope-pill--region { background: #e3f2fd; color: #1565c0; }
 
     /* ── Plain, reliably-aligned checkboxes (override Materialize quirks) ── */
-    .agro-check-row { display: flex; flex-wrap: wrap; gap: 22px 28px; margin: 4px 0 6px; }
+    .agro-check-row { display: flex; flex-wrap: wrap; gap: 14px 28px; margin: 4px 0 6px; }
     .agro-check {
-      display: inline-flex; align-items: center; gap: 8px;
+      display: inline-flex; align-items: center; gap: 10px;
       cursor: pointer; font-size: 14px; color: var(--cab-text);
       margin: 0; padding: 0; line-height: 1.3;
     }
@@ -42,10 +42,41 @@
       accent-color: var(--cab-accent);
       flex: 0 0 18px;
     }
-    .agro-check span { line-height: 1.3; }
+    /* Kill Materialize's decorative span::before/::after checkbox ghost */
+    .agro-check input[type="checkbox"] + span:not(.lever) {
+      padding-left: 0 !important;
+      position: static !important;
+      line-height: 1.3;
+    }
+    .agro-check input[type="checkbox"] + span:not(.lever)::before,
+    .agro-check input[type="checkbox"] + span:not(.lever)::after {
+      display: none !important;
+      content: none !important;
+      border: 0 !important;
+      background: transparent !important;
+    }
 
-    .agro-section-title { margin: 28px 0 12px 0; font-size: 15px; font-weight: 600; color: var(--cab-text); }
+    /* Unified typography inside agrocosmos cabinet */
+    .agro-section-title {
+      margin: 28px 0 14px 0;
+      font-size: 14px; font-weight: 600;
+      color: var(--cab-text);
+      text-transform: uppercase; letter-spacing: 0.5px;
+    }
     .agro-section-title:first-child { margin-top: 0; }
+
+    .agro-sub-add label[for] {
+      display: block;
+      font-size: 11px; font-weight: 600;
+      color: var(--cab-muted);
+      text-transform: uppercase; letter-spacing: 0.5px;
+      margin-bottom: 6px;
+      position: static; transform: none;
+    }
+    .agro-sub-add select.browser-default {
+      height: 40px; font-size: 14px;
+      border-color: var(--cab-border);
+    }
   </style>
 {% endblock %}
 

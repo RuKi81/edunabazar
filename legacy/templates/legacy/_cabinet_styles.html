@@ -60,13 +60,11 @@
     font-size: 14px; font-weight: 500;
     text-decoration: none;
     transition: background 0.12s ease, color 0.12s ease;
-    border-left: 3px solid transparent;
   }
   .cab-nav-item:hover { background: #f3f4f6; color: var(--cab-text); }
   .cab-nav-item.active {
     background: var(--cab-accent-soft);
     color: var(--cab-accent);
-    border-left-color: var(--cab-accent);
     font-weight: 600;
   }
   .cab-nav-icon { font-size: 18px; width: 22px; text-align: center; line-height: 1; }
@@ -120,6 +118,27 @@
     border: 1px solid var(--cab-border); border-radius: 8px; overflow: hidden;
   }
   #me_map { height: 260px; }
+
+  /* Pagination */
+  .cab-pagination {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+    margin-top: 16px; padding-top: 12px;
+    border-top: 1px solid var(--cab-border);
+    font-size: 13px; color: var(--cab-muted);
+  }
+  .cab-pagination .cab-page-info { margin-right: auto; }
+  .cab-pagination a, .cab-pagination span.cab-page-cur {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 32px; height: 32px; padding: 0 10px;
+    border: 1px solid var(--cab-border); border-radius: 6px;
+    text-decoration: none; color: var(--cab-text);
+    background: #fff;
+  }
+  .cab-pagination a:hover { background: #f3f4f6; }
+  .cab-pagination span.cab-page-cur {
+    background: var(--cab-accent); color: #fff; border-color: var(--cab-accent); font-weight: 600;
+  }
+  .cab-pagination span.cab-page-gap { min-width: auto; padding: 0 6px; border: 0; background: transparent; }
 
   /* Adverts table: tighter & cleaner */
   .cab-section table.striped { font-size: 13px; }
