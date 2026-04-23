@@ -14,7 +14,7 @@ Menu items that live on the same page (/me/) use data-tab, so the JS on
       </div>
     </div>
 
-    <nav class="cab-nav">
+    <div class="cab-nav">
       {% if active_section == 'agrocosmos' %}
         <a href="{% url 'legacy_me' %}" class="cab-nav-item">
           <span class="cab-nav-icon">👤</span>
@@ -63,6 +63,6 @@ Menu items that live on the same page (/me/) use data-tab, so the JS on
         <span class="cab-nav-icon">⭐</span>
         <span>Отзывы обо мне</span>
       </a>
-    </nav>
+    </div>
   </div>
 </aside>
