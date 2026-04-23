@@ -284,6 +284,12 @@ VK_REDIRECT_URI = os.getenv('VK_REDIRECT_URI', 'https://edunabazar.ru/oauth/vk/c
 
 TEST_RUNNER = 'legacy.test_runner.UnmanagedModelTestRunner'
 
+# Base absolute URL of this site (used in outgoing emails, e.g. links
+# to NDVI reports from Agrocosmos notifications).  Override via env for
+# staging/preview hosts.
+SITE_URL = os.getenv('SITE_URL', 'https://edunabazar.ru')
+
+
 # ── Google Earth Engine client (agrocosmos/services/gee_client.py) ─────────
 # Self-policed rate limiting (no public quota API from GEE).
 GEE_CALLS_PER_MINUTE = int(os.getenv('GEE_CALLS_PER_MINUTE', '60'))

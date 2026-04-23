@@ -39,6 +39,7 @@
           </ul>
 
           <a href="{% url 'change_password' %}" class="btn-flat enb-btn-xs" style="margin-bottom:8px; display:inline-block;">🔑 Сменить пароль</a>
+          <a href="{% url 'legacy_me_agrocosmos' %}" class="btn-flat enb-btn-xs" style="margin-bottom:8px; display:inline-block;">🌱 Агрокосмос — подписки</a>
           {% if is_admin_cabinet %}
             <a href="{% url 'admin_campaigns' %}" class="btn-flat enb-btn-xs" style="margin-bottom:8px; display:inline-block;">📨 Email-рассылки</a>
             <a href="{% url 'admin_reviews' %}" class="btn-flat enb-btn-xs" style="margin-bottom:8px; display:inline-block;">⭐ Отзывы</a>

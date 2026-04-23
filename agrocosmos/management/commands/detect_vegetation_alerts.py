@@ -286,7 +286,15 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------
 
     def _reconcile(self, farmland, alert_type, detection, dry):
-        """Sync one (farmland, alert_type) cell against new detection."""
+        """Sync one (farmland, alert_type) cell against new detection.
+
+        Side effect: on newly-created alerts OR on severity escalation
+        (warning → critical), kicks off an email notification to all
+        ``AgroSubscription.notify_anomalies=True`` subscribers whose
+        scope covers this farmland.
+        """
+        from agrocosmos.services.notifications import send_anomaly_email
+
         existing = (
             VegetationAlert.objects
             .filter(farmland=farmland, alert_type=alert_type)
@@ -309,7 +317,7 @@ class Command(BaseCommand):
         # We have a detection.
         if existing is None:
             if not dry:
-                VegetationAlert.objects.create(
+                alert = VegetationAlert.objects.create(
                     farmland=farmland,
                     alert_type=alert_type,
                     severity=detection['severity'],
@@ -318,9 +326,14 @@ class Command(BaseCommand):
                     context=detection['context'],
                     message=detection['message'],
                 )
+                try:
+                    send_anomaly_email(alert)
+                except Exception:
+                    logger.exception('Failed to notify subscribers for alert #%s', alert.pk)
             return (1, 0, 0)
 
         # Update existing (same or escalated severity, newer observation).
+        prev_severity = existing.severity
         changed = False
         if existing.severity != detection['severity']:
             existing.severity = detection['severity']
@@ -339,5 +352,17 @@ class Command(BaseCommand):
             existing.save(update_fields=[
                 'severity', 'detected_on', 'context', 'message',
             ])
+            # Notify on escalation only (warning → critical), to avoid
+            # spamming the same subscribers every night for a slow-moving
+            # anomaly that's already been acknowledged.
+            escalated = (
+                prev_severity == VegetationAlert.Severity.WARNING
+                and existing.severity == VegetationAlert.Severity.CRITICAL
+            )
+            if escalated:
+                try:
+                    send_anomaly_email(existing)
+                except Exception:
+                    logger.exception('Failed to notify on escalation alert=%s', existing.pk)
 
         return (0, 1 if changed else 0, 0)
