@@ -26,6 +26,7 @@ Usage:
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import signal
@@ -125,24 +126,37 @@ class Command(BaseCommand):
         # Mirror stdout of the inner command to the per-run log file, so
         # ``tail -f logs/pipeline/run_<id>.log`` works exactly the same
         # way it did when the admin spawned a detached subprocess.
+        #
+        # ``run_ndvi_pipeline`` internally uses plain ``print(..., flush=True)``
+        # as well as nested ``call_command`` of stage sub-commands whose
+        # Django ``OutputWrapper`` grabs ``sys.stdout`` at construction time.
+        # To capture *all* of that we must redirect ``sys.stdout``/``stderr``
+        # at the interpreter level, not just pass ``stdout=`` to call_command.
         log_file_path = run.log_file or ''
         log_f = None
         if log_file_path:
             try:
                 os.makedirs(os.path.dirname(log_file_path) or '.', exist_ok=True)
-                log_f = open(log_file_path, 'ab', buffering=0)
+                # line-buffered text mode so ``tail -f`` sees updates live
+                log_f = open(log_file_path, 'a', encoding='utf-8',
+                             errors='replace', buffering=1)
             except OSError as exc:
                 self.stderr.write(f'[worker] cannot open log file {log_file_path}: {exc}')
                 log_f = None
 
-        # run_ndvi_pipeline accepts stdout/stderr via call_command kwargs.
+        redirect_ctx = (
+            contextlib.ExitStack()
+            if log_f is None
+            else _redirect_std_to(log_f)
+        )
+
         try:
             kwargs = dict(args)
             if log_f is not None:
-                # Wrap the binary file object so call_command can .write(str).
-                kwargs['stdout'] = _BinaryTextSink(log_f)
-                kwargs['stderr'] = kwargs['stdout']
-            call_command('run_ndvi_pipeline', **kwargs)
+                kwargs['stdout'] = log_f
+                kwargs['stderr'] = log_f
+            with redirect_ctx:
+                call_command('run_ndvi_pipeline', **kwargs)
         except SystemExit:
             # run_ndvi_pipeline calls sys.exit(1) on SIGTERM — let it go.
             raise
@@ -159,6 +173,10 @@ class Command(BaseCommand):
                 logger.exception('worker: failed to mark run as failed')
         finally:
             if log_f is not None:
+                try:
+                    log_f.flush()
+                except OSError:
+                    pass
                 try:
                     log_f.close()
                 except OSError:
@@ -201,27 +219,24 @@ class Command(BaseCommand):
         self.stdout.write(self.style.WARNING('[worker] exited cleanly'))
 
 
-class _BinaryTextSink:
-    """Adapt a binary file object so call_command can write text to it."""
+@contextlib.contextmanager
+def _redirect_std_to(file_obj):
+    """Temporarily redirect ``sys.stdout`` and ``sys.stderr`` to *file_obj*.
 
-    def __init__(self, binary_file):
-        self._f = binary_file
-
-    def write(self, s):
-        if not isinstance(s, (bytes, bytearray)):
-            s = str(s).encode('utf-8', errors='replace')
-        self._f.write(s)
-        return len(s)
-
-    def flush(self):
+    Unlike ``contextlib.redirect_stdout`` alone, this also swaps
+    ``sys.stderr`` so that tracebacks and ``print(..., file=sys.stderr)``
+    end up in the same pipeline log file.
+    """
+    import sys
+    old_out, old_err = sys.stdout, sys.stderr
+    sys.stdout = file_obj
+    sys.stderr = file_obj
+    try:
+        yield
+    finally:
         try:
-            self._f.flush()
-        except OSError:
+            file_obj.flush()
+        except Exception:
             pass
-
-    def isatty(self):
-        return False
-
-    @property
-    def encoding(self):
-        return 'utf-8'
+        sys.stdout = old_out
+        sys.stderr = old_err
