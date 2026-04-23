@@ -130,8 +130,10 @@ def download_composite(region_geom_extent, region_id, date_from, date_to,
         composite = ndvi_col.median().rename('NDVI').toFloat()
 
         # Download as GeoTIFF via computePixels (uses compute API, no
-        # extra IAM permissions needed unlike getDownloadURL)
-        content = ee.data.computePixels({
+        # extra IAM permissions needed unlike getDownloadURL).
+        # Route through call_compute_pixels for rate-limit + retries + metrics.
+        from .gee_client import call_compute_pixels
+        content = call_compute_pixels({
             'expression': composite,
             'fileFormat': 'GEO_TIFF',
             'grid': {

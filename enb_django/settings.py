@@ -284,6 +284,14 @@ VK_REDIRECT_URI = os.getenv('VK_REDIRECT_URI', 'https://edunabazar.ru/oauth/vk/c
 
 TEST_RUNNER = 'legacy.test_runner.UnmanagedModelTestRunner'
 
+# ── Google Earth Engine client (agrocosmos/services/gee_client.py) ─────────
+# Self-policed rate limiting (no public quota API from GEE).
+GEE_CALLS_PER_MINUTE = int(os.getenv('GEE_CALLS_PER_MINUTE', '60'))
+GEE_MAX_RETRIES = int(os.getenv('GEE_MAX_RETRIES', '3'))
+GEE_BACKOFF_BASE_SEC = float(os.getenv('GEE_BACKOFF_BASE_SEC', '2.0'))
+GEE_RATE_WAIT_SEC = float(os.getenv('GEE_RATE_WAIT_SEC', '1.0'))
+GEE_RATE_MAX_WAIT_SEC = float(os.getenv('GEE_RATE_MAX_WAIT_SEC', '30.0'))
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,

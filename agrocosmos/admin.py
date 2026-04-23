@@ -15,7 +15,7 @@ from django.utils import timezone
 from django.utils.html import format_html
 
 from .models import (
-    District, Farmland, MonitoringTask, PipelineRun,
+    District, Farmland, GeeApiMetric, MonitoringTask, PipelineRun,
     Region, SatelliteScene, VegetationIndex,
 )
 
@@ -60,6 +60,23 @@ class SatelliteSceneAdmin(admin.ModelAdmin):
 class VegetationIndexAdmin(admin.ModelAdmin):
     list_display = ('farmland', 'index_type', 'acquired_date', 'mean', 'median')
     list_filter = ('index_type', 'acquired_date')
+
+
+@admin.register(GeeApiMetric)
+class GeeApiMetricAdmin(admin.ModelAdmin):
+    """Daily counters for Google Earth Engine ``computePixels`` calls."""
+    list_display = ('day', 'calls', 'errors', 'throttled', 'mb_display', 'updated_at')
+    list_filter = ('day',)
+    ordering = ('-day',)
+    readonly_fields = ('day', 'calls', 'errors', 'throttled',
+                       'bytes_downloaded', 'last_error', 'updated_at')
+
+    def mb_display(self, obj):
+        return f'{(obj.bytes_downloaded or 0) / 1e6:.1f} МБ'
+    mb_display.short_description = 'Скачано'
+
+    def has_add_permission(self, request):
+        return False  # rows are created by services.gee_client only
 
 
 # ── PipelineRun admin ─────────────────────────────────────────────
@@ -177,7 +194,10 @@ admin.AdminSite.get_urls = _patched_get_urls
 
 def agro_panel_view(request):
     """Main Agrocosmos control panel."""
-    from django.db.models import Count
+    from datetime import timedelta
+    from django.db.models import Count, Sum
+    from .models import GeeApiMetric
+
     regions = Region.objects.annotate(
         farmland_count=Count('districts__farmlands'),
     )
@@ -186,6 +206,44 @@ def agro_panel_view(request):
     pipeline_runs = PipelineRun.objects.select_related('region').all()[:30]
     current_year = date.today().year
     years = list(range(current_year, current_year - 6, -1))
+
+    # ── GEE API metrics ────────────────────────────────────────────
+    today = date.today()
+    week_ago = today - timedelta(days=6)      # last 7 days inclusive
+    month_ago = today - timedelta(days=29)    # last 30 days inclusive
+
+    gee_rows = list(
+        GeeApiMetric.objects.filter(day__gte=month_ago)
+        .order_by('-day')
+        .values('day', 'calls', 'errors', 'throttled', 'bytes_downloaded', 'last_error')
+    )
+
+    def _sum(rows, field, since):
+        return sum((r[field] or 0) for r in rows if r['day'] >= since)
+
+    gee_totals = {
+        'today': {
+            'calls': _sum(gee_rows, 'calls', today),
+            'errors': _sum(gee_rows, 'errors', today),
+            'throttled': _sum(gee_rows, 'throttled', today),
+            'mb': round(_sum(gee_rows, 'bytes_downloaded', today) / 1e6, 1),
+        },
+        'week': {
+            'calls': _sum(gee_rows, 'calls', week_ago),
+            'errors': _sum(gee_rows, 'errors', week_ago),
+            'throttled': _sum(gee_rows, 'throttled', week_ago),
+            'mb': round(_sum(gee_rows, 'bytes_downloaded', week_ago) / 1e6, 1),
+        },
+        'month': {
+            'calls': _sum(gee_rows, 'calls', month_ago),
+            'errors': _sum(gee_rows, 'errors', month_ago),
+            'throttled': _sum(gee_rows, 'throttled', month_ago),
+            'mb': round(_sum(gee_rows, 'bytes_downloaded', month_ago) / 1e6, 1),
+        },
+    }
+    # Precompute MB per row for the table
+    for r in gee_rows:
+        r['mb'] = round((r['bytes_downloaded'] or 0) / 1e6, 1)
 
     return render(request, 'admin/agrocosmos/panel.html', {
         **admin.site.each_context(request),
@@ -196,6 +254,9 @@ def agro_panel_view(request):
         'pipeline_runs': pipeline_runs,
         'years': years,
         'current_year': current_year,
+        'gee_rows': gee_rows,
+        'gee_totals': gee_totals,
+        'gee_calls_per_minute': getattr(settings, 'GEE_CALLS_PER_MINUTE', 60),
     })
 
 
