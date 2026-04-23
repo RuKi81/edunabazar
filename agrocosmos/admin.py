@@ -962,36 +962,33 @@ def start_raster_monitoring_view(request):
     scope_desc = f'{region.name}' + (f' / {district.name}' if district else '')
     run = PipelineRun.objects.create(
         task_type='raster_ndvi',
-        region=region, year=year, status='running',
+        region=region, year=year, status=PipelineRun.Status.QUEUED,
         description=(
             f'[monitor init] {scope_desc}, {year} '
             f'({window_from}..{window_to}, valid≥{min_valid:.0%})'
         ),
     )
     try:
-        pid, log_path = _launch_ndvi_pipeline_detached(
+        _enqueue_ndvi_pipeline(
             run_id=run.pk, region_id=region.pk, district_id=did,
             year=year, min_valid=min_valid,
             overwrite=False, rebuild_fusion=True,
             date_from=window_from.isoformat(),
             date_to=window_to.isoformat(),
         )
-        run.pid = pid
-        run.log_file = log_path
-        run.heartbeat_at = timezone.now()
-        run.save(update_fields=['pid', 'log_file', 'heartbeat_at'])
         messages.success(
             request,
-            f'Начальная выкачка S2+L8 запущена (run #{run.pk}, pid={pid}) '
-            f'для окна {window_from}..{window_to}. Дальше cron раз в сутки.'
+            f'Начальная выкачка S2+L8 поставлена в очередь (run #{run.pk}) '
+            f'для окна {window_from}..{window_to}. Воркер подхватит в течение '
+            f'нескольких секунд. Дальше cron раз в сутки.'
         )
     except Exception as exc:
-        logger.exception('failed to launch initial raster monitoring run')
-        run.status = 'failed'
-        run.log = f'Ошибка запуска подпроцесса: {exc}'
+        logger.exception('failed to enqueue initial raster monitoring run')
+        run.status = PipelineRun.Status.FAILED
+        run.log = f'Ошибка постановки в очередь: {exc}'
         run.finished_at = timezone.now()
         run.save()
-        messages.error(request, f'Не удалось запустить начальную выкачку: {exc}')
+        messages.error(request, f'Не удалось поставить начальную выкачку в очередь: {exc}')
     return redirect('admin:agro_panel')
 
 
