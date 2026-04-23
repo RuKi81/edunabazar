@@ -16,7 +16,7 @@ from django.utils.html import format_html
 
 from .models import (
     District, Farmland, GeeApiMetric, MonitoringTask, PipelineRun,
-    Region, SatelliteScene, VegetationIndex,
+    Region, SatelliteScene, VegetationAlert, VegetationIndex,
 )
 
 import logging
@@ -60,6 +60,28 @@ class SatelliteSceneAdmin(admin.ModelAdmin):
 class VegetationIndexAdmin(admin.ModelAdmin):
     list_display = ('farmland', 'index_type', 'acquired_date', 'mean', 'median')
     list_filter = ('index_type', 'acquired_date')
+
+
+@admin.register(VegetationAlert)
+class VegetationAlertAdmin(admin.ModelAdmin):
+    """Biological NDVI alerts (baseline deviation, rapid drops)."""
+    list_display = ('id', 'farmland', 'alert_type', 'severity_badge',
+                    'status', 'detected_on', 'triggered_at', 'acknowledged_by')
+    list_filter = ('status', 'severity', 'alert_type', 'triggered_at')
+    search_fields = ('farmland__cadastral_number', 'message')
+    readonly_fields = ('farmland', 'alert_type', 'detected_on', 'triggered_at',
+                       'context', 'message')
+
+    def severity_badge(self, obj):
+        color = '#b91c1c' if obj.severity == 'critical' else '#b45309'
+        return format_html(
+            '<span style="color:{}; font-weight:600;">{}</span>',
+            color, obj.get_severity_display(),
+        )
+    severity_badge.short_description = 'Критичность'
+
+    def has_add_permission(self, request):
+        return False  # managed by detect_vegetation_alerts command
 
 
 @admin.register(GeeApiMetric)
@@ -181,6 +203,9 @@ class AgrocosmosAdminSite:
             path('agrocosmos/rasters/files/',
                  admin.site.admin_view(agro_raster_files_view),
                  name='agro_raster_files'),
+            path('agrocosmos/alerts/action/',
+                 admin.site.admin_view(agro_alert_action_view),
+                 name='agro_alert_action'),
         ]
 
 
@@ -251,6 +276,22 @@ def agro_panel_view(request):
     for r in gee_rows:
         r['mb'] = round((r['bytes_downloaded'] or 0) / 1e6, 1)
 
+    # ── Vegetation alerts ──────────────────────────────────────────
+    alerts_active = (
+        VegetationAlert.objects
+        .filter(status__in=['active', 'acknowledged'])
+        .select_related('farmland', 'farmland__district', 'farmland__district__region')
+        .order_by('-severity', '-triggered_at')[:30]
+    )
+    alert_counts = {
+        'critical': VegetationAlert.objects.filter(
+            status='active', severity='critical').count(),
+        'warning': VegetationAlert.objects.filter(
+            status='active', severity='warning').count(),
+        'acknowledged': VegetationAlert.objects.filter(
+            status='acknowledged').count(),
+    }
+
     return render(request, 'admin/agrocosmos/panel.html', {
         **admin.site.each_context(request),
         'title': 'Агрокосмос — Управление',
@@ -263,6 +304,8 @@ def agro_panel_view(request):
         'gee_rows': gee_rows,
         'gee_totals': gee_totals,
         'gee_calls_per_minute': getattr(settings, 'GEE_CALLS_PER_MINUTE', 60),
+        'alerts_active': alerts_active,
+        'alert_counts': alert_counts,
     })
 
 
@@ -710,6 +753,47 @@ def run_status_view(request, run_id: int):
         'duration': run.duration,
         'tail': tail[-8000:],
     })
+
+
+# ── Vegetation alerts ack / resolve ────────────────────────────────
+
+def agro_alert_action_view(request):
+    """POST handler: acknowledge or resolve a VegetationAlert.
+
+    Form params: ``alert_id`` (int), ``action`` ("acknowledge" | "resolve").
+    Redirects back to ``agro_panel`` with a flash message.
+    """
+    if request.method != 'POST':
+        return redirect('admin:agro_panel')
+
+    try:
+        alert_id = int(request.POST.get('alert_id') or 0)
+    except (TypeError, ValueError):
+        alert_id = 0
+    action = request.POST.get('action', '')
+
+    try:
+        alert = VegetationAlert.objects.get(pk=alert_id)
+    except VegetationAlert.DoesNotExist:
+        messages.error(request, 'Алерт не найден.')
+        return redirect('admin:agro_panel')
+
+    now = timezone.now()
+    if action == 'acknowledge' and alert.status == VegetationAlert.Status.ACTIVE:
+        alert.status = VegetationAlert.Status.ACKNOWLEDGED
+        alert.acknowledged_at = now
+        alert.acknowledged_by = request.user if request.user.is_authenticated else None
+        alert.save(update_fields=['status', 'acknowledged_at', 'acknowledged_by'])
+        messages.success(request, f'Алерт #{alert.pk} принят.')
+    elif action == 'resolve':
+        alert.status = VegetationAlert.Status.RESOLVED
+        alert.resolved_at = now
+        alert.save(update_fields=['status', 'resolved_at'])
+        messages.success(request, f'Алерт #{alert.pk} разрешён.')
+    else:
+        messages.warning(request, f'Действие "{action}" неприменимо к алерту в статусе {alert.status}.')
+
+    return redirect(request.POST.get('next') or 'admin:agro_panel')
 
 
 # ── Raster storage management ──────────────────────────────────────

@@ -344,6 +344,87 @@ class PipelineRun(models.Model):
         return '—'
 
 
+class VegetationAlert(models.Model):
+    """Предупреждение о проблеме с вегетацией на конкретном угодье.
+
+    Генерируется командой ``detect_vegetation_alerts`` на основе
+    сглаженной серии NDVI (``VegetationIndex.mean_smooth``) и
+    исторической нормы (``NdviBaseline``).  Это **биологическое**
+    отклонение — в отличие от ``VegetationIndex.is_outlier``, который
+    маркирует технические выбросы (снег/облако).
+
+    Детектор покрывает два паттерна:
+        - ``baseline_deviation`` — несколько подряд наблюдений ниже
+          исторической нормы (z-score ≤ -1.5).
+        - ``rapid_drop`` — быстрое падение NDVI (≥ 0.15 за ~16 дней).
+    """
+
+    class AlertType(models.TextChoices):
+        BASELINE_DEVIATION = 'baseline_deviation', 'Отклонение от нормы'
+        RAPID_DROP = 'rapid_drop', 'Резкое падение NDVI'
+
+    class Severity(models.TextChoices):
+        WARNING = 'warning', 'Предупреждение'
+        CRITICAL = 'critical', 'Критично'
+
+    class Status(models.TextChoices):
+        ACTIVE = 'active', 'Активный'
+        ACKNOWLEDGED = 'acknowledged', 'Принят'
+        RESOLVED = 'resolved', 'Разрешён'
+
+    farmland = models.ForeignKey(
+        Farmland, on_delete=models.CASCADE, related_name='alerts',
+        verbose_name='Угодье',
+    )
+    alert_type = models.CharField(
+        max_length=30, choices=AlertType.choices, verbose_name='Тип алерта',
+    )
+    severity = models.CharField(
+        max_length=10, choices=Severity.choices, default=Severity.WARNING,
+        verbose_name='Критичность',
+    )
+    status = models.CharField(
+        max_length=15, choices=Status.choices, default=Status.ACTIVE,
+        verbose_name='Статус',
+    )
+    detected_on = models.DateField(
+        verbose_name='Дата наблюдения, спровоцировавшего алерт',
+    )
+    triggered_at = models.DateTimeField(auto_now_add=True, verbose_name='Создан')
+    acknowledged_at = models.DateTimeField(null=True, blank=True, verbose_name='Принят')
+    acknowledged_by = models.ForeignKey(
+        'auth.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='+', verbose_name='Кем принят',
+    )
+    resolved_at = models.DateTimeField(null=True, blank=True, verbose_name='Разрешён')
+    context = models.JSONField(
+        blank=True, null=True,
+        verbose_name='Контекст (z-score, NDVI, baseline и т.п.)',
+    )
+    message = models.CharField(
+        max_length=500, blank=True, default='',
+        verbose_name='Человеко-читаемое описание',
+    )
+
+    class Meta:
+        db_table = 'agro_vegetation_alert'
+        ordering = ['-triggered_at']
+        verbose_name = 'Алерт вегетации'
+        verbose_name_plural = 'Алерты вегетации'
+        indexes = [
+            # Hot query on panel: WHERE status='active' ORDER BY triggered_at DESC.
+            models.Index(
+                fields=['status', '-triggered_at'],
+                name='veg_alert_active_idx',
+            ),
+            models.Index(fields=['farmland', 'alert_type', 'status']),
+        ]
+
+    def __str__(self):
+        return (f'{self.get_alert_type_display()} / {self.get_severity_display()} '
+                f'— farmland={self.farmland_id} ({self.detected_on})')
+
+
 class GeeApiMetric(models.Model):
     """Дневной агрегат вызовов Google Earth Engine API.
 
