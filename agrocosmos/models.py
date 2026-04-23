@@ -299,12 +299,17 @@ class PipelineRun(models.Model):
         MONITORING = 'monitoring', 'Мониторинг NDVI'
 
     class Status(models.TextChoices):
+        QUEUED = 'queued', 'В очереди'
         RUNNING = 'running', 'Выполняется'
         COMPLETED = 'completed', 'Завершён'
         FAILED = 'failed', 'Ошибка'
 
     task_type = models.CharField(max_length=30, choices=TaskType.choices, verbose_name='Тип процесса')
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.RUNNING, verbose_name='Статус')
+    launch_args = models.JSONField(
+        default=dict, blank=True, verbose_name='Параметры запуска',
+        help_text='CLI-аргументы для команды воркера (используется при status=queued).',
+    )
     region = models.ForeignKey(
         Region, on_delete=models.SET_NULL, null=True, blank=True,
         verbose_name='Регион',
