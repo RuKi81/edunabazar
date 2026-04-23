@@ -16,6 +16,7 @@ from django.db import IntegrityError
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import redirect, render
 
+from legacy.models import Message
 from legacy.views.helpers import _get_current_legacy_user
 
 from ..models import AgroSubscription, District, Region
@@ -127,6 +128,9 @@ def me_agrocosmos(request: HttpRequest) -> HttpResponse:
         'regions': regions,
         'districts': list(districts),
         'active_section': 'agrocosmos',
+        'messages_unread_count': Message.objects.filter(
+            recipient_id=user.id, is_read=False,
+        ).count(),
     })
 
 

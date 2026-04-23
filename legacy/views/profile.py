@@ -5,7 +5,7 @@ from django.shortcuts import redirect, render
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 
-from ..models import Advert, LegacyUser
+from ..models import Advert, LegacyUser, Message
 from ..constants import (
     ADVERT_STATUS_DELETED, ADVERT_STATUS_HIDDEN, ADVERT_STATUS_MODERATION,
     ADVERT_STATUS_PUBLISHED,
@@ -153,6 +153,9 @@ def legacy_me(request: HttpRequest) -> HttpResponse:
             'admin_filter_status': admin_status,
             'admin_filter_sort': admin_sort,
             'active_section': section,
+            'messages_unread_count': Message.objects.filter(
+                recipient_id=user.id, is_read=False,
+            ).count(),
         },
     )
 

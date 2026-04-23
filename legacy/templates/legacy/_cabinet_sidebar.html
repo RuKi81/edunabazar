@@ -44,6 +44,23 @@
           <span>Мои объявления</span>
         </a>
       {% endif %}
+
+      <div class="cab-nav-divider"></div>
+
+      <a href="{% url 'messages_inbox' %}"
+         class="cab-nav-item {% if active_section == 'messages' %}active{% endif %}">
+        <span class="cab-nav-icon">💬</span>
+        <span>Сообщения</span>
+        {% if messages_unread_count %}
+          <span class="cab-nav-badge">{{ messages_unread_count }}</span>
+        {% endif %}
+      </a>
+
+      <a href="{% url 'seller_detail' legacy_user.id %}"
+         class="cab-nav-item {% if active_section == 'reviews' %}active{% endif %}">
+        <span class="cab-nav-icon">⭐</span>
+        <span>Отзывы обо мне</span>
+      </a>
     </nav>
 
     <div class="cab-side-footer">
