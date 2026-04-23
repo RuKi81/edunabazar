@@ -342,3 +342,35 @@ class PipelineRun(models.Model):
             seconds = int(delta.total_seconds() % 60)
             return f'{minutes}м {seconds}с'
         return '—'
+
+
+class GeeApiMetric(models.Model):
+    """Дневной агрегат вызовов Google Earth Engine API.
+
+    Инкрементируется через ``services.gee_client`` для каждого
+    ``computePixels`` вызова. Используется для мониторинга расхода
+    квоты GEE в админ-панели (нет публичного quota API у Earth Engine,
+    поэтому мы считаем вызовы сами).
+    """
+    day = models.DateField(unique=True, verbose_name='Дата')
+    calls = models.BigIntegerField(default=0, verbose_name='Успешных вызовов')
+    errors = models.IntegerField(default=0, verbose_name='Ошибок')
+    throttled = models.IntegerField(
+        default=0,
+        verbose_name='Переповторов из-за лимита',
+    )
+    bytes_downloaded = models.BigIntegerField(
+        default=0,
+        verbose_name='Байт скачано',
+    )
+    last_error = models.TextField(blank=True, default='', verbose_name='Последняя ошибка')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'agro_gee_api_metric'
+        ordering = ['-day']
+        verbose_name = 'Метрика GEE API'
+        verbose_name_plural = 'Метрики GEE API'
+
+    def __str__(self):
+        return f'{self.day}: {self.calls} calls, {self.errors} err'

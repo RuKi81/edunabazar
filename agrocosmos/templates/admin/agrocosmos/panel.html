@@ -491,6 +491,81 @@
     </div>
   </div>
 
+  <!-- ═══ 7. GEE API metrics ═══ -->
+  <div class="agro-section">
+    <h2>🛰️ Метрики Google Earth Engine</h2>
+    <div class="body">
+      <p class="agro-hint" style="margin:0 0 10px 0;">
+        Собственный счётчик вызовов <code>ee.data.computePixels</code>
+        (публичного quota API у GEE нет). Лимит конфигурации —
+        <strong>{{ gee_calls_per_minute }}</strong> вызовов/мин;
+        throttled — количество повторов из-за 429/quota/memory-ошибок.
+      </p>
+
+      <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin-bottom:12px;">
+        <div style="border:1px solid #ddd; border-radius:4px; padding:10px;">
+          <div style="font-size:11px; color:#888; text-transform:uppercase;">Сегодня</div>
+          <div style="font-size:20px; font-weight:700;">{{ gee_totals.today.calls }}</div>
+          <div style="font-size:11px; color:#555;">
+            {{ gee_totals.today.mb }} МБ &middot;
+            <span style="color:#b45309;">⚠ {{ gee_totals.today.throttled }}</span> &middot;
+            <span style="color:#b91c1c;">✕ {{ gee_totals.today.errors }}</span>
+          </div>
+        </div>
+        <div style="border:1px solid #ddd; border-radius:4px; padding:10px;">
+          <div style="font-size:11px; color:#888; text-transform:uppercase;">7 дней</div>
+          <div style="font-size:20px; font-weight:700;">{{ gee_totals.week.calls }}</div>
+          <div style="font-size:11px; color:#555;">
+            {{ gee_totals.week.mb }} МБ &middot;
+            <span style="color:#b45309;">⚠ {{ gee_totals.week.throttled }}</span> &middot;
+            <span style="color:#b91c1c;">✕ {{ gee_totals.week.errors }}</span>
+          </div>
+        </div>
+        <div style="border:1px solid #ddd; border-radius:4px; padding:10px;">
+          <div style="font-size:11px; color:#888; text-transform:uppercase;">30 дней</div>
+          <div style="font-size:20px; font-weight:700;">{{ gee_totals.month.calls }}</div>
+          <div style="font-size:11px; color:#555;">
+            {{ gee_totals.month.mb }} МБ &middot;
+            <span style="color:#b45309;">⚠ {{ gee_totals.month.throttled }}</span> &middot;
+            <span style="color:#b91c1c;">✕ {{ gee_totals.month.errors }}</span>
+          </div>
+        </div>
+      </div>
+
+      {% if gee_rows %}
+        <table class="agro-tasks">
+          <thead>
+            <tr>
+              <th>Дата</th>
+              <th style="text-align:right;">Вызовов</th>
+              <th style="text-align:right;">Ошибок</th>
+              <th style="text-align:right;">Throttled</th>
+              <th style="text-align:right;">МБ</th>
+              <th>Последняя ошибка</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in gee_rows %}
+            <tr>
+              <td>{{ r.day|date:"Y-m-d" }}</td>
+              <td style="text-align:right;">{{ r.calls }}</td>
+              <td style="text-align:right; color:{% if r.errors %}#b91c1c{% else %}#888{% endif %};">{{ r.errors }}</td>
+              <td style="text-align:right; color:{% if r.throttled %}#b45309{% else %}#888{% endif %};">{{ r.throttled }}</td>
+              <td style="text-align:right;">{{ r.mb }}</td>
+              <td style="font-size:11px; color:#666; max-width:360px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="{{ r.last_error }}">{{ r.last_error|truncatechars:80 }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <div class="agro-hint" style="margin-top:8px;">
+          <a href="{% url 'admin:agrocosmos_geeapimetric_changelist' %}">Все метрики →</a>
+        </div>
+      {% else %}
+        <p style="color:#888; font-size:13px;">Нет данных за последние 30 дней.</p>
+      {% endif %}
+    </div>
+  </div>
+
 </div>
 
 <script>

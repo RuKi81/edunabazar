@@ -53,8 +53,14 @@ def tile_extents(xmin, ymin, xmax, ymax, scale_deg, max_px=MAX_TILE_PX):
 
 
 def _compute_pixels(params):
-    """Wrapper for ee.data.computePixels (for use in thread pool)."""
-    return ee.data.computePixels(params)
+    """Wrapper for ee.data.computePixels (for use in thread pool).
+
+    Routed through ``services.gee_client.call_compute_pixels`` so that
+    rate-limiting, retries on 429/quota errors, and daily metrics all
+    happen transparently.
+    """
+    from .gee_client import call_compute_pixels
+    return call_compute_pixels(params)
 
 
 def download_tile(composite, tx0, ty0, tx1, ty1, scale_deg,
