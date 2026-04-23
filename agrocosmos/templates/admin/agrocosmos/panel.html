@@ -67,6 +67,99 @@
 
 <div class="agro-panel">
 
+  <!-- ═══ 0. Vegetation alerts ═══ -->
+  <div class="agro-section">
+    <h2>🚨 Алерты вегетации
+      {% if alert_counts.critical %}
+        <span style="background:#b91c1c; color:#fff; padding:2px 8px; border-radius:10px; font-size:12px; margin-left:8px;">
+          критичных: {{ alert_counts.critical }}
+        </span>
+      {% endif %}
+      {% if alert_counts.warning %}
+        <span style="background:#b45309; color:#fff; padding:2px 8px; border-radius:10px; font-size:12px; margin-left:4px;">
+          предупреждений: {{ alert_counts.warning }}
+        </span>
+      {% endif %}
+    </h2>
+    <div class="body">
+      {% if alerts_active %}
+        <table class="agro-tasks">
+          <thead>
+            <tr>
+              <th>Угодье</th>
+              <th>Район</th>
+              <th>Тип</th>
+              <th>Критичность</th>
+              <th>Статус</th>
+              <th>Дата</th>
+              <th>Описание</th>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for a in alerts_active %}
+            <tr>
+              <td>
+                <a href="{% url 'admin:agrocosmos_farmland_change' a.farmland_id %}">
+                  #{{ a.farmland_id }}
+                </a>
+                <span style="color:#888; font-size:11px;">
+                  ({{ a.farmland.get_crop_type_display }},
+                  {{ a.farmland.area_ha|floatformat:1 }} га)
+                </span>
+              </td>
+              <td style="font-size:12px;">
+                {{ a.farmland.district.name }}
+                <span style="color:#888;">· {{ a.farmland.district.region.name }}</span>
+              </td>
+              <td style="font-size:12px;">{{ a.get_alert_type_display }}</td>
+              <td>
+                {% if a.severity == 'critical' %}
+                  <span style="color:#b91c1c; font-weight:700;">КРИТИЧНО</span>
+                {% else %}
+                  <span style="color:#b45309; font-weight:600;">предупр.</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if a.status == 'active' %}
+                  <span style="background:#fee2e2; color:#991b1b; padding:1px 6px; border-radius:3px; font-size:11px;">активный</span>
+                {% else %}
+                  <span style="background:#fef3c7; color:#854d0e; padding:1px 6px; border-radius:3px; font-size:11px;">принят</span>
+                {% endif %}
+              </td>
+              <td style="font-size:12px;">{{ a.detected_on|date:"Y-m-d" }}</td>
+              <td style="font-size:12px; color:#444; max-width:320px;">{{ a.message }}</td>
+              <td>
+                <form method="post" action="{% url 'admin:agro_alert_action' %}" style="display:inline;">
+                  {% csrf_token %}
+                  <input type="hidden" name="alert_id" value="{{ a.pk }}">
+                  {% if a.status == 'active' %}
+                    <button type="submit" name="action" value="acknowledge"
+                            class="agro-btn" style="padding:3px 8px; font-size:11px;">
+                      принять
+                    </button>
+                  {% endif %}
+                  <button type="submit" name="action" value="resolve"
+                          class="agro-btn" style="padding:3px 8px; font-size:11px;"
+                          onclick="return confirm('Пометить алерт #{{ a.pk }} разрешённым?');">
+                    разрешить
+                  </button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <div class="agro-hint" style="margin-top:8px;">
+          <a href="{% url 'admin:agrocosmos_vegetationalert_changelist' %}">Все алерты →</a>
+          &middot; Принято (в работе): {{ alert_counts.acknowledged }}
+        </div>
+      {% else %}
+        <p style="color:#888; font-size:13px;">Активных алертов нет.</p>
+      {% endif %}
+    </div>
+  </div>
+
   <!-- ═══ 1. Upload Region Vector ═══ -->
   <div class="agro-section">
     <h2>📁 Загрузка границ субъекта</h2>
