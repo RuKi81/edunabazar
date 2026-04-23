@@ -1,9 +1,20 @@
 from django.contrib.gis.geos import Point
+from django.core.paginator import Paginator
 from django.db.models import F
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import redirect, render
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
+
+ADVERTS_PER_PAGE = 100
+
+
+def _safe_page_num(raw) -> int:
+    try:
+        n = int(str(raw or '1').strip())
+        return max(1, n)
+    except (TypeError, ValueError):
+        return 1
 
 from ..models import Advert, LegacyUser, Message
 from ..constants import (
@@ -26,12 +37,16 @@ def legacy_me(request: HttpRequest) -> HttpResponse:
 
     is_admin = _is_admin_user(user)
 
-    my_qs = Advert.objects.filter(author_id=user.id).exclude(status=ADVERT_STATUS_DELETED)
-
-    my_adverts = _annotate_adverts(
-        list(my_qs.select_related('category').order_by('-updated_at', '-id')),
-        user=user,
+    my_qs = (
+        Advert.objects.filter(author_id=user.id)
+        .exclude(status=ADVERT_STATUS_DELETED)
+        .select_related('category')
+        .order_by('-updated_at', '-id')
     )
+    my_paginator = Paginator(my_qs, ADVERTS_PER_PAGE)
+    my_page_num = _safe_page_num(request.GET.get('page_my'))
+    my_page = my_paginator.get_page(my_page_num)
+    my_adverts = _annotate_adverts(list(my_page.object_list), user=user)
 
     admin_status = (request.GET.get('status') or 'all').strip().lower()
     admin_sort = (request.GET.get('sort') or 'created').strip().lower()
@@ -41,6 +56,8 @@ def legacy_me(request: HttpRequest) -> HttpResponse:
         admin_sort = 'created'
 
     admin_adverts = []
+    admin_page = None
+    admin_paginator = None
     if is_admin:
         qs = Advert.objects.select_related('category', 'author').exclude(status=ADVERT_STATUS_DELETED)
         if admin_status == 'published':
@@ -55,7 +72,10 @@ def legacy_me(request: HttpRequest) -> HttpResponse:
         else:
             qs = qs.order_by('-updated_at', '-id')
 
-        admin_adverts = _annotate_adverts(list(qs[:500]))
+        admin_paginator = Paginator(qs, ADVERTS_PER_PAGE)
+        admin_page_num = _safe_page_num(request.GET.get('page_admin'))
+        admin_page = admin_paginator.get_page(admin_page_num)
+        admin_adverts = _annotate_adverts(list(admin_page.object_list))
         for a in admin_adverts:
             try:
                 a.author_label = str(getattr(getattr(a, 'author', None), 'username', '') or '')
@@ -148,8 +168,12 @@ def legacy_me(request: HttpRequest) -> HttpResponse:
             'saved': saved,
             'show_address_enabled': show_address_enabled,
             'my_adverts': my_adverts,
+            'my_page': my_page,
+            'my_paginator': my_paginator,
             'is_admin_cabinet': is_admin,
             'admin_adverts': admin_adverts,
+            'admin_page': admin_page,
+            'admin_paginator': admin_paginator,
             'admin_filter_status': admin_status,
             'admin_filter_sort': admin_sort,
             'active_section': section,
