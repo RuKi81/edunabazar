@@ -3,9 +3,14 @@ Retention cleanup for downloaded NDVI raster composites.
 
 GEE NDVI composites are cached as GeoTIFFs under sensor-specific roots
 (S2, Landsat, MODIS).  Zonal statistics are long since persisted to
-PostgreSQL, so historical rasters exist only to serve the map-overlay
-layer on the dashboard.  This command deletes rasters older than
-``--keep-days`` (default 730 = ~2 years).
+PostgreSQL, so MODIS rasters exist only as a byproduct of fetching
+stats and can be aged out aggressively.
+
+**S2 and Landsat rasters are kept by default** because they are used
+by the dashboard's map-overlay layer (NDVI raster-tiles served by
+``services/raster_tiles.py``).  Until that use-case is retired or
+explicitly scoped to a shorter window, ``--sensor`` defaults to
+``modis`` only.  Pass ``--sensor all`` or ``--sensor s2|l8`` to force.
 
 Filename convention (see ``services/satellite_*_raster.py``)::
 
@@ -16,7 +21,8 @@ The ``date_to`` component is used as the retention reference.
 
 Usage::
 
-    python manage.py cleanup_rasters                     # all sensors, 2y
+    python manage.py cleanup_rasters                     # MODIS, 2y
+    python manage.py cleanup_rasters --sensor all        # include S2/L8
     python manage.py cleanup_rasters --keep-days 365
     python manage.py cleanup_rasters --sensor s2
     python manage.py cleanup_rasters --dry-run           # list only
@@ -50,8 +56,10 @@ class Command(BaseCommand):
         parser.add_argument('--keep-days', type=int, default=730,
                             help='Retention window in days (default 730 = ~2y).')
         parser.add_argument('--sensor', choices=list(SENSORS) + ['all'],
-                            default='all',
-                            help='Which sensor root to clean (default all).')
+                            default='modis',
+                            help='Which sensor root to clean. Default "modis": '
+                                 'S2/L8 are kept because map-overlay layer '
+                                 'still consumes them. Pass "all" to force.')
         parser.add_argument('--dry-run', action='store_true',
                             help='List candidates without deleting.')
 
