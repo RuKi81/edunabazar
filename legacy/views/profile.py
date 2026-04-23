@@ -133,6 +133,12 @@ def legacy_me(request: HttpRequest) -> HttpResponse:
 
             show_address_enabled = show_address_new
 
+    # Which tab is active on initial render.  Client-side JS also reacts
+    # to URL hash (#credentials / #adverts) for in-page tab switching.
+    section = (request.GET.get('section') or '').strip().lower()
+    if section not in {'credentials', 'adverts'}:
+        section = 'credentials'
+
     return render(
         request,
         'legacy/me.html',
@@ -146,6 +152,7 @@ def legacy_me(request: HttpRequest) -> HttpResponse:
             'admin_adverts': admin_adverts,
             'admin_filter_status': admin_status,
             'admin_filter_sort': admin_sort,
+            'active_section': section,
         },
     )
 

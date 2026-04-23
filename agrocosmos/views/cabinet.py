@@ -126,7 +126,7 @@ def me_agrocosmos(request: HttpRequest) -> HttpResponse:
         'subscriptions': subscriptions,
         'regions': regions,
         'districts': list(districts),
-        'active_page': 'cabinet_agrocosmos',
+        'active_section': 'agrocosmos',
     })
 
 
