@@ -7,17 +7,16 @@
   {% include 'legacy/_cabinet_styles.html' %}
   <style>
     .agro-sub-table { width:100%; border-collapse: collapse; font-size: 14px; }
-    .agro-sub-table th, .agro-sub-table td { padding: 10px 12px; border-bottom: 1px solid var(--cab-border); text-align: left; vertical-align: middle; }
+    .agro-sub-table th, .agro-sub-table td { padding: 14px 12px; border-bottom: 1px solid var(--cab-border); text-align: left; vertical-align: middle; }
     .agro-sub-table th { background: #f9fafb; color: var(--cab-muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
     .agro-sub-table tr:last-child td { border-bottom: 0; }
-    .agro-sub-form label { display: inline-flex; align-items: center; margin-right: 12px; }
     .agro-sub-add {
       background: #f9fafb; border: 1px solid var(--cab-border);
-      padding: 16px; border-radius: 10px; margin-bottom: 20px;
+      padding: 22px 22px 18px; border-radius: 10px; margin-bottom: 28px;
     }
-    .agro-sub-add .row { margin-bottom: 8px; }
+    .agro-sub-add .row { margin-bottom: 18px; }
     .agro-sub-add select { display: block; }
-    .agro-sub-hint { color: var(--cab-muted); font-size: 12px; margin-top: 2px; }
+    .agro-sub-hint { color: var(--cab-muted); font-size: 12px; margin-top: 4px; }
     .agro-scope-pill {
       display: inline-block; padding: 2px 10px;
       border-radius: 12px; font-size: 11px; font-weight: 600;
@@ -25,6 +24,28 @@
       text-transform: uppercase; letter-spacing: 0.4px;
     }
     .agro-scope-pill--region { background: #e3f2fd; color: #1565c0; }
+
+    /* ── Plain, reliably-aligned checkboxes (override Materialize quirks) ── */
+    .agro-check-row { display: flex; flex-wrap: wrap; gap: 22px 28px; margin: 4px 0 6px; }
+    .agro-check {
+      display: inline-flex; align-items: center; gap: 8px;
+      cursor: pointer; font-size: 14px; color: var(--cab-text);
+      margin: 0; padding: 0; line-height: 1.3;
+    }
+    .agro-check input[type="checkbox"] {
+      /* reset Materialize's opacity:0 / position:absolute on bare checkboxes */
+      opacity: 1 !important;
+      position: static !important;
+      pointer-events: auto !important;
+      width: 18px; height: 18px;
+      margin: 0; padding: 0;
+      accent-color: var(--cab-accent);
+      flex: 0 0 18px;
+    }
+    .agro-check span { line-height: 1.3; }
+
+    .agro-section-title { margin: 28px 0 12px 0; font-size: 15px; font-weight: 600; color: var(--cab-text); }
+    .agro-section-title:first-child { margin-top: 0; }
   </style>
 {% endblock %}
 
@@ -53,7 +74,7 @@
 
 <!-- Add new subscription -->
 <div class="agro-sub-add">
-  <h5 style="margin:0 0 10px 0; font-size: 15px; font-weight: 600;">Добавить подписку</h5>
+  <h5 class="agro-section-title">Добавить подписку</h5>
   <form method="post" class="agro-sub-form">
     {% csrf_token %}
     <input type="hidden" name="action" value="add">
@@ -83,23 +104,25 @@
 
     <div class="row">
       <div class="col s12">
-        <label>
-          <input type="checkbox" name="notify_anomalies" value="1" checked class="filled-in">
-          <span>Уведомлять об аномалиях (алерты NDVI)</span>
-        </label>
-        <label style="margin-left: 20px;">
-          <input type="checkbox" name="notify_updates" value="1" class="filled-in">
-          <span>Получать уведомления при обновлении графика</span>
-        </label>
+        <div class="agro-check-row">
+          <label class="agro-check">
+            <input type="checkbox" name="notify_anomalies" value="1" checked>
+            <span>Уведомлять об аномалиях (алерты NDVI)</span>
+          </label>
+          <label class="agro-check">
+            <input type="checkbox" name="notify_updates" value="1">
+            <span>Получать уведомления при обновлении графика</span>
+          </label>
+        </div>
       </div>
     </div>
 
-    <button class="btn" type="submit">Добавить</button>
+    <button class="btn" type="submit" style="margin-top: 4px;">Добавить подписку</button>
   </form>
 </div>
 
 <!-- Existing subscriptions -->
-<h5 style="margin: 18px 0 8px 0; font-size: 15px; font-weight: 600;">Мои подписки</h5>
+<h5 class="agro-section-title">Мои подписки</h5>
 {% if subscriptions %}
   <table class="agro-sub-table">
     <thead>
@@ -124,18 +147,18 @@
           {% endif %}
         </td>
         <td colspan="2">
-          <form method="post" class="agro-sub-form" style="display:flex; gap:8px; align-items:center;">
+          <form method="post" style="display:flex; gap:18px; align-items:center; flex-wrap:wrap;">
             {% csrf_token %}
             <input type="hidden" name="action" value="update">
             <input type="hidden" name="subscription_id" value="{{ s.pk }}">
-            <label>
+            <label class="agro-check">
               <input type="checkbox" name="notify_anomalies" value="1"
-                     {% if s.notify_anomalies %}checked{% endif %} class="filled-in">
+                     {% if s.notify_anomalies %}checked{% endif %}>
               <span>аномалии</span>
             </label>
-            <label>
+            <label class="agro-check">
               <input type="checkbox" name="notify_updates" value="1"
-                     {% if s.notify_updates %}checked{% endif %} class="filled-in">
+                     {% if s.notify_updates %}checked{% endif %}>
               <span>обновления</span>
             </label>
             <button class="btn-flat btn-small" type="submit">Сохранить</button>
