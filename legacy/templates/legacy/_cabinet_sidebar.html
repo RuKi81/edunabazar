@@ -1,7 +1,9 @@
-{# Shared sidebar for the user cabinet (/me/ and /me/agrocosmos/).
-   Requires context var ``active_section`` in {credentials|agrocosmos|adverts}.
-   Menu items that live on the same page (/me/) use data-tab, so the JS on
-   /me/ can switch sections without a full reload. External pages use href. #}
+{% comment %}
+Shared sidebar for the user cabinet (/me/ and /me/agrocosmos/).
+Requires context var ``active_section`` in {credentials|agrocosmos|adverts|messages|reviews}.
+Menu items that live on the same page (/me/) use data-tab, so the JS on
+/me/ can switch sections without a full reload. External pages use href.
+{% endcomment %}
 <aside class="cab-sidebar">
   <div class="cab-side-card">
     <div class="cab-user">
