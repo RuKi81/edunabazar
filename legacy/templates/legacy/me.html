@@ -5,120 +5,108 @@
 
 {% block head %}
   <link rel="stylesheet" href="{% static 'legacy/css/leaflet.css' %}" />
-  <style>
-    #me_map { height: 240px; border: 1px solid rgba(0,0,0,0.12); }
-  </style>
+  {% include 'legacy/_cabinet_styles.html' %}
 {% endblock %}
 
 {% block content %}
-  <h1>Профиль</h1>
-
   <style>
     .enb-actions { display:flex; flex-wrap:wrap; align-items:center; gap:4px; }
-    .enb-btn-xs { height: 20px; line-height: 20px; padding: 0 6px; font-size: 10px; }
-    .enb-btn-xs.btn-small { height: 20px; line-height: 20px; }
+    .enb-btn-xs { height: 22px; line-height: 22px; padding: 0 8px; font-size: 11px; }
+    .enb-btn-xs.btn-small { height: 22px; line-height: 22px; }
     .enb-filter-inline { display:flex; align-items:center; gap:8px; }
-    .enb-filter-label { font-size: 11px; color:#616161; min-width: 86px; }
+    .enb-filter-label { font-size: 12px; color:var(--cab-muted); min-width: 86px; }
     .enb-filter-inline .input-field { margin:0; flex:1; }
-    .enb-filter-inline .select-wrapper input.select-dropdown { height: 28px; line-height: 28px; font-size: 12px; }
-    .enb-filter-inline .select-wrapper .caret { height: 28px; line-height: 28px; }
   </style>
 
-  <div class="row">
-    <div class="col s12 m3 l3">
-      <div class="card" style="margin-top:0;">
-        <div class="card-content">
-          <h5 style="margin-top:0;">Учетные данные</h5>
+  <h1 style="font-size: 26px; font-weight: 600; margin: 8px 0 4px;">Личный кабинет</h1>
+  <p style="color:var(--cab-muted); margin: 0 0 8px; font-size: 14px;">
+    Управляйте профилем, подписками Агрокосмос и объявлениями.
+  </p>
 
-          {% if saved %}
-            <div class="card-panel" style="background:#e8f5e9;color:#2e7d32; padding: 10px;">Сохранено</div>
-          {% endif %}
+  <div class="cab-layout">
+    {% include 'legacy/_cabinet_sidebar.html' %}
 
-          <ul class="collection" style="margin:0 0 12px 0;">
-            <li class="collection-item" style="padding: 8px 12px;"><strong>id:</strong> {{ legacy_user.id }}</li>
-          </ul>
+    <div class="cab-main">
 
-          <a href="{% url 'change_password' %}" class="btn-flat enb-btn-xs" style="margin-bottom:8px; display:inline-block;">🔑 Сменить пароль</a>
-          <a href="{% url 'legacy_me_agrocosmos' %}" class="btn-flat enb-btn-xs" style="margin-bottom:8px; display:inline-block;">🌱 Агрокосмос — подписки</a>
-          {% if is_admin_cabinet %}
-            <a href="{% url 'admin_campaigns' %}" class="btn-flat enb-btn-xs" style="margin-bottom:8px; display:inline-block;">📨 Email-рассылки</a>
-            <a href="{% url 'admin_reviews' %}" class="btn-flat enb-btn-xs" style="margin-bottom:8px; display:inline-block;">⭐ Отзывы</a>
-            <a href="{% url 'admin_messages' %}" class="btn-flat enb-btn-xs" style="margin-bottom:8px; display:inline-block;">💬 Сообщения</a>
-          {% endif %}
+      <!-- ═══ Section: credentials ═══ -->
+      <section id="section-credentials" class="cab-section {% if active_section != 'credentials' %}cab-section-hidden{% endif %}" data-section="credentials">
+        <h2>Мои учетные данные</h2>
+        <p class="cab-sub">Ваши контактные данные и адрес по умолчанию для объявлений.</p>
 
-          <form method="post" action="">
-            {% csrf_token %}
+        {% if saved %}
+          <div class="cab-flash-success">✔ Изменения сохранены</div>
+        {% endif %}
 
-            <div class="row" style="margin-bottom:0;">
-              <div class="input-field col s12">
-                <input id="username" name="username" type="text" value="{{ legacy_user.username|default:'' }}">
-                <label for="username" class="active">Логин</label>
-                {% if errors.username %}
-                  <div style="color:#d32f2f;font-size:12px;margin-top:4px;">{{ errors.username }}</div>
-                {% endif %}
+        <form method="post" action="">
+          {% csrf_token %}
+          <div class="row" style="margin-bottom:0;">
+            <div class="input-field col s12 m6">
+              <input id="username" name="username" type="text" value="{{ legacy_user.username|default:'' }}">
+              <label for="username" class="active">Логин</label>
+              {% if errors.username %}
+                <div style="color:#d32f2f;font-size:12px;margin-top:4px;">{{ errors.username }}</div>
+              {% endif %}
+            </div>
+
+            <div class="input-field col s12 m6">
+              <input id="name" name="name" type="text" value="{{ legacy_user.name|default:'' }}">
+              <label for="name" class="active">Имя</label>
+            </div>
+
+            <div class="input-field col s12 m6">
+              <input id="email" name="email" type="email" value="{{ legacy_user.email|default:'' }}">
+              <label for="email" class="active">Email</label>
+              {% if errors.email %}
+                <div style="color:#d32f2f;font-size:12px;margin-top:4px;">{{ errors.email }}</div>
+              {% endif %}
+            </div>
+
+            <div class="input-field col s12 m6">
+              <input id="phone" name="phone" type="text" value="{{ legacy_user.phone|default:'' }}">
+              <label for="phone" class="active">Телефон</label>
+            </div>
+
+            <div class="input-field col s12">
+              <input id="address" name="address" type="text" value="{{ legacy_user.address|default:'' }}">
+              <label for="address" class="active">Адрес</label>
+            </div>
+
+            <input id="lat" name="lat" type="hidden" value="{% if legacy_user.location %}{{ legacy_user.location.y|stringformat:'.6f' }}{% endif %}">
+            <input id="lon" name="lon" type="hidden" value="{% if legacy_user.location %}{{ legacy_user.location.x|stringformat:'.6f' }}{% endif %}">
+
+            <div class="col s12" style="margin-top: 6px;">
+              <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom: 8px;">
+                <a id="address_find" class="btn btn-small enb-btn-xs" href="#">Найти на карте</a>
+                <span id="address_status" style="font-size:12px; color:var(--cab-muted);"></span>
               </div>
-
-              <div class="input-field col s12">
-                <input id="name" name="name" type="text" value="{{ legacy_user.name|default:'' }}">
-                <label for="name" class="active">Имя</label>
-              </div>
-
-              <div class="input-field col s12">
-                <input id="email" name="email" type="email" value="{{ legacy_user.email|default:'' }}">
-                <label for="email" class="active">Email</label>
-                {% if errors.email %}
-                  <div style="color:#d32f2f;font-size:12px;margin-top:4px;">{{ errors.email }}</div>
-                {% endif %}
-              </div>
-
-              <div class="input-field col s12">
-                <input id="phone" name="phone" type="text" value="{{ legacy_user.phone|default:'' }}">
-                <label for="phone" class="active">Телефон</label>
-              </div>
-
-              <div class="input-field col s12">
-                <input id="address" name="address" type="text" value="{{ legacy_user.address|default:'' }}">
-                <label for="address" class="active">Адрес</label>
-              </div>
-
-              <input id="lat" name="lat" type="hidden" value="{% if legacy_user.location %}{{ legacy_user.location.y|stringformat:'.6f' }}{% endif %}">
-              <input id="lon" name="lon" type="hidden" value="{% if legacy_user.location %}{{ legacy_user.location.x|stringformat:'.6f' }}{% endif %}">
-
-              <div class="col s12" style="margin-top: 6px;">
-                <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom: 6px;">
-                  <a id="address_find" class="btn btn-small enb-btn-xs" href="#" style="flex: 0 0 auto;">Найти на карте</a>
-                  <span id="address_status" style="font-size:12px; color:#777;"></span>
-                </div>
-                <div id="me_map"></div>
-                <div style="font-size: 12px; color:#777; margin-top: 6px;">
-                  Укажи точку на карте кликом или перетащи маркер.
-                </div>
-              </div>
-
-              <div class="col s12" style="margin-top: 6px;">
-                <label style="margin:0;">
-                  <input name="show_address" type="checkbox" value="1" {% if show_address_enabled %}checked{% endif %}>
-                  <span>указывать в объявлениях</span>
-                </label>
-              </div>
-
-              <div class="col s12" style="margin-top: 6px;">
-                <button class="btn btn-small enb-btn-xs" type="submit" style="width:100%;">Сохранить</button>
+              <div class="cab-map-wrap"><div id="me_map"></div></div>
+              <div style="font-size: 12px; color:var(--cab-muted); margin-top: 6px;">
+                Укажите точку кликом или перетащите маркер.
               </div>
             </div>
-          </form>
-        </div>
-      </div>
-    </div>
 
-    <div class="col s12 m9 l9">
+            <div class="col s12" style="margin-top: 10px;">
+              <label style="margin:0;">
+                <input name="show_address" type="checkbox" value="1" {% if show_address_enabled %}checked{% endif %}>
+                <span>указывать адрес в объявлениях</span>
+              </label>
+            </div>
+
+            <div class="col s12" style="margin-top: 14px;">
+              <button class="btn" type="submit">Сохранить</button>
+            </div>
+          </div>
+        </form>
+      </section>
+
+      <!-- ═══ Section: adverts (personal) ═══ -->
       {% if not is_admin_cabinet %}
-        <div class="card" style="margin-top:0;">
-          <div class="card-content">
-            <h5 style="margin-top:0;">Мои объявления</h5>
+        <section id="section-adverts" class="cab-section {% if active_section != 'adverts' %}cab-section-hidden{% endif %}" data-section="adverts">
+          <h2>Мои объявления</h2>
+          <p class="cab-sub">Все ваши объявления, включая опубликованные, на модерации и скрытые.</p>
 
         {% if not my_adverts %}
-          <p>У вас пока нет объявлений.</p>
+          <p style="color:var(--cab-muted);">У вас пока нет объявлений. <a href="{% url 'advert_create' %}">Создать первое →</a></p>
         {% else %}
           <form id="bulk_my_form" method="post" action="{% url 'legacy_me_bulk_adverts' %}" style="margin-bottom: 10px;">
             {% csrf_token %}
@@ -200,14 +188,13 @@
             </tbody>
           </table>
         {% endif %}
-          </div>
-        </div>
+        </section>
       {% endif %}
 
       {% if is_admin_cabinet %}
-        <div class="card" style="margin-top: 16px;">
-          <div class="card-content">
-            <h5 style="margin-top:0;">Все объявления (админ)</h5>
+        <section id="section-adverts" class="cab-section {% if active_section != 'adverts' %}cab-section-hidden{% endif %}" data-section="adverts">
+          <h2>Все объявления (админ)</h2>
+          <p class="cab-sub">Доступно только админам сайта.</p>
 
             <form method="get" action="" style="margin-bottom: 12px;">
               <div class="row" style="margin-bottom:0;">
@@ -332,11 +319,42 @@
                 </tbody>
               </table>
             {% endif %}
-          </div>
-        </div>
+        </section>
       {% endif %}
-    </div>
-  </div>
+
+    </div>{# /cab-main #}
+  </div>{# /cab-layout #}
+
+  <script>
+    // ── Tab switching between credentials and adverts sections ──
+    (function() {
+      function show(section) {
+        document.querySelectorAll('.cab-section[data-section]').forEach(function(el) {
+          el.classList.toggle('cab-section-hidden', el.getAttribute('data-section') !== section);
+        });
+        document.querySelectorAll('.cab-nav-item[data-tab]').forEach(function(el) {
+          el.classList.toggle('active', el.getAttribute('data-tab') === section);
+        });
+      }
+      function fromHash() {
+        var h = (window.location.hash || '').replace('#', '');
+        if (h === 'adverts' || h === 'credentials') show(h);
+      }
+      fromHash();
+      window.addEventListener('hashchange', fromHash);
+      document.querySelectorAll('.cab-nav-item[data-tab]').forEach(function(el) {
+        el.addEventListener('click', function(e) {
+          var tab = el.getAttribute('data-tab');
+          if (!tab) return;
+          if (window.location.pathname === el.pathname.replace(/\/?$/, '/')) {
+            e.preventDefault();
+            window.location.hash = tab;
+            show(tab);
+          }
+        });
+      });
+    })();
+  </script>
 {% endblock %}
 
 {% block scripts %}

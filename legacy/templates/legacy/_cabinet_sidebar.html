@@ -1,0 +1,54 @@
+{# Shared sidebar for the user cabinet (/me/ and /me/agrocosmos/).
+   Requires context var ``active_section`` in {credentials|agrocosmos|adverts}.
+   Menu items that live on the same page (/me/) use data-tab, so the JS on
+   /me/ can switch sections without a full reload. External pages use href. #}
+<aside class="cab-sidebar">
+  <div class="cab-side-card">
+    <div class="cab-user">
+      <div class="cab-avatar">{{ legacy_user.name|default:legacy_user.username|slice:':1'|upper|default:'?' }}</div>
+      <div class="cab-user-info">
+        <div class="cab-user-name">{{ legacy_user.name|default:legacy_user.username }}</div>
+        <div class="cab-user-id">id {{ legacy_user.id }}</div>
+      </div>
+    </div>
+
+    <nav class="cab-nav">
+      {% if active_section == 'agrocosmos' %}
+        <a href="{% url 'legacy_me' %}" class="cab-nav-item">
+          <span class="cab-nav-icon">👤</span>
+          <span>Мои учетные данные</span>
+        </a>
+      {% else %}
+        <a href="{% url 'legacy_me' %}#credentials" data-tab="credentials"
+           class="cab-nav-item {% if active_section == 'credentials' %}active{% endif %}">
+          <span class="cab-nav-icon">👤</span>
+          <span>Мои учетные данные</span>
+        </a>
+      {% endif %}
+
+      <a href="{% url 'legacy_me_agrocosmos' %}"
+         class="cab-nav-item {% if active_section == 'agrocosmos' %}active{% endif %}">
+        <span class="cab-nav-icon">🌱</span>
+        <span>Агрокосмос</span>
+      </a>
+
+      {% if active_section == 'agrocosmos' %}
+        <a href="{% url 'legacy_me' %}#adverts" class="cab-nav-item">
+          <span class="cab-nav-icon">📋</span>
+          <span>Мои объявления</span>
+        </a>
+      {% else %}
+        <a href="{% url 'legacy_me' %}#adverts" data-tab="adverts"
+           class="cab-nav-item {% if active_section == 'adverts' %}active{% endif %}">
+          <span class="cab-nav-icon">📋</span>
+          <span>Мои объявления</span>
+        </a>
+      {% endif %}
+    </nav>
+
+    <div class="cab-side-footer">
+      <a href="{% url 'change_password' %}" class="cab-link-subtle">🔑 Сменить пароль</a>
+      <a href="{% url 'legacy_logout' %}" class="cab-link-subtle">↩ Выйти</a>
+    </div>
+  </div>
+</aside>

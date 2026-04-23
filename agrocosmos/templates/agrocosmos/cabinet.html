@@ -3,42 +3,57 @@
 
 {% block title %}Агрокосмос — подписки{% endblock %}
 
+{% block head %}
+  {% include 'legacy/_cabinet_styles.html' %}
+  <style>
+    .agro-sub-table { width:100%; border-collapse: collapse; font-size: 14px; }
+    .agro-sub-table th, .agro-sub-table td { padding: 10px 12px; border-bottom: 1px solid var(--cab-border); text-align: left; vertical-align: middle; }
+    .agro-sub-table th { background: #f9fafb; color: var(--cab-muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .agro-sub-table tr:last-child td { border-bottom: 0; }
+    .agro-sub-form label { display: inline-flex; align-items: center; margin-right: 12px; }
+    .agro-sub-add {
+      background: #f9fafb; border: 1px solid var(--cab-border);
+      padding: 16px; border-radius: 10px; margin-bottom: 20px;
+    }
+    .agro-sub-add .row { margin-bottom: 8px; }
+    .agro-sub-add select { display: block; }
+    .agro-sub-hint { color: var(--cab-muted); font-size: 12px; margin-top: 2px; }
+    .agro-scope-pill {
+      display: inline-block; padding: 2px 10px;
+      border-radius: 12px; font-size: 11px; font-weight: 600;
+      background: var(--cab-accent-soft); color: var(--cab-accent);
+      text-transform: uppercase; letter-spacing: 0.4px;
+    }
+    .agro-scope-pill--region { background: #e3f2fd; color: #1565c0; }
+  </style>
+{% endblock %}
+
 {% block content %}
-<h1 style="margin-bottom: 8px;">🌱 Агрокосмос — подписки на уведомления</h1>
-<p style="color:#616161; margin-top: 0;">
-  Получайте email-уведомления о вегетационных аномалиях и появлении новых
-  данных NDVI по выбранным субъектам и районам.
-</p>
+  <h1 style="font-size: 26px; font-weight: 600; margin: 8px 0 4px;">Личный кабинет</h1>
+  <p style="color:var(--cab-muted); margin: 0 0 8px; font-size: 14px;">
+    Управляйте профилем, подписками Агрокосмос и объявлениями.
+  </p>
 
-<div style="margin-bottom: 16px;">
-  <a href="{% url 'legacy_me' %}" class="btn-flat">← Профиль</a>
-</div>
+  <div class="cab-layout">
+    {% include 'legacy/_cabinet_sidebar.html' %}
 
-{% if messages %}
-  {% for m in messages %}
-    <div class="card-panel" style="padding: 10px;
-      background: {% if m.tags == 'success' %}#e8f5e9{% elif m.tags == 'warning' %}#fff8e1{% else %}#ffebee{% endif %};
-      color: {% if m.tags == 'success' %}#2e7d32{% elif m.tags == 'warning' %}#795548{% else %}#c62828{% endif %};">
-      {{ m }}
-    </div>
-  {% endfor %}
-{% endif %}
+    <div class="cab-main">
+      <section class="cab-section">
+        <h2>🌱 Агрокосмос — подписки</h2>
+        <p class="cab-sub">
+          Получайте email-уведомления о вегетационных аномалиях и появлении
+          новых данных NDVI по выбранным субъектам и районам.
+        </p>
 
-<style>
-  .agro-sub-table { width:100%; border-collapse: collapse; font-size: 14px; }
-  .agro-sub-table th, .agro-sub-table td { padding: 8px; border-bottom: 1px solid #eee; text-align: left; }
-  .agro-sub-table th { background: #f5f5f5; font-weight: 600; }
-  .agro-sub-form input[type="checkbox"] { margin-right: 6px; }
-  .agro-sub-form label { display: inline-flex; align-items: center; margin-right: 16px; }
-  .agro-sub-add { background: #f9f9f9; border: 1px solid #ddd; padding: 14px; border-radius: 4px; margin-bottom: 20px; }
-  .agro-sub-add .row { margin-bottom: 8px; }
-  .agro-sub-add select { display: block; }
-  .agro-sub-hint { color:#888; font-size: 12px; }
-</style>
+        {% if messages %}
+          {% for m in messages %}
+            <div class="{% if m.tags == 'success' %}cab-flash-success{% elif m.tags == 'warning' %}cab-flash-warning{% else %}cab-flash-error{% endif %}">{{ m }}</div>
+          {% endfor %}
+        {% endif %}
 
 <!-- Add new subscription -->
 <div class="agro-sub-add">
-  <h5 style="margin-top:0;">Добавить подписку</h5>
+  <h5 style="margin:0 0 10px 0; font-size: 15px; font-weight: 600;">Добавить подписку</h5>
   <form method="post" class="agro-sub-form">
     {% csrf_token %}
     <input type="hidden" name="action" value="add">
@@ -84,14 +99,13 @@
 </div>
 
 <!-- Existing subscriptions -->
-<h5>Мои подписки</h5>
+<h5 style="margin: 18px 0 8px 0; font-size: 15px; font-weight: 600;">Мои подписки</h5>
 {% if subscriptions %}
   <table class="agro-sub-table">
     <thead>
       <tr>
-        <th>Scope</th>
-        <th>Аномалии</th>
-        <th>Обновления</th>
+        <th>Объект</th>
+        <th colspan="2">Уведомления</th>
         <th>Действия</th>
       </tr>
     </thead>
@@ -100,11 +114,13 @@
       <tr>
         <td>
           {% if s.district_id %}
-            <strong>{{ s.district.name }}</strong>
-            <span style="color:#888; font-size:12px;">({{ s.district.region.name }})</span>
+            <span class="agro-scope-pill">район</span><br>
+            <strong style="font-size: 14px;">{{ s.district.name }}</strong>
+            <div style="color: var(--cab-muted); font-size: 12px;">{{ s.district.region.name }}</div>
           {% else %}
-            <strong>{{ s.region.name }}</strong>
-            <span style="color:#888; font-size:12px;">— весь субъект</span>
+            <span class="agro-scope-pill agro-scope-pill--region">субъект</span><br>
+            <strong style="font-size: 14px;">{{ s.region.name }}</strong>
+            <div style="color: var(--cab-muted); font-size: 12px;">весь субъект</div>
           {% endif %}
         </td>
         <td colspan="2">
@@ -139,8 +155,12 @@
     </tbody>
   </table>
 {% else %}
-  <p style="color:#888;">У вас пока нет подписок. Добавьте первую выше.</p>
+  <p style="color: var(--cab-muted);">У вас пока нет подписок. Добавьте первую выше.</p>
 {% endif %}
+
+      </section>
+    </div>{# /cab-main #}
+  </div>{# /cab-layout #}
 
 <script>
 (function() {

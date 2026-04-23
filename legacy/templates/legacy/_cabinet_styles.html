@@ -1,0 +1,123 @@
+{# Shared cabinet styles for /me/ and /me/agrocosmos/.  Include in {% block head %}. #}
+<style>
+  :root {
+    --cab-accent: #2e7d32;
+    --cab-accent-soft: #e8f5e9;
+    --cab-border: #e5e7eb;
+    --cab-text: #1f2937;
+    --cab-muted: #6b7280;
+    --cab-bg: #f5f7fa;
+    --cab-card-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.06);
+  }
+
+  .cab-layout {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    gap: 24px;
+    align-items: start;
+    margin-top: 16px;
+  }
+  @media (max-width: 900px) {
+    .cab-layout { grid-template-columns: 1fr; gap: 12px; }
+  }
+
+  .cab-sidebar { position: sticky; top: 16px; }
+  @media (max-width: 900px) { .cab-sidebar { position: static; } }
+
+  .cab-side-card {
+    background: #fff;
+    border: 1px solid var(--cab-border);
+    border-radius: 12px;
+    padding: 18px 14px;
+    box-shadow: var(--cab-card-shadow);
+  }
+
+  .cab-user {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--cab-border);
+    margin-bottom: 10px;
+  }
+  .cab-avatar {
+    width: 44px; height: 44px; flex: 0 0 44px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #a5d6a7 0%, var(--cab-accent) 100%);
+    color: #fff; font-weight: 700; font-size: 20px;
+    display: flex; align-items: center; justify-content: center;
+    text-transform: uppercase;
+  }
+  .cab-user-name { font-weight: 600; color: var(--cab-text); font-size: 14px; line-height: 1.2; }
+  .cab-user-id { color: var(--cab-muted); font-size: 11px; margin-top: 2px; }
+
+  .cab-nav { display: flex; flex-direction: column; gap: 2px; margin: 6px 0 10px; }
+  .cab-nav-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    color: var(--cab-text);
+    font-size: 14px; font-weight: 500;
+    text-decoration: none;
+    transition: background 0.12s ease, color 0.12s ease;
+    border-left: 3px solid transparent;
+  }
+  .cab-nav-item:hover { background: #f3f4f6; color: var(--cab-text); }
+  .cab-nav-item.active {
+    background: var(--cab-accent-soft);
+    color: var(--cab-accent);
+    border-left-color: var(--cab-accent);
+    font-weight: 600;
+  }
+  .cab-nav-icon { font-size: 18px; width: 22px; text-align: center; line-height: 1; }
+
+  .cab-side-footer {
+    display: flex; flex-direction: column; gap: 4px;
+    padding-top: 10px; border-top: 1px solid var(--cab-border);
+  }
+  .cab-link-subtle {
+    color: var(--cab-muted); font-size: 12px; padding: 6px 12px;
+    text-decoration: none; border-radius: 6px;
+  }
+  .cab-link-subtle:hover { background: #f3f4f6; color: var(--cab-text); }
+
+  /* main content */
+  .cab-main { min-width: 0; }
+  .cab-section {
+    background: #fff;
+    border: 1px solid var(--cab-border);
+    border-radius: 12px;
+    box-shadow: var(--cab-card-shadow);
+    padding: 22px;
+    margin-bottom: 16px;
+  }
+  .cab-section h2 {
+    margin: 0 0 4px; font-size: 20px; font-weight: 600; color: var(--cab-text);
+  }
+  .cab-section .cab-sub { color: var(--cab-muted); font-size: 13px; margin: 0 0 18px; }
+  .cab-section-hidden { display: none; }
+
+  .cab-flash-success { background: var(--cab-accent-soft); color: var(--cab-accent);
+    padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; font-size: 14px; }
+  .cab-flash-error { background: #fde8e8; color: #c62828;
+    padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; font-size: 14px; }
+  .cab-flash-warning { background: #fff8e1; color: #795548;
+    padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; font-size: 14px; }
+
+  /* Form tweaks inside cabinet sections */
+  .cab-section .input-field input { font-size: 14px; }
+  .cab-section label { color: var(--cab-muted); }
+
+  /* Map card */
+  .cab-map-wrap {
+    border: 1px solid var(--cab-border); border-radius: 8px; overflow: hidden;
+  }
+  #me_map { height: 260px; }
+
+  /* Adverts table: tighter & cleaner */
+  .cab-section table.striped { font-size: 13px; }
+  .cab-section table.striped th {
+    background: #f9fafb; color: var(--cab-muted);
+    font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+</style>
