@@ -92,8 +92,14 @@
               </label>
             </div>
 
-            <div class="col s12" style="margin-top: 14px;">
+            <div class="col s12" style="margin-top: 14px; display:flex; flex-wrap:wrap; gap:10px; align-items:center;">
               <button class="btn" type="submit">Сохранить</button>
+              <a href="{% url 'change_password' %}" class="btn-flat" style="text-transform:none;">
+                🔑 Сменить пароль
+              </a>
+              <a href="{% url 'legacy_logout' %}" class="btn-flat" style="text-transform:none; color:#c62828; margin-left:auto;">
+                ↩ Выйти из аккаунта
+              </a>
             </div>
           </div>
         </form>
