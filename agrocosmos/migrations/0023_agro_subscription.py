@@ -42,7 +42,7 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name='agrosubscription',
             constraint=models.CheckConstraint(
-                check=models.Q(('region__isnull', False)) | models.Q(('district__isnull', False)),
+                condition=models.Q(('region__isnull', False)) | models.Q(('district__isnull', False)),
                 name='agrosub_scope_required',
             ),
         ),
