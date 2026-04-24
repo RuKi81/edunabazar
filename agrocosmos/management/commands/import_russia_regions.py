@@ -253,7 +253,11 @@ def _name_variants(raw: str | None):
     """
     if not raw:
         return
-    base = _PUNCT_RE.sub(' ', raw).strip().casefold()
+    # Drop parenthesised duplicates like "Республика Татарстан (Татарстан)"
+    # before normalisation, otherwise the resulting "татарстан татарстан"
+    # matches nothing in OSM.
+    s = re.sub(r'\(.*?\)', ' ', raw)
+    base = _PUNCT_RE.sub(' ', s).strip().casefold()
     base = re.sub(r'\s+', ' ', base)
     if not base:
         return
