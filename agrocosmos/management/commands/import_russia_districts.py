@@ -2,30 +2,37 @@
 Bulk-import all Russian municipal districts / urban okrugs
 (admin_level=6) from OSM.
 
-Mirrors :mod:`import_russia_regions` but at a finer level, and adds a
-spatial-join step because OSM relations don't carry an explicit link
-from district → federal subject: we match each district's centroid
-against the stored Region geometries.
+Strategy: iterate over stored :class:`Region` rows that have an
+``osm_id`` set, and for each one run a per-region Overpass query
+(``area(region.osm_id + 3_600_000_000)`` scope). One country-wide
+``admin_level=6`` query times out at Overpass's 15-min QL limit; the
+per-region decomposition finishes one subject in a few seconds.
+
+Each district is upserted by its OSM relation id (``District.osm_id``),
+which makes the import idempotent even when the same district name
+repeats across subjects.
 
 Usage::
 
-    python manage.py import_russia_districts
-    python manage.py import_russia_districts --limit 50 --sleep 1
-    python manage.py import_russia_districts --skip-existing
-    python manage.py import_russia_districts --region-code RU-KDA  # only Krasnodar
+    # whole country (all Region rows with osm_id populated):
+    python manage.py import_russia_districts --sleep 2
 
-Districts whose centroid doesn't fall inside any imported Region are
-skipped with a warning — typically they're either offshore (disputed)
-or the regions dataset is incomplete.
+    # one subject at a time (uses region.osm_id automatically):
+    python manage.py import_russia_districts --region-code krim_resp
+
+    # manual Overpass scope override (rare — e.g. pre-osm_id backfill):
+    python manage.py import_russia_districts --region-code krim_resp \\
+        --parent-osm-id 3795586
+
+Prerequisite: populate ``Region.osm_id`` first via
+``import_russia_regions --refresh-osm-ids`` (fast, one Overpass call).
 """
 from __future__ import annotations
 
 import time
 
-from django.contrib.gis.geos import MultiPolygon
 from django.core.management.base import BaseCommand
 from django.db import transaction
-from django.db.models import Q
 
 from agrocosmos.management.commands.import_russia_regions import (
     _coerce_multipolygon,
@@ -34,7 +41,6 @@ from agrocosmos.models import District, Region
 from agrocosmos.services.osm_overpass import (
     fetch_admin_relations_in,
     fetch_polygon_geojson,
-    fetch_russia_admin_relations,
 )
 
 
@@ -76,52 +82,86 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **opts):
-        regions = list(Region.objects.all())
-        if not regions:
-            self.stderr.write(
-                'No Region rows found. Import regions first: '
-                '`python manage.py import_russia_regions`.'
-            )
-            return
-
-        region_filter = None
+        # Resolve which Region rows to process.
         if opts['region_code']:
             try:
-                region_filter = Region.objects.get(code=opts['region_code'])
+                regions = [Region.objects.get(code=opts['region_code'])]
             except Region.DoesNotExist:
                 self.stderr.write(f'Region code {opts["region_code"]!r} not found.')
                 return
-
-        parent_osm_id = opts.get('parent_osm_id')
-        if parent_osm_id:
-            self.stdout.write(
-                f'Fetching admin_level={opts["admin_level"]} relations from '
-                f'Overpass inside parent OSM relation {parent_osm_id}…'
-            )
         else:
-            self.stdout.write(
-                f'Fetching admin_level={opts["admin_level"]} relations from '
-                f'Overpass across ALL of Russia (may time out — consider '
-                f'--parent-osm-id for per-region batching)…'
-            )
-        try:
-            if parent_osm_id:
-                relations = fetch_admin_relations_in(
-                    parent_osm_id, opts['admin_level'],
+            regions = list(Region.objects.exclude(osm_id__isnull=True).order_by('name'))
+            if not regions:
+                self.stderr.write(
+                    'No Region rows with osm_id set. Run '
+                    '`python manage.py import_russia_regions --refresh-osm-ids` '
+                    'first, or pass --region-code with --parent-osm-id.'
                 )
-            else:
-                relations = fetch_russia_admin_relations(opts['admin_level'])
-        except Exception as exc:
-            self.stderr.write(f'Overpass error: {exc}')
+                return
+
+        manual_parent = opts.get('parent_osm_id')
+        if manual_parent and len(regions) > 1:
+            self.stderr.write(
+                '--parent-osm-id can only be used with --region-code '
+                '(one region at a time).'
+            )
             return
 
-        if opts['limit']:
-            relations = relations[: opts['limit']]
+        admin_level = opts['admin_level']
+        limit = opts['limit']
+        sleep_s = opts['sleep']
+        skip_existing = opts['skip_existing']
+
+        total_created = total_updated = total_skipped = 0
+        total_failed = total_regions_skipped = 0
+
+        for ri, region in enumerate(regions, 1):
+            scope_osm_id = manual_parent or region.osm_id
+            if not scope_osm_id:
+                self.stderr.write(
+                    f'[region {ri}/{len(regions)}] {region.name}: '
+                    'no osm_id — skipping (run import_russia_regions '
+                    '--refresh-osm-ids).'
+                )
+                total_regions_skipped += 1
+                continue
+
+            self.stdout.write(self.style.HTTP_INFO(
+                f'[region {ri}/{len(regions)}] {region.name} '
+                f'(code={region.code}, scope=osm:{scope_osm_id}) — '
+                f'fetching admin_level={admin_level}…'
+            ))
+            try:
+                relations = fetch_admin_relations_in(scope_osm_id, admin_level)
+            except Exception as exc:
+                self.stderr.write(f'  ! Overpass error: {exc}')
+                total_regions_skipped += 1
+                continue
+
+            if limit:
+                relations = relations[:limit]
+            total = len(relations)
+            self.stdout.write(f'  {total} districts in {region.name}')
+
+            c, u, s, f = self._process_region(
+                region, relations, skip_existing, sleep_s,
+            )
+            total_created += c
+            total_updated += u
+            total_skipped += s
+            total_failed += f
+
+        self.stdout.write(self.style.SUCCESS(
+            f'Done across {len(regions)} region(s): '
+            f'{total_created} created, {total_updated} updated, '
+            f'{total_skipped} skipped, {total_failed} failed'
+            + (f', {total_regions_skipped} region(s) skipped'
+               if total_regions_skipped else '')
+        ))
+
+    def _process_region(self, region, relations, skip_existing, sleep_s):
+        created = updated = skipped = failed = 0
         total = len(relations)
-        self.stdout.write(f'Processing {total} relations…')
-
-        created = updated = skipped = failed = unmatched = 0
-
         for i, rel in enumerate(relations, 1):
             name = rel['name']
             tags = rel['tags']
@@ -132,76 +172,45 @@ class Command(BaseCommand):
             ).strip()
 
             if not name:
-                self.stderr.write(f'[{i}/{total}] skip: no name on relation {rel["osm_id"]}')
+                self.stderr.write(
+                    f'    [{i}/{total}] skip: no name on relation {rel["osm_id"]}'
+                )
                 failed += 1
                 continue
 
-            # Cheap pre-check: if --skip-existing and any matching district
-            # already exists in any region, skip the expensive geometry fetch.
-            if opts['skip_existing'] and District.objects.filter(
-                Q(code=code) & ~Q(code='')
-            ).exists():
+            if skip_existing and District.objects.filter(osm_id=rel['osm_id']).exists():
                 skipped += 1
                 continue
 
-            self.stdout.write(f'[{i}/{total}] {name} ({code}) …')
+            self.stdout.write(f'    [{i}/{total}] {name} ({code}) …')
             raw = fetch_polygon_geojson(rel['osm_id'])
             if not raw:
-                self.stderr.write('  ! polygons.osm.fr returned no geometry')
+                self.stderr.write('      ! polygons.osm.fr returned no geometry')
                 failed += 1
-                time.sleep(opts['sleep'])
+                time.sleep(sleep_s)
                 continue
 
             try:
                 geom = _coerce_multipolygon(raw)
             except Exception as exc:
-                self.stderr.write(f'  ! geometry decode failed: {exc}')
+                self.stderr.write(f'      ! geometry decode failed: {exc}')
                 failed += 1
-                time.sleep(opts['sleep'])
-                continue
-
-            region = _match_region(geom, region_filter)
-            if region is None:
-                self.stderr.write('  ! no matching Region (skipped)')
-                unmatched += 1
-                time.sleep(opts['sleep'])
+                time.sleep(sleep_s)
                 continue
 
             with transaction.atomic():
                 _, is_new = District.objects.update_or_create(
-                    region=region,
-                    name=name,
-                    defaults={'code': code, 'geom': geom},
+                    osm_id=rel['osm_id'],
+                    defaults={
+                        'region': region,
+                        'name': name,
+                        'code': code,
+                        'geom': geom,
+                    },
                 )
-            tag = 'created' if is_new else 'updated'
-            self.stdout.write(f'  → {tag} in {region.name}')
             if is_new:
                 created += 1
             else:
                 updated += 1
-
-            time.sleep(opts['sleep'])
-
-        self.stdout.write(self.style.SUCCESS(
-            f'Done: {created} created, {updated} updated, '
-            f'{skipped} skipped, {unmatched} unmatched, {failed} failed'
-        ))
-
-
-def _match_region(district_geom: MultiPolygon,
-                  region_filter: Region | None) -> Region | None:
-    """
-    Pick the Region whose geometry contains the district's centroid.
-
-    Using the centroid (instead of Intersects on the full polygon) makes
-    the match deterministic for districts that straddle subject borders
-    because of coarse OSM edits. If ``region_filter`` is given, only
-    that region is considered — useful for partial re-imports.
-    """
-    centroid = district_geom.centroid
-    qs = (
-        Region.objects.filter(pk=region_filter.pk)
-        if region_filter is not None
-        else Region.objects.all()
-    )
-    return qs.filter(geom__contains=centroid).first()
+            time.sleep(sleep_s)
+        return created, updated, skipped, failed
