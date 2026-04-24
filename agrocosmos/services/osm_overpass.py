@@ -47,6 +47,46 @@ OVERPASS_QL_TIMEOUT = 900
 _UA = 'agrocosmos-import/1.0 (+https://edunabazar.ru)'
 _HEADERS = {'User-Agent': _UA, 'Accept': 'application/json'}
 
+# Transient HTTP statuses from Overpass we're willing to retry on.
+# 429 = rate limit, 502/503/504 = upstream/temporary, 500 = server error.
+_RETRY_STATUSES = (429, 500, 502, 503, 504)
+
+
+def _overpass_post(query: str, *, retries: int = 3) -> dict:
+    """POST a QL query to ``OVERPASS_URL`` with retry/backoff on 5xx/timeouts.
+
+    Why: public Overpass mirrors (kumi.systems, lz4, main) intermittently
+    return 504/502 for a few seconds when they're under load. A single
+    retry loop here avoids skipping entire regions in the bulk importers.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            resp = requests.post(
+                OVERPASS_URL,
+                data={'data': query},
+                headers=_HEADERS,
+                timeout=OVERPASS_QL_TIMEOUT + 60,
+            )
+            if resp.status_code in _RETRY_STATUSES:
+                raise requests.HTTPError(
+                    f'{resp.status_code} {resp.reason}', response=resp,
+                )
+            resp.raise_for_status()
+            return resp.json()
+        except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as exc:
+            last_exc = exc
+            if attempt >= retries:
+                break
+            sleep_s = min(30, 2 ** attempt)  # 2s, 4s, 8s, ... capped at 30s
+            logger.warning(
+                'Overpass %s (attempt %d/%d); retrying in %ds…',
+                exc, attempt, retries, sleep_s,
+            )
+            time.sleep(sleep_s)
+    assert last_exc is not None
+    raise last_exc
+
 
 def fetch_admin_relations_in(parent_osm_id: int, admin_level: int) -> list[dict]:
     """
@@ -75,14 +115,7 @@ def fetch_admin_relations_in(parent_osm_id: int, admin_level: int) -> list[dict]
         'Overpass: fetching admin_level=%d relations inside parent rel %d…',
         admin_level, parent_osm_id,
     )
-    resp = requests.post(
-        OVERPASS_URL,
-        data={'data': query},
-        headers=_HEADERS,
-        timeout=OVERPASS_QL_TIMEOUT + 60,
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    data = _overpass_post(query)
 
     out: list[dict] = []
     for el in data.get('elements', []):
@@ -132,14 +165,7 @@ def fetch_russia_admin_relations(admin_level: int) -> list[dict]:
     out tags;
     """
     logger.info('Overpass: fetching admin_level=%d relations…', admin_level)
-    resp = requests.post(
-        OVERPASS_URL,
-        data={'data': query},
-        headers=_HEADERS,
-        timeout=OVERPASS_QL_TIMEOUT + 60,
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    data = _overpass_post(query)
 
     out: list[dict] = []
     for el in data.get('elements', []):
