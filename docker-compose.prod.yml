@@ -58,6 +58,9 @@ services:
       DJANGO_DEBUG: "0"
       REDIS_URL: redis://redis:6379/0
       PYTHONUNBUFFERED: "1"
+      # Number of tiles a single composite window downloads in parallel.
+      # See agrocosmos.services.gee_download.TILE_CONCURRENCY.
+      GEE_TILE_CONCURRENCY: "${GEE_TILE_CONCURRENCY:-6}"
     volumes:
       - ./media:/app/media
       - ./logs:/app/logs

@@ -4,13 +4,14 @@ Shared GEE raster download utilities with tiling and timeouts.
 Uses computePixels() with:
 - Auto-tiling to fit 48 MB response limit (~12M pixels at float32)
 - concurrent.futures timeout to prevent indefinite hangs
+- Optional per-composite tile-level parallelism (env ``GEE_TILE_CONCURRENCY``)
 
 MAX_TILE_PX = 2000 → each tile ≈ 2000×2000 = 4M pixels ≈ 16 MB (< 48 MB).
 """
 import logging
 import math
 import os
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 
 import ee
 
@@ -19,6 +20,12 @@ logger = logging.getLogger(__name__)
 MAX_TILE_PX = 2000    # 2000×2000 = 4M pixels × 4 = 16 MB (limit is 48 MB)
 DOWNLOAD_TIMEOUT = 300  # seconds per tile
 MAX_RESPONSE_BYTES = 50_331_648  # GEE computePixels hard limit
+
+# Number of tiles to download in parallel from a single composite window.
+# GEE tolerates ~5-10 concurrent computePixels calls per project before it
+# starts throwing RESOURCE_EXHAUSTED; 6 is a safe default. Retries on 429
+# are handled inside services.gee_client.call_compute_pixels.
+TILE_CONCURRENCY = max(1, int(os.environ.get('GEE_TILE_CONCURRENCY', '6')))
 
 
 def tile_extents(xmin, ymin, xmax, ymax, scale_deg, max_px=MAX_TILE_PX):
@@ -171,20 +178,57 @@ def download_tiled_composite(composite, extent, scale_m, out_path,
         with open(out_path, 'wb') as f:
             f.write(content)
     else:
-        logger.info('%s: downloading %d tiles…', sensor_label, len(tiles))
-        tile_paths = []
         base = out_path.replace('.tif', '')
+        conc = min(TILE_CONCURRENCY, len(tiles))
+        msg = (f'{sensor_label}: downloading {len(tiles)} tiles '
+               f'(concurrency={conc})…')
+        logger.info(msg)
+        print(f'    [tile] {msg}')
 
-        for ti, (tx0, ty0, tx1, ty1) in enumerate(tiles):
-            tile_path = f'{base}_tile{ti}.tif'
+        tile_paths: list[str | None] = [None] * len(tiles)
+
+        def _download_one(idx: int, bbox: tuple) -> tuple[int, str, int]:
+            tx0, ty0, tx1, ty1 = bbox
+            path = f'{base}_tile{idx}.tif'
             content = download_tile(composite, tx0, ty0, tx1, ty1, scale_deg)
-            with open(tile_path, 'wb') as f:
+            with open(path, 'wb') as f:
                 f.write(content)
-            tile_paths.append(tile_path)
-            logger.info('  Tile %d/%d OK (%.1f MB)',
-                        ti + 1, len(tiles), len(content) / 1e6)
+            return idx, path, len(content)
 
-        merge_tiles(tile_paths, out_path)
+        with ThreadPoolExecutor(max_workers=conc) as pool:
+            futures = {
+                pool.submit(_download_one, ti, bbox): ti
+                for ti, bbox in enumerate(tiles)
+            }
+            first_error: Exception | None = None
+            done = 0
+            for fut in as_completed(futures):
+                try:
+                    ti, path, size = fut.result()
+                except Exception as exc:
+                    # Fail fast: cancel the rest so we don't pile up
+                    # partial tile files and network traffic.
+                    if first_error is None:
+                        first_error = exc
+                    for other in futures:
+                        other.cancel()
+                    continue
+                tile_paths[ti] = path
+                done += 1
+                logger.info('  Tile %d/%d OK (%.1f MB)',
+                            done, len(tiles), size / 1e6)
+
+            if first_error is not None:
+                # Remove any partial tiles to keep the data dir clean.
+                for p in tile_paths:
+                    if p and os.path.exists(p):
+                        try:
+                            os.remove(p)
+                        except OSError:
+                            pass
+                raise first_error
+
+        merge_tiles([p for p in tile_paths if p], out_path)
 
     import rasterio
     with rasterio.open(out_path) as ds:

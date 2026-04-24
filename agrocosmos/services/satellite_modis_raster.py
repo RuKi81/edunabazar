@@ -32,6 +32,9 @@ RASTER_DIR = os.environ.get(
     getattr(settings, 'MODIS_RASTER_DIR', '/data/modis'),
 )
 
+# MODIS MOD13Q1/MYD13Q1 native resolution (in metres).
+SCALE_M = 250
+
 
 def _biweekly_chunks(date_from, date_to):
     """
@@ -129,41 +132,20 @@ def download_composite(region_geom_extent, region_id, date_from, date_to,
         # Median composite — cloud-free
         composite = ndvi_col.median().rename('NDVI').toFloat()
 
-        # Download as GeoTIFF via computePixels (uses compute API, no
-        # extra IAM permissions needed unlike getDownloadURL).
-        # Route through call_compute_pixels for rate-limit + retries + metrics.
-        from .gee_client import call_compute_pixels
-        content = call_compute_pixels({
-            'expression': composite,
-            'fileFormat': 'GEO_TIFF',
-            'grid': {
-                'crsCode': 'EPSG:4326',
-                'affineTransform': {
-                    'scaleX': 250 / 111320,   # ~250m in degrees at equator
-                    'shearX': 0,
-                    'translateX': xmin,
-                    'shearY': 0,
-                    'scaleY': -250 / 111320,
-                    'translateY': ymax,
-                },
-                'dimensions': {
-                    'width': int((xmax - xmin) / (250 / 111320)) + 1,
-                    'height': int((ymax - ymin) / (250 / 111320)) + 1,
-                },
-            },
-        })
-
-        with open(out_path, 'wb') as f:
-            f.write(content)
-
-        # Verify the file is readable
-        with rasterio.open(out_path) as ds:
-            logger.info(
-                'Downloaded: %s (%d×%d, %.1f MB, %d images → median)',
-                out_path, ds.width, ds.height,
-                os.path.getsize(out_path) / 1e6, n_images,
-            )
-
+        # Download via the shared tiled-composite helper — handles:
+        #   * auto-tiling for extents that exceed GEE computePixels limits
+        #     (e.g. whole-Russia MODIS = ~5 GB raw → must be split), and
+        #   * tile-level parallelism via GEE_TILE_CONCURRENCY.
+        # Rate-limiting / 429 retries remain inside gee_client.call_compute_pixels.
+        from .gee_download import download_tiled_composite
+        download_tiled_composite(
+            composite,
+            extent=(xmin, ymin, xmax, ymax),
+            scale_m=SCALE_M,
+            out_path=out_path,
+            n_images=n_images,
+            sensor_label='MODIS',
+        )
         return out_path
 
     except Exception as e:
