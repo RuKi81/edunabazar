@@ -35,6 +35,12 @@ POLYGONS_URL = 'https://polygons.openstreetmap.fr/get_geojson.py'
 # than a connection reset.
 OVERPASS_QL_TIMEOUT = 900
 
+# Both Overpass and polygons.osm.fr reject requests without a sensible
+# User-Agent (Overpass returns 406 Not Acceptable for the default
+# "python-requests/*"). Identify ourselves per OSM etiquette.
+_UA = 'agrocosmos-import/1.0 (+https://edunabazar.ru)'
+_HEADERS = {'User-Agent': _UA, 'Accept': 'application/json'}
+
 
 def fetch_russia_admin_relations(admin_level: int) -> list[dict]:
     """
@@ -59,6 +65,7 @@ def fetch_russia_admin_relations(admin_level: int) -> list[dict]:
     resp = requests.post(
         OVERPASS_URL,
         data={'data': query},
+        headers=_HEADERS,
         timeout=OVERPASS_QL_TIMEOUT + 60,
     )
     resp.raise_for_status()
@@ -97,6 +104,7 @@ def fetch_polygon_geojson(osm_id: int, retries: int = 3,
             resp = requests.get(
                 POLYGONS_URL,
                 params={'id': osm_id, 'params': 0},
+                headers=_HEADERS,
                 timeout=120,
             )
             body = resp.text.strip()
