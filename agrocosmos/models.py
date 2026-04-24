@@ -95,8 +95,18 @@ class Farmland(models.Model):
         verbose_name = 'Угодье'
         verbose_name_plural = 'Угодья'
         indexes = [
-            models.Index(fields=['region', 'crop_type']),
-            models.Index(fields=['region', 'is_used']),
+            # Names must match migration 0026 exactly — otherwise Django
+            # sees a diff and nags about ``makemigrations``.
+            models.Index(
+                fields=['region', 'crop_type'],
+                name='agro_farmla_region__cropt_idx',
+            ),
+            models.Index(
+                fields=['region', 'is_used'],
+                name='agro_farmla_region__isused_idx',
+            ),
+            # Historical index, renamed in 0008; auto-name matches
+            # applied state.
             models.Index(fields=['district', 'crop_type']),
         ]
 
