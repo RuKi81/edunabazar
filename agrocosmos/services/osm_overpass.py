@@ -111,14 +111,24 @@ def fetch_russia_admin_relations(admin_level: int) -> list[dict]:
     Only tags are returned — geometry is fetched per-relation via
     :func:`fetch_polygon_geojson` because Overpass's inline geometry
     output for thousands of relations blows past response size limits.
+
+    We filter by the ``ISO3166-2`` tag (``^RU-*``) instead of
+    ``area[ISO3166-1=RU]`` because the area-scoped query forces Overpass
+    to materialise Russia's full multipolygon on the fly, which has been
+    timing out on the public servers. Tag-filtering is O(index) and
+    completes in <2 s on mirrors like overpass.kumi.systems.
+
+    For admin_level=4 (federal subjects) every RU subject carries an
+    ISO3166-2 tag, so this is complete. For other levels (where the tag
+    doesn't exist), prefer :func:`fetch_admin_relations_in` with a
+    parent relation id.
     """
     query = f"""
     [out:json][timeout:{OVERPASS_QL_TIMEOUT}];
-    area["ISO3166-1"="RU"]->.ru;
     relation
       ["boundary"="administrative"]
       ["admin_level"="{admin_level}"]
-      (area.ru);
+      ["ISO3166-2"~"^RU-"];
     out tags;
     """
     logger.info('Overpass: fetching admin_level=%d relations…', admin_level)
