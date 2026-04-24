@@ -5,6 +5,10 @@ class Region(models.Model):
     """Субъект РФ (например, Республика Крым)."""
     name = models.CharField(max_length=255, verbose_name='Название')
     code = models.CharField(max_length=100, unique=True, verbose_name='Код субъекта')
+    osm_id = models.BigIntegerField(
+        null=True, blank=True, unique=True, db_index=True,
+        verbose_name='OSM relation id',
+    )
     geom = models.MultiPolygonField(srid=4326, verbose_name='Границы')
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -23,6 +27,10 @@ class District(models.Model):
     region = models.ForeignKey(Region, on_delete=models.CASCADE, related_name='districts')
     name = models.CharField(max_length=255, verbose_name='Название')
     code = models.CharField(max_length=150, blank=True, default='', verbose_name='Код района')
+    osm_id = models.BigIntegerField(
+        null=True, blank=True, unique=True, db_index=True,
+        verbose_name='OSM relation id',
+    )
     geom = models.MultiPolygonField(srid=4326, verbose_name='Границы')
     created_at = models.DateTimeField(auto_now_add=True)
 

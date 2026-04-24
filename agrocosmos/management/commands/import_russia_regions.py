@@ -65,10 +65,21 @@ class Command(BaseCommand):
             '--name', default=None,
             help='Explicit region name to write (used with --osm-id).',
         )
+        parser.add_argument(
+            '--refresh-osm-ids', action='store_true',
+            help=(
+                'Do NOT fetch polygons; only match Overpass admin_level=4 '
+                'relations to existing Region rows (by name, case-insensitive) '
+                'and populate their osm_id column. Fast (one Overpass call).'
+            ),
+        )
 
     def handle(self, *args, **opts):
         if opts['osm_id']:
             self._handle_single(opts)
+            return
+        if opts['refresh_osm_ids']:
+            self._handle_refresh_ids()
             return
 
         self.stdout.write('Fetching admin_level=4 relations from Overpass…')
@@ -123,7 +134,11 @@ class Command(BaseCommand):
             with transaction.atomic():
                 _, is_new = Region.objects.update_or_create(
                     code=code,
-                    defaults={'name': name, 'geom': geom},
+                    defaults={
+                        'name': name,
+                        'geom': geom,
+                        'osm_id': rel['osm_id'],
+                    },
                 )
             if is_new:
                 created += 1
@@ -161,11 +176,49 @@ class Command(BaseCommand):
         with transaction.atomic():
             obj, is_new = Region.objects.update_or_create(
                 code=code,
-                defaults={'name': name, 'geom': geom},
+                defaults={'name': name, 'geom': geom, 'osm_id': osm_id},
             )
         tag = 'created' if is_new else 'updated'
         self.stdout.write(self.style.SUCCESS(
-            f'{tag}: {obj.name} (code={obj.code}, pk={obj.pk})'
+            f'{tag}: {obj.name} (code={obj.code}, pk={obj.pk}, osm_id={osm_id})'
+        ))
+
+    def _handle_refresh_ids(self) -> None:
+        """Populate Region.osm_id from OSM admin_level=4 relations by name match."""
+        self.stdout.write('Fetching admin_level=4 relations from Overpass…')
+        try:
+            relations = fetch_russia_admin_relations(4)
+        except Exception as exc:
+            self.stderr.write(f'Overpass error: {exc}')
+            return
+
+        # Build a case-insensitive name → osm_id map. If OSM has duplicates
+        # with the same display name (e.g. two Sevastopol relations), keep
+        # the first one and warn.
+        by_name: dict[str, int] = {}
+        for rel in relations:
+            key = rel['name'].strip().casefold()
+            if key and key not in by_name:
+                by_name[key] = rel['osm_id']
+
+        matched = unmatched = already = 0
+        for r in Region.objects.all():
+            key = (r.name or '').strip().casefold()
+            osm_id = by_name.get(key)
+            if osm_id is None:
+                self.stderr.write(f'  ! no OSM match for {r.name!r} (code={r.code!r})')
+                unmatched += 1
+                continue
+            if r.osm_id == osm_id:
+                already += 1
+                continue
+            r.osm_id = osm_id
+            r.save(update_fields=['osm_id'])
+            self.stdout.write(f'  {r.name} (code={r.code}) → osm_id={osm_id}')
+            matched += 1
+
+        self.stdout.write(self.style.SUCCESS(
+            f'Done: {matched} set, {already} already correct, {unmatched} unmatched'
         ))
 
 
