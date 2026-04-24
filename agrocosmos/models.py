@@ -49,30 +49,54 @@ class Farmland(models.Model):
 
     class CropType(models.TextChoices):
         ARABLE = 'arable', 'Пашня'
+        FALLOW = 'fallow', 'Залежь'
         HAYFIELD = 'hayfield', 'Сенокос'
         PASTURE = 'pasture', 'Пастбище'
-        PERENNIAL = 'perennial', 'Многолетнее насаждение'
+        PERENNIAL = 'perennial', 'Многолетние насаждения'
+        OTHER_AGRI = 'other_agri', 'Иные с.-х. земли'
         OTHER = 'other', 'Прочее'
 
-    district = models.ForeignKey(District, on_delete=models.CASCADE, related_name='farmlands')
+    region = models.ForeignKey(
+        Region, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='farmlands', verbose_name='Регион',
+    )
+    district = models.ForeignKey(
+        District, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='farmlands', verbose_name='Район',
+    )
     crop_type = models.CharField(
         max_length=20,
         choices=CropType.choices,
         default=CropType.ARABLE,
         verbose_name='Вид угодья',
     )
-    cadastral_number = models.CharField(max_length=50, blank=True, default='', verbose_name='Кадастровый номер')
+    is_used = models.BooleanField(
+        null=True, blank=True,
+        verbose_name='Факт использования',
+        help_text='True — используется, False — не используется, NULL — неизвестно',
+    )
+    cadastral_number = models.CharField(
+        max_length=50, blank=True, default='', db_index=True,
+        verbose_name='Кадастровый номер',
+    )
     area_ha = models.FloatField(default=0, verbose_name='Площадь, га')
     geom = models.MultiPolygonField(srid=4326, verbose_name='Границы')
     properties = models.JSONField(blank=True, null=True, verbose_name='Доп. атрибуты')
+    source = models.CharField(
+        max_length=40, blank=True, default='',
+        verbose_name='Источник (schema_id)',
+        help_text='Идентификатор исходной схемы данных, например "rosreestr_zsn/altai"',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'agro_farmland'
-        ordering = ['district', 'crop_type']
+        ordering = ['region', 'district', 'crop_type']
         verbose_name = 'Угодье'
         verbose_name_plural = 'Угодья'
         indexes = [
+            models.Index(fields=['region', 'crop_type']),
+            models.Index(fields=['region', 'is_used']),
             models.Index(fields=['district', 'crop_type']),
         ]
 
@@ -410,7 +434,10 @@ class AgroSubscription(models.Model):
         constraints = [
             # A subscription must scope to something.
             models.CheckConstraint(
-                check=models.Q(region__isnull=False) | models.Q(district__isnull=False),
+                # Django 5.1 renamed ``check`` → ``condition`` and
+                # removed the alias in 6.0. Use ``condition`` for
+                # forward-compat.
+                condition=models.Q(region__isnull=False) | models.Q(district__isnull=False),
                 name='agrosub_scope_required',
             ),
             # One row per (user, region, district) cell.

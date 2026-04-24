@@ -36,3 +36,8 @@ db.sqlite3
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Farmland import artefacts (large, local)
+scripts/*.json
+import_data/
+_tmp_*.py

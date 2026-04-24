@@ -25,6 +25,7 @@ services:
     volumes:
       - ./media:/app/media
       - ./logs:/app/logs
+      - ./import_data:/data/import:ro
       - static_files:/app/staticfiles
       - modis_data:/data/modis
       - s2_data:/data/s2
