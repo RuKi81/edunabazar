@@ -130,7 +130,9 @@ jobs:
             cd /opt/edunabazar
             git fetch origin
             git reset --hard origin/main
-            docker compose -f docker-compose.prod.yml build web
+            # Build both web and worker — they share the Dockerfile but
+            # docker compose maintains them as separate image tags.
+            docker compose -f docker-compose.prod.yml build web worker
             docker compose -f docker-compose.prod.yml up -d
             docker compose -f docker-compose.prod.yml exec -T web python manage.py migrate --noinput
             docker compose -f docker-compose.prod.yml exec -T web python manage.py collectstatic --noinput
