@@ -21,13 +21,19 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 
 import requests
 
 logger = logging.getLogger(__name__)
 
-OVERPASS_URL = 'https://overpass-api.de/api/interpreter'
+# Allow switching to mirrors (e.g. https://overpass.kumi.systems/api/interpreter
+# or https://lz4.overpass-api.de/api/interpreter) without a redeploy.
+OVERPASS_URL = os.environ.get(
+    'OVERPASS_URL',
+    'https://overpass-api.de/api/interpreter',
+)
 POLYGONS_URL = 'https://polygons.openstreetmap.fr/get_geojson.py'
 
 # Overpass QL's own timeout (seconds). The HTTP timeout we use for the
