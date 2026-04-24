@@ -32,6 +32,7 @@ from agrocosmos.management.commands.import_russia_regions import (
 )
 from agrocosmos.models import District, Region
 from agrocosmos.services.osm_overpass import (
+    fetch_admin_relations_in,
     fetch_polygon_geojson,
     fetch_russia_admin_relations,
 )
@@ -61,6 +62,15 @@ class Command(BaseCommand):
             help='Restrict to a single federal subject (e.g. RU-KDA).',
         )
         parser.add_argument(
+            '--parent-osm-id', type=int, default=None,
+            help=(
+                'Scope the Overpass query to a single parent relation '
+                '(e.g. 3795586 for Republic of Crimea). Strongly recommended '
+                'for production: querying all of Russia for admin_level=6 in '
+                'one shot times out at Overpass\'s 15-min QL limit.'
+            ),
+        )
+        parser.add_argument(
             '--admin-level', type=int, default=6,
             help='OSM admin_level to fetch (default 6 = mun. districts).',
         )
@@ -82,11 +92,25 @@ class Command(BaseCommand):
                 self.stderr.write(f'Region code {opts["region_code"]!r} not found.')
                 return
 
-        self.stdout.write(
-            f'Fetching admin_level={opts["admin_level"]} relations from Overpass…'
-        )
+        parent_osm_id = opts.get('parent_osm_id')
+        if parent_osm_id:
+            self.stdout.write(
+                f'Fetching admin_level={opts["admin_level"]} relations from '
+                f'Overpass inside parent OSM relation {parent_osm_id}…'
+            )
+        else:
+            self.stdout.write(
+                f'Fetching admin_level={opts["admin_level"]} relations from '
+                f'Overpass across ALL of Russia (may time out — consider '
+                f'--parent-osm-id for per-region batching)…'
+            )
         try:
-            relations = fetch_russia_admin_relations(opts['admin_level'])
+            if parent_osm_id:
+                relations = fetch_admin_relations_in(
+                    parent_osm_id, opts['admin_level'],
+                )
+            else:
+                relations = fetch_russia_admin_relations(opts['admin_level'])
         except Exception as exc:
             self.stderr.write(f'Overpass error: {exc}')
             return

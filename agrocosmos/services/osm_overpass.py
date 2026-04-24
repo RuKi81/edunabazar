@@ -42,6 +42,60 @@ _UA = 'agrocosmos-import/1.0 (+https://edunabazar.ru)'
 _HEADERS = {'User-Agent': _UA, 'Accept': 'application/json'}
 
 
+def fetch_admin_relations_in(parent_osm_id: int, admin_level: int) -> list[dict]:
+    """
+    Return OSM admin_level=N relations inside a given parent relation.
+
+    Useful for per-region district imports: ``area[ISO3166-1=RU]`` +
+    admin_level=6 is too heavy for Overpass (times out at 15 min), but
+    scoping to one subject at a time runs in a few seconds.
+
+    ``parent_osm_id`` is the OSM *relation* id (e.g. 3795586 for
+    Republic of Crimea). We map it to an area id with Overpass's
+    standard ``rel(id); map_to_area;`` trick.
+    """
+    # Overpass area ids = relation_id + 3_600_000_000 for relations
+    area_id = parent_osm_id + 3_600_000_000
+    query = f"""
+    [out:json][timeout:{OVERPASS_QL_TIMEOUT}];
+    area({area_id})->.parent;
+    relation
+      ["boundary"="administrative"]
+      ["admin_level"="{admin_level}"]
+      (area.parent);
+    out tags;
+    """
+    logger.info(
+        'Overpass: fetching admin_level=%d relations inside parent rel %d…',
+        admin_level, parent_osm_id,
+    )
+    resp = requests.post(
+        OVERPASS_URL,
+        data={'data': query},
+        headers=_HEADERS,
+        timeout=OVERPASS_QL_TIMEOUT + 60,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    out: list[dict] = []
+    for el in data.get('elements', []):
+        if el.get('type') != 'relation':
+            continue
+        tags = el.get('tags', {})
+        name = tags.get('name:ru') or tags.get('name') or ''
+        out.append({
+            'osm_id': el['id'],
+            'name': name.strip(),
+            'tags': tags,
+        })
+    logger.info(
+        'Overpass: got %d relations at admin_level=%d inside rel %d',
+        len(out), admin_level, parent_osm_id,
+    )
+    return out
+
+
 def fetch_russia_admin_relations(admin_level: int) -> list[dict]:
     """
     Return a list of OSM relations with a given admin_level inside Russia.
