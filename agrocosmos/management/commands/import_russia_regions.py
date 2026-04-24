@@ -20,6 +20,7 @@ Usage::
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from django.contrib.gis.geos import GEOSGeometry, MultiPolygon
@@ -192,19 +193,32 @@ class Command(BaseCommand):
             self.stderr.write(f'Overpass error: {exc}')
             return
 
-        # Build a case-insensitive name → osm_id map. If OSM has duplicates
-        # with the same display name (e.g. two Sevastopol relations), keep
-        # the first one and warn.
+        # Build a normalised-name → osm_id map, indexing every name-like
+        # tag we can find on the relation plus a stop-word-stripped form
+        # (e.g. "республика башкортостан" ↔ "башкортостан") so the DB's
+        # canonical "Республика Башкортостан" matches OSM's name:ru
+        # "Башкортостан" and vice-versa.
         by_name: dict[str, int] = {}
         for rel in relations:
-            key = rel['name'].strip().casefold()
-            if key and key not in by_name:
-                by_name[key] = rel['osm_id']
+            tags = rel['tags']
+            candidates = {
+                tags.get('name'), tags.get('name:ru'),
+                tags.get('official_name'), tags.get('official_name:ru'),
+                tags.get('short_name'), tags.get('short_name:ru'),
+                tags.get('alt_name'), tags.get('alt_name:ru'),
+                rel.get('name'),
+            }
+            for raw in candidates:
+                for norm in _name_variants(raw):
+                    by_name.setdefault(norm, rel['osm_id'])
 
         matched = unmatched = already = 0
         for r in Region.objects.all():
-            key = (r.name or '').strip().casefold()
-            osm_id = by_name.get(key)
+            osm_id = None
+            for norm in _name_variants(r.name):
+                osm_id = by_name.get(norm)
+                if osm_id is not None:
+                    break
             if osm_id is None:
                 self.stderr.write(f'  ! no OSM match for {r.name!r} (code={r.code!r})')
                 unmatched += 1
@@ -220,6 +234,37 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f'Done: {matched} set, {already} already correct, {unmatched} unmatched'
         ))
+
+
+_STOP_WORDS = (
+    'автономный округ', 'автономная область',
+    'республика', 'область', 'край', 'округ', 'обл',
+)
+_PUNCT_RE = re.compile(r'[\s\-\u2010-\u2015_()/.,:;«»"\'`]+')
+
+
+def _name_variants(raw: str | None):
+    """Yield normalised keys for matching a subject name.
+
+    Strips punctuation/case, collapses whitespace, and yields both the
+    full normalised form and versions with common administrative
+    qualifiers removed (e.g. "Республика Башкортостан" -> "башкортостан",
+    "Ханты-Мансийский автономный округ — Югра" -> "ханты мансийский югра").
+    """
+    if not raw:
+        return
+    base = _PUNCT_RE.sub(' ', raw).strip().casefold()
+    base = re.sub(r'\s+', ' ', base)
+    if not base:
+        return
+    seen = {base}
+    yield base
+    for sw in _STOP_WORDS:
+        if sw in base:
+            stripped = re.sub(r'\s+', ' ', base.replace(sw, '')).strip()
+            if stripped and stripped not in seen:
+                seen.add(stripped)
+                yield stripped
 
 
 def _coerce_multipolygon(raw: dict) -> MultiPolygon:
