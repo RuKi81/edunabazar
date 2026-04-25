@@ -17,3 +17,19 @@ db.sqlite3
 .DS_Store
 Thumbs.db
 node_modules
+
+# Large data directories that live alongside the repo on the prod VM
+# but must NEVER be sent to Docker as build context (they're bind-mounted
+# at runtime via docker-compose volumes). Without these excludes,
+# `docker compose build` on the server tries to ship 100+ GB of shapefiles
+# and rasters, blowing past the deploy timeout.
+import_data/
+geodata/
+modis_data/
+s2_data/
+data/
+logs/
+
+# Local scratch / scan artefacts
+_shp_preview.txt
+_tmp_*.py
