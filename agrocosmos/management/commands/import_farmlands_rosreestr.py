@@ -318,10 +318,16 @@ class Command(BaseCommand):
         return None
 
     def _truncate_farmland(self) -> None:
+        # CASCADE is required because agro_vegetation_index (and other
+        # dependants) hold FK references to agro_farmland. Truncating
+        # agro_farmland alone raises NotSupportedError from Postgres.
+        # Any cached NDVI/VCI rows for the old farmlands become stale
+        # once the farmland_id set is replaced anyway, so cascading is
+        # the correct semantic.
         with connection.cursor() as cur:
-            cur.execute('TRUNCATE agro_farmland RESTART IDENTITY;')
+            cur.execute('TRUNCATE agro_farmland RESTART IDENTITY CASCADE;')
         self.stdout.write(self.style.WARNING(
-            'agro_farmland TRUNCATEd (RESTART IDENTITY).'
+            'agro_farmland TRUNCATEd (RESTART IDENTITY CASCADE).'
         ))
 
     def _drop_staging_silent(self, staging: str) -> None:
