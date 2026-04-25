@@ -302,8 +302,20 @@ class Command(BaseCommand):
                 return r
 
         # 3. Substring match both directions
-        return (Region.objects.filter(name__icontains=normalised).first()
-                or Region.objects.filter(name__icontains=bare or normalised).first())
+        r = (Region.objects.filter(name__icontains=normalised).first()
+             or Region.objects.filter(name__icontains=bare or normalised).first())
+        if r is not None:
+            return r
+
+        # 4. Strip a trailing alternate name after ' - ' (e.g.
+        #    "Кемеровская область - Кузбасс" → "Кемеровская область";
+        #    Rosreestr ships these aliases, but the Region table keeps
+        #    the canonical short form).
+        if ' - ' in normalised:
+            head = normalised.split(' - ', 1)[0].strip()
+            return (Region.objects.filter(name__iexact=head).first()
+                    or Region.objects.filter(name__icontains=head).first())
+        return None
 
     def _truncate_farmland(self) -> None:
         with connection.cursor() as cur:
