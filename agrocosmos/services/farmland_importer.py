@@ -124,6 +124,13 @@ def run_ogr2ogr(
         '-lco', 'FID=ogc_fid',
         '-lco', 'SPATIAL_INDEX=NONE',
         '-lco', 'LAUNDER=NO',
+        # PRECISION=NO disables propagating the .dbf field width/decimals
+        # into the Postgres column definition. Some Rosreestr files declare
+        # S_ha as numeric(18,15) — i.e. max ~999.999… — but actually contain
+        # values >1000 (e.g. 1912.45 ha), which makes the COPY abort with
+        # "numeric field overflow". With PRECISION=NO ogr2ogr emits a plain
+        # numeric/float8 column that accepts the full data range.
+        '-lco', 'PRECISION=NO',
         '-oo', f'ENCODING={schema.data_encoding}',
         '-overwrite',
         '-skipfailures',
