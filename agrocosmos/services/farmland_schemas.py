@@ -26,11 +26,24 @@ from pathlib import Path
 USAGE_ALIASES: tuple[str, ...] = (
     # 'S_Vid_N' is the most reliable canonical label and must win over
     # Kaluga-style 'Farming' (which actually holds kolhoz names).
-    's_vid_n', 's_vid_efis', 's_vid_dzz',
-    'sovr_vid', 'sovr_vid_c',
-    'vid_efis', 'vid_dzz_n', 'vid_gfdz',
+    #
+    # NOTE: 's_vid_dzz' / 'sovr_vid_c' / 'vid_dzz_n' / 'vid_fact_c' are
+    # *numeric* code columns in some Rosreestr dialects (Кемеровская,
+    # for instance, ships S_vid_DZZ as Integer alongside the textual
+    # Sovr_vid). The textual sibling (sovr_vid / vid_fact_t / dzz_text)
+    # must be picked first so the ogr2ogr -where filter on Russian
+    # labels and the downstream crop_type CASE both work. Otherwise the
+    # numeric column wins, the IN ('Пашня',…) -where silently passes
+    # everything (GDAL type-mismatch quirk) and the INSERT … SELECT
+    # filters all rows out (observed: Кемеровская staged=985k inserted=0).
+    's_vid_n', 's_vid_efis',
+    'sovr_vid',
+    'vid_efis', 'vid_gfdz',
     'vid_fact_t',  # Primorsky: text sibling of the numeric Vid_Fact_C code
-    'vid_fact_c',  # fallback: numeric code, needs separate decoding
+    # Numeric/code fallbacks — only chosen when no textual usage column
+    # is present at all. They will not match the Russian -where filter,
+    # so an empty staging is the expected outcome (skip the region).
+    's_vid_dzz', 'sovr_vid_c', 'vid_dzz_n', 'vid_fact_c',
     'farming',     # Kaluga — tried last, often noise
 )
 
