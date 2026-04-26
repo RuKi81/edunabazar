@@ -41,13 +41,29 @@ def api_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
 
     where_clauses = []
     params = []
+    extra_ctes = ""
 
     if district_id:
         try:
-            where_clauses.append("f.district_id = %s")
-            params.append(int(district_id))
+            did = int(district_id)
         except (TypeError, ValueError):
-            pass
+            did = None
+        if did is not None:
+            # Hybrid filter: match by FK when assign_farmland_district has
+            # already run, otherwise fall back to a spatial intersection with
+            # the district's geometry. The CTE computes the district geometry
+            # once per tile query; the bbox-prefilter (f.geom && envelope)
+            # still bounds the cost.
+            extra_ctes = ",\n        sel_district AS (SELECT geom FROM agro_district WHERE id = %s)"
+            where_clauses.append(
+                "( f.district_id = %s "
+                "OR (f.district_id IS NULL "
+                "AND f.geom && (SELECT geom FROM sel_district) "
+                "AND ST_Intersects(f.geom, (SELECT geom FROM sel_district))) )"
+            )
+            # First param is for sel_district CTE, second for f.district_id = %s
+            params.append(did)
+            params.append(did)
     elif region_id:
         try:
             # Filter via f.region_id (not d.region_id) — a freshly imported
@@ -66,7 +82,7 @@ def api_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
         WITH
         bounds AS (
             SELECT ST_MakeEnvelope(%s, %s, %s, %s, 3857) AS envelope
-        ),
+        ){extra_ctes},
         tile_data AS (
             SELECT
                 f.id,
