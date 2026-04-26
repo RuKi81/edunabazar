@@ -50,7 +50,10 @@ def api_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
             pass
     elif region_id:
         try:
-            where_clauses.append("d.region_id = %s")
+            # Filter via f.region_id (not d.region_id) — a freshly imported
+            # farmland may have district_id = NULL until assign_farmland_district
+            # has run, and the LEFT JOIN below would then produce d.region_id = NULL.
+            where_clauses.append("f.region_id = %s")
             params.append(int(region_id))
         except (TypeError, ValueError):
             pass
@@ -80,7 +83,9 @@ def api_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
                     true
                 ) AS geom
             FROM agro_farmland f
-            JOIN agro_district d ON d.id = f.district_id
+            -- LEFT JOIN so newly imported farmlands (district_id = NULL,
+            -- to be filled in by `assign_farmland_district`) still render.
+            LEFT JOIN agro_district d ON d.id = f.district_id
             CROSS JOIN bounds b
             WHERE f.geom && ST_Transform(b.envelope, 4326)
             {where_sql}
