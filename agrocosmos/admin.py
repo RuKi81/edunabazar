@@ -237,8 +237,14 @@ def agro_panel_view(request):
     from django.db.models import Count, Sum
     from .models import GeeApiMetric
 
+    # Count farmlands via the direct ``Farmland.region`` FK (related_name
+    # ``farmlands``) — going through ``districts__farmlands`` would skip
+    # every freshly-imported parcel whose ``district_id`` is still NULL
+    # (only filled in later by ``assign_farmland_district``) and, more
+    # painfully, blow up into a 3-table join over 19M+ rows that times out
+    # behind nginx. The direct FK is indexed on (region_id, ...).
     regions = Region.objects.annotate(
-        farmland_count=Count('districts__farmlands'),
+        farmland_count=Count('farmlands'),
     )
     districts = District.objects.select_related('region').order_by('region__name', 'name')
     tasks = MonitoringTask.objects.select_related('region').all()[:20]
