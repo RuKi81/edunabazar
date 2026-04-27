@@ -293,7 +293,7 @@
         </label>
       </div>
       {% else %}
-      {# Farmland borders are admin-only. Hidden stub keeps JS .checked refs alive. #}
+      {% comment %}Farmland borders are admin-only. Hidden stub keeps JS .checked refs alive.{% endcomment %}
       <input type="checkbox" id="agro-toggle-farmlands" style="display:none" />
       {% endif %}
       <div class="agro-cb-row" style="margin-bottom:8px;">
