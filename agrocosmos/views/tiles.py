@@ -2,11 +2,29 @@
 import logging
 import math
 
+from django.conf import settings
 from django.db import connection
 from django.http import HttpRequest, HttpResponse
 from django.views.decorators.cache import cache_page
 
 from ._helpers import rate_limit
+
+
+def _is_admin_legacy(request: HttpRequest) -> bool:
+    """Return True if the current legacy user is an admin.
+
+    Mirrors ``legacy.context_processors._is_admin``: superuser flag OR
+    username listed in ``settings.ADMIN_USERNAMES`` (case-insensitive).
+    Kept local to avoid importing from a private helper.
+    """
+    user = getattr(request, 'legacy_user', None)
+    if user is None:
+        return False
+    if bool(getattr(user, 'is_superuser', False)):
+        return True
+    username = (getattr(user, 'username', '') or '').strip().lower()
+    admin_usernames = getattr(settings, 'ADMIN_USERNAMES', {'admin'})
+    return username in {u.lower() for u in admin_usernames}
 
 
 def _tile_bbox(z, x, y):
@@ -29,11 +47,27 @@ def _tile_bbox(z, x, y):
 
 
 @rate_limit('300/m', binary=True)
-@cache_page(60 * 10)  # 10 min in Redis
 def api_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
     """Mapbox Vector Tile (MVT) endpoint for farmland polygons.
-    Uses PostGIS ST_AsMVT for on-the-fly tile generation.
+
+    Access restricted: admin-only (LegacyUser whose username is in
+    ``settings.ADMIN_USERNAMES`` or whose ``is_superuser`` flag is set).
+    The admin gate sits *outside* of ``cache_page`` so a non-admin's empty
+    403 never gets cached and shadow-banned for everyone else; the cached
+    body is keyed by URL only and shared across admin sessions.
     """
+    if not _is_admin_legacy(request):
+        # Empty body keeps Leaflet's vectorGrid quiet; the tile pane
+        # simply remains blank for unauthorised users.
+        resp = HttpResponse(b'', content_type='application/x-protobuf', status=403)
+        resp['Cache-Control'] = 'private, no-store'
+        return resp
+    return _api_tile_cached(request, z, x, y)
+
+
+@cache_page(60 * 10)  # 10 min in Redis; admin-only by the time we get here.
+def _api_tile_cached(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
+    """The actual MVT producer. Wrapped by ``api_tile`` for auth gating."""
     logger = logging.getLogger('agrocosmos')
 
     region_id = request.GET.get('region')

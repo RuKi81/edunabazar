@@ -285,12 +285,17 @@
           <span style="font-size:11px;"><i class="material-icons" style="font-size:14px; vertical-align:-2px; color:#1565C0;">border_style</i> Границы региона</span>
         </label>
       </div>
+      {% if is_admin_user %}
       <div class="agro-cb-row" style="margin-bottom:2px;">
         <label>
           <input type="checkbox" id="agro-toggle-farmlands" />
           <span style="font-size:11px;"><i class="material-icons" style="font-size:14px; vertical-align:-2px; color:#43A047;">layers</i> Границы угодий</span>
         </label>
       </div>
+      {% else %}
+      {# Farmland borders are admin-only. Hidden stub keeps JS .checked refs alive. #}
+      <input type="checkbox" id="agro-toggle-farmlands" style="display:none" />
+      {% endif %}
       <div class="agro-cb-row" style="margin-bottom:8px;">
         <label>
           <input type="checkbox" id="agro-toggle-raster" />
