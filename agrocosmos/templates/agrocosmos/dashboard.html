@@ -287,10 +287,12 @@
         </label>
       </div>
       {% else %}
-      {# Farmland borders are admin-only. Keep a hidden stub so the JS that
-         reads/clears `agro-toggle-farmlands.checked` keeps working without
-         null-guards everywhere. The stub is never checked, so loadMVT()
-         is never called for non-admin users. #}
+      {% comment %}
+        Farmland borders are admin-only. Keep a hidden stub so the JS that
+        reads/clears agro-toggle-farmlands.checked keeps working without
+        null-guards everywhere. The stub is never checked, so loadMVT()
+        is never called for non-admin users.
+      {% endcomment %}
       <input type="checkbox" id="agro-toggle-farmlands" style="display:none" />
       {% endif %}
 
