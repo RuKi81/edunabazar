@@ -90,6 +90,12 @@ def api_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
                 f.area_ha,
                 f.cadastral_number,
                 d.name AS district,
+                -- Tri-state usage: 1 = used, 0 = not used, -1 = unknown.
+                -- MVT strips NULLs, so encode "unknown" as -1 to keep
+                -- client-side branches explicit.
+                CASE WHEN f.is_used IS TRUE THEN 1
+                     WHEN f.is_used IS FALSE THEN 0
+                     ELSE -1 END AS is_used,
                 COALESCE(f.properties->>'Fact_isp', '') AS fact_isp,
                 ST_AsMVTGeom(
                     ST_Transform(f.geom, 3857),

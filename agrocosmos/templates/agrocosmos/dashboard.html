@@ -307,12 +307,9 @@
             <span style="font-size:10px;"><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#F44336;vertical-align:-1px;margin-right:2px;"></i>Не используется</span>
           </label>
         </div>
-        <div class="agro-cb-row">
-          <label>
-            <input type="checkbox" class="agro-usage-cb" value="unknown" checked />
-            <span style="font-size:10px;"><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#9E9E9E;vertical-align:-1px;margin-right:2px;"></i>Нет данных</span>
-          </label>
-        </div>
+        <!-- "Нет данных" merged into "Используется": Rosreestr lays may have
+             NULL Fact_isp; we treat such parcels as used by default. -->
+
       </div>
 
       <div class="agro-legend" style="margin-top:8px;">
@@ -679,12 +676,18 @@
       return s;
     }
 
-    function factIspToKey(fi) {
-      if (!fi) return 'unknown';
+    function factIspToKey(fi, isUsed) {
+      // Authoritative is_used flag from the DB:
+      //   1 → used, 0 → unused, -1 → no data → treated as "used" by default
+      //   (assumption: absence of "не используется" mark means the parcel
+      //    is considered active until proven otherwise).
+      // Text-based fallback only kicks in for legacy tiles without is_used.
+      if (isUsed === 0) return 'unused';
+      if (isUsed === 1 || isUsed === -1) return 'used';
+      if (!fi) return 'used';
       var low = fi.toLowerCase();
       if (low.indexOf('не ') === 0 || low.indexOf('не и') >= 0) return 'unused';
-      if (low.indexOf('использ') >= 0) return 'used';
-      return 'unknown';
+      return 'used';
     }
 
     function loadMVT(regionId, districtId) {
@@ -701,7 +704,7 @@
         rendererFactory: L.canvas.tile,
         vectorTileLayerStyles: {
           farmlands: function (props) {
-            var usageKey = factIspToKey(props.fact_isp);
+            var usageKey = factIspToKey(props.fact_isp, props.is_used);
             if (!_activeCropTypes.has(props.crop_type) || !_activeUsage.has(usageKey)) {
               return { fill: false, stroke: false, opacity: 0, fillOpacity: 0, weight: 0 };
             }
@@ -742,7 +745,11 @@
 
         var cropLabel = {arable:'Пашня', hayfield:'Сенокос', pasture:'Пастбище', perennial:'Многолетнее насаждение', other:'Прочее'};
         var area = (p.area_ha != null) ? Number(p.area_ha).toFixed(2) : '?';
-        var usageLabel = p.fact_isp ? esc(p.fact_isp) : '<span style="color:#999;">нет данных</span>';
+        // Prefer authoritative is_used flag; fall back to raw Fact_isp text.
+        var usageLabel;
+        if (p.is_used === 1) usageLabel = '<span style="color:#2e7d32;">Используется</span>';
+        else if (p.is_used === 0) usageLabel = '<span style="color:#C62828;">Не используется</span>';
+        else usageLabel = p.fact_isp ? esc(p.fact_isp) : '<span style="color:#999;">нет данных</span>';
         var popupHtml = '<b>' + esc(cropLabel[p.crop_type] || p.crop_type) + '</b> #' + p.id + '<br>'
           + 'Площадь: ' + area + ' га<br>'
           + 'Район: ' + esc(p.district || '') + '<br>'
