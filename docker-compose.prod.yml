@@ -46,7 +46,18 @@ services:
   # Long-running NDVI pipeline worker.
   # Lives in its own container so deploys / healthcheck restarts of `web`
   # don't kill multi-hour S2+L8 downloads. Picks up PipelineRun rows with
-  # status='queued' and runs them via the run_ndvi_pipeline command.
+  # status='queued' and dispatches them via the run_ndvi_pipeline (S2/L8)
+  # or run_archive_pipeline (MODIS archive + baseline) management command.
+  #
+  # Scaling: workers atomically claim queued PipelineRun rows via an
+  # ``UPDATE ... WHERE status='queued'`` predicate, so it's safe to run
+  # multiple replicas. For the bulk MODIS baseline backfill (~84 regions)
+  # the recommended concurrency is 4:
+  #
+  #     docker compose -f docker-compose.prod.yml up -d --scale worker=4
+  #
+  # Each replica processes one PipelineRun at a time. Increase only if
+  # GEE quota allows (watch for HTTP 429 in logs/pipeline/run_*.log).
   worker:
     build: .
     restart: always

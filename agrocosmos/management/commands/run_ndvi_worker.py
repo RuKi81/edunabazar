@@ -44,9 +44,14 @@ from agrocosmos.models import PipelineRun
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL_SEC_DEFAULT = 5
-SUPPORTED_TASK_TYPES = {
-    PipelineRun.TaskType.RASTER_NDVI,
+# task_type -> management command that knows how to run it.
+# Both commands accept ``--run-id`` and update the PipelineRun row
+# internally (status/heartbeat/log).
+TASK_COMMAND = {
+    PipelineRun.TaskType.RASTER_NDVI: 'run_ndvi_pipeline',
+    PipelineRun.TaskType.ARCHIVE_NDVI: 'run_archive_pipeline',
 }
+SUPPORTED_TASK_TYPES = set(TASK_COMMAND)
 
 
 class Command(BaseCommand):
@@ -150,15 +155,28 @@ class Command(BaseCommand):
             else _redirect_std_to(log_f)
         )
 
+        command_name = TASK_COMMAND.get(run.task_type)
+        if not command_name:
+            # Shouldn't happen: _claim_next_run filters by SUPPORTED_TASK_TYPES.
+            self.stderr.write(
+                f'[worker] unsupported task_type={run.task_type!r} on run #{run.pk}'
+            )
+            PipelineRun.objects.filter(pk=run.pk).update(
+                status=PipelineRun.Status.FAILED,
+                finished_at=timezone.now(),
+                log=f'worker: no handler for task_type={run.task_type!r}',
+            )
+            return
+
         try:
             kwargs = dict(args)
             if log_f is not None:
                 kwargs['stdout'] = log_f
                 kwargs['stderr'] = log_f
             with redirect_ctx:
-                call_command('run_ndvi_pipeline', **kwargs)
+                call_command(command_name, **kwargs)
         except SystemExit:
-            # run_ndvi_pipeline calls sys.exit(1) on SIGTERM — let it go.
+            # pipeline orchestrators call sys.exit(1) on SIGTERM — let it go.
             raise
         except Exception:
             tb = traceback.format_exc()
