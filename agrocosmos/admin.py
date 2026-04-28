@@ -7,9 +7,11 @@ from pathlib import Path
 
 from django.conf import settings
 from django.contrib import admin, messages
+from django.core.paginator import Paginator
 from django.shortcuts import redirect, render
 from django.urls import path
 from django.utils import timezone
+from django.utils.functional import cached_property
 from django.utils.html import format_html
 
 from .models import (
@@ -51,19 +53,37 @@ class DistrictAdmin(admin.ModelAdmin):
     search_fields = ('name', 'code')
 
 
+class _NoCountPaginator(Paginator):
+    """Paginator that skips ``SELECT COUNT(*)`` on huge tables.
+
+    Returns a fixed, deliberately-large ``count`` so the admin renders pagination
+    controls without ever asking Postgres to count 19M+ rows. Trade-off: the
+    "Last page" link points at a fictional offset, but Next / Previous /
+    direct page numbers all work correctly.
+    """
+
+    @cached_property
+    def count(self):
+        return 10_000_000_000
+
+
 @admin.register(Farmland)
 class FarmlandAdmin(admin.ModelAdmin):
     """Tuned for a 19M+ row table.
 
-    ``list_filter`` and the default full-count pagination both perform
-    ``SELECT DISTINCT`` / ``COUNT(*)`` scans over the whole table and would
-    time out every gunicorn worker that opens the changelist. The admin is
-    intentionally stripped back to what works on this scale:
+    ``list_filter``, the default pagination COUNT, and the model's
+    ``Meta.ordering`` all triggered full table scans / 19M-row sorts that
+    blew past the 30 s gunicorn timeout, killing the worker and wedging
+    the agrocosmos panel that shared the worker pool. Stripped back to:
 
-    * ``show_full_result_count=False`` — skip the un-bounded ``COUNT(*)``;
-    * no ``list_filter`` — any DISTINCT on this table is a full seq-scan;
-    * ``raw_id_fields`` on ``district`` / ``region`` — avoid pre-loading
-      thousands of options into the change form;
+    * ``ordering=('-id',)`` — primary-key descending, uses the PK index
+      for an O(log n) ``LIMIT 100`` instead of sorting all 19M rows;
+    * ``paginator=_NoCountPaginator`` — skip the unbounded ``COUNT(*)``;
+    * ``show_full_result_count=False`` — and the "X results" line that
+      would otherwise also count;
+    * no ``list_filter`` — every DISTINCT on this table is a seq-scan;
+    * ``raw_id_fields`` on FK columns — avoid pre-loading thousands of
+      options into the change form;
     * ``list_select_related`` so per-row FK renders don't N+1.
     """
     list_display = ('id', 'region', 'district', 'crop_type', 'area_ha',
@@ -71,6 +91,8 @@ class FarmlandAdmin(admin.ModelAdmin):
     list_select_related = ('region', 'district')
     search_fields = ('cadastral_number',)
     raw_id_fields = ('region', 'district')
+    ordering = ('-id',)
+    paginator = _NoCountPaginator
     show_full_result_count = False
 
 
@@ -95,6 +117,8 @@ class VegetationIndexAdmin(admin.ModelAdmin):
     list_select_related = ('farmland',)
     raw_id_fields = ('farmland', 'scene')
     search_fields = ('farmland__cadastral_number',)
+    ordering = ('-id',)
+    paginator = _NoCountPaginator
     show_full_result_count = False
 
 
