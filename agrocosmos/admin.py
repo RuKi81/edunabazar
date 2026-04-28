@@ -542,49 +542,11 @@ def upload_farmlands_view(request):
     return redirect('admin:agro_panel')
 
 
-def _run_modis_bg(region_id, year, run_id=None, min_valid=0.5):
-    """Run modis_ndvi command in background thread."""
-    try:
-        from django.core.management import call_command
-        from io import StringIO
-        out = StringIO()
-        call_command(
-            'modis_ndvi',
-            region_id=region_id,
-            year=year,
-            min_valid_ratio=min_valid,
-            stdout=out,
-            stderr=out,
-        )
-        log_text = out.getvalue()
-        logger.info('modis_ndvi done: region=%s year=%s', region_id, year)
-
-        if run_id:
-            try:
-                run = PipelineRun.objects.get(pk=run_id)
-                run.status = 'completed'
-                run.log = log_text[-8000:]
-                for line in log_text.splitlines():
-                    if 'Records saved:' in line:
-                        try:
-                            run.records_count += int(line.split('Records saved:')[1].strip())
-                        except (ValueError, IndexError):
-                            pass
-                run.finished_at = timezone.now()
-                run.save()
-            except PipelineRun.DoesNotExist:
-                pass
-    except Exception as e:
-        logger.error('modis_ndvi error: %s', e)
-        if run_id:
-            try:
-                run = PipelineRun.objects.get(pk=run_id)
-                run.status = 'failed'
-                run.log = str(e)
-                run.finished_at = timezone.now()
-                run.save()
-            except PipelineRun.DoesNotExist:
-                pass
+# Note: ``_run_modis_bg`` was removed — archive MODIS now flows through the
+# ``run_archive_pipeline`` worker command (see ``run_archive_view`` and
+# ``run_ndvi_worker``) instead of an in-process daemon thread. Running
+# rasterio inside gunicorn workers held the GIL and starved HTTP workers
+# whenever an archive download was in flight.
 
 
 def _run_check_monitoring_bg(run_id=None, force=False):
@@ -620,40 +582,79 @@ def _run_check_monitoring_bg(run_id=None, force=False):
 
 
 def run_archive_view(request):
-    """Trigger archive NDVI download for a region + year."""
+    """Queue an archive MODIS NDVI pipeline for a region + year window.
+
+    The actual work runs inside the ``worker`` container (see
+    :mod:`run_archive_pipeline`), not inside gunicorn — this decouples a
+    multi-hour MODIS download from web lifecycle (deploys, gunicorn
+    worker recycling) and prevents a GIL-bound rasterio run from starving
+    HTTP workers on the web container.
+    """
     if request.method != 'POST':
         return redirect('admin:agro_panel')
 
     region_id = request.POST.get('region_id')
     year = request.POST.get('year')
+    year_from = request.POST.get('year_from')
+    year_to = request.POST.get('year_to')
 
-    if not region_id or not year:
-        messages.error(request, 'Укажите регион и год')
+    if not region_id:
+        messages.error(request, 'Укажите регион')
         return redirect('admin:agro_panel')
 
-    region = Region.objects.get(pk=int(region_id))
-    year = int(year)
-
-    run = PipelineRun.objects.create(
-        task_type='archive_ndvi',
-        region=region,
-        year=year,
-        description=f'{region.name}, {year} год',
-    )
+    # Accept either a single --year or a --year-from/--year-to window.
+    try:
+        if year_from and year_to:
+            yf, yt = int(year_from), int(year_to)
+        elif year:
+            yf = yt = int(year)
+        else:
+            messages.error(request, 'Укажите год или диапазон лет')
+            return redirect('admin:agro_panel')
+    except ValueError:
+        messages.error(request, 'Год должен быть числом')
+        return redirect('admin:agro_panel')
 
     min_valid = float(request.POST.get('min_valid', 0.5))
+    skip_baseline = request.POST.get('skip_baseline') == 'on'
 
-    t = threading.Thread(
-        target=_run_modis_bg,
-        args=(int(region_id), year, run.pk, min_valid),
-        daemon=True,
+    region = Region.objects.get(pk=int(region_id))
+
+    run = PipelineRun.objects.create(
+        task_type=PipelineRun.TaskType.ARCHIVE_NDVI,
+        status=PipelineRun.Status.QUEUED,
+        region=region,
+        year=yt,
+        description=f'{region.name}, {yf}..{yt}'
+                    + (' (без baseline)' if skip_baseline else ''),
     )
-    t.start()
+
+    # Pre-create the on-disk log file so admin tail-f works immediately.
+    log_dir = _pipeline_log_dir()
+    log_path = log_dir / f'run_{run.pk}.log'
+    try:
+        log_path.touch(exist_ok=True)
+    except OSError:
+        pass
+
+    launch_args = {
+        'region_id': int(region_id),
+        'year_from': yf,
+        'year_to': yt,
+        'min_valid': float(f'{min_valid:.3f}'),
+        'overwrite': False,
+        'skip_baseline': skip_baseline,
+    }
+    run.launch_args = launch_args
+    run.log_file = str(log_path)
+    run.heartbeat_at = timezone.now()
+    run.save(update_fields=['launch_args', 'log_file', 'heartbeat_at'])
 
     messages.success(
         request,
-        f'Загрузка архивных данных NDVI запущена: {region.name}, {year} '
-        f'(min_valid={min_valid:.0%}). Процесс выполняется в фоне (~20 мин).'
+        f'Архивный MODIS NDVI поставлен в очередь: {region.name}, '
+        f'{yf}..{yt} (min_valid={min_valid:.0%}). '
+        f'Worker подхватит задачу в течение 5 секунд.'
     )
     return redirect('admin:agro_panel')
 
