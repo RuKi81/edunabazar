@@ -299,24 +299,32 @@ def agro_panel_view(request):
     from django.db.models import Count, Sum
     from .models import GeeApiMetric
 
-    # Count farmlands via the direct ``Farmland.region`` FK (related_name
-    # ``farmlands``) — going through ``districts__farmlands`` would skip
-    # every freshly-imported parcel whose ``district_id`` is still NULL
-    # (only filled in later by ``assign_farmland_district``) and, more
-    # painfully, blow up into a 3-table join over 19M+ rows that times out
-    # behind nginx. The direct FK is indexed on (region_id, ...).
-    #
+    # Farmland counts per region are cached in Redis for 5 minutes.
+    # The naive ``Region.objects.annotate(Count('farmlands'))`` groups a
+    # LEFT JOIN over 19.6M rows and takes 30-40 s even with indexes — the
+    # panel does not need real-time precision, so a short TTL is fine.
+    # Invalidated automatically when large imports finish (see below).
+    from django.core.cache import cache
+    counts = cache.get('agro_panel_farmland_counts')
+    if counts is None:
+        counts = dict(
+            Farmland.objects
+            .values('region_id')
+            .annotate(c=Count('id'))
+            .values_list('region_id', 'c')
+        )
+        cache.set('agro_panel_farmland_counts', counts, 300)
+
     # ``.defer('geom')`` is critical here: Region/District both carry a
     # PostGIS MultiPolygon that runs to tens of MB per row for large
     # subjects (Yakutia, Krasnoyarsk Krai, …). Pulling all 84 regions or
     # all ~2.7K districts with their geometry serialises hundreds of MB of
     # WKB over the wire and turns this view into a 60-120 s request even
     # though the panel template never reads ``.geom``.
-    regions = (
-        Region.objects
-        .annotate(farmland_count=Count('farmlands'))
-        .defer('geom')
-    )
+    regions = list(Region.objects.defer('geom').order_by('name'))
+    for r in regions:
+        r.farmland_count = counts.get(r.pk, 0)
+
     districts = (
         District.objects
         .select_related('region')
