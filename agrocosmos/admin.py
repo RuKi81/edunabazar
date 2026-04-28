@@ -305,10 +305,24 @@ def agro_panel_view(request):
     # (only filled in later by ``assign_farmland_district``) and, more
     # painfully, blow up into a 3-table join over 19M+ rows that times out
     # behind nginx. The direct FK is indexed on (region_id, ...).
-    regions = Region.objects.annotate(
-        farmland_count=Count('farmlands'),
+    #
+    # ``.defer('geom')`` is critical here: Region/District both carry a
+    # PostGIS MultiPolygon that runs to tens of MB per row for large
+    # subjects (Yakutia, Krasnoyarsk Krai, …). Pulling all 84 regions or
+    # all ~2.7K districts with their geometry serialises hundreds of MB of
+    # WKB over the wire and turns this view into a 60-120 s request even
+    # though the panel template never reads ``.geom``.
+    regions = (
+        Region.objects
+        .annotate(farmland_count=Count('farmlands'))
+        .defer('geom')
     )
-    districts = District.objects.select_related('region').order_by('region__name', 'name')
+    districts = (
+        District.objects
+        .select_related('region')
+        .defer('geom', 'region__geom')
+        .order_by('region__name', 'name')
+    )
     tasks = MonitoringTask.objects.select_related('region').all()[:20]
     pipeline_runs = PipelineRun.objects.select_related('region').all()[:30]
     current_year = date.today().year
