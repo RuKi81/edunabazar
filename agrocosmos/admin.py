@@ -28,9 +28,20 @@ class RegionAdmin(admin.ModelAdmin):
     list_display = ('name', 'code', 'farmland_count', 'created_at')
     search_fields = ('name', 'code')
 
+    def get_queryset(self, request):
+        # Annotate farmland count once via the direct ``Farmland.region`` FK
+        # instead of issuing an N+1 ``COUNT()`` query per row that joins
+        # through ``district`` (which also silently drops every parcel with
+        # ``district_id=NULL``).
+        from django.db.models import Count
+        return super().get_queryset(request).annotate(
+            _farmland_count=Count('farmlands'),
+        )
+
     def farmland_count(self, obj):
-        return Farmland.objects.filter(district__region=obj).count()
+        return obj._farmland_count
     farmland_count.short_description = 'Угодий'
+    farmland_count.admin_order_field = '_farmland_count'
 
 
 @admin.register(District)
@@ -42,9 +53,25 @@ class DistrictAdmin(admin.ModelAdmin):
 
 @admin.register(Farmland)
 class FarmlandAdmin(admin.ModelAdmin):
-    list_display = ('id', 'district', 'crop_type', 'area_ha', 'cadastral_number')
-    list_filter = ('crop_type', 'district__region')
+    """Tuned for a 19M+ row table.
+
+    ``list_filter`` and the default full-count pagination both perform
+    ``SELECT DISTINCT`` / ``COUNT(*)`` scans over the whole table and would
+    time out every gunicorn worker that opens the changelist. The admin is
+    intentionally stripped back to what works on this scale:
+
+    * ``show_full_result_count=False`` — skip the un-bounded ``COUNT(*)``;
+    * no ``list_filter`` — any DISTINCT on this table is a full seq-scan;
+    * ``raw_id_fields`` on ``district`` / ``region`` — avoid pre-loading
+      thousands of options into the change form;
+    * ``list_select_related`` so per-row FK renders don't N+1.
+    """
+    list_display = ('id', 'region', 'district', 'crop_type', 'area_ha',
+                    'cadastral_number')
+    list_select_related = ('region', 'district')
     search_fields = ('cadastral_number',)
+    raw_id_fields = ('region', 'district')
+    show_full_result_count = False
 
 
 @admin.register(SatelliteScene)
@@ -56,8 +83,19 @@ class SatelliteSceneAdmin(admin.ModelAdmin):
 
 @admin.register(VegetationIndex)
 class VegetationIndexAdmin(admin.ModelAdmin):
-    list_display = ('farmland', 'index_type', 'acquired_date', 'mean', 'median')
-    list_filter = ('index_type', 'acquired_date')
+    """Tuned for a multi-million row table.
+
+    ``list_filter=('acquired_date',)`` builds a ``SELECT DISTINCT
+    acquired_date`` hierarchical widget on every page load — on 3M+ rows
+    that's seconds to tens of seconds and guaranteed to kill workers.
+    Dropped for the same reasons as :class:`FarmlandAdmin`.
+    """
+    list_display = ('id', 'farmland', 'index_type', 'acquired_date',
+                    'mean', 'median')
+    list_select_related = ('farmland',)
+    raw_id_fields = ('farmland', 'scene')
+    search_fields = ('farmland__cadastral_number',)
+    show_full_result_count = False
 
 
 @admin.register(VegetationAlert)
