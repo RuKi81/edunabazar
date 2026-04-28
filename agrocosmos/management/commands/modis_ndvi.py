@@ -175,31 +175,42 @@ class Command(BaseCommand):
         import sys
         sys.stdout.flush()
 
-        # Load farmlands
-        self.stdout.write('  Loading farmlands…', ending='')
+        # Load farmlands.
+        #
+        # Memory-safe streaming: regions like Алтайский край have 500K+
+        # farmlands with MultiPolygon geometries, so the previous
+        # ``list(qs)`` + ``select_related('district')`` combo pulled
+        # ~dozens of GB into RAM and got OOM-killed (exit 137) by the
+        # container. We now:
+        #   * ``only('id','district_id','geom')`` — skip cadastral_number
+        #     (50-byte strings x 500K), properties (JSONField, can be
+        #     huge), full district row (FK), etc.
+        #   * ``.iterator(chunk_size=5000)`` — stream rows from Postgres
+        #     instead of caching the whole queryset in the Python side.
+        #   * drop the Farmland object as soon as we've extracted the
+        #     simplified GeoJSON + district_id; store a compact
+        #     ``fl_district: {fl_id: district_id}`` dict for scene
+        #     lookup later, not the full model instance.
+        self.stdout.write('  Loading farmlands (streamed)…', ending='')
         sys.stdout.flush()
-        qs = Farmland.objects.select_related('district')
+        qs = Farmland.objects.only('id', 'district_id', 'geom')
         if district:
             qs = qs.filter(district=district)
         else:
             qs = qs.filter(district__region=region)
         qs = qs.order_by('district_id', 'pk')
 
-        farmlands = list(qs)
-        if not farmlands:
-            self.stderr.write('No farmlands found')
-            return
-
-        self.stdout.write(f' {len(farmlands)}')
-        sys.stdout.flush()
-
-        # Prepare geometry data (simplified for MODIS 250m)
-        self.stdout.write('  Preparing geometries…', ending='')
-        sys.stdout.flush()
-        fl_geoms = []
-        fl_map = {}
-        for idx, fl in enumerate(farmlands):
+        # Prepare simplified geometries in one streaming pass. We don't
+        # need a separate "Preparing geometries" loop any more — loading
+        # and simplification are fused to keep peak memory low.
+        fl_geoms: list[dict] = []
+        fl_district: dict[int, int] = {}
+        loaded = 0
+        for fl in qs.iterator(chunk_size=5000):
+            loaded += 1
             geom = fl.geom
+            if geom is None:
+                continue
             geom = geom.simplify(0.002, preserve_topology=True)
             if geom.empty:
                 continue
@@ -208,12 +219,16 @@ class Command(BaseCommand):
             else:
                 geom_json = json.loads(geom.geojson)
             fl_geoms.append({'id': fl.pk, 'geometry': geom_json})
-            fl_map[fl.pk] = fl
-            if (idx + 1) % 20000 == 0:
-                self.stdout.write(f' {idx+1}', ending='')
+            fl_district[fl.pk] = fl.district_id or 0
+            if loaded % 20000 == 0:
+                self.stdout.write(f' {loaded}', ending='')
                 sys.stdout.flush()
 
-        self.stdout.write(f' → {len(fl_geoms)} ready')
+        if not fl_geoms:
+            self.stderr.write('No farmlands found')
+            return
+
+        self.stdout.write(f' → {loaded} loaded, {len(fl_geoms)} ready')
         sys.stdout.flush()
 
         created_total = 0
@@ -264,9 +279,8 @@ class Command(BaseCommand):
             # Pre-create scenes (few districts, fast)
             district_ids_needed = set()
             for fl_id in results:
-                fl_obj = fl_map.get(fl_id)
-                if fl_obj:
-                    district_ids_needed.add(fl_obj.district_id or 0)
+                if fl_id in fl_district:
+                    district_ids_needed.add(fl_district[fl_id])
 
             for did in district_ids_needed:
                 scene_id = f'modis_{mid_date.isoformat()}_{did}'
@@ -281,20 +295,22 @@ class Command(BaseCommand):
                 )
                 district_scenes[did] = scene
 
-            # Upsert via INSERT ... ON CONFLICT UPDATE (no SELECT needed)
+            # Upsert via INSERT ... ON CONFLICT UPDATE (no SELECT needed).
+            # Use farmland_id / scene_id to avoid materialising the full
+            # Farmland instance (we only have fl_district dict now).
             self.stdout.write(' DB…', ending='')
             sys.stdout.flush()
 
             objs = []
             for fl_id, st in results.items():
-                fl_obj = fl_map.get(fl_id)
-                if not fl_obj:
+                did = fl_district.get(fl_id)
+                if did is None:
                     continue
-                scene = district_scenes.get(fl_obj.district_id or 0)
+                scene = district_scenes.get(did)
                 if not scene:
                     continue
                 objs.append(VegetationIndex(
-                    farmland=fl_obj,
+                    farmland_id=fl_id,
                     scene=scene,
                     index_type='ndvi',
                     acquired_date=mid_date,
