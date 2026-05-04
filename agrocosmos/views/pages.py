@@ -51,13 +51,18 @@ def _available_ndvi_years(current_year: int) -> list[int]:
 
 
 def _available_modis_ndvi_years(current_year: int) -> list[int]:
-    """Years for MODIS-only NDVI reports."""
+    """Years for MODIS-only NDVI reports.
+
+    Uses ``SatelliteScene`` (small table) instead of ``VegetationIndex``
+    (1B+ rows). The MIN/MAX over a JOIN to filter by ``satellite`` cannot
+    use the ``acquired_date`` index and degenerates into a full hash join
+    that takes 4+ minutes on production data.
+    """
     cache_key = 'agrocosmos:years:ndvi_modis'
     years = cache.get(cache_key)
     if years is None:
-        agg = (VegetationIndex.objects
-               .filter(index_type='ndvi',
-                       scene__satellite__in=MODIS_SATELLITES)
+        agg = (SatelliteScene.objects
+               .filter(satellite__in=MODIS_SATELLITES)
                .aggregate(first=Min('acquired_date'),
                           last=Max('acquired_date')))
         first = agg['first'].year if agg['first'] else None
