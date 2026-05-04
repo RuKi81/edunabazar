@@ -128,30 +128,49 @@ def dashboard(request: HttpRequest) -> HttpResponse:
         except (TypeError, ValueError):
             pass
 
-    # Summary stats
+    # Summary stats. The unfiltered global aggregate scans ~20M farmlands
+    # and takes ~20s; cache it. Filtered (region/district) aggregates use
+    # the district_id index and are sub-second, so we don't cache them.
     farmland_qs = Farmland.objects.all()
+    scope_key: str | None = None  # ``None`` means "do not cache"
     if district_id:
         try:
-            farmland_qs = farmland_qs.filter(district_id=int(district_id))
+            d_id = int(district_id)
+            farmland_qs = farmland_qs.filter(district_id=d_id)
         except (TypeError, ValueError):
             pass
     elif region_id:
         try:
-            farmland_qs = farmland_qs.filter(district__region_id=int(region_id))
+            r_id = int(region_id)
+            farmland_qs = farmland_qs.filter(district__region_id=r_id)
         except (TypeError, ValueError):
             pass
+    else:
+        scope_key = 'agrocosmos:farmland_stats:global'
 
-    summary = farmland_qs.aggregate(
-        total_count=Count('id'),
-        total_area=Sum('area_ha'),
-    )
-
-    crop_stats = (
-        farmland_qs
-        .values('crop_type')
-        .annotate(cnt=Count('id'), area=Sum('area_ha'))
-        .order_by('-area')
-    )
+    if scope_key:
+        cached = cache.get(scope_key)
+    else:
+        cached = None
+    if cached is not None:
+        summary = cached['summary']
+        crop_stats = cached['crop_stats']
+    else:
+        summary = farmland_qs.aggregate(
+            total_count=Count('id'),
+            total_area=Sum('area_ha'),
+        )
+        crop_stats = list(
+            farmland_qs
+            .values('crop_type')
+            .annotate(cnt=Count('id'), area=Sum('area_ha'))
+            .order_by('-area')
+        )
+        if scope_key:
+            cache.set(scope_key, {
+                'summary': summary,
+                'crop_stats': crop_stats,
+            }, _YEARS_CACHE_TTL)
 
     # Available years: cheap MIN/MAX + Redis cache (previously DISTINCT
     # EXTRACT(YEAR) over 1B+ rows → 60-80s full scan per request).
@@ -165,7 +184,7 @@ def dashboard(request: HttpRequest) -> HttpResponse:
         'region_id': region_id or '',
         'district_id': district_id or '',
         'summary': summary,
-        'crop_stats': list(crop_stats),
+        'crop_stats': crop_stats,
         'crop_type_labels': dict(Farmland.CropType.choices),
         'years': years,
         'selected_years': selected_years,
