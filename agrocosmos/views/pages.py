@@ -1,12 +1,92 @@
 """HTML page views: dashboards and report pages."""
 from datetime import date
 
-from django.db.models import Count, Sum
+from django.core.cache import cache
+from django.db.models import Count, Min, Max, Sum
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import render
 
 from ..models import Region, District, Farmland, VegetationIndex, SatelliteScene
 from ._helpers import MODIS_SATELLITES, RASTER_SATELLITES
+
+
+# Cache TTL for "available years" lookups. Previously these were executed on
+# every page load as ``SELECT DISTINCT EXTRACT(YEAR FROM acquired_date)`` on
+# agro_vegetation_index (1+ billion rows), which caused 60-80 s dashboards
+# and gunicorn worker starvation. We now do a cheap MIN/MAX on the indexed
+# ``acquired_date`` column and build the year range in Python, plus cache
+# the result in Redis.
+_YEARS_CACHE_TTL = 3600  # seconds
+
+
+def _years_range(first_year: int | None, last_year: int | None,
+                 current_year: int) -> list[int]:
+    """Build descending list of years covering data range + current year."""
+    if not first_year or not last_year:
+        return [current_year]
+    lo = min(first_year, current_year)
+    hi = max(last_year, current_year)
+    return list(range(hi, lo - 1, -1))
+
+
+def _available_ndvi_years(current_year: int) -> list[int]:
+    """Years for the main NDVI dashboard (all satellites)."""
+    cache_key = 'agrocosmos:years:ndvi_all'
+    years = cache.get(cache_key)
+    if years is None:
+        agg = (VegetationIndex.objects
+               .filter(index_type='ndvi')
+               .aggregate(first=Min('acquired_date'),
+                          last=Max('acquired_date')))
+        first = agg['first'].year if agg['first'] else None
+        last = agg['last'].year if agg['last'] else None
+        years = _years_range(first, last, current_year)
+        cache.set(cache_key, years, _YEARS_CACHE_TTL)
+    else:
+        # Ensure current year is always present (e.g. first day of Jan before
+        # the next NDVI composite lands).
+        if current_year not in years:
+            years = sorted(set(years) | {current_year}, reverse=True)
+    return years
+
+
+def _available_modis_ndvi_years(current_year: int) -> list[int]:
+    """Years for MODIS-only NDVI reports."""
+    cache_key = 'agrocosmos:years:ndvi_modis'
+    years = cache.get(cache_key)
+    if years is None:
+        agg = (VegetationIndex.objects
+               .filter(index_type='ndvi',
+                       scene__satellite__in=MODIS_SATELLITES)
+               .aggregate(first=Min('acquired_date'),
+                          last=Max('acquired_date')))
+        first = agg['first'].year if agg['first'] else None
+        last = agg['last'].year if agg['last'] else None
+        years = _years_range(first, last, current_year)
+        cache.set(cache_key, years, _YEARS_CACHE_TTL)
+    else:
+        if current_year not in years:
+            years = sorted(set(years) | {current_year}, reverse=True)
+    return years
+
+
+def _available_raster_years(current_year: int) -> list[int]:
+    """Years for the raster (Sentinel-2 / Landsat) dashboard."""
+    cache_key = 'agrocosmos:years:raster'
+    years = cache.get(cache_key)
+    if years is None:
+        agg = (SatelliteScene.objects
+               .filter(satellite__in=RASTER_SATELLITES)
+               .aggregate(first=Min('acquired_date'),
+                          last=Max('acquired_date')))
+        first = agg['first'].year if agg['first'] else None
+        last = agg['last'].year if agg['last'] else None
+        years = _years_range(first, last, current_year)
+        cache.set(cache_key, years, _YEARS_CACHE_TTL)
+    else:
+        if current_year not in years:
+            years = sorted(set(years) | {current_year}, reverse=True)
+    return years
 
 
 def _get_legacy_user(request):
@@ -73,16 +153,10 @@ def dashboard(request: HttpRequest) -> HttpResponse:
         .order_by('-area')
     )
 
-    # Available years: from NDVI data + current year
+    # Available years: cheap MIN/MAX + Redis cache (previously DISTINCT
+    # EXTRACT(YEAR) over 1B+ rows → 60-80s full scan per request).
     current_year = date.today().year
-    data_years = (
-        VegetationIndex.objects
-        .filter(index_type='ndvi')
-        .values_list('acquired_date__year', flat=True)
-        .distinct()
-        .order_by('-acquired_date__year')
-    )
-    years = sorted(set(list(data_years) + [current_year]), reverse=True)
+    years = _available_ndvi_years(current_year)
 
     return render(request, 'agrocosmos/dashboard.html', {
         'legacy_user': _get_legacy_user(request),
@@ -115,16 +189,9 @@ def raster_dashboard(request: HttpRequest) -> HttpResponse:
         except (TypeError, ValueError):
             pass
 
-    # Available years from raster scenes
+    # Available years from raster scenes (cached helper)
     current_year = date.today().year
-    data_years = (
-        SatelliteScene.objects
-        .filter(satellite__in=RASTER_SATELLITES)
-        .values_list('acquired_date__year', flat=True)
-        .distinct()
-        .order_by('-acquired_date__year')
-    )
-    years = sorted(set(list(data_years) + [current_year]), reverse=True)
+    years = _available_raster_years(current_year)
 
     return render(request, 'agrocosmos/raster_dashboard.html', {
         'legacy_user': _get_legacy_user(request),
@@ -147,14 +214,7 @@ def report_region(request: HttpRequest) -> HttpResponse:
     year = request.GET.get('year')
 
     current_year = date.today().year
-    data_years = (
-        VegetationIndex.objects
-        .filter(index_type='ndvi', scene__satellite__in=MODIS_SATELLITES)
-        .values_list('acquired_date__year', flat=True)
-        .distinct()
-        .order_by('-acquired_date__year')
-    )
-    years = sorted(set(list(data_years) + [current_year]), reverse=True)
+    years = _available_modis_ndvi_years(current_year)
 
     districts = District.objects.none()
     if region_id:
@@ -183,14 +243,7 @@ def report_district(request: HttpRequest) -> HttpResponse:
     year = request.GET.get('year')
 
     current_year = date.today().year
-    data_years = (
-        VegetationIndex.objects
-        .filter(index_type='ndvi', scene__satellite__in=MODIS_SATELLITES)
-        .values_list('acquired_date__year', flat=True)
-        .distinct()
-        .order_by('-acquired_date__year')
-    )
-    years = sorted(set(list(data_years) + [current_year]), reverse=True)
+    years = _available_modis_ndvi_years(current_year)
 
     districts = District.objects.none()
     if region_id:
