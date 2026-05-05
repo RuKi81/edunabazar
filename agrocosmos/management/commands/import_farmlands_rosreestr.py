@@ -166,13 +166,15 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------
 
     def _process_region(self, region_dir: Path, options: dict) -> dict:
-        # 1. Find the .shp
-        shp = self._find_shp(region_dir)
-        if shp is None:
+        # 1. Find ALL .shp in the folder (some regions, e.g. Omsk, ship the
+        #    data split into two .shp halves — both must be imported).
+        shps = self._find_shps(region_dir)
+        if not shps:
             return {'status': 'skipped', 'reason': 'no .shp file'}
 
-        # 2. Detect schema
-        schema = detect_schema(shp)
+        # 2. Detect schema from the first file (halves share the same schema
+        #    by construction — they are produced by splitting one dataset).
+        schema = detect_schema(shps[0])
         if not schema.is_usable:
             return {'status': 'skipped',
                     'reason': f'unrecognised schema {schema.all_fields}'}
@@ -188,63 +190,69 @@ class Command(BaseCommand):
                 return {'status': 'skipped',
                         'reason': 'already has farmlands (use --no-skip to reimport)'}
 
-        # ``source`` is the schema fingerprint (schema_id) — truncated to
-        # the column's max_length. Lets us re-run one schema class later
-        # with a simple WHERE source = '…' filter.
         source_id = schema.schema_id[:40]
-        staging = f'staging_farmland_{self._slug(region.code)}'
 
         self.stdout.write(
             f'[{region_dir.name}] region={region.name} code={region.code} '
             f'schema={schema.schema_id} usage={schema.usage_field!r} '
-            f'fact_isp={schema.fact_isp_field!r} cad={schema.cadastral_field!r}'
+            f'fact_isp={schema.fact_isp_field!r} cad={schema.cadastral_field!r} '
+            f'shp_count={len(shps)}'
         )
 
         if options['dry_run']:
-            self.stdout.write(f'  DRY: would ogr2ogr {shp.name} → {staging}')
+            for shp in shps:
+                self.stdout.write(f'  DRY: would ogr2ogr {shp.name}')
             return {'status': 'ok', 'staged': 0, 'inserted': 0}
 
-        # 4. ogr2ogr shp → staging
-        self.stdout.write(f'  running ogr2ogr → {staging}…')
-        ogr_result = run_ogr2ogr(
-            shp, staging, schema,
-            binary=options['ogr2ogr'],
-            log_stream=self.stdout,
-        )
-        if ogr_result.returncode != 0:
-            # still try the rest: ogr2ogr exits non-zero on skipfailures
-            self.stderr.write(self.style.WARNING(
-                f'  ogr2ogr rc={ogr_result.returncode} '
-                f'(continuing — some features may have been skipped)'
-            ))
-
-        # 5. Count staged, then INSERT into agro_farmland
-        with connection.cursor() as cur:
-            try:
-                cur.execute(build_count_staging_sql(staging))
-                staged_rows = cur.fetchone()[0]
-            except Exception as exc:
-                self._drop_staging_silent(staging)
-                return {'status': 'skipped',
-                        'reason': f'staging table missing after ogr2ogr: {exc}'}
-
-            if staged_rows == 0:
-                self.stdout.write(self.style.WARNING(
-                    '  staging is empty (no agricultural rows matched)'
-                ))
-                cur.execute(build_drop_staging_sql(staging))
-                return {'status': 'ok', 'staged': 0, 'inserted': 0}
-
-            self.stdout.write(f'  staged {staged_rows:,} rows, promoting…')
-            insert_sql = build_insert_sql(
-                schema, staging, region_id=region.pk, source_id=source_id,
+        total_staged = 0
+        total_inserted = 0
+        for idx, shp in enumerate(shps, 1):
+            staging = f'staging_farmland_{self._slug(region.code)}_{idx}'
+            self.stdout.write(
+                f'  [{idx}/{len(shps)}] running ogr2ogr {shp.name} → {staging}…'
             )
-            with transaction.atomic():
-                cur.execute(insert_sql)
-                inserted = cur.rowcount
-            cur.execute(build_drop_staging_sql(staging))
+            ogr_result = run_ogr2ogr(
+                shp, staging, schema,
+                binary=options['ogr2ogr'],
+                log_stream=self.stdout,
+            )
+            if ogr_result.returncode != 0:
+                self.stderr.write(self.style.WARNING(
+                    f'    ogr2ogr rc={ogr_result.returncode} '
+                    f'(continuing — some features may have been skipped)'
+                ))
 
-        return {'status': 'ok', 'staged': staged_rows, 'inserted': inserted}
+            with connection.cursor() as cur:
+                try:
+                    cur.execute(build_count_staging_sql(staging))
+                    staged_rows = cur.fetchone()[0]
+                except Exception as exc:
+                    self._drop_staging_silent(staging)
+                    self.stderr.write(self.style.WARNING(
+                        f'    staging missing after ogr2ogr: {exc}; skipping this half'
+                    ))
+                    continue
+
+                if staged_rows == 0:
+                    self.stdout.write(self.style.WARNING(
+                        f'    staging is empty (no agricultural rows matched)'
+                    ))
+                    cur.execute(build_drop_staging_sql(staging))
+                    continue
+
+                self.stdout.write(f'    staged {staged_rows:,} rows, promoting…')
+                insert_sql = build_insert_sql(
+                    schema, staging, region_id=region.pk, source_id=source_id,
+                )
+                with transaction.atomic():
+                    cur.execute(insert_sql)
+                    inserted = cur.rowcount
+                cur.execute(build_drop_staging_sql(staging))
+
+            total_staged += staged_rows
+            total_inserted += inserted
+
+        return {'status': 'ok', 'staged': total_staged, 'inserted': total_inserted}
 
     # ------------------------------------------------------------------
     # Helpers
@@ -262,14 +270,13 @@ class Command(BaseCommand):
         )
 
     @staticmethod
-    def _find_shp(region_dir: Path) -> Path | None:
-        """Pick the largest .shp in the region folder (handles the rare
-        case of Omsk-style split halves — we prefer the one with the
-        most features, which is the largest file). Recurses into
-        sub-folders."""
-        shps = sorted(region_dir.rglob('*.shp'),
-                      key=lambda p: p.stat().st_size, reverse=True)
-        return shps[0] if shps else None
+    def _find_shps(region_dir: Path) -> list[Path]:
+        """Return all .shp files in the region folder, sorted by name.
+
+        Some regions (Omsk in particular) ship the data split into two
+        .shp halves — both must be imported. Sorting by name gives a
+        deterministic order (`*_first_half`, `*_second_half`, etc.)."""
+        return sorted(region_dir.rglob('*.shp'), key=lambda p: p.name.lower())
 
     @staticmethod
     def _slug(text: str) -> str:
