@@ -182,11 +182,26 @@ class Command(BaseCommand):
             tb = traceback.format_exc()
             logger.exception('worker: pipeline raised')
             try:
-                PipelineRun.objects.filter(pk=run.pk).update(
+                # Mark FAILED only if the pipeline didn't already mark
+                # itself COMPLETED. Otherwise a late background-thread
+                # exception (e.g. heartbeat trying to write after the
+                # main connection was closed) would clobber a successful
+                # run's status.
+                updated = PipelineRun.objects.filter(
+                    pk=run.pk,
+                ).exclude(
+                    status=PipelineRun.Status.COMPLETED,
+                ).update(
                     status=PipelineRun.Status.FAILED,
                     finished_at=timezone.now(),
                     log=(run.log or '') + '\n[worker] ' + tb[-4000:],
                 )
+                if not updated:
+                    logger.warning(
+                        'worker: run #%s already completed, '
+                        'ignoring late exception: %s',
+                        run.pk, tb.splitlines()[-1] if tb else '',
+                    )
             except Exception:
                 logger.exception('worker: failed to mark run as failed')
         finally:
