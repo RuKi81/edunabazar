@@ -119,7 +119,7 @@ VM2 с полной репо-версией compose (тюнинг + healthcheck 
 
 ---
 
-## [ ] FIX: бэкапы PostgreSQL — настроить pull на Synology NAS
+## [x] DONE: бэкапы PostgreSQL — pull на Synology NAS (6 мая 2026)
 
 **Контекст (6 мая 2026):** обнаружено что cron-бэкап на VM2 ни разу не
 сработал — путь `/opt/edunabazar/deploy/db/backup.sh` не существует
@@ -137,8 +137,9 @@ VM2 с полной репо-версией compose (тюнинг + healthcheck 
 7. ✅ Pull-скрипт на NAS: `/volume1/scripts/pull_pg_backup.sh` (rsync over SSH)
 8. ✅ DSM Task Scheduler: ежедневно в 05:00 запускает pull-скрипт от root
 9. ✅ Shared folder `/volume1/pg_backups/` на NAS (доступ только admin/geoadmin)
-10. ✅ pigz -p 4 заменил gzip — dump будет проходить за ~1-1.5ч вместо 5-7ч
-11. ⏳ Идёт первый ручной dump (запущен в 12:12 UTC, ~5-6ч с обычным gzip)
+10. ✅ pigz -p 4 заменил gzip — следующие dumps будут проходить ~30-40мин вместо 2.5ч
+11. ✅ Первый dump завершён: 38GB за 2ч38мин (12:12→14:50 UTC, gzip)
+12. ✅ Тестовый pull проверен: 26 мин по 11 МБ/с (~87 Mbit), `gunzip -t` → OK
 
 **Архитектура pull (вместо push):**
 ```
