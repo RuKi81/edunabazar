@@ -1,32 +1,49 @@
-version: "3.9"
-
-# VM2: Database server (93.95.98.209)
-# Deploy: copy this file + init.sql to the DB server and run:
+# VM2: Database server (10.0.0.11, internal; 93.95.98.209 public)
+# Deploy: copy this file + pg_hba_custom.conf + .env to /opt/edunabazar-db/ and run:
 #   docker compose up -d
+#
+# Tuning targets: VM2 has 90 GiB RAM, ~410 GiB DB on NVMe. Parameters below
+# follow pgtune-style "OLTP, mixed read/write" preset. Adjust if RAM changes.
 
 services:
   db:
     image: postgis/postgis:16-3.4
+    shm_size: '4gb'                # parallel hash/sort workers (was 64MB default → caused OOM on dashboard)
     restart: always
+    env_file: .env
     environment:
       POSTGRES_DB: ${DB_NAME:-enb_DB}
       POSTGRES_USER: ${DB_USER:-enb_app}
       POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
     ports:
-      # Expose to app server only — use firewall to restrict access
+      # Expose to VM1 (app server) only — firewall-restricted on host
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./pg_hba_custom.conf:/etc/postgresql/pg_hba.conf:ro
     command: >
       postgres
-        -c listen_addresses='*'
+        -c hba_file=/etc/postgresql/pg_hba.conf
+        -c listen_addresses=*
         -c max_connections=100
-        -c shared_buffers=256MB
-        -c work_mem=8MB
-        -c maintenance_work_mem=128MB
-        -c log_statement=mod
+        -c shared_buffers=22GB
+        -c effective_cache_size=64GB
+        -c work_mem=64MB
+        -c maintenance_work_mem=2GB
+        -c max_wal_size=8GB
+        -c min_wal_size=2GB
+        -c wal_buffers=64MB
+        -c checkpoint_completion_target=0.9
+        -c random_page_cost=1.1
+        -c effective_io_concurrency=200
+        -c max_worker_processes=8
+        -c max_parallel_workers=8
+        -c max_parallel_workers_per_gather=2
+        -c max_parallel_maintenance_workers=2
+        -c default_statistics_target=200
         -c log_min_duration_statement=500
+        -c log_checkpoints=on
+        -c log_temp_files=10MB
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-enb_app} -d ${DB_NAME:-enb_DB}"]
       interval: 10s

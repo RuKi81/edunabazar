@@ -5,9 +5,9 @@
 set -euo pipefail
 
 # --- Config ---
-BACKUP_DIR="${BACKUP_DIR:-/mnt/nas/pg_backups}"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/postgres}"
 KEEP_DAYS="${KEEP_DAYS:-14}"
-DB_CONTAINER="${DB_CONTAINER:-db-db-1}"
+DB_CONTAINER="${DB_CONTAINER:-edunabazar-db-db-1}"
 DB_NAME="${DB_NAME:-enb_DB}"
 DB_USER="${DB_USER:-enb_app}"
 DATE=$(date +%Y-%m-%d_%H%M)
@@ -19,7 +19,7 @@ mkdir -p "$BACKUP_DIR"
 echo "[$(date)] Starting backup of ${DB_NAME}..."
 
 docker exec "$DB_CONTAINER" pg_dump -U "$DB_USER" -d "$DB_NAME" --no-owner --no-acl \
-  | gzip > "$BACKUP_FILE"
+  | pigz -p 4 > "$BACKUP_FILE"
 
 SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
 echo "[$(date)] Backup complete: ${BACKUP_FILE} (${SIZE})"
