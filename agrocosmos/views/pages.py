@@ -119,9 +119,22 @@ def _parse_selected_years(raw):
 
 
 def dashboard(request: HttpRequest) -> HttpResponse:
-    """Main Agrocosmos map page — MODIS NDVI monitoring."""
+    """Main Agrocosmos map page — MODIS NDVI monitoring.
+
+    A bare ``/agrocosmos/`` URL with no ``region`` parameter defaults to
+    the all-Russia choropleth so first-time visitors land on the
+    operational overview rather than an empty map. The sentinel value
+    ``'all'`` is the same one the region <select> uses, and the
+    front-end JS auto-fires its ``change`` handler to load the layer.
+    """
     regions = Region.objects.all()
-    region_id = request.GET.get('region')
+    # ``region`` may legitimately be empty when the user explicitly
+    # selects "— Регион —"; only fall back to 'all' when the parameter
+    # is missing entirely from the query string.
+    if 'region' in request.GET:
+        region_id = request.GET.get('region')
+    else:
+        region_id = 'all'
     district_id = request.GET.get('district')
     selected_years = _parse_selected_years(request.GET.get('year'))
     farmland_id = request.GET.get('farmland') or ''
