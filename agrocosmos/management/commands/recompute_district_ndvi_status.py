@@ -20,7 +20,7 @@ from __future__ import annotations
 import time
 
 from django.core.management.base import BaseCommand
-from django.db import connection
+from django.db import connection, transaction
 
 
 _RECOMPUTE_SQL = """
@@ -103,20 +103,23 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument(
-            '--statement-timeout', type=int, default=900_000,
+            '--statement-timeout', type=int, default=3_600_000,
             help='PostgreSQL statement_timeout in milliseconds '
-                 '(default 900_000 = 15 min).',
+                 '(default 3_600_000 = 60 min). Effective only when wrapped '
+                 'in a transaction; under autocommit the session-level '
+                 'default applies.',
         )
 
     def handle(self, *args, **opts):
         timeout_ms = opts['statement_timeout']
         t = time.time()
-        with connection.cursor() as cur:
-            # Bound the worst-case so a runaway query can't lock a connection
-            # forever — refresh is idempotent and can be retried later.
-            cur.execute(f'SET LOCAL statement_timeout = {int(timeout_ms)}')
-            cur.execute(_RECOMPUTE_SQL)
-            rowcount = cur.rowcount
+        # Wrap in an explicit transaction so SET LOCAL actually scopes the
+        # timeout to this query (under autocommit it would be a no-op).
+        with transaction.atomic():
+            with connection.cursor() as cur:
+                cur.execute(f'SET LOCAL statement_timeout = {int(timeout_ms)}')
+                cur.execute(_RECOMPUTE_SQL)
+                rowcount = cur.rowcount
 
         elapsed = time.time() - t
         self.stdout.write(self.style.SUCCESS(
