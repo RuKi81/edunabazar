@@ -3,7 +3,9 @@ import json
 import logging
 import time
 
-from django.contrib.gis.db.models.functions import AsGeoJSON, SimplifyPreserveTopology
+from django.contrib.gis.db.models import GeometryField
+from django.contrib.gis.db.models.functions import AsGeoJSON
+from django.db.models import F, Func, Value
 from django.http import HttpRequest, JsonResponse
 from django.views.decorators.cache import cache_page
 
@@ -11,6 +13,23 @@ from ..models import Region, District, Farmland, VegetationIndex
 from ._helpers import _satellite_filter, rate_limit
 
 logger = logging.getLogger(__name__)
+
+
+class SimplifyPreserveTopology(Func):
+    """PostGIS ``ST_SimplifyPreserveTopology(geom, tolerance)`` wrapper.
+
+    Django ships ``Simplify`` but not the topology-preserving variant — the
+    plain one can collapse polygons / produce invalid geometry, which then
+    breaks ``AsGeoJSON``.
+    """
+    function = 'ST_SimplifyPreserveTopology'
+    output_field = GeometryField()
+
+    def __init__(self, expression, tolerance):
+        super().__init__(
+            F(expression) if isinstance(expression, str) else expression,
+            Value(tolerance),
+        )
 
 
 def api_regions(request: HttpRequest) -> JsonResponse:
