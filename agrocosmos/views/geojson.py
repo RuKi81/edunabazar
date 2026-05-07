@@ -3,7 +3,7 @@ import json
 import logging
 import time
 
-from django.contrib.gis.db.models.functions import AsGeoJSON
+from django.contrib.gis.db.models.functions import AsGeoJSON, SimplifyPreserveTopology
 from django.http import HttpRequest, JsonResponse
 from django.views.decorators.cache import cache_page
 
@@ -79,9 +79,16 @@ def api_districts_status(request: HttpRequest) -> JsonResponse:
     # Single query: every district + (optional) latest status. Districts
     # without a precomputed row appear in the response as `pct_of_baseline=null`
     # → coloured grey on the frontend, signalling "no recent data".
+    # ST_SimplifyPreserveTopology(geom, 0.01°) — tolerance ≈1.1 km, which
+    # is plenty for a full-country overview and shrinks the payload from
+    # ~100 MB down to a few MB. precision=3 (≈100 m) on the JSON side
+    # avoids spurious decimals once the geometry is already simplified.
     rows = (
         District.objects
-        .annotate(geojson=AsGeoJSON('geom', precision=4))
+        .annotate(geojson=AsGeoJSON(
+            SimplifyPreserveTopology('geom', 0.01),
+            precision=3,
+        ))
         .values(
             'id', 'name', 'region__name', 'geojson',
             'ndvi_status__latest_date',
