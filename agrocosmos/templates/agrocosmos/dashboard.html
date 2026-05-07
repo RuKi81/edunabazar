@@ -648,7 +648,16 @@
               if (p.pct_of_baseline != null) {
                 html += '% от нормы: <b>' + p.pct_of_baseline.toFixed(1) + '%</b>';
               }
-              layer.bindTooltip(html, { sticky: true });
+              // Popup (not tooltip): Leaflet enforces a single open popup at
+              // a time, auto-closes on map click / pan / new selection. The
+              // previous sticky-tooltip approach piled up on touch devices
+              // and on fast cursor movement because mouseout doesn't fire
+              // reliably between touch taps.
+              layer.bindPopup(html, {
+                closeButton: true,
+                autoPan: false,
+                maxWidth: 280,
+              });
             },
           }).addTo(map);
           if (districtLayer.getBounds().isValid()) {
