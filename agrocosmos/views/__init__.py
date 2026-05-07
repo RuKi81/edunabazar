@@ -21,6 +21,7 @@ from .pages import (
 from .geojson import (
     api_regions,
     api_districts,
+    api_districts_status,
     api_farmlands,
 )
 from .tiles import (
@@ -47,7 +48,7 @@ __all__ = [
     # pages
     'dashboard', 'raster_dashboard', 'report_region', 'report_district',
     # GeoJSON
-    'api_regions', 'api_districts', 'api_farmlands',
+    'api_regions', 'api_districts', 'api_districts_status', 'api_farmlands',
     # tiles
     'api_tile', 'api_raster_tile',
     # NDVI data APIs

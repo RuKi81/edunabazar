@@ -241,6 +241,7 @@
 
       <select id="agro-region" class="browser-default agro-ui__select">
         <option value="">— Регион —</option>
+        <option value="all" {% if region_id == 'all' %}selected{% endif %}>— Все регионы (NDVI vs baseline) —</option>
         {% for r in regions %}
           <option value="{{ r.id }}" data-code="{{ r.code }}" {% if region_id|stringformat:'s' == r.id|stringformat:'s' %}selected{% endif %}>{{ r.name }}</option>
         {% endfor %}
@@ -252,6 +253,27 @@
           <option value="{{ d.id }}" {% if district_id|stringformat:'s' == d.id|stringformat:'s' %}selected{% endif %}>{{ d.name }}</option>
         {% endfor %}
       </select>
+
+      <!-- Loader shown while the all-regions choropleth is being fetched -->
+      <div id="agro-region-loader" style="display:none; margin: 4px 0 8px; padding:6px 8px; background:#fff3e0; border:1px solid #ffcc80; border-radius:4px; font-size:11px; color:#6d4c41;">
+        <i class="material-icons" style="font-size:14px; vertical-align:-2px;">hourglass_empty</i>
+        Загрузка районов РФ…
+      </div>
+
+      <!-- Legend for "All regions" mode (NDVI vs baseline, % of normal) -->
+      <div id="agro-allregions-legend" style="display:none; margin: 0 0 10px; padding:8px; background:#fafafa; border:1px solid #e0e0e0; border-radius:4px; font-size:10px;">
+        <div style="font-weight:600; margin-bottom:4px;">% от нормы (baseline)</div>
+        <div style="display:flex; flex-direction:column; gap:2px;">
+          <div><span style="display:inline-block; width:14px; height:10px; background:#b71c1c; vertical-align:middle;"></span> &lt; 70% — резкий дефицит</div>
+          <div><span style="display:inline-block; width:14px; height:10px; background:#e53935; vertical-align:middle;"></span> 70–80% — дефицит</div>
+          <div><span style="display:inline-block; width:14px; height:10px; background:#fb8c00; vertical-align:middle;"></span> 80–90% — ниже нормы</div>
+          <div><span style="display:inline-block; width:14px; height:10px; background:#fdd835; vertical-align:middle;"></span> 90–95% — слегка ниже</div>
+          <div><span style="display:inline-block; width:14px; height:10px; background:#7cb342; vertical-align:middle;"></span> 95–105% — норма</div>
+          <div><span style="display:inline-block; width:14px; height:10px; background:#2e7d32; vertical-align:middle;"></span> 105–115% — выше</div>
+          <div><span style="display:inline-block; width:14px; height:10px; background:#1b5e20; vertical-align:middle;"></span> &gt; 115% — много выше</div>
+          <div><span style="display:inline-block; width:14px; height:10px; background:#bdbdbd; vertical-align:middle;"></span> нет данных</div>
+        </div>
+      </div>
 
       <!-- Multi-year picker -->
       <div id="agro-year-wrap" style="position:relative; margin-bottom:10px;">
@@ -549,17 +571,106 @@
     var regionSel = document.getElementById('agro-region');
     var districtSel = document.getElementById('agro-district');
 
-    // When region changes — update district dropdown + uncheck layers
+    // Color scale for "% of baseline" choropleth (all-regions mode).
+    function pctToColor(pct) {
+      if (pct == null) return '#bdbdbd';        // grey: no data
+      if (pct < 70)  return '#b71c1c';          // deep red:    severe deficit
+      if (pct < 80)  return '#e53935';          // red:         deficit
+      if (pct < 90)  return '#fb8c00';          // orange:      below normal
+      if (pct < 95)  return '#fdd835';          // yellow:      slightly below
+      if (pct < 105) return '#7cb342';          // light green: normal
+      if (pct < 115) return '#2e7d32';          // green:       above normal
+      return '#1b5e20';                          // dark green:  well above
+    }
+
+    // Toggle visibility of the legend strip embedded in the sidebar.
+    function setAllRegionsLegendVisible(show) {
+      var el = document.getElementById('agro-allregions-legend');
+      if (el) el.style.display = show ? '' : 'none';
+    }
+
+    // Loads the all-Russia districts status FeatureCollection and renders it
+    // as a choropleth. Heavy (~few MB), but cached server-side for 1 hour.
+    function loadAllDistrictsStatus() {
+      districtLayer = clearLayer(districtLayer);
+      var loader = document.getElementById('agro-region-loader');
+      if (loader) loader.style.display = '';
+      fetch('/agrocosmos/api/districts/status/')
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (loader) loader.style.display = 'none';
+          if (!data.features || !data.features.length) return;
+          districtLayer = L.geoJSON(data, {
+            style: function (f) {
+              return {
+                color: '#37474f',
+                weight: 0.4,
+                fillColor: pctToColor(f.properties.pct_of_baseline),
+                fillOpacity: 0.65,
+              };
+            },
+            onEachFeature: function (f, layer) {
+              var p = f.properties;
+              var html = '<b>' + (p.name || '—') + '</b><br/>'
+                + '<span style="color:#666">' + (p.region || '') + '</span><br/>';
+              if (p.current_ndvi != null) {
+                html += 'NDVI: <b>' + p.current_ndvi.toFixed(3) + '</b>'
+                  + ' <span style="color:#999">(' + (p.current_date || '') + ')</span><br/>';
+              } else {
+                html += '<i style="color:#999">Нет свежих данных</i><br/>';
+              }
+              if (p.baseline_ndvi != null) {
+                html += 'Baseline: ' + p.baseline_ndvi.toFixed(3) + '<br/>';
+              }
+              if (p.pct_of_baseline != null) {
+                html += '% от нормы: <b>' + p.pct_of_baseline.toFixed(1) + '%</b>';
+              }
+              layer.bindTooltip(html, { sticky: true });
+            },
+          }).addTo(map);
+          if (districtLayer.getBounds().isValid()) {
+            map.fitBounds(districtLayer.getBounds(), { padding: [10, 10] });
+          }
+        })
+        .catch(function () {
+          if (loader) loader.style.display = 'none';
+        });
+    }
+
+    // When region changes — update district dropdown + auto-show borders & zoom.
+    // Special case: regionId === 'all' renders an all-Russia districts choropleth
+    // coloured by current NDVI vs baseline (% of normal).
     regionSel.addEventListener('change', function () {
       var regionId = this.value;
       districtSel.innerHTML = '<option value="">— Все районы —</option>';
-      document.getElementById('agro-toggle-borders').checked = false;
       document.getElementById('agro-toggle-farmlands').checked = false;
       districtLayer = clearLayer(districtLayer);
       if (mvtLayer) { map.removeLayer(mvtLayer); mvtLayer = null; }
       document.getElementById('crop-type-checkboxes').innerHTML = '';
       document.getElementById('stat-count').textContent = '—';
-      if (!regionId) return;
+
+      var bordersCb = document.getElementById('agro-toggle-borders');
+
+      if (regionId === 'all') {
+        // All-Russia choropleth: borders checkbox is irrelevant here
+        bordersCb.checked = false;
+        districtSel.disabled = true;
+        setAllRegionsLegendVisible(true);
+        loadAllDistrictsStatus();
+        return;
+      }
+
+      districtSel.disabled = false;
+      setAllRegionsLegendVisible(false);
+
+      if (!regionId) {
+        bordersCb.checked = false;
+        return;
+      }
+      // Auto-enable borders + zoom — reuses existing fetch/fitBounds logic.
+      bordersCb.checked = true;
+      bordersCb.dispatchEvent(new Event('change'));
+
       fetch('/agrocosmos/api/districts/?region=' + regionId)
         .then(function (r) { return r.json(); })
         .then(function (data) {
