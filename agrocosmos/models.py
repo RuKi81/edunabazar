@@ -319,6 +319,46 @@ class NdviBaseline(models.Model):
         return f'Baseline d={self.district_id} doy={self.day_of_year} ndvi={self.mean_ndvi:.3f}'
 
 
+class DistrictNdviStatus(models.Model):
+    """Кешированный текущий статус NDVI по району (для all-Russia choropleth).
+
+    Одна строка на район. Пересчитывается командой
+    ``recompute_district_ndvi_status`` после каждого запуска MODIS-пайплайна
+    (см. конец ``modis_ndvi.py``). Без этого кеша HTTP-запрос
+    ``/agrocosmos/api/districts/status/`` не уложился бы в таймаут — на
+    проде в ``agro_vegetation_index`` ~25M строк за 60 дней.
+
+    Поля рассчитываются по последней доступной MODIS-композите района как
+    area-weighted среднее NDVI ферм. ``baseline_ndvi`` берётся из
+    ``NdviBaseline`` для соответствующего DOY (с ±8/±16 fallback).
+    """
+    district = models.OneToOneField(
+        District,
+        on_delete=models.CASCADE,
+        primary_key=True,
+        related_name='ndvi_status',
+    )
+    latest_date = models.DateField(verbose_name='Последняя дата MODIS')
+    current_ndvi = models.FloatField(verbose_name='Текущее NDVI (area-weighted)')
+    baseline_ndvi = models.FloatField(
+        null=True, blank=True, verbose_name='Baseline NDVI на ту же DOY',
+    )
+    pct_of_baseline = models.FloatField(
+        null=True, blank=True,
+        verbose_name='% от нормы (current / baseline * 100)',
+    )
+    computed_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'agro_district_ndvi_status'
+        verbose_name = 'Статус NDVI района'
+        verbose_name_plural = 'Статусы NDVI районов'
+
+    def __str__(self):
+        pct = f'{self.pct_of_baseline:.0f}%' if self.pct_of_baseline is not None else '—'
+        return f'{self.district.name}: {self.current_ndvi:.3f} ({pct})'
+
+
 class PipelineRun(models.Model):
     """Лог запуска любого процесса пайплайна."""
 

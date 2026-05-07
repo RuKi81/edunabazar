@@ -1,14 +1,16 @@
 """GeoJSON API endpoints: regions, districts, farmlands."""
 import json
-from collections import defaultdict
-from datetime import date, timedelta
+import logging
+import time
 
 from django.contrib.gis.db.models.functions import AsGeoJSON
 from django.http import HttpRequest, JsonResponse
 from django.views.decorators.cache import cache_page
 
-from ..models import Region, District, Farmland, NdviBaseline, VegetationIndex
-from ._helpers import MODIS_SATELLITES, _satellite_filter, rate_limit
+from ..models import Region, District, Farmland, VegetationIndex
+from ._helpers import _satellite_filter, rate_limit
+
+logger = logging.getLogger(__name__)
 
 
 def api_regions(request: HttpRequest) -> JsonResponse:
@@ -58,112 +60,66 @@ def api_districts(request: HttpRequest) -> JsonResponse:
 def api_districts_status(request: HttpRequest) -> JsonResponse:
     """All-Russia FeatureCollection of districts with current NDVI vs baseline.
 
-    For each district: the latest available MODIS 16-day composite (within
-    the last ~60 days) is aggregated as area-weighted mean of farmland NDVI
-    on that date. Baseline is taken from ``NdviBaseline`` at the matching
-    day-of-year (with ±8/±16 fallback to handle composite drift), and
-    ``pct_of_baseline = current / baseline * 100``. Districts without data
-    are returned with ``pct_of_baseline = null`` so the frontend can colour
-    them grey.
+    Reads from the precomputed cache table ``agro_district_ndvi_status``
+    (one row per district), populated by the management command
+    ``recompute_district_ndvi_status`` at the tail of the MODIS pipeline.
 
-    Geometry is simplified server-side via ``AsGeoJSON(precision=4)`` to keep
-    the payload reasonable (≈2200 districts × geom). Response is cached for
-    1 hour because the underlying data changes only every ~16 days.
+    Computing this on-the-fly is infeasible: ``agro_vegetation_index``
+    holds ~25M MODIS rows in any 60-day window, and even a single
+    per-district aggregation takes >70 seconds. The cache table makes the
+    endpoint ~constant-time (a single LEFT JOIN District ⟕ status with
+    geometry serialisation).
+
+    Geometry is simplified server-side via ``AsGeoJSON(precision=4)`` to
+    keep the payload reasonable (≈2300 districts × geom ≈ 5-10 MB).
+    Response is additionally cached at the HTTP layer for 1 hour.
     """
-    cutoff = date.today() - timedelta(days=60)
+    overall_t = time.time()
 
-    # Single pass over recent VI rows. We need: per-district latest date and
-    # the area-weighted NDVI on that date.
-    vi_qs = (
-        VegetationIndex.objects
-        .filter(
-            index_type='ndvi',
-            scene__satellite__in=MODIS_SATELLITES,
-            is_outlier=False,
-            mean__gte=-0.2, mean__lte=1,
-            acquired_date__gte=cutoff,
-        )
-        .values_list(
-            'acquired_date', 'mean', 'farmland__district_id', 'farmland__area_ha',
-        )
-    )
-
-    # (district_id, acquired_date) -> {sum_ndvi*area, sum_area}
-    per_dd = defaultdict(lambda: {'sum_w': 0.0, 'sum_a': 0.0})
-    for acq_date, mean_v, did, area_ha in vi_qs.iterator(chunk_size=10000):
-        if did is None or mean_v is None or area_ha is None:
-            continue
-        af = float(area_ha)
-        if af <= 0:
-            continue
-        bucket = per_dd[(did, acq_date)]
-        bucket['sum_w'] += float(mean_v) * af
-        bucket['sum_a'] += af
-
-    # Per district: pick the latest date with data
-    latest = {}
-    for (did, d), acc in per_dd.items():
-        if acc['sum_a'] <= 0:
-            continue
-        cur = acc['sum_w'] / acc['sum_a']
-        prev = latest.get(did)
-        if prev is None or d > prev['date']:
-            latest[did] = {'date': d, 'mean': cur}
-
-    # Baseline (region-agnostic, all districts at once)
-    bl_lookup = defaultdict(dict)
-    for b in NdviBaseline.objects.filter(crop_type='').values(
-        'district_id', 'day_of_year', 'mean_ndvi',
-    ).iterator(chunk_size=10000):
-        bl_lookup[b['district_id']][b['day_of_year']] = b['mean_ndvi']
-
-    def _baseline_for(did, doy):
-        m = bl_lookup.get(did)
-        if not m:
-            return None
-        # Exact, then ±8/±16 to tolerate MODIS biweekly composite drift
-        for off in (0, 8, -8, 16, -16):
-            v = m.get(doy + off)
-            if v is not None:
-                return v
-        return None
-
+    # Single query: every district + (optional) latest status. Districts
+    # without a precomputed row appear in the response as `pct_of_baseline=null`
+    # → coloured grey on the frontend, signalling "no recent data".
     rows = (
         District.objects
         .annotate(geojson=AsGeoJSON('geom', precision=4))
-        .values('id', 'name', 'region__name', 'geojson')
+        .values(
+            'id', 'name', 'region__name', 'geojson',
+            'ndvi_status__latest_date',
+            'ndvi_status__current_ndvi',
+            'ndvi_status__baseline_ndvi',
+            'ndvi_status__pct_of_baseline',
+        )
     )
 
     features = []
-    for r in rows:
+    with_data = 0
+    for r in rows.iterator(chunk_size=500):
         if not r['geojson']:
             continue
-        cur_info = latest.get(r['id'])
-        props = {
-            'id': r['id'],
-            'name': r['name'],
-            'region': r['region__name'],
-            'current_ndvi': None,
-            'current_date': None,
-            'baseline_ndvi': None,
-            'pct_of_baseline': None,
-        }
-        if cur_info is not None:
-            cur_d = cur_info['date']
-            cur_v = cur_info['mean']
-            doy = cur_d.timetuple().tm_yday
-            bl = _baseline_for(r['id'], doy)
-            props['current_ndvi'] = round(cur_v, 3)
-            props['current_date'] = str(cur_d)
-            if bl is not None and bl > 0.05:
-                props['baseline_ndvi'] = round(bl, 3)
-                props['pct_of_baseline'] = round(cur_v / bl * 100.0, 1)
+        cur_v = r['ndvi_status__current_ndvi']
+        cur_d = r['ndvi_status__latest_date']
+        bl_v = r['ndvi_status__baseline_ndvi']
+        pct = r['ndvi_status__pct_of_baseline']
+        if cur_v is not None:
+            with_data += 1
         features.append({
             'type': 'Feature',
-            'properties': props,
+            'properties': {
+                'id': r['id'],
+                'name': r['name'],
+                'region': r['region__name'],
+                'current_ndvi': round(cur_v, 3) if cur_v is not None else None,
+                'current_date': str(cur_d) if cur_d else None,
+                'baseline_ndvi': round(bl_v, 3) if bl_v is not None else None,
+                'pct_of_baseline': pct,
+            },
             'geometry': json.loads(r['geojson']),
         })
 
+    logger.info(
+        'api_districts_status: districts=%d  with_data=%d  total=%.2fs',
+        len(features), with_data, time.time() - overall_t,
+    )
     return JsonResponse({'type': 'FeatureCollection', 'features': features})
 
 
