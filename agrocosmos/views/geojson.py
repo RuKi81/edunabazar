@@ -3,33 +3,14 @@ import json
 import logging
 import time
 
-from django.contrib.gis.db.models import GeometryField
 from django.contrib.gis.db.models.functions import AsGeoJSON
-from django.db.models import F, Func, Value
 from django.http import HttpRequest, JsonResponse
-from django.views.decorators.cache import cache_page
 
 from ..models import Region, District, Farmland, VegetationIndex
+from ..services import districts_status_geojson
 from ._helpers import _satellite_filter, rate_limit
 
 logger = logging.getLogger(__name__)
-
-
-class SimplifyPreserveTopology(Func):
-    """PostGIS ``ST_SimplifyPreserveTopology(geom, tolerance)`` wrapper.
-
-    Django ships ``Simplify`` but not the topology-preserving variant — the
-    plain one can collapse polygons / produce invalid geometry, which then
-    breaks ``AsGeoJSON``.
-    """
-    function = 'ST_SimplifyPreserveTopology'
-    output_field = GeometryField()
-
-    def __init__(self, expression, tolerance):
-        super().__init__(
-            F(expression) if isinstance(expression, str) else expression,
-            Value(tolerance),
-        )
 
 
 def api_regions(request: HttpRequest) -> JsonResponse:
@@ -75,78 +56,29 @@ def api_districts(request: HttpRequest) -> JsonResponse:
 
 
 @rate_limit('20/m')
-@cache_page(60 * 60)
 def api_districts_status(request: HttpRequest) -> JsonResponse:
     """All-Russia FeatureCollection of districts with current NDVI vs baseline.
 
-    Reads from the precomputed cache table ``agro_district_ndvi_status``
-    (one row per district), populated by the management command
-    ``recompute_district_ndvi_status`` at the tail of the MODIS pipeline.
+    The heavy GeoJSON build (district geometries + simplification +
+    serialisation, ~20 s) is cached eternally in Redis under a dedicated
+    key by ``agrocosmos.services.districts_status_geojson``. The cached
+    payload is rotated:
 
-    Computing this on-the-fly is infeasible: ``agro_vegetation_index``
-    holds ~25M MODIS rows in any 60-day window, and even a single
-    per-district aggregation takes >70 seconds. The cache table makes the
-    endpoint ~constant-time (a single LEFT JOIN District ⟕ status with
-    geometry serialisation).
+    1. by ``recompute_district_ndvi_status`` after each NDVI refresh
+       (daily, at the tail of the MODIS pipeline), and
+    2. by the ``prewarm_agro_caches`` management command on deploy.
 
-    Geometry is simplified server-side via ``AsGeoJSON(precision=4)`` to
-    keep the payload reasonable (≈2300 districts × geom ≈ 5-10 MB).
-    Response is additionally cached at the HTTP layer for 1 hour.
+    Therefore this view is sub-millisecond on the hot path and never
+    hammers PostgreSQL — keeping the choropleth from blocking gunicorn
+    workers when traffic bursts (which previously took the site down).
     """
     overall_t = time.time()
-
-    # Single query: every district + (optional) latest status. Districts
-    # without a precomputed row appear in the response as `pct_of_baseline=null`
-    # → coloured grey on the frontend, signalling "no recent data".
-    # ST_SimplifyPreserveTopology(geom, 0.01°) — tolerance ≈1.1 km, which
-    # is plenty for a full-country overview and shrinks the payload from
-    # ~100 MB down to a few MB. precision=3 (≈100 m) on the JSON side
-    # avoids spurious decimals once the geometry is already simplified.
-    rows = (
-        District.objects
-        .annotate(geojson=AsGeoJSON(
-            SimplifyPreserveTopology('geom', 0.01),
-            precision=3,
-        ))
-        .values(
-            'id', 'name', 'region__name', 'geojson',
-            'ndvi_status__latest_date',
-            'ndvi_status__current_ndvi',
-            'ndvi_status__baseline_ndvi',
-            'ndvi_status__pct_of_baseline',
-        )
-    )
-
-    features = []
-    with_data = 0
-    for r in rows.iterator(chunk_size=500):
-        if not r['geojson']:
-            continue
-        cur_v = r['ndvi_status__current_ndvi']
-        cur_d = r['ndvi_status__latest_date']
-        bl_v = r['ndvi_status__baseline_ndvi']
-        pct = r['ndvi_status__pct_of_baseline']
-        if cur_v is not None:
-            with_data += 1
-        features.append({
-            'type': 'Feature',
-            'properties': {
-                'id': r['id'],
-                'name': r['name'],
-                'region': r['region__name'],
-                'current_ndvi': round(cur_v, 3) if cur_v is not None else None,
-                'current_date': str(cur_d) if cur_d else None,
-                'baseline_ndvi': round(bl_v, 3) if bl_v is not None else None,
-                'pct_of_baseline': pct,
-            },
-            'geometry': json.loads(r['geojson']),
-        })
-
+    payload = districts_status_geojson.get_or_build()
     logger.info(
-        'api_districts_status: districts=%d  with_data=%d  total=%.2fs',
-        len(features), with_data, time.time() - overall_t,
+        'api_districts_status: features=%d  total=%.3fs',
+        len(payload.get('features', [])), time.time() - overall_t,
     )
-    return JsonResponse({'type': 'FeatureCollection', 'features': features})
+    return JsonResponse(payload)
 
 
 @rate_limit('60/m')

@@ -125,3 +125,22 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f'agro_district_ndvi_status: {rowcount} rows upserted in {elapsed:.1f}s'
         ))
+
+        # Refresh the cached GeoJSON FeatureCollection that backs the
+        # all-Russia choropleth endpoint. Doing it here means the next
+        # API hit is a sub-millisecond `cache.get()` instead of a 20s
+        # rebuild — important on deploy days when traffic ramps up.
+        # Failure must NOT mask the successful upsert above; the view
+        # transparently falls back to inline rebuild.
+        try:
+            from agrocosmos.services import districts_status_geojson
+            t2 = time.time()
+            payload = districts_status_geojson.refresh_cache()
+            self.stdout.write(self.style.SUCCESS(
+                f'districts_status GeoJSON cached: {len(payload["features"])} '
+                f'features in {time.time() - t2:.1f}s'
+            ))
+        except Exception as exc:
+            self.stderr.write(self.style.WARNING(
+                f'  GeoJSON cache refresh failed (non-fatal): {exc}'
+            ))
