@@ -359,3 +359,19 @@ class Command(BaseCommand):
             self.stderr.write(self.style.WARNING(
                 'Interrupted. Re-run with --stats-only to resume stats calculation.'
             ))
+            return
+
+        # Refresh the cached per-district NDVI status used by the
+        # all-Russia choropleth (`/agrocosmos/api/districts/status/`).
+        # This must run AFTER new VI rows are saved, otherwise the
+        # cached status would lag one MODIS composite behind. Failure
+        # here must NOT fail the pipeline — the status cache is only
+        # used by a non-critical map view.
+        try:
+            self.stdout.write('\n📌 Refreshing district NDVI status cache…')
+            from django.core.management import call_command
+            call_command('recompute_district_ndvi_status', stdout=self.stdout)
+        except Exception as exc:
+            self.stderr.write(self.style.WARNING(
+                f'  district status refresh failed (non-fatal): {exc}'
+            ))
