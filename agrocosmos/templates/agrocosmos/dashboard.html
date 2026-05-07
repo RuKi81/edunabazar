@@ -229,10 +229,10 @@
 
       <div class="agro-page-tabs">
         <a href="{% url 'agrocosmos:dashboard' %}" class="{% if active_page == 'modis' %}active{% endif %}">
-          <i class="material-icons" style="font-size:14px; vertical-align:-2px;">timeline</i> MODIS
+          <i class="material-icons" style="font-size:14px; vertical-align:-2px;">timeline</i> Региональный мониторинг
         </a>
         <a href="{% url 'agrocosmos:raster_dashboard' %}" class="{% if active_page == 'raster' %}active{% endif %}">
-          <i class="material-icons" style="font-size:14px; vertical-align:-2px;">satellite</i> Sentinel / Landsat
+          <i class="material-icons" style="font-size:14px; vertical-align:-2px;">satellite</i> Детальный мониторинг
         </a>
         <a href="{% url 'agrocosmos:report_region' %}" class="{% if active_page == 'report_region' %}active{% endif %}">
           <i class="material-icons" style="font-size:14px; vertical-align:-2px;">assessment</i> Отчёты
@@ -241,7 +241,7 @@
 
       <select id="agro-region" class="browser-default agro-ui__select">
         <option value="">— Регион —</option>
-        <option value="all" {% if region_id == 'all' %}selected{% endif %}>— Все регионы (NDVI vs baseline) —</option>
+        <option value="all" {% if region_id == 'all' %}selected{% endif %}>— Все регионы (Оперативное состояние) —</option>
         {% for r in regions %}
           <option value="{{ r.id }}" data-code="{{ r.code }}" {% if region_id|stringformat:'s' == r.id|stringformat:'s' %}selected{% endif %}>{{ r.name }}</option>
         {% endfor %}
@@ -260,18 +260,21 @@
         Загрузка районов РФ…
       </div>
 
-      <!-- Legend for "All regions" mode (NDVI vs baseline, % of normal) -->
-      <div id="agro-allregions-legend" style="display:none; margin: 0 0 10px; padding:8px; background:#fafafa; border:1px solid #e0e0e0; border-radius:4px; font-size:10px;">
-        <div style="font-weight:600; margin-bottom:4px;">% от нормы (baseline)</div>
-        <div style="display:flex; flex-direction:column; gap:2px;">
-          <div><span style="display:inline-block; width:14px; height:10px; background:#b71c1c; vertical-align:middle;"></span> &lt; 70% — резкий дефицит</div>
-          <div><span style="display:inline-block; width:14px; height:10px; background:#e53935; vertical-align:middle;"></span> 70–80% — дефицит</div>
-          <div><span style="display:inline-block; width:14px; height:10px; background:#fb8c00; vertical-align:middle;"></span> 80–90% — ниже нормы</div>
-          <div><span style="display:inline-block; width:14px; height:10px; background:#fdd835; vertical-align:middle;"></span> 90–95% — слегка ниже</div>
-          <div><span style="display:inline-block; width:14px; height:10px; background:#7cb342; vertical-align:middle;"></span> 95–105% — норма</div>
-          <div><span style="display:inline-block; width:14px; height:10px; background:#2e7d32; vertical-align:middle;"></span> 105–115% — выше</div>
-          <div><span style="display:inline-block; width:14px; height:10px; background:#1b5e20; vertical-align:middle;"></span> &gt; 115% — много выше</div>
-          <div><span style="display:inline-block; width:14px; height:10px; background:#bdbdbd; vertical-align:middle;"></span> нет данных</div>
+      <!-- Legend for "All regions" mode (NDVI vs multi-year mean) -->
+      <div id="agro-allregions-legend" style="display:none; margin: 0 0 10px; padding:10px 12px; background:#fafafa; border:1px solid #e0e0e0; border-radius:4px; font-size:12px; line-height:1.45;">
+        <div id="agro-allregions-asof" style="font-size:11px; color:#555; margin-bottom:6px;">
+          Ситуация на: <b id="agro-allregions-asof-date" style="color:#222;">—</b>
+        </div>
+        <div style="font-weight:700; margin-bottom:6px; font-size:12px;">% от среднего многолетнего</div>
+        <div style="display:flex; flex-direction:column; gap:4px;">
+          <div><span style="display:inline-block; width:18px; height:12px; background:#b71c1c; vertical-align:middle; margin-right:4px;"></span> &lt; 70% — резкий дефицит</div>
+          <div><span style="display:inline-block; width:18px; height:12px; background:#e53935; vertical-align:middle; margin-right:4px;"></span> 70–80% — дефицит</div>
+          <div><span style="display:inline-block; width:18px; height:12px; background:#fb8c00; vertical-align:middle; margin-right:4px;"></span> 80–90% — ниже нормы</div>
+          <div><span style="display:inline-block; width:18px; height:12px; background:#fdd835; vertical-align:middle; margin-right:4px;"></span> 90–95% — слегка ниже</div>
+          <div><span style="display:inline-block; width:18px; height:12px; background:#7cb342; vertical-align:middle; margin-right:4px;"></span> 95–105% — норма</div>
+          <div><span style="display:inline-block; width:18px; height:12px; background:#2e7d32; vertical-align:middle; margin-right:4px;"></span> 105–115% — выше</div>
+          <div><span style="display:inline-block; width:18px; height:12px; background:#1b5e20; vertical-align:middle; margin-right:4px;"></span> &gt; 115% — много выше</div>
+          <div><span style="display:inline-block; width:18px; height:12px; background:#bdbdbd; vertical-align:middle; margin-right:4px;"></span> нет данных</div>
         </div>
       </div>
 
@@ -623,6 +626,19 @@
         .then(function (data) {
           if (loader) loader.style.display = 'none';
           if (!data.features || !data.features.length) return;
+
+          // "Ситуация на" — pick the most recent ``current_date`` across
+          // all districts (it can vary by a day or two near the country
+          // edges) and surface it at the top of the legend so the user
+          // immediately sees how fresh the choropleth is.
+          var latestDate = null;
+          data.features.forEach(function (f) {
+            var d = f.properties && f.properties.current_date;
+            if (d && (!latestDate || d > latestDate)) latestDate = d;
+          });
+          var asOfEl = document.getElementById('agro-allregions-asof-date');
+          if (asOfEl) asOfEl.textContent = latestDate || '—';
+
           districtLayer = L.geoJSON(data, {
             style: function (f) {
               return {
@@ -646,7 +662,7 @@
                 html += 'Baseline: ' + p.baseline_ndvi.toFixed(3) + '<br/>';
               }
               if (p.pct_of_baseline != null) {
-                html += '% от нормы: <b>' + p.pct_of_baseline.toFixed(1) + '%</b>';
+                html += '% от среднего многолетнего: <b>' + p.pct_of_baseline.toFixed(1) + '%</b>';
               }
               // Popup (not tooltip): Leaflet enforces a single open popup at
               // a time, auto-closes on map click / pan / new selection. The
