@@ -48,8 +48,10 @@ def _site_url() -> str:
 
 
 def _district_report_url(region_id: int, district_id: int, year: int | None = None) -> str:
+    # The dedicated ``report_district`` page was merged into ``report_region``.
+    # The unified page renders the per-district view when ``district`` is set.
     year = year or date.today().year
-    path = reverse('report_district')
+    path = reverse('report_region')
     return f'{_site_url()}{path}?region={region_id}&district={district_id}&year={year}'
 
 

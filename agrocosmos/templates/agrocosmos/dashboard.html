@@ -1749,7 +1749,10 @@
           + (rid ? '?region=' + rid + '&year=' + yr : '');
       }
       if (_btnReportDistrict) {
-        _btnReportDistrict.href = '{% url "agrocosmos:report_district" %}'
+        // The standalone "Отчёт по району" page has been merged into the
+        // unified report_region page (district view = same URL with a
+        // ``district`` query param).
+        _btnReportDistrict.href = '{% url "agrocosmos:report_region" %}'
           + (rid ? '?region=' + rid + (did ? '&district=' + did : '') + '&year=' + yr : '');
       }
     }

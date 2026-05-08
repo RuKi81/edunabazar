@@ -272,30 +272,3 @@ def report_region(request: HttpRequest) -> HttpResponse:
     })
 
 
-def report_district(request: HttpRequest) -> HttpResponse:
-    """MODIS NDVI report page — district level."""
-    regions = Region.objects.all()
-    region_id = request.GET.get('region')
-    district_id = request.GET.get('district')
-    year = request.GET.get('year')
-
-    current_year = date.today().year
-    years = _available_modis_ndvi_years(current_year)
-
-    districts = District.objects.none()
-    if region_id:
-        try:
-            districts = District.objects.filter(region_id=int(region_id)).order_by('name')
-        except (TypeError, ValueError):
-            pass
-
-    return render(request, 'agrocosmos/report_district.html', {
-        'legacy_user': _get_legacy_user(request),
-        'regions': regions,
-        'districts': districts,
-        'region_id': region_id or '',
-        'district_id': district_id or '',
-        'year': year or str(current_year),
-        'years': years,
-        'active_page': 'report_district',
-    })

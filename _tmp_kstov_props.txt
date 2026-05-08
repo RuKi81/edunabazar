@@ -1,0 +1,1 @@
+[0] geom=Polygon  props={"osm_id": -1086960, "name": "Кстовский район", "name_en": "Kstovsky District", "boundary": "administrative", "admin_level": 9, "admin_centre_node_id": 356483013, "admin_centre_node_lat": 56.149551, "admin_centre_node_lng": 44.198032, "label_node_id": null, "label_node_lat": null, "label_node_lng": null}

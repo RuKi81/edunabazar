@@ -7,7 +7,6 @@ urlpatterns = [
     path('', views.dashboard, name='dashboard'),
     path('raster/', views.raster_dashboard, name='raster_dashboard'),
     path('report/region/', views.report_region, name='report_region'),
-    path('report/district/', views.report_district, name='report_district'),
     path('api/regions/', views.api_regions, name='api_regions'),
     path('api/districts/', views.api_districts, name='api_districts'),
     path('api/districts/status/', views.api_districts_status, name='api_districts_status'),

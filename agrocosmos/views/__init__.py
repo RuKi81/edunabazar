@@ -15,7 +15,6 @@ from .pages import (
     dashboard,
     raster_dashboard,
     report_region,
-    report_district,
     _get_legacy_user,
 )
 from .geojson import (
@@ -47,7 +46,7 @@ __all__ = [
     # constants
     'MODIS_SATELLITES', 'RASTER_SATELLITES',
     # pages
-    'dashboard', 'raster_dashboard', 'report_region', 'report_district',
+    'dashboard', 'raster_dashboard', 'report_region',
     # GeoJSON
     'api_regions', 'api_districts', 'api_districts_status',
     'api_districts_status_timeline', 'api_farmlands',
