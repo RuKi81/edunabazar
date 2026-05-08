@@ -440,7 +440,11 @@
     // is intentionally generous (covers Kaliningrad → Chukotka).
     var map = L.map('agro-map', { scrollWheelZoom: true, zoomControl: false });
     var RUSSIA_BOUNDS = L.latLngBounds([[41.0, 19.0], [82.0, 180.0]]);
-    map.fitBounds(RUSSIA_BOUNDS, { padding: [10, 10] });
+    // The all-Russia choropleth concentrates data density in European Russia
+    // (agriculture is sparse east of the Urals), so the default view zooms
+    // there. Users can pan/zoom to Siberia & Far East as needed.
+    var EUROPEAN_RUSSIA_BOUNDS = L.latLngBounds([[43.0, 19.0], [68.0, 65.0]]);
+    map.fitBounds(EUROPEAN_RUSSIA_BOUNDS, { padding: [10, 10] });
 
     // Custom pane for basemap tiles — always below vectors
     map.createPane('basemapPane');
@@ -676,9 +680,10 @@
               });
             },
           }).addTo(map);
-          if (districtLayer.getBounds().isValid()) {
-            map.fitBounds(districtLayer.getBounds(), { padding: [10, 10] });
-          }
+          // Zoom to European Russia (data-dense area) rather than the full
+          // districts FeatureCollection bounds (which would zoom out all the
+          // way to Chukotka and lose detail in the agricultural belt).
+          map.fitBounds(EUROPEAN_RUSSIA_BOUNDS, { padding: [10, 10] });
         })
         .catch(function () {
           if (loader) loader.style.display = 'none';
@@ -717,8 +722,9 @@
       if (!regionId) {
         bordersCb.checked = false;
         bordersCb.dispatchEvent(new Event('change'));
-        // Reset the map back to the country-wide overview.
-        map.fitBounds(RUSSIA_BOUNDS, { padding: [10, 10] });
+        // Reset the map back to the European Russia overview, matching the
+        // initial viewport.
+        map.fitBounds(EUROPEAN_RUSSIA_BOUNDS, { padding: [10, 10] });
         return;
       }
 
