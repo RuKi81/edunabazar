@@ -73,10 +73,17 @@ class Command(BaseCommand):
             '--force', action='store_true',
             help='Force run even if period is not yet due',
         )
+        parser.add_argument(
+            '--max-periods-per-task', type=int, default=2,
+            help='Maximum number of biweekly periods to process per task in '
+                 'one invocation (default: 2). Caps catch-up work so a single '
+                 'cron run cannot exceed the PipelineRun heartbeat window.',
+        )
 
     def handle(self, *args, **options):
         dry_run = options['dry_run']
         force = options['force']
+        max_periods_per_task = options['max_periods_per_task']
         today = date.today()
 
         tasks = MonitoringTask.objects.filter(
@@ -90,9 +97,9 @@ class Command(BaseCommand):
         self.stdout.write(f'Found {tasks.count()} active task(s), today={today}')
 
         for task in tasks:
-            self._process_task(task, today, dry_run, force)
+            self._process_task(task, today, dry_run, force, max_periods_per_task)
 
-    def _process_task(self, task, today, dry_run, force):
+    def _process_task(self, task, today, dry_run, force, max_periods_per_task):
         region = task.region
         year = task.year
 
@@ -198,6 +205,16 @@ class Command(BaseCommand):
                 task.save()
 
                 if next_to >= year_end:
+                    break
+
+                # Safety cap: never process more than N periods per task
+                # in one cron invocation. Catch-up converges within a few
+                # cron runs and the heartbeat window stays comfortable.
+                if max_periods_per_task and periods_done >= max_periods_per_task:
+                    self.stdout.write(
+                        f'    → reached --max-periods-per-task={max_periods_per_task}, '
+                        f'will continue on next cron run.'
+                    )
                     break
 
             except Exception as e:
