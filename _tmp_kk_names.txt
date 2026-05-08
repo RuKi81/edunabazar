@@ -1,0 +1,60 @@
+total: 59
+  -1159212  lvl=6  Абанский район                                      en=Abansky Rayon
+  -1149989  lvl=6  Ачинский муниципальный округ                        en=None
+  -1147949  lvl=6  Балахтинский район                                  en=Balakhtinsky Rayon
+  -1157620  lvl=6  Берёзовский район                                   en=Beryozovsky Rayon
+  -1162482  lvl=6  Бирилюсский муниципальный округ                     en=None
+  -1149758  lvl=6  Боготольский муниципальный округ                    en=None
+  -1162689  lvl=6  Богучанский район                                   en=Boguchansky Rayon
+  -1161672  lvl=6  Большемуртинский район                              en=Bolshemurtinsky Rayon
+  -1161670  lvl=6  Дзержинский район                                   en=Dzerzhinsky Rayon
+  -1157389  lvl=6  Емельяновский район                                 en=Yemelyanovsky Rayon
+   -191279  lvl=6  Енисейский район                                    en=Yeniseisk Rayon
+  -1153029  lvl=6  Ермаковский район                                   en=Yermakovsky Rayon
+  -1165290  lvl=6  ЗАТО Железногорск                                   en=Closed administrative-territorial formation of Zheleznogorsk
+  -1547051  lvl=6  ЗАТО Зеленогорск                                    en=None
+  -1165299  lvl=6  ЗАТО Солнечный                                      en=None
+  -1152594  lvl=6  Идринский район                                     en=Idrinsky Rayon
+  -1157550  lvl=6  Иланский район                                      en=Ilansky Rayon
+  -1159138  lvl=6  Ирбейский район                                     en=Irbeysky Rayon
+  -1161676  lvl=6  Казачинский район                                   en=Kazachinsky Rayon
+  -1157414  lvl=6  Канский район                                       en=Kansky Rayon
+  -1153023  lvl=6  Каратузский район                                   en=Karatuzsky Rayon
+  -1162682  lvl=6  Кежемский район                                     en=Kezhemsky Rayon
+  -1150328  lvl=6  Козульский район                                    en=Kozulsky Rayon
+  -1152538  lvl=6  Краснотуранский район                               en=Krasnoturansky Rayon
+  -1152577  lvl=6  Курагинский район                                   en=Kuraginsky Rayon
+  -1157671  lvl=6  Манский район                                       en=Mansky Rayon
+  -1152899  lvl=6  Минусинский район                                   en=Minusinsky Rayon
+  -1162501  lvl=6  Мотыгинский район                                   en=Motyginsky Rayon
+  -1143780  lvl=6  Назаровский район                                   en=Nazarovsky Rayon
+  -1157555  lvl=6  Нижнеингашский район                                en=Nizhneingashsky Rayon
+  -1152534  lvl=6  Новосёловский район                                 en=Novosyolovsky Rayon
+  -1157782  lvl=6  Партизанский район                                  en=Partizansky Rayon
+  -1161786  lvl=6  Пировский муниципальный округ                       en=Pirovsky Rayon
+  -1157565  lvl=6  Рыбинский район                                     en=Rybinsky Rayon
+  -1159135  lvl=6  Саянский район                                      en=Sayansky Rayon
+  -1164603  lvl=6  Северо-Енисейский район                             en=Severo-Yeniseysky Rayon
+  -1157397  lvl=6  Сухобузимский район                                 en=Sukhobuzimsky Rayon
+  -1165292  lvl=6  Таймырский Долгано-Ненецкий район                   en=Taymyrsky Dolgano-Nenetsky District
+  -1162502  lvl=6  Тасеевский район                                    en=Taseyevsky Rayon
+  -1164624  lvl=6  Туруханский район                                   en=Turukhansky District
+  -1162476  lvl=6  Тюхтетский муниципальный округ                      en=Tyukhtetsky Rayon
+  -1147807  lvl=6  Ужурский район                                      en=Uzhursky Rayon
+  82662281  lvl=6  Усть-Ангарск                                        en=None
+  -1157597  lvl=6  Уярский район                                       en=Uyarsky Rayon
+  -1147813  lvl=6  Шарыповский муниципальный округ                     en=Sharypovsky Rayon
+  -1152935  lvl=6  Шушенский район                                     en=Shushensky Rayon
+  -1164668  lvl=6  Эвенкийский район                                   en=Evenkiysky Rayon
+  -3511818  lvl=6  городской округ Бородино                            en=None
+  -1153097  lvl=6  городской округ Дивногорск                          en=Divnogorsk Urban Okrug
+  -1164633  lvl=6  городской округ Енисейск                            en=None
+  -1157476  lvl=6  городской округ Канск                               en=None
+  -3369619  lvl=6  городской округ Кедровый                            en=None
+  -1157393  lvl=6  городской округ Красноярск                          en=Krasnoyarsk Urban Okrug
+  -1153131  lvl=6  городской округ Лесосибирск                         en=None
+  -1241549  lvl=6  городской округ Минусинск                           en=Minusinsk Urban District
+  -2886645  lvl=6  городской округ Назарово                            en=None
+  -1454742  lvl=6  городской округ Норильск                            en=None
+  -1153070  lvl=6  городской округ Сосновоборск                        en=None
+  -1209483  lvl=6  городской округ Шарыпово                            en=None
