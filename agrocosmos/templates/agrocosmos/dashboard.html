@@ -675,11 +675,26 @@
         var p = lyr.feature && lyr.feature.properties;
         if (!p) return;
         var stat = byId[p.id] || byId[String(p.id)] || null;
-        p.current_ndvi   = stat ? stat.current_ndvi   : null;
-        p.baseline_ndvi  = stat ? stat.baseline_ndvi  : null;
-        p.pct_of_baseline = stat ? stat.pct_of_baseline : null;
-        p.current_date   = date;
-        lyr.setStyle({ fillColor: pctToColor(p.pct_of_baseline) });
+        if (stat) {
+          // District has data on or before the selected date — update.
+          p.current_ndvi   = stat.current_ndvi;
+          p.baseline_ndvi  = stat.baseline_ndvi;
+          p.pct_of_baseline = stat.pct_of_baseline;
+          // Backend returns the actual observation date per district
+          // (carry-forward), so the popup reflects when the value was
+          // last measured rather than the slider position.
+          p.current_date   = stat.as_of || date;
+          lyr.setStyle({ fillColor: pctToColor(p.pct_of_baseline) });
+        } else {
+          // No data within the 60-day look-back — explicitly mark as
+          // unknown so the choropleth doesn't carry stale values from
+          // a future date when scrubbing backwards.
+          p.current_ndvi = null;
+          p.baseline_ndvi = null;
+          p.pct_of_baseline = null;
+          p.current_date = null;
+          lyr.setStyle({ fillColor: pctToColor(null) });
+        }
         var popup = lyr.getPopup();
         if (popup) popup.setContent(buildDistrictPopupHtml(p));
       });
