@@ -146,6 +146,14 @@ class Command(BaseCommand):
                 periods_done += 1
                 if next_to >= year_end:
                     break
+                # Apply the same safety cap in dry-run so the preview
+                # honestly reflects what a real cron invocation would do.
+                if max_periods_per_task and periods_done >= max_periods_per_task:
+                    self.stdout.write(
+                        f'    → reached --max-periods-per-task={max_periods_per_task} '
+                        f'(dry-run preview).'
+                    )
+                    break
                 continue
 
             # Run NDVI pipeline for this specific period
