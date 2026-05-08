@@ -678,6 +678,27 @@
                 autoPan: false,
                 maxWidth: 280,
               });
+
+              // Click on a district polygon → render the NDVI time series
+              // (baseline band + current year) in the right sidebar, without
+              // touching the region/district dropdowns or zooming in.
+              // The user stays in the all-Russia overview and can keep
+              // comparing districts by clicking them one after another.
+              layer.on('click', function () {
+                if (p.region_id == null) return;
+                var years = (typeof getSelectedYears === 'function')
+                  ? getSelectedYears() : [];
+                if (!years.length) {
+                  years = [new Date().getFullYear()];
+                }
+                var title = document.getElementById('ndvi-region-title');
+                if (title) {
+                  title.textContent = 'Динамика NDVI ('
+                    + (p.name || '—')
+                    + (p.region ? ', ' + p.region : '') + ')';
+                }
+                loadMultiYearChart(p.region_id, p.id, years);
+              });
             },
           }).addTo(map);
           // Zoom to European Russia (data-dense area) rather than the full

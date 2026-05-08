@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # (extra properties, different precision, etc.) — old cached payloads
 # from previous deploys then become unreachable and are eventually
 # evicted by Redis LRU.
-CACHE_KEY = 'agro:districts_status:geojson:v1'
+CACHE_KEY = 'agro:districts_status:geojson:v2'
 
 
 class _SimplifyPreserveTopology(Func):
@@ -72,7 +72,7 @@ def build_geojson_payload() -> dict:
             precision=3,
         ))
         .values(
-            'id', 'name', 'region__name', 'geojson',
+            'id', 'name', 'region_id', 'region__name', 'geojson',
             'ndvi_status__latest_date',
             'ndvi_status__current_ndvi',
             'ndvi_status__baseline_ndvi',
@@ -96,6 +96,7 @@ def build_geojson_payload() -> dict:
             'properties': {
                 'id': r['id'],
                 'name': r['name'],
+                'region_id': r['region_id'],
                 'region': r['region__name'],
                 'current_ndvi': round(cur_v, 3) if cur_v is not None else None,
                 'current_date': str(cur_d) if cur_d else None,
