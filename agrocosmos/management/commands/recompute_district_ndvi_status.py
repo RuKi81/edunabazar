@@ -109,6 +109,13 @@ class Command(BaseCommand):
                  'in a transaction; under autocommit the session-level '
                  'default applies.',
         )
+        parser.add_argument(
+            '--prewarm-recent', type=int, default=4,
+            help='After the upsert, pre-build per-date timeline snapshots '
+                 'for the N most recent MODIS composites of the current '
+                 'year so users never wait on a cold cache for fresh dates. '
+                 '0 disables. Default: 4 (~2 months of MODIS biweekly data).',
+        )
 
     def handle(self, *args, **opts):
         timeout_ms = opts['statement_timeout']
@@ -144,3 +151,33 @@ class Command(BaseCommand):
             self.stderr.write(self.style.WARNING(
                 f'  GeoJSON cache refresh failed (non-fatal): {exc}'
             ))
+
+        # Pre-build the most recent timeline snapshots so the dashboard
+        # slider is instant for the dates users actually scrub through
+        # right after a fresh MODIS ingest. Older dates remain lazy —
+        # rebuilding them all every day would be wasteful.
+        prewarm_recent = int(opts.get('prewarm_recent') or 0)
+        if prewarm_recent > 0:
+            try:
+                from datetime import date as _date
+                from agrocosmos.services import districts_status_geojson as svc
+                year = _date.today().year
+                # Bust the 1 h list-of-dates cache so the composite that
+                # was just ingested actually shows up.
+                svc.invalidate_available_dates(year)
+                dates = svc.list_available_dates(year)
+                if dates:
+                    recent = dates[-prewarm_recent:]
+                    built, skipped, elapsed = svc.prewarm_snapshots(recent)
+                    self.stdout.write(self.style.SUCCESS(
+                        f'timeline prewarm ({year}, last {len(recent)}): '
+                        f'{built} built, {skipped} cached in {elapsed:.1f}s'
+                    ))
+                else:
+                    self.stdout.write(
+                        f'timeline prewarm: no dates for {year}, skipped'
+                    )
+            except Exception as exc:
+                self.stderr.write(self.style.WARNING(
+                    f'  timeline prewarm failed (non-fatal): {exc}'
+                ))

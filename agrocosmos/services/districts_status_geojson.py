@@ -298,3 +298,46 @@ def build_snapshot(target_date: str) -> dict:
     # Eternal cache — past composites are immutable.
     cache.set(key, payload, timeout=None)
     return payload
+
+
+def invalidate_available_dates(year: int) -> None:
+    """Drop the cached list-of-dates for ``year``.
+
+    Called by prewarm jobs after fresh MODIS data has been ingested so the
+    next ``list_available_dates`` call rebuilds the list and includes the
+    newly-arrived composite.
+    """
+    cache.delete(_AVAILABLE_DATES_KEY.format(year=int(year)))
+
+
+def prewarm_snapshots(
+    dates: list[str],
+    force: bool = False,
+) -> tuple[int, int, float]:
+    """Pre-build per-date timeline snapshots so users never wait on a miss.
+
+    Iterates ``dates`` sequentially (the underlying SQL is already heavy on
+    a single CPU; running them in parallel just thrashes the same indexes).
+
+    Returns ``(built, skipped, elapsed_s)``:
+      * ``built``   — snapshots actually rebuilt (cache miss or ``force``).
+      * ``skipped`` — already in cache, left untouched.
+      * ``elapsed_s`` — total wall time.
+    """
+    t0 = time.time()
+    built = skipped = 0
+    for d in dates:
+        key = _SNAPSHOT_KEY.format(date=str(d))
+        if not force and cache.get(key) is not None:
+            skipped += 1
+            continue
+        if force:
+            cache.delete(key)
+        try:
+            build_snapshot(str(d))
+            built += 1
+        except Exception as exc:  # noqa: BLE001 — log + continue
+            logger.warning(
+                'prewarm_snapshots: build_snapshot(%s) failed: %s', d, exc,
+            )
+    return built, skipped, time.time() - t0
