@@ -137,3 +137,134 @@ def get_or_build() -> dict:
         return payload
     logger.warning('districts_status_geojson cache miss — rebuilding inline')
     return refresh_cache()
+
+
+# ── Timeline support: per-date snapshots & list of available dates ───────
+#
+# The choropleth above shows "current" status (latest available MODIS
+# composite). For the timeline UI we additionally need to colour the
+# same polygons by NDVI on an arbitrary past biweekly date.
+#
+# Building a full FeatureCollection per date would 16x the Redis usage
+# and the load time. Instead the snapshot endpoint returns only the
+# {district_id -> {current, baseline, pct}} mapping (~50 KB JSON), and
+# the frontend recolours the layer it already loaded once.
+
+_AVAILABLE_DATES_KEY = 'agro:districts_status:dates:v1:{year}'
+_SNAPSHOT_KEY = 'agro:districts_status:snapshot:v1:{date}'
+
+
+def list_available_dates(year: int) -> list[str]:
+    """List of distinct MODIS NDVI ``acquired_date`` values within ``year``
+    that have at least one row in ``agro_vegetation_index``.
+
+    Cached for 1 hour — new dates only appear once per biweekly cycle and
+    the timeline UI does not need second-level freshness.
+    """
+    key = _AVAILABLE_DATES_KEY.format(year=int(year))
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+
+    from django.db import connection
+    sql = """
+        SELECT DISTINCT vi.acquired_date
+        FROM agro_vegetation_index vi
+        JOIN agro_satellite_scene s ON s.id = vi.scene_id
+        WHERE vi.index_type = 'ndvi'
+          AND vi.is_outlier = false
+          AND vi.mean BETWEEN -0.2 AND 1
+          AND s.satellite IN ('modis_terra', 'modis_aqua')
+          AND EXTRACT(YEAR FROM vi.acquired_date) = %s
+        ORDER BY vi.acquired_date
+    """
+    with connection.cursor() as cur:
+        cur.execute(sql, [int(year)])
+        dates = [str(row[0]) for row in cur.fetchall()]
+
+    cache.set(key, dates, timeout=3600)
+    return dates
+
+
+def build_snapshot(target_date: str) -> dict:
+    """Per-district NDVI snapshot for one MODIS composite date.
+
+    Returns ``{ "date": "YYYY-MM-DD",
+                "districts": { district_id: {current_ndvi, baseline_ndvi,
+                                              pct_of_baseline}, ...} }``.
+
+    Cached eternally per date — past biweekly composites never mutate
+    once written. ~5-15 s SQL on cold cache, sub-ms on warm.
+    """
+    from datetime import date as _date
+    # Normalise / validate
+    d = _date.fromisoformat(target_date)
+    target_iso = d.isoformat()
+    doy = d.timetuple().tm_yday
+
+    key = _SNAPSHOT_KEY.format(date=target_iso)
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+
+    from django.db import connection
+    sql = """
+        WITH current_ndvi AS (
+            SELECT  f.district_id,
+                    SUM(vi.mean * f.area_ha)
+                      / NULLIF(SUM(f.area_ha), 0) AS w_ndvi
+            FROM   agro_vegetation_index vi
+            JOIN   agro_farmland f         ON f.id = vi.farmland_id
+            JOIN   agro_satellite_scene s  ON s.id = vi.scene_id
+            WHERE  vi.index_type = 'ndvi'
+              AND  vi.is_outlier = false
+              AND  vi.mean BETWEEN -0.2 AND 1
+              AND  s.satellite IN ('modis_terra', 'modis_aqua')
+              AND  vi.acquired_date = %s
+              AND  f.district_id IS NOT NULL
+            GROUP BY f.district_id
+        ),
+        matched_baseline AS (
+            SELECT DISTINCT ON (cn.district_id)
+                   cn.district_id,
+                   bl.mean_ndvi AS baseline_ndvi
+            FROM   current_ndvi cn
+            LEFT JOIN agro_ndvi_baseline bl
+                   ON bl.district_id = cn.district_id
+                  AND bl.crop_type = ''
+                  AND bl.day_of_year BETWEEN %s - 16 AND %s + 16
+            ORDER BY cn.district_id,
+                     ABS(bl.day_of_year - %s) NULLS LAST
+        )
+        SELECT  cn.district_id,
+                ROUND(cn.w_ndvi::numeric, 3) AS current_ndvi,
+                CASE WHEN mb.baseline_ndvi IS NOT NULL
+                     THEN ROUND(mb.baseline_ndvi::numeric, 3)
+                     ELSE NULL END AS baseline_ndvi,
+                CASE WHEN mb.baseline_ndvi IS NOT NULL
+                      AND mb.baseline_ndvi > 0.05
+                     THEN ROUND((cn.w_ndvi / mb.baseline_ndvi * 100.0)::numeric, 1)
+                     ELSE NULL END AS pct_of_baseline
+        FROM    current_ndvi cn
+        LEFT JOIN matched_baseline mb USING (district_id)
+        WHERE   cn.w_ndvi IS NOT NULL
+    """
+    overall_t = time.time()
+    districts = {}
+    with connection.cursor() as cur:
+        cur.execute(sql, [target_iso, doy, doy, doy])
+        for d_id, cur_v, bl_v, pct in cur.fetchall():
+            districts[d_id] = {
+                'current_ndvi': float(cur_v) if cur_v is not None else None,
+                'baseline_ndvi': float(bl_v) if bl_v is not None else None,
+                'pct_of_baseline': float(pct) if pct is not None else None,
+            }
+
+    payload = {'date': target_iso, 'districts': districts}
+    logger.info(
+        'districts_status_geojson.build_snapshot date=%s districts=%d in %.2fs',
+        target_iso, len(districts), time.time() - overall_t,
+    )
+    # Eternal cache — past composites are immutable.
+    cache.set(key, payload, timeout=None)
+    return payload
