@@ -44,6 +44,13 @@ if 'localhost' not in ALLOWED_HOSTS:
 _admins_raw = os.getenv('DJANGO_ADMIN_USERS', 'admin')
 ADMIN_USERNAMES = {u.strip() for u in _admins_raw.replace(',', ' ').split() if u.strip()}
 
+# Django default is 1000, which is exceeded by Django admin bulk actions on
+# large changelists (e.g. selecting all rows on the VegetationAlert page,
+# which can have 5–10k rows -> the POST contains that many `_selected_action`
+# fields and Django raises TooManyFieldsSent -> HTTP 400). Lift the cap so
+# admin housekeeping on large tables works.
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 50000
+
 
 # Application definition
 
