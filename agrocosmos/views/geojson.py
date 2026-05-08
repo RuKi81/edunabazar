@@ -55,6 +55,54 @@ def api_districts(request: HttpRequest) -> JsonResponse:
     return JsonResponse({'type': 'FeatureCollection', 'features': features})
 
 
+@rate_limit('60/m')
+def api_districts_status_timeline(request: HttpRequest) -> JsonResponse:
+    """Timeline support for the all-Russia choropleth.
+
+    Two modes:
+
+    * ``?year=YYYY`` (no ``date``) — return the list of MODIS composite
+      dates available within the year. Used by the dashboard to populate
+      the timeline slider.
+    * ``?date=YYYY-MM-DD`` — return a per-district NDVI snapshot for that
+      composite date (``current_ndvi``, ``baseline_ndvi``,
+      ``pct_of_baseline``). Used by the slider's ``change`` handler to
+      recolour the choropleth in place.
+
+    Both modes are cached (1 h for the dates list, eternally per date for
+    snapshots — past biweekly composites are immutable).
+    """
+    from datetime import date as _date
+
+    target_date = request.GET.get('date')
+    year_param = request.GET.get('year')
+
+    if target_date:
+        try:
+            payload = districts_status_geojson.build_snapshot(target_date)
+        except ValueError:
+            return JsonResponse(
+                {'ok': False, 'error': 'invalid date'}, status=400,
+            )
+        # Surface the dates list for the same year so the slider can be
+        # re-populated without a second round-trip.
+        try:
+            year = _date.fromisoformat(payload['date']).year
+            payload['dates'] = districts_status_geojson.list_available_dates(year)
+        except Exception:
+            payload['dates'] = []
+        payload['ok'] = True
+        return JsonResponse(payload)
+
+    # Dates list mode
+    try:
+        year = int(year_param) if year_param else _date.today().year
+    except (TypeError, ValueError):
+        return JsonResponse({'ok': False, 'error': 'invalid year'}, status=400)
+    dates = districts_status_geojson.list_available_dates(year)
+    return JsonResponse({'ok': True, 'year': year, 'dates': dates})
+
+
 @rate_limit('20/m')
 def api_districts_status(request: HttpRequest) -> JsonResponse:
     """All-Russia FeatureCollection of districts with current NDVI vs baseline.

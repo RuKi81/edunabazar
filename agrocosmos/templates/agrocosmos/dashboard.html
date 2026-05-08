@@ -265,6 +265,20 @@
         <div id="agro-allregions-asof" style="font-size:11px; color:#555; margin-bottom:6px;">
           Ситуация на: <b id="agro-allregions-asof-date" style="color:#222;">—</b>
         </div>
+        <!-- Timeline: scrub through past biweekly composites of the year. -->
+        <div id="agro-allregions-timeline" style="display:none; margin:0 0 8px;">
+          <div style="display:flex; align-items:center; gap:6px;">
+            <button id="agro-tl-prev" type="button" title="Предыдущая дата"
+                    style="width:22px; height:22px; padding:0; line-height:1; border:1px solid #ccc; background:#fff; border-radius:3px; cursor:pointer;">‹</button>
+            <input id="agro-tl-slider" type="range" min="0" max="0" step="1" value="0"
+                   style="flex:1; margin:0;" />
+            <button id="agro-tl-next" type="button" title="Следующая дата"
+                    style="width:22px; height:22px; padding:0; line-height:1; border:1px solid #ccc; background:#fff; border-radius:3px; cursor:pointer;">›</button>
+          </div>
+          <div id="agro-tl-loader" style="display:none; font-size:10px; color:#888; margin-top:2px;">
+            <i class="material-icons" style="font-size:11px; vertical-align:-1px;">hourglass_empty</i> Пересчёт…
+          </div>
+        </div>
         <div style="font-weight:700; margin-bottom:6px; font-size:12px;">% от среднего многолетнего</div>
         <div style="display:flex; flex-direction:column; gap:4px;">
           <div><span style="display:inline-block; width:18px; height:12px; background:#b71c1c; vertical-align:middle; margin-right:4px;"></span> &lt; 70% — резкий дефицит</div>
@@ -619,6 +633,134 @@
       if (el) el.style.display = show ? '' : 'none';
     }
 
+    /* ── All-regions timeline state ───────────────────────────────── */
+    // Populated by ``loadAllDistrictsStatus`` once the choropleth is up.
+    // Mutating the slider re-paints the existing ``districtLayer`` in
+    // place (via ``applyDistrictsSnapshot``) instead of refetching the
+    // full FeatureCollection — only ~50 KB of {id: stat} JSON moves.
+    var _allRegionsDates = [];        // ['2026-01-09', ...]
+    var _allRegionsCurrentDate = null;
+
+    // Build the popup HTML for one district feature. Reused at bind time
+    // and on every timeline date change so popup numbers stay in sync
+    // with the choropleth fill colour.
+    function buildDistrictPopupHtml(p) {
+      var html = '<b>' + (p.name || '—') + '</b><br/>'
+        + '<span style="color:#666">' + (p.region || '') + '</span><br/>';
+      if (p.current_ndvi != null) {
+        html += 'NDVI: <b>' + p.current_ndvi.toFixed(3) + '</b>'
+          + ' <span style="color:#999">(' + (p.current_date || '') + ')</span><br/>';
+      } else {
+        html += '<i style="color:#999">Нет свежих данных</i><br/>';
+      }
+      if (p.baseline_ndvi != null) {
+        html += 'Baseline: ' + p.baseline_ndvi.toFixed(3) + '<br/>';
+      }
+      if (p.pct_of_baseline != null) {
+        html += '% от среднего многолетнего: <b>' + p.pct_of_baseline.toFixed(1) + '%</b>';
+      }
+      return html;
+    }
+
+    // Recolour every polygon in ``districtLayer`` from a fresh
+    // {district_id -> {current,baseline,pct}} mapping returned by the
+    // ``status/timeline/?date=...`` endpoint. No layer rebuild: cheap,
+    // smooth, preserves currently-open popups.
+    function applyDistrictsSnapshot(date, byId) {
+      if (!districtLayer) return;
+      _allRegionsCurrentDate = date;
+      var asOfEl = document.getElementById('agro-allregions-asof-date');
+      if (asOfEl) asOfEl.textContent = date || '—';
+      districtLayer.eachLayer(function (lyr) {
+        var p = lyr.feature && lyr.feature.properties;
+        if (!p) return;
+        var stat = byId[p.id] || byId[String(p.id)] || null;
+        p.current_ndvi   = stat ? stat.current_ndvi   : null;
+        p.baseline_ndvi  = stat ? stat.baseline_ndvi  : null;
+        p.pct_of_baseline = stat ? stat.pct_of_baseline : null;
+        p.current_date   = date;
+        lyr.setStyle({ fillColor: pctToColor(p.pct_of_baseline) });
+        var popup = lyr.getPopup();
+        if (popup) popup.setContent(buildDistrictPopupHtml(p));
+      });
+    }
+
+    function setTimelineLoader(on) {
+      var el = document.getElementById('agro-tl-loader');
+      if (el) el.style.display = on ? '' : 'none';
+    }
+
+    // Fetch one date's snapshot and apply it. Failure leaves the current
+    // colours intact and just hides the spinner.
+    function loadDistrictsSnapshot(date) {
+      setTimelineLoader(true);
+      fetch('/agrocosmos/api/districts/status/timeline/?date=' + encodeURIComponent(date))
+        .then(function (r) { return r.json(); })
+        .then(function (resp) {
+          setTimelineLoader(false);
+          if (!resp || !resp.ok) return;
+          applyDistrictsSnapshot(resp.date, resp.districts || {});
+        })
+        .catch(function () { setTimelineLoader(false); });
+    }
+
+    // Wire the slider once. We attach handlers in ``loadAllDistrictsStatus``
+    // *after* dates are known to avoid stale closures over an empty list.
+    function wireTimelineControls() {
+      var slider = document.getElementById('agro-tl-slider');
+      var prev = document.getElementById('agro-tl-prev');
+      var next = document.getElementById('agro-tl-next');
+      if (!slider || slider.dataset.wired) return;
+      slider.dataset.wired = '1';
+
+      // ``input`` updates the visible date as the user drags; the actual
+      // (heavier) snapshot fetch fires on ``change`` (release) only.
+      slider.addEventListener('input', function () {
+        var idx = parseInt(this.value, 10) || 0;
+        var d = _allRegionsDates[idx];
+        var asOfEl = document.getElementById('agro-allregions-asof-date');
+        if (asOfEl && d) asOfEl.textContent = d;
+      });
+      slider.addEventListener('change', function () {
+        var idx = parseInt(this.value, 10) || 0;
+        var d = _allRegionsDates[idx];
+        if (d) loadDistrictsSnapshot(d);
+      });
+      function step(delta) {
+        var max = _allRegionsDates.length - 1;
+        if (max < 0) return;
+        var idx = parseInt(slider.value, 10) || 0;
+        idx = Math.max(0, Math.min(max, idx + delta));
+        if (String(idx) !== slider.value) {
+          slider.value = String(idx);
+          slider.dispatchEvent(new Event('input'));
+          slider.dispatchEvent(new Event('change'));
+        }
+      }
+      if (prev) prev.addEventListener('click', function () { step(-1); });
+      if (next) next.addEventListener('click', function () { step(+1); });
+    }
+
+    function populateTimeline(dates, currentDate) {
+      var wrap = document.getElementById('agro-allregions-timeline');
+      var slider = document.getElementById('agro-tl-slider');
+      if (!wrap || !slider) return;
+      _allRegionsDates = dates || [];
+      if (_allRegionsDates.length < 2) {
+        // Less than 2 dates: timeline is meaningless, hide it.
+        wrap.style.display = 'none';
+        return;
+      }
+      wrap.style.display = '';
+      slider.min = '0';
+      slider.max = String(_allRegionsDates.length - 1);
+      // Default position = ``currentDate`` if known, else last date.
+      var idx = _allRegionsDates.indexOf(currentDate);
+      if (idx < 0) idx = _allRegionsDates.length - 1;
+      slider.value = String(idx);
+      wireTimelineControls();
+    }
+
     // Loads the all-Russia districts status FeatureCollection and renders it
     // as a choropleth. Heavy (~few MB), but cached server-side for 1 hour.
     function loadAllDistrictsStatus() {
@@ -642,6 +784,7 @@
           });
           var asOfEl = document.getElementById('agro-allregions-asof-date');
           if (asOfEl) asOfEl.textContent = latestDate || '—';
+          _allRegionsCurrentDate = latestDate;
 
           districtLayer = L.geoJSON(data, {
             style: function (f) {
@@ -654,26 +797,12 @@
             },
             onEachFeature: function (f, layer) {
               var p = f.properties;
-              var html = '<b>' + (p.name || '—') + '</b><br/>'
-                + '<span style="color:#666">' + (p.region || '') + '</span><br/>';
-              if (p.current_ndvi != null) {
-                html += 'NDVI: <b>' + p.current_ndvi.toFixed(3) + '</b>'
-                  + ' <span style="color:#999">(' + (p.current_date || '') + ')</span><br/>';
-              } else {
-                html += '<i style="color:#999">Нет свежих данных</i><br/>';
-              }
-              if (p.baseline_ndvi != null) {
-                html += 'Baseline: ' + p.baseline_ndvi.toFixed(3) + '<br/>';
-              }
-              if (p.pct_of_baseline != null) {
-                html += '% от среднего многолетнего: <b>' + p.pct_of_baseline.toFixed(1) + '%</b>';
-              }
               // Popup (not tooltip): Leaflet enforces a single open popup at
               // a time, auto-closes on map click / pan / new selection. The
               // previous sticky-tooltip approach piled up on touch devices
               // and on fast cursor movement because mouseout doesn't fire
               // reliably between touch taps.
-              layer.bindPopup(html, {
+              layer.bindPopup(buildDistrictPopupHtml(p), {
                 closeButton: true,
                 autoPan: false,
                 maxWidth: 280,
@@ -705,6 +834,19 @@
           // districts FeatureCollection bounds (which would zoom out all the
           // way to Chukotka and lose detail in the agricultural belt).
           map.fitBounds(EUROPEAN_RUSSIA_BOUNDS, { padding: [10, 10] });
+
+          // Populate the timeline slider for the year of ``latestDate``.
+          // We use a separate, much lighter endpoint so the choropleth
+          // appears immediately and the slider just becomes interactive
+          // a moment later.
+          var year = (latestDate || '').slice(0, 4)
+            || String(new Date().getFullYear());
+          fetch('/agrocosmos/api/districts/status/timeline/?year=' + year)
+            .then(function (r) { return r.json(); })
+            .then(function (resp) {
+              if (resp && resp.ok) populateTimeline(resp.dates || [], latestDate);
+            })
+            .catch(function () { /* timeline is optional */ });
         })
         .catch(function () {
           if (loader) loader.style.display = 'none';
