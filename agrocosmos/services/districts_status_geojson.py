@@ -151,7 +151,10 @@ def get_or_build() -> dict:
 # the frontend recolours the layer it already loaded once.
 
 _AVAILABLE_DATES_KEY = 'agro:districts_status:dates:v1:{year}'
-_SNAPSHOT_KEY = 'agro:districts_status:snapshot:v1:{date}'
+# v2: snapshot now uses as-of semantics (carry-forward over 60 days)
+# instead of exact date match — old v1 payloads (with grey holes for
+# any district missing on the exact composite date) must not be served.
+_SNAPSHOT_KEY = 'agro:districts_status:snapshot:v2:{date}'
 
 
 def list_available_dates(year: int) -> list[str]:
@@ -200,7 +203,6 @@ def build_snapshot(target_date: str) -> dict:
     # Normalise / validate
     d = _date.fromisoformat(target_date)
     target_iso = d.isoformat()
-    doy = d.timetuple().tm_yday
 
     key = _SNAPSHOT_KEY.format(date=target_iso)
     cached = cache.get(key)
@@ -208,11 +210,17 @@ def build_snapshot(target_date: str) -> dict:
         return cached
 
     from django.db import connection
+    # As-of semantics: for each district, pick the most recent MODIS
+    # composite with NDVI data on or before ``target_date`` within a
+    # 60-day look-back. This avoids grey holes when a single composite
+    # was cloud-masked over a district — the choropleth carries forward
+    # the previous reading until a fresher one is available. The 60-day
+    # window matches the existing ``recompute_district_ndvi_status`` so
+    # the slider's last position is identical to the always-on cached
+    # GeoJSON.
     sql = """
-        WITH current_ndvi AS (
-            SELECT  f.district_id,
-                    SUM(vi.mean * f.area_ha)
-                      / NULLIF(SUM(f.area_ha), 0) AS w_ndvi
+        WITH latest_per_district AS (
+            SELECT f.district_id, MAX(vi.acquired_date) AS as_of
             FROM   agro_vegetation_index vi
             JOIN   agro_farmland f         ON f.id = vi.farmland_id
             JOIN   agro_satellite_scene s  ON s.id = vi.scene_id
@@ -220,9 +228,27 @@ def build_snapshot(target_date: str) -> dict:
               AND  vi.is_outlier = false
               AND  vi.mean BETWEEN -0.2 AND 1
               AND  s.satellite IN ('modis_terra', 'modis_aqua')
-              AND  vi.acquired_date = %s
+              AND  vi.acquired_date <= %s
+              AND  vi.acquired_date >= %s::date - INTERVAL '60 days'
               AND  f.district_id IS NOT NULL
             GROUP BY f.district_id
+        ),
+        current_ndvi AS (
+            SELECT  l.district_id,
+                    l.as_of,
+                    SUM(vi.mean * f.area_ha)
+                      / NULLIF(SUM(f.area_ha), 0) AS w_ndvi
+            FROM   latest_per_district l
+            JOIN   agro_farmland f ON f.district_id = l.district_id
+            JOIN   agro_vegetation_index vi
+                       ON vi.farmland_id   = f.id
+                      AND vi.acquired_date = l.as_of
+            JOIN   agro_satellite_scene s ON s.id = vi.scene_id
+            WHERE  vi.index_type = 'ndvi'
+              AND  vi.is_outlier = false
+              AND  vi.mean BETWEEN -0.2 AND 1
+              AND  s.satellite IN ('modis_terra', 'modis_aqua')
+            GROUP BY l.district_id, l.as_of
         ),
         matched_baseline AS (
             SELECT DISTINCT ON (cn.district_id)
@@ -232,11 +258,14 @@ def build_snapshot(target_date: str) -> dict:
             LEFT JOIN agro_ndvi_baseline bl
                    ON bl.district_id = cn.district_id
                   AND bl.crop_type = ''
-                  AND bl.day_of_year BETWEEN %s - 16 AND %s + 16
+                  AND bl.day_of_year BETWEEN
+                          EXTRACT(DOY FROM cn.as_of)::int - 16
+                      AND EXTRACT(DOY FROM cn.as_of)::int + 16
             ORDER BY cn.district_id,
-                     ABS(bl.day_of_year - %s) NULLS LAST
+                     ABS(bl.day_of_year - EXTRACT(DOY FROM cn.as_of)::int) NULLS LAST
         )
         SELECT  cn.district_id,
+                cn.as_of,
                 ROUND(cn.w_ndvi::numeric, 3) AS current_ndvi,
                 CASE WHEN mb.baseline_ndvi IS NOT NULL
                      THEN ROUND(mb.baseline_ndvi::numeric, 3)
@@ -252,9 +281,10 @@ def build_snapshot(target_date: str) -> dict:
     overall_t = time.time()
     districts = {}
     with connection.cursor() as cur:
-        cur.execute(sql, [target_iso, doy, doy, doy])
-        for d_id, cur_v, bl_v, pct in cur.fetchall():
+        cur.execute(sql, [target_iso, target_iso])
+        for d_id, as_of, cur_v, bl_v, pct in cur.fetchall():
             districts[d_id] = {
+                'as_of': str(as_of) if as_of else None,
                 'current_ndvi': float(cur_v) if cur_v is not None else None,
                 'baseline_ndvi': float(bl_v) if bl_v is not None else None,
                 'pct_of_baseline': float(pct) if pct is not None else None,
