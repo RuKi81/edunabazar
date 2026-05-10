@@ -127,7 +127,10 @@ def dashboard(request: HttpRequest) -> HttpResponse:
     ``'all'`` is the same one the region <select> uses, and the
     front-end JS auto-fires its ``change`` handler to load the layer.
     """
-    regions = Region.objects.all()
+    # Only ``id``/``name``/``code`` are used by the <select>; skip the heavy
+    # ``geom`` MultiPolygon to avoid tens of MB of GeoDjango deserialization
+    # on every dashboard render.
+    regions = Region.objects.only('id', 'name', 'code')
     # ``region`` may legitimately be empty when the user explicitly
     # selects "— Регион —"; only fall back to 'all' when the parameter
     # is missing entirely from the query string.
@@ -142,7 +145,10 @@ def dashboard(request: HttpRequest) -> HttpResponse:
     districts = District.objects.none()
     if region_id:
         try:
-            districts = District.objects.filter(region_id=int(region_id)).order_by('name')
+            districts = (District.objects
+                         .filter(region_id=int(region_id))
+                         .only('id', 'name')
+                         .order_by('name'))
         except (TypeError, ValueError):
             pass
 
@@ -213,7 +219,7 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 
 def raster_dashboard(request: HttpRequest) -> HttpResponse:
     """Detailed raster analysis page — Sentinel-2 / Landsat."""
-    regions = Region.objects.all()
+    regions = Region.objects.only('id', 'name', 'code')
     region_id = request.GET.get('region')
     district_id = request.GET.get('district')
     selected_years = _parse_selected_years(request.GET.get('year'))
@@ -222,7 +228,10 @@ def raster_dashboard(request: HttpRequest) -> HttpResponse:
     districts = District.objects.none()
     if region_id:
         try:
-            districts = District.objects.filter(region_id=int(region_id)).order_by('name')
+            districts = (District.objects
+                         .filter(region_id=int(region_id))
+                         .only('id', 'name')
+                         .order_by('name'))
         except (TypeError, ValueError):
             pass
 
@@ -245,7 +254,7 @@ def raster_dashboard(request: HttpRequest) -> HttpResponse:
 
 def report_region(request: HttpRequest) -> HttpResponse:
     """Unified MODIS NDVI report page (region or district level)."""
-    regions = Region.objects.all()
+    regions = Region.objects.only('id', 'name', 'code')
     region_id = request.GET.get('region')
     district_id = request.GET.get('district')
     year = request.GET.get('year')
@@ -256,7 +265,10 @@ def report_region(request: HttpRequest) -> HttpResponse:
     districts = District.objects.none()
     if region_id:
         try:
-            districts = District.objects.filter(region_id=int(region_id)).order_by('name')
+            districts = (District.objects
+                         .filter(region_id=int(region_id))
+                         .only('id', 'name')
+                         .order_by('name'))
         except (TypeError, ValueError):
             pass
 
