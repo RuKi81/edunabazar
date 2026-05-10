@@ -122,9 +122,28 @@ def api_districts_status(request: HttpRequest) -> JsonResponse:
     """
     overall_t = time.time()
     payload = districts_status_geojson.get_or_build()
+
+    # Optional ``?region=<id>`` filter: re-use the cached all-Russia
+    # FeatureCollection by sub-setting it in memory (~2300 dict checks,
+    # microseconds) so the per-region choropleth shares the same warm
+    # cache as the all-regions view. No second heavy PostGIS query.
+    region_id = request.GET.get('region')
+    if region_id:
+        try:
+            r_id = int(region_id)
+        except (TypeError, ValueError):
+            r_id = None
+        if r_id is not None:
+            features = [
+                f for f in payload.get('features', [])
+                if (f.get('properties') or {}).get('region_id') == r_id
+            ]
+            payload = {'type': 'FeatureCollection', 'features': features}
+
     logger.info(
-        'api_districts_status: features=%d  total=%.3fs',
+        'api_districts_status: features=%d  total=%.3fs region=%s',
         len(payload.get('features', [])), time.time() - overall_t,
+        region_id or '-',
     )
     return JsonResponse(payload)
 

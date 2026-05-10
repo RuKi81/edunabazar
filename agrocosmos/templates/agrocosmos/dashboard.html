@@ -776,13 +776,21 @@
       wireTimelineControls();
     }
 
-    // Loads the all-Russia districts status FeatureCollection and renders it
-    // as a choropleth. Heavy (~few MB), but cached server-side for 1 hour.
-    function loadAllDistrictsStatus() {
+    // Loads the (all-Russia or single-region) districts status FeatureCollection
+    // and renders it as a choropleth. Heavy (~few MB) for the country-wide case,
+    // but cached server-side eternally; per-region requests sub-set the same
+    // warm cache in memory.
+    //
+    // ``regionId`` is optional. When provided, the layer is fitted to its
+    // bounds; when omitted, we anchor on the European Russia bounding box
+    // (data-dense agricultural belt).
+    function loadAllDistrictsStatus(regionId) {
       districtLayer = clearLayer(districtLayer);
       var loader = document.getElementById('agro-region-loader');
       if (loader) loader.style.display = '';
-      fetch('/agrocosmos/api/districts/status/')
+      var url = '/agrocosmos/api/districts/status/'
+        + (regionId ? ('?region=' + encodeURIComponent(regionId)) : '');
+      fetch(url)
         .then(function (r) { return r.json(); })
         .then(function (data) {
           if (loader) loader.style.display = 'none';
@@ -845,10 +853,35 @@
               });
             },
           }).addTo(map);
-          // Zoom to European Russia (data-dense area) rather than the full
-          // districts FeatureCollection bounds (which would zoom out all the
-          // way to Chukotka and lose detail in the agricultural belt).
-          map.fitBounds(EUROPEAN_RUSSIA_BOUNDS, { padding: [10, 10] });
+          // Per-region: zoom to that subject's actual extent.
+          // All-regions: anchor on the European Russia bounding box (data-dense
+          // agricultural belt) rather than the full FeatureCollection bounds
+          // (which would zoom out all the way to Chukotka and lose detail).
+          if (regionId && districtLayer.getBounds().isValid()) {
+            map.fitBounds(districtLayer.getBounds(), { padding: [20, 20] });
+          } else {
+            map.fitBounds(EUROPEAN_RUSSIA_BOUNDS, { padding: [10, 10] });
+          }
+
+          // Populate the district <select> from the same payload so we don't
+          // need a second ``/api/districts/?region=`` round-trip when the
+          // user picks a specific region.
+          if (regionId) {
+            var districtSelEl = document.getElementById('agro-district');
+            if (districtSelEl) {
+              districtSelEl.innerHTML = '<option value="">— Все районы —</option>';
+              data.features.slice()
+                .sort(function (a, b) {
+                  return (a.properties.name || '').localeCompare(b.properties.name || '', 'ru');
+                })
+                .forEach(function (f) {
+                  var opt = document.createElement('option');
+                  opt.value = f.properties.id;
+                  opt.textContent = f.properties.name;
+                  districtSelEl.appendChild(opt);
+                });
+            }
+          }
 
           // Populate the timeline slider for the year of ``latestDate``.
           // We use a separate, much lighter endpoint so the choropleth
@@ -895,9 +928,9 @@
       }
 
       districtSel.disabled = false;
-      setAllRegionsLegendVisible(false);
 
       if (!regionId) {
+        setAllRegionsLegendVisible(false);
         bordersCb.checked = false;
         bordersCb.dispatchEvent(new Event('change'));
         // Reset the map back to the European Russia overview, matching the
@@ -906,32 +939,13 @@
         return;
       }
 
-      // Specific region: zoom to its outline and overlay subject borders.
-      // Fetch its outline directly (independent of the borders checkbox so
-      // disabling it doesn't reset the viewport).
-      fetch('/agrocosmos/api/regions/?id=' + regionId)
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-          if (!data.features || !data.features.length) return;
-          var tmp = L.geoJSON(data);
-          if (tmp.getBounds().isValid()) {
-            map.fitBounds(tmp.getBounds(), { padding: [20, 20] });
-          }
-        });
-      bordersCb.checked = true;
-      bordersCb.dispatchEvent(new Event('change'));
-
-      fetch('/agrocosmos/api/districts/?region=' + regionId)
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-          if (!data.features) return;
-          data.features.forEach(function (f) {
-            var opt = document.createElement('option');
-            opt.value = f.properties.id;
-            opt.textContent = f.properties.name;
-            districtSel.appendChild(opt);
-          });
-        });
+      // Specific region: render the same NDVI choropleth as the all-regions
+      // view, but scoped to this subject's districts. Zooming and the district
+      // <select> are populated from the same FeatureCollection.
+      setAllRegionsLegendVisible(true);
+      loadAllDistrictsStatus(regionId);
+      // Keep the subject borders overlay in sync with the user's checkbox.
+      if (bordersCb.checked) bordersCb.dispatchEvent(new Event('change'));
     });
 
     // When district changes — auto-load district vector + reload MVT if visible
