@@ -853,6 +853,12 @@
               });
             },
           }).addTo(map);
+          // Honour the current "Границы угодий" toggle: if farmlands are
+          // visible, the choropleth must not compete with them.
+          var _flCb = document.getElementById('agro-toggle-farmlands');
+          if (_flCb && _flCb.checked) {
+            setDistrictsChoroplethFillVisible(false);
+          }
           // Per-region: zoom to that subject's actual extent.
           // All-regions: anchor on the European Russia bounding box (data-dense
           // agricultural belt) rather than the full FeatureCollection bounds
@@ -1164,12 +1170,45 @@
       mvtLayer.addTo(map);
     }
 
+    // Toggle the districts choropleth fill so it doesn't visually compete
+    // with the farmland borders MVT layer. We keep the polygon outlines
+    // (they help orient the user inside the region) but drop the colour
+    // fill and the popup/click interaction.
+    function setDistrictsChoroplethFillVisible(show) {
+      if (!districtLayer) return;
+      districtLayer.eachLayer(function (lyr) {
+        lyr.setStyle({
+          fillOpacity: show ? 0.65 : 0,
+          weight: show ? 0.4 : 0.6,
+          color: show ? '#37474f' : '#555',
+        });
+        // Disable popup while the fill is hidden — clicks should pass
+        // through to the underlying farmland MVT layer instead.
+        if (show) {
+          if (lyr._suppressedPopup) {
+            lyr.bindPopup(lyr._suppressedPopup.html, lyr._suppressedPopup.opts);
+            lyr._suppressedPopup = null;
+          }
+        } else if (lyr.getPopup && lyr.getPopup()) {
+          lyr._suppressedPopup = {
+            html: lyr.getPopup().getContent(),
+            opts: lyr.getPopup().options,
+          };
+          lyr.unbindPopup();
+        }
+      });
+      // Same for the legend strip — meaningless when the fill is hidden.
+      var legend = document.getElementById('agro-allregions-legend');
+      if (legend) legend.style.display = show ? '' : 'none';
+    }
+
     document.getElementById('agro-toggle-farmlands').addEventListener('change', function () {
       if (this.checked) {
         var regionId = regionSel.value;
         var districtId = districtSel.value;
         if (!regionId && !districtId) { this.checked = false; return; }
         setFarmlandsInfoVisible(true);
+        setDistrictsChoroplethFillVisible(false);
         loadMVT(regionId, districtId || null);
         loadNdviStats();
       } else {
@@ -1177,6 +1216,7 @@
         farmlandLayer = clearLayer(farmlandLayer);
         document.getElementById('ndvi-region-chart-wrap').style.display = 'none';
         setFarmlandsInfoVisible(false);
+        setDistrictsChoroplethFillVisible(true);
       }
     });
 
