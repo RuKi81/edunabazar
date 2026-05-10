@@ -155,22 +155,32 @@ def dashboard(request: HttpRequest) -> HttpResponse:
     # Summary stats. The unfiltered global aggregate scans ~20M farmlands
     # and takes ~20s; cache it. Filtered (region/district) aggregates use
     # the district_id index and are sub-second, so we don't cache them.
+    #
+    # Important: any region_id that is not a real PK (empty, ``'all'``,
+    # garbage) collapses to the *global* scope and MUST hit the cache.
+    # The previous version left ``scope_key = None`` for ``region=all``,
+    # which made every default dashboard load re-run the 20-second
+    # aggregate against ~20M farmlands.
     farmland_qs = Farmland.objects.all()
-    scope_key: str | None = None  # ``None`` means "do not cache"
+    scope_key: str | None = 'agrocosmos:farmland_stats:global'
+    d_id_int: int | None = None
+    r_id_int: int | None = None
     if district_id:
         try:
-            d_id = int(district_id)
-            farmland_qs = farmland_qs.filter(district_id=d_id)
+            d_id_int = int(district_id)
         except (TypeError, ValueError):
-            pass
-    elif region_id:
+            d_id_int = None
+    if region_id and r_id_int is None:
         try:
-            r_id = int(region_id)
-            farmland_qs = farmland_qs.filter(district__region_id=r_id)
+            r_id_int = int(region_id)
         except (TypeError, ValueError):
-            pass
-    else:
-        scope_key = 'agrocosmos:farmland_stats:global'
+            r_id_int = None
+    if d_id_int is not None:
+        farmland_qs = farmland_qs.filter(district_id=d_id_int)
+        scope_key = None
+    elif r_id_int is not None:
+        farmland_qs = farmland_qs.filter(district__region_id=r_id_int)
+        scope_key = None
 
     if scope_key:
         cached = cache.get(scope_key)
