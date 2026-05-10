@@ -1196,6 +1196,12 @@
           };
           lyr.unbindPopup();
         }
+        // Make the SVG path itself click-through so the user can interact
+        // with the underlying farmland MVT polygons. Restore default when
+        // the choropleth fill is shown again.
+        if (lyr._path) {
+          lyr._path.style.pointerEvents = show ? '' : 'none';
+        }
       });
       // Same for the legend strip — meaningless when the fill is hidden.
       var legend = document.getElementById('agro-allregions-legend');
