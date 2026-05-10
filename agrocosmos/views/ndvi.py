@@ -3,7 +3,7 @@ and the list of available raster composites for the raster dashboard."""
 from collections import defaultdict
 from datetime import date, timedelta
 
-from django.db.models import Avg, Count, Sum, Value, CharField
+from django.db.models import Avg, Count, F, FloatField, Sum, Value, CharField
 from django.db.models.functions import Coalesce, Extract
 from django.db.models.fields.json import KeyTextTransform
 from django.http import HttpRequest, JsonResponse
@@ -169,44 +169,57 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
 
     crop_labels = dict(Farmland.CropType.choices)
 
-    # --- Single-pass aggregation ---
-    # The four aggregates below (by_crop, by_period, with_ndvi, global avg)
-    # all scan the same joined VegetationIndex + Farmland rows. For a large
-    # region-year this join can be millions of rows, and running it four times
-    # at the DB level is pointlessly slow. We instead fetch the raw tuples
-    # once and aggregate in Python — one scan, O(n) memory, same results.
-    rows = vi_qs.values_list(
-        'acquired_date', 'mean', 'farmland_id',
-        'farmland__crop_type', 'farmland__area_ha',
+    # --- SQL-level aggregation ---
+    # Streaming raw rows into Python was the previous strategy; for a large
+    # region-year (e.g. Moscow Oblast) the join VegetationIndex ⨝ Farmland
+    # ⨝ SatelliteScene returns millions of rows and the endpoint times out
+    # after 120 s. Pushing the aggregation into Postgres (``GROUP BY``)
+    # collapses the result set to at most ~(periods × crop_types) ≈ 150
+    # rows and runs in seconds even for the biggest subjects.
+    weighted_ndvi = Sum(
+        F('mean') * F('farmland__area_ha'),
+        output_field=FloatField(),
+    )
+    by_period_period_crop = (
+        vi_qs
+        .values('acquired_date', 'farmland__crop_type')
+        .annotate(
+            sum_w_ndvi=weighted_ndvi,
+            sum_area=Sum('farmland__area_ha'),
+            count=Count('id'),
+        )
     )
 
-    by_crop_acc = defaultdict(lambda: {'farmlands': set(), 'sum_ndvi_area': 0.0, 'sum_area': 0.0})
     by_period_acc = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0, 'count': 0})
+    by_crop_acc = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0})
     global_ndvi_area = 0.0
     global_area = 0.0
-    farmland_ids_with_ndvi = set()
 
-    for acq_date, mean_v, fl_id, crop_type, area_ha in rows.iterator(chunk_size=5000):
-        if mean_v is None or area_ha is None:
+    for r in by_period_period_crop.iterator(chunk_size=2000):
+        s_area = float(r['sum_area'] or 0)
+        s_w = float(r['sum_w_ndvi'] or 0)
+        if not s_area:
             continue
-        area_f = float(area_ha)
-        ndvi_area = float(mean_v) * area_f
+        ct = r['farmland__crop_type']
+        d = r['acquired_date']
+        p = by_period_acc[d]
+        p['sum_ndvi_area'] += s_w
+        p['sum_area'] += s_area
+        p['count'] += r['count']
+        c = by_crop_acc[ct]
+        c['sum_ndvi_area'] += s_w
+        c['sum_area'] += s_area
+        global_ndvi_area += s_w
+        global_area += s_area
 
-        c = by_crop_acc[crop_type]
-        c['farmlands'].add(fl_id)
-        c['sum_ndvi_area'] += ndvi_area
-        c['sum_area'] += area_f
+    # Distinct farmlands per crop type (count(distinct) at SQL level — fast
+    # because it runs on the same joined rowset Postgres already cached).
+    by_crop_counts = dict(
+        vi_qs.values_list('farmland__crop_type')
+             .annotate(c=Count('farmland_id', distinct=True))
+             .values_list('farmland__crop_type', 'c')
+    )
 
-        p = by_period_acc[acq_date]
-        p['sum_ndvi_area'] += ndvi_area
-        p['sum_area'] += area_f
-        p['count'] += 1
-
-        global_ndvi_area += ndvi_area
-        global_area += area_f
-        farmland_ids_with_ndvi.add(fl_id)
-
-    # Materialise by_crop_list (sorted by mean_ndvi desc, same as before)
     by_crop_list = []
     for ct in sorted(by_crop_acc.keys()):
         acc = by_crop_acc[ct]
@@ -215,12 +228,11 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
         by_crop_list.append({
             'crop_type': ct,
             'label': crop_labels.get(ct, ct),
-            'count': len(acc['farmlands']),
+            'count': by_crop_counts.get(ct, 0),
             'mean_ndvi': _safe_round(weighted),
         })
     by_crop_list.sort(key=lambda r: r['mean_ndvi'] or 0, reverse=True)
 
-    # Materialise by_period_list (chronological order, same as before)
     by_period_list = []
     for acq_date in sorted(by_period_acc.keys()):
         acc = by_period_acc[acq_date]
@@ -234,7 +246,7 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
 
     # Summary (area-weighted)
     total_fl = fl_qs.count()
-    with_ndvi = len(farmland_ids_with_ndvi)
+    with_ndvi = vi_qs.values('farmland_id').distinct().count()
     avg = (global_ndvi_area / global_area) if global_area else None
 
     # Farmland summary by crop type
