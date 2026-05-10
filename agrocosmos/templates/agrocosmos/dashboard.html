@@ -952,6 +952,16 @@
       loadAllDistrictsStatus(regionId);
       // Keep the subject borders overlay in sync with the user's checkbox.
       if (bordersCb.checked) bordersCb.dispatchEvent(new Event('change'));
+
+      // Show the NDVI baseline-vs-current chart for the whole region in
+      // the right sidebar — same widget used for district clicks, but
+      // aggregated over the region (no ``districtId``).
+      var regionName = (regionSel.options[regionSel.selectedIndex] || {}).textContent || '';
+      var title = document.getElementById('ndvi-region-title');
+      if (title) title.textContent = 'Динамика NDVI (' + regionName.trim() + ')';
+      var years = (typeof getSelectedYears === 'function') ? getSelectedYears() : [];
+      if (!years.length) years = [new Date().getFullYear()];
+      loadMultiYearChart(regionId, null, years);
     });
 
     // When district changes — auto-load district vector + reload MVT if visible
