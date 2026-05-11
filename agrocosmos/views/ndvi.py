@@ -169,6 +169,21 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
         source in ('modis', 'raster', 'fused')
         and not fact_isp_filter
     )
+    if use_series:
+        # Quick existence check (uses dns_district_src_date_idx). When the
+        # pre-aggregate has not been populated for this region/source yet
+        # (fresh deploy, new region, etc.) fall back to raw VI so the
+        # endpoint still returns correct data — at the cost of speed.
+        _probe = DistrictNdviSeries.objects.filter(
+            district__region_id=region_id, source=source,
+        )
+        if year:
+            try:
+                _probe = _probe.filter(acquired_date__year=int(year))
+            except (TypeError, ValueError):
+                pass
+        if not _probe.exists():
+            use_series = False
 
     by_period_acc = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0, 'count': 0})
     by_crop_acc = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0})
