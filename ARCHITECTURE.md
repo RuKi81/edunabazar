@@ -2,10 +2,11 @@
 
 > **Репозиторий:** <https://github.com/RuKi81/edunabazar>
 > **Домен:** edunabazar.ru / www.edunabazar.ru
-> **Дата:** 2026-04-20
+> **Дата:** 2026-05-11
 
 > См. также: [`README.md`](./README.md) (overview, quick start) ·
-> [`docs/AGROCOSMOS_API.md`](./docs/AGROCOSMOS_API.md) (API reference)
+> [`docs/AGROCOSMOS_API.md`](./docs/AGROCOSMOS_API.md) (API reference) ·
+> [`docs/AGROCOSMOS_DATA_MODEL.md`](./docs/AGROCOSMOS_DATA_MODEL.md) (полная схема таблиц + cron-карта)
 
 ---
 
@@ -106,8 +107,10 @@ edunabazar/
 │
 ├── agrocosmos/              # Приложение «Агрокосмос» (ГИС + спутники)
 │   ├── models.py            # Region, District, Farmland, SatelliteScene,
-│   │                        #   VegetationIndex, NdviBaseline, DistrictNdviStatus,
-│   │                        #   FarmlandPhenology
+│   │                        #   VegetationIndex, NdviBaseline, FarmlandPhenology,
+│   │                        #   DistrictNdviStatus, DistrictNdviSeries,
+│   │                        #   MonitoringTask, PipelineRun, GeeApiMetric,
+│   │                        #   AgroSubscription, VegetationAlert
 │   ├── views/               # Views-пакет (разделён по доменам)
 │   │   ├── __init__.py      #   — re-export для обратной совместимости
 │   │   ├── _helpers.py      #   — константы, rate_limit, satellite_filter
@@ -115,8 +118,12 @@ edunabazar/
 │   │   ├── geojson.py       #   — GeoJSON endpoints (regions/districts/farmlands)
 │   │   ├── tiles.py         #   — MVT + raster PNG tiles
 │   │   ├── ndvi.py          #   — NDVI time series, stats, phenology
-│   │   └── reports.py       #   — данные для отчётов region/district
+│   │   ├── reports.py       #   — данные для отчётов region/district
+│   │   └── cabinet.py       #   — страница /me/agrocosmos/ (подписки)
 │   ├── services/
+│   │   ├── district_ndvi_series.py  # Предагрегат per-district×date×crop
+│   │   ├── notifications.py         # Email для алертов и дайджестов
+│   │   └── gee_client.py            # Google Earth Engine wrapper
 │   ├── static/agrocosmos/js/ndvi_chart.js  # Общий helper для Chart.js
 │   ├── templates/agrocosmos/
 │   └── management/commands/
@@ -172,11 +179,18 @@ edunabazar/
 |--------|---------|----------|
 | `Region` | `agro_region` | Субъект РФ (MultiPolygon) |
 | `District` | `agro_district` | Муниципальный район (MultiPolygon) |
-| `Farmland` | `agro_farmland` | Полигон сельхоз. угодья (пашня, пастбище и т.д.) |
+| `Farmland` | `agro_farmland` | Полигон сельхоз. угодья (пашня, пастбище, сенокос, многолетние насаждения, залежь) |
 | `SatelliteScene` | `agro_satellite_scene` | Метаданные спутникового снимка (Sentinel-2, Landsat, MODIS) |
-| `VegetationIndex` | `agro_vegetation_index` | Зональная статистика вегетационных индексов по угодью |
+| `VegetationIndex` | `agro_vegetation_index` | Зональная статистика вегетационных индексов по угодью (+ `mean_smooth`, `is_outlier`) |
 | `NdviBaseline` | `agro_ndvi_baseline` | Историческое среднее NDVI района на каждый день года (по всем годам кроме текущего) |
+| `FarmlandPhenology` | `agro_farmland_phenology` | Фенология по угодью на сезон (SOS/POS/EOS) из `mean_smooth` |
 | `DistrictNdviStatus` | `agro_district_ndvi_status` | Кешированный текущий NDVI района для all-Russia choropleth (см. §14.4) |
+| `DistrictNdviSeries` | `agro_district_ndvi_series` | Area-weighted NDVI по района×дате×культуре — питает дашборд-графики (см. §14.5) |
+| `MonitoringTask` | `agro_monitoring_task` | Активная задача периодического NDVI-мониторинга для региона |
+| `PipelineRun` | `agro_pipeline_run` | Лог запуска пайплайнов (MODIS, S2+L8, backfill, baselines) |
+| `GeeApiMetric` | `agro_gee_api_metric` | Дневной счётчик вызовов Google Earth Engine (`computePixels`) + трафик |
+| `AgroSubscription` | `agro_subscription` | Подписка `LegacyUser` на email-уведомления по региону/району (см. §15) |
+| `VegetationAlert` | `agro_vegetation_alert` | Биологическая аномалия на угодье (baseline deviation / rapid drop) (см. §15) |
 
 ---
 
@@ -440,6 +454,10 @@ query-string, т.е. `?region=37&year=2025` и `?region=37&year=2024` —
 предрассчитаны (см. §14.4), поэтому холодный запрос укладывается в ~20с
 и лишь на первой загрузке после `FLUSHDB`.
 
+Прогрев `prewarm_agro_caches` (вызывается в CI после каждого деплоя)
+проходит по всем регионам + all-Russia и форсирует построение GeoJSON,
+чтобы первый живой пользователь не платил cold-price.
+
 Инвалидация кеша после NDVI-pipeline (ручная):
 
 ```bash
@@ -484,7 +502,47 @@ ssh root@195.47.196.46 "ssh root@10.0.0.10 \
    python manage.py recompute_district_ndvi_status'"
 ```
 
-### 14.5 Оптимизация агрегатов (single-pass Python)
+### 14.5 Предагрегат `DistrictNdviSeries`
+
+Ещё один шаг оптимизации поверх `DistrictNdviStatus` — в той таблице
+всего одна строка на район (последняя композита), а дашборд-графику
+«Динамика NDVI по району/региону» нужен **полный временной ряд**. Для
+Московской области это ~14 М сырых VI-строк × 5 лет × 5 культур —
+`api_ndvi_stats` в лоб сканировал ~37 с.
+
+`agro_district_ndvi_series` хранит area-weighted NDVI **per district ×
+date × crop_type × source**: несколько тысяч строк на регион вместо
+миллионов. Даёт доступ ко всем осям (культура, источник, год) без JOIN'а
+с `Farmland` в горячем пути.
+
+| Поле | Описание |
+|---|---|
+| `district_id` | FK на `agro_district` |
+| `source` | `modis` / `raster` / `fused` |
+| `crop_type` | 5 категорий `Farmland.CropType` |
+| `acquired_date` | Дата композиты (для MODIS — mid-date 16-дневного окна) |
+| `sum_ndvi_area` / `sum_area` | Числитель / знаменатель area-weighted mean |
+| `obs_count` | Количество валидных угодий, вошедших в агрегат |
+
+Пересчёт: команда `recompute_district_ndvi_series` (инкрементальное окно
+60 дней — в ежедневном cron; `--rebuild` — full rebuild при изменении
+логики). Источник — `recompute_district_ndvi_status` вызывает её под
+капотом после успешного MODIS-пайплайна.
+
+**Производительность `api_ndvi_stats` после внедрения (Московская обл.,
+район, `breakdown=crop`):**
+
+| Сценарий | Время |
+|---|---|
+| Район + год + `breakdown=crop` (5 культур с рядом + baseline) | ~700 мс cold |
+| Регион-уровень + год | ~2 с cold |
+| Cache-warm (`@cache_page` 5 мин) | <10 мс |
+
+Даёт сайдбар-дашборду возможность рисовать 1 общий + N мини-графиков
+по типам угодий (`views/ndvi.py::api_ndvi_stats`, параметр
+`?breakdown=crop`).
+
+### 14.6 Оптимизация агрегатов (single-pass Python)
 
 Endpoint'ы с агрегатами раньше делали 3–4 отдельных `GROUP BY` по одному
 и тому же огромному JOIN — `VegetationIndex × Farmland`. Это повторно
@@ -495,9 +553,10 @@ Endpoint'ы с агрегатами раньше делали 3–4 отдель
 за один проход. Код — в `agrocosmos/views/ndvi.py` и `reports.py`,
 метка `Single-pass aggregation`.
 
-Эффект: ~50% снижение cold-time (72s → 37s для `api_ndvi_stats`).
+Эффект на fallback-пути (когда предагрегат пустой): ~50% снижение
+cold-time (72s → 37s для `api_ndvi_stats`).
 
-### 14.4 Индексы БД (миграция `0015_perf_indexes`)
+### 14.7 Индексы БД (миграция `0015_perf_indexes`)
 
 | Индекс | Таблица | Определение |
 |---|---|---|
@@ -509,7 +568,7 @@ Partial-индекс выигрывает за счёт того, что в ре
 `is_outlier=false` — отфильтрованный срез получается в разы меньше
 полной таблицы.
 
-### 14.5 Мониторинг (TODO)
+### 14.8 Мониторинг (TODO)
 
 Ещё не настроено:
 
@@ -522,3 +581,81 @@ Partial-индекс выигрывает за счёт того, что в ре
 - `/healthz` — health-check (проверяется docker compose healthcheck)
 - `docker logs -f edunabazar-web-1` — ручная диагностика
 - `docker logs -f edunabazar-nginx-1` — access log
+
+---
+
+## 15. Алерты вегетации и подписки
+
+### 15.1 Пайплайн детекции
+
+Команда `detect_vegetation_alerts` (`agrocosmos/management/commands/`)
+ежедневно ходит по всем угодьям и проверяет два паттерна на окне 30
+дней сглаженной серии NDVI (`VegetationIndex.mean_smooth` с fallback
+на `mean`):
+
+| Тип | Условие | Severity |
+|---|---|---|
+| `baseline_deviation` | 2 наблюдения подряд с z-score ≤ −1.5 vs `NdviBaseline` района/культуры | `warning` (z ≤ −1.5) / `critical` (z ≤ −2.0) |
+| `rapid_drop` | Падение NDVI ≥ 0.15 относительно точки ≥16 дней назад | `warning` (≥ 0.15) / `critical` (≥ 0.20) |
+
+Дедупликация: один активный `VegetationAlert` на пару
+`(farmland, alert_type)`. Новое детектирование **обновляет** severity /
+`context` существующей записи, без дублей. Когда метрика восстанавливается
+— алерт автоматически переходит в `resolved`.
+
+Пороги и окна захардкожены в начале файла `detect_vegetation_alerts.py`
+(константы `Z_WARN / Z_CRIT / DROP_WARN / DROP_CRIT / LOOKBACK_DAYS`)
+— тонкая настройка через подмену констант.
+
+### 15.2 Подписки (`AgroSubscription`)
+
+Кабинет пользователя `/me/agrocosmos/` (`agrocosmos/views/cabinet.py`)
+даёт `LegacyUser` возможность вести строки-подписки:
+
+- **Scope**: либо весь регион (`district=NULL`), либо один район
+- **`notify_anomalies`**: email при появлении / эскалации
+  `VegetationAlert` на угодьях этого scope
+- **`notify_updates`**: ежедневный дайджест свежих NDVI-данных
+  (команда `send_agrocosmos_updates`)
+
+Админка: `/legacy-admin/agrocosmos/agrosubscription/` — показывает
+логин/email/имя подписчика через bulk-lookup в `legacy_user` (нет
+реального FK — `LegacyUser` unmanaged), с поиском по
+`username / email / name / phone`.
+
+### 15.3 Рассылка (`services/notifications.py`)
+
+- `send_anomaly_email(alert)` — вызывается из `_reconcile` сразу после
+  создания нового алерта **или** на эскалации `warning → critical`.
+  Не шлёт повторно для того же severity — иначе каждую ночь был бы
+  спам по долгоиграющим аномалиям
+- Получатели: все `AgroSubscription` с `notify_anomalies=True` чей
+  scope покрывает угодье (район точно или регион целиком)
+- Транспорт: `EmailMultiAlternatives` через тот же SMTP что и
+  `/legacy-admin/campaigns/` (Yandex)
+- Ошибки отправки **не блокируют** создание алерта — логируются в
+  `logger.exception`
+
+---
+
+## 16. Cron-задачи (VM1, хост-crontab)
+
+Настраиваются в CI (`deploy` job) после каждого успешного деплоя —
+существующие строки перезаписываются. Источник правды — блок
+`setup-cron` в `.github/workflows/ci.yml`.
+
+| Время (Moscow / UTC) | Команда | Назначение |
+|---|---|---|
+| `07:00 / 04:00` | `fetch_news --count 3` | RSS → GigaChat рерайт в `News` |
+| `09:00 / 06:00` | `check_monitoring` | Запуск MODIS-пайплайнов по `MonitoringTask` |
+| `10:00 / 07:00` | `check_raster_monitoring` | S2 + L8 оперативный NDVI |
+| `11:00 / 08:00` | `detect_vegetation_alerts` | Детекция аномалий, email подписчикам |
+| `12:00 / 09:00` | `send_agrocosmos_updates` | Ежедневный дайджест свежих NDVI |
+| `*/10 min` | `cleanup_stale_runs --timeout-min 15` | Закрытие зависших `PipelineRun` |
+| `01 Jan 03:00 MSK` | `ensure_all_regions_monitored` | Годовой roll-over `MonitoringTask` |
+| `07 Jan` | `recompute_ndvi_baselines` | Пересчёт `NdviBaseline` с учётом прошлого года |
+
+Инкрементальный пересчёт предагрегатов (`DistrictNdviStatus` +
+`DistrictNdviSeries`) **не в отдельном cron** — он вызывается из
+`check_monitoring` / `modis_ndvi` после успешного пайплайна, чтобы
+таблицы обновлялись сразу после поступления новых данных.
