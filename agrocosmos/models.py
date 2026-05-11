@@ -583,6 +583,17 @@ class VegetationAlert(models.Model):
     отклонение — в отличие от ``VegetationIndex.is_outlier``, который
     маркирует технические выбросы (снег/облако).
 
+    Алерт может быть двух уровней:
+
+    - **per-farmland** (legacy / S2-L8): ``farmland`` заполнен, ``district``
+      и ``crop_type`` производные. Покрывает кейс «алерт по конкретному
+      угодью», когда разрешения растра достаточно (10–30 м).
+    - **per-district** (MODIS): ``farmland`` = NULL, ``district`` +
+      ``crop_type`` заполнены. NDVI здесь — area-weighted среднее по
+      ``DistrictNdviSeries`` для (district, crop_type, MODIS). Это
+      основной режим для дневного мониторинга — MODIS 250 м per-farmland
+      статистически шумный, поэтому работаем на уровне района.
+
     Детектор покрывает два паттерна:
         - ``baseline_deviation`` — несколько подряд наблюдений ниже
           исторической нормы (z-score ≤ -1.5).
@@ -602,9 +613,32 @@ class VegetationAlert(models.Model):
         ACKNOWLEDGED = 'acknowledged', 'Принят'
         RESOLVED = 'resolved', 'Разрешён'
 
+    class Source(models.TextChoices):
+        MODIS = 'modis', 'MODIS'
+        RASTER = 'raster', 'Sentinel-2 / Landsat'
+        FUSED = 'fused', 'HLS Fused'
+
     farmland = models.ForeignKey(
         Farmland, on_delete=models.CASCADE, related_name='alerts',
+        null=True, blank=True,
         verbose_name='Угодье',
+        help_text='NULL для district-level алертов (MODIS).',
+    )
+    district = models.ForeignKey(
+        District, on_delete=models.CASCADE, related_name='district_alerts',
+        null=True, blank=True,
+        verbose_name='Район',
+        help_text='Заполняется для district-level алертов.',
+    )
+    crop_type = models.CharField(
+        max_length=20, blank=True, default='',
+        choices=Farmland.CropType.choices,
+        verbose_name='Тип угодья',
+        help_text='Для district-level алертов: культура, по которой сработал детектор.',
+    )
+    source = models.CharField(
+        max_length=10, choices=Source.choices, default=Source.MODIS,
+        verbose_name='Источник данных',
     )
     alert_type = models.CharField(
         max_length=30, choices=AlertType.choices, verbose_name='Тип алерта',
@@ -648,11 +682,29 @@ class VegetationAlert(models.Model):
                 name='veg_alert_active_idx',
             ),
             models.Index(fields=['farmland', 'alert_type', 'status']),
+            # District-level reconcile lookup: WHERE district AND crop_type
+            # AND alert_type AND status != resolved.
+            models.Index(
+                fields=['district', 'crop_type', 'alert_type', 'status'],
+                name='veg_alert_district_idx',
+            ),
+        ]
+        constraints = [
+            # Each alert must scope to a farmland (legacy/S2/L8) or to a
+            # district (MODIS pre-aggregate). Both NULL is meaningless.
+            models.CheckConstraint(
+                condition=models.Q(farmland__isnull=False) | models.Q(district__isnull=False),
+                name='veg_alert_scope_required',
+            ),
         ]
 
     def __str__(self):
+        if self.farmland_id:
+            scope = f'farmland={self.farmland_id}'
+        else:
+            scope = f'district={self.district_id}/{self.crop_type or "all"}'
         return (f'{self.get_alert_type_display()} / {self.get_severity_display()} '
-                f'— farmland={self.farmland_id} ({self.detected_on})')
+                f'— {scope} ({self.detected_on})')
 
 
 class GeeApiMetric(models.Model):

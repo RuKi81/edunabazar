@@ -124,13 +124,29 @@ class VegetationIndexAdmin(admin.ModelAdmin):
 
 @admin.register(VegetationAlert)
 class VegetationAlertAdmin(admin.ModelAdmin):
-    """Biological NDVI alerts (baseline deviation, rapid drops)."""
-    list_display = ('id', 'farmland', 'alert_type', 'severity_badge',
+    """Biological NDVI alerts (baseline deviation, rapid drops).
+
+    Two scopes coexist in this table — per-farmland (legacy / S2-L8) and
+    per-district (MODIS). ``scope`` column normalises the display.
+    """
+    list_display = ('id', 'scope', 'source', 'alert_type', 'severity_badge',
                     'status', 'detected_on', 'triggered_at', 'acknowledged_by')
-    list_filter = ('status', 'severity', 'alert_type', 'triggered_at')
-    search_fields = ('farmland__cadastral_number', 'message')
-    readonly_fields = ('farmland', 'alert_type', 'detected_on', 'triggered_at',
+    list_filter = ('status', 'severity', 'alert_type', 'source', 'triggered_at')
+    search_fields = ('farmland__cadastral_number', 'district__name',
+                     'district__region__name', 'message')
+    list_select_related = ('farmland', 'district', 'district__region')
+    readonly_fields = ('farmland', 'district', 'crop_type', 'source',
+                       'alert_type', 'detected_on', 'triggered_at',
                        'context', 'message')
+
+    def scope(self, obj):
+        if obj.farmland_id:
+            return f'угодье #{obj.farmland_id}'
+        if obj.district_id:
+            crop = obj.get_crop_type_display() or 'все культуры'
+            return f'район «{obj.district.name}» / {crop}'
+        return '—'
+    scope.short_description = 'Объект'
 
     def severity_badge(self, obj):
         color = '#b91c1c' if obj.severity == 'critical' else '#b45309'
@@ -141,7 +157,7 @@ class VegetationAlertAdmin(admin.ModelAdmin):
     severity_badge.short_description = 'Критичность'
 
     def has_add_permission(self, request):
-        return False  # managed by detect_vegetation_alerts command
+        return False  # managed by detect_district_ndvi_alerts command
 
 
 @admin.register(AgroSubscription)
@@ -506,7 +522,10 @@ def agro_panel_view(request):
     alerts_active = (
         VegetationAlert.objects
         .filter(status__in=['active', 'acknowledged'])
-        .select_related('farmland', 'farmland__district', 'farmland__district__region')
+        .select_related(
+            'farmland', 'farmland__district', 'farmland__district__region',
+            'district', 'district__region',
+        )
         .order_by('-severity', '-triggered_at')[:30]
     )
     alert_counts = {

@@ -92,6 +92,20 @@ def _subscriptions_for_farmland(farmland: Farmland, flag: str):
     )
 
 
+def _subscriptions_for_district(district, flag: str):
+    """Return subscriptions covering a district-level alert.
+
+    Same matching rule as :func:`_subscriptions_for_farmland` minus the
+    farmland indirection — district-level alerts target the whole
+    district aggregate.
+    """
+    from django.db.models import Q
+    return AgroSubscription.objects.filter(**{flag: True}).filter(
+        Q(district_id=district.pk)
+        | Q(district__isnull=True, region_id=district.region_id)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Sender
 # ---------------------------------------------------------------------------
@@ -124,7 +138,23 @@ def send_anomaly_email(alert: VegetationAlert) -> int:
 
     Returns count of successfully delivered emails.  Idempotent only
     per invocation — call sites should gate on "new alert" themselves.
+
+    Supports both alert shapes:
+
+    - **per-farmland**: ``alert.farmland`` populated → recipients
+      resolved via the farmland's district/region, message names the
+      farmland.
+    - **per-district** (MODIS): ``alert.farmland`` is NULL,
+      ``alert.district`` + ``alert.crop_type`` populated → recipients
+      resolved via the district, message reports the area-weighted
+      district aggregate.
     """
+    if alert.farmland_id:
+        return _send_farmland_anomaly(alert)
+    return _send_district_anomaly(alert)
+
+
+def _send_farmland_anomaly(alert: VegetationAlert) -> int:
     farmland = alert.farmland
     district = farmland.district
     region = district.region
@@ -172,7 +202,63 @@ def send_anomaly_email(alert: VegetationAlert) -> int:
     for _uid, email in pairs:
         if _send(email, subject, text, html):
             delivered += 1
-    logger.info('Anomaly email: alert=%s delivered=%d/%d', alert.pk, delivered, len(pairs))
+    logger.info('Anomaly email (farmland): alert=%s delivered=%d/%d',
+                alert.pk, delivered, len(pairs))
+    return delivered
+
+
+def _send_district_anomaly(alert: VegetationAlert) -> int:
+    district = alert.district
+    if district is None:
+        logger.warning('district-level alert=%s has no district; skipping email', alert.pk)
+        return 0
+    region = district.region
+
+    subs = _subscriptions_for_district(district, 'notify_anomalies')
+    pairs = _emails_for_subscriptions(list(subs))
+    if not pairs:
+        return 0
+
+    report_url = _district_report_url(region.pk, district.pk)
+    sev_label = alert.get_severity_display().upper()
+    type_label = alert.get_alert_type_display()
+    crop_label = alert.get_crop_type_display() or 'все типы угодий'
+
+    subject = f'[{sev_label}] {type_label} — {district.name}, {region.name} ({crop_label})'
+    text = (
+        f'В районе «{district.name}» ({region.name}) зафиксирован '
+        f'district-level алерт по культуре «{crop_label}» (MODIS).\n\n'
+        f'Тип: {type_label}\n'
+        f'Критичность: {alert.get_severity_display()}\n'
+        f'Дата наблюдения: {alert.detected_on}\n'
+        f'Описание: {alert.message}\n\n'
+        f'Посмотреть отчёт с графиком NDVI по району:\n{report_url}\n\n'
+        f'Управление подписками: {_site_url()}/me/agrocosmos/\n'
+    )
+    html = f'''
+    <p>В районе <strong>«{district.name}»</strong> ({region.name})
+    зафиксирован district-level алерт по культуре
+    <strong>«{crop_label}»</strong> (MODIS, среднее area-weighted NDVI
+    по району).</p>
+    <ul>
+      <li><strong>Тип:</strong> {type_label}</li>
+      <li><strong>Критичность:</strong> {alert.get_severity_display()}</li>
+      <li><strong>Дата наблюдения:</strong> {alert.detected_on}</li>
+    </ul>
+    <p>{alert.message}</p>
+    <p><a href="{report_url}" style="padding:8px 14px; background:#417690; color:#fff;
+    border-radius:3px; text-decoration:none;">Открыть отчёт с графиком NDVI</a></p>
+    <p style="color:#888; font-size:12px;">
+      Управление подписками: <a href="{_site_url()}/me/agrocosmos/">{_site_url()}/me/agrocosmos/</a>
+    </p>
+    '''
+
+    delivered = 0
+    for _uid, email in pairs:
+        if _send(email, subject, text, html):
+            delivered += 1
+    logger.info('Anomaly email (district): alert=%s delivered=%d/%d',
+                alert.pk, delivered, len(pairs))
     return delivered
 
 
