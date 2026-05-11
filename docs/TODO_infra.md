@@ -160,7 +160,8 @@ SSH-юзера с read-only ACL.
   добавить публичную часть в `/home/nas_pull/.ssh/authorized_keys` на VM2
 - [ ] Настроить Synology Task Scheduler: ежедневный rsync с VM2 в
   `/volume1/pg_backups/`
-- [ ] Проверить retention: 14 дней на VM2 (KEEP_DAYS=14 в backup.sh),
+- [ ] Проверить retention: 7 дней на VM2 (KEEP_DAYS=7 в backup.sh,
+  было 14 — сокращено 11 мая 2026, ~270GB экономии диска),
   90 дней на NAS (через rsync `--max-age` или DSM-чистку)
 - [ ] **Оптимизация:** заменить `gzip` на `pigz -p 4` в `backup.sh` —
   ускорит сжатие в 4-8 раз (gzip однопоточный, в первом dump'е был
