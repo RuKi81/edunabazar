@@ -190,7 +190,7 @@ edunabazar/
 | `PipelineRun` | `agro_pipeline_run` | Лог запуска пайплайнов (MODIS, S2+L8, backfill, baselines) |
 | `GeeApiMetric` | `agro_gee_api_metric` | Дневной счётчик вызовов Google Earth Engine (`computePixels`) + трафик |
 | `AgroSubscription` | `agro_subscription` | Подписка `LegacyUser` на email-уведомления по региону/району (см. §15) |
-| `VegetationAlert` | `agro_vegetation_alert` | Биологическая аномалия на угодье (baseline deviation / rapid drop) (см. §15) |
+| `VegetationAlert` | `agro_vegetation_alert` | Биологическая аномалия на угодье **или** районе/культуре (baseline deviation / rapid drop) (см. §15) |
 
 ---
 
@@ -588,23 +588,44 @@ Partial-индекс выигрывает за счёт того, что в ре
 
 ### 15.1 Пайплайн детекции
 
-Команда `detect_vegetation_alerts` (`agrocosmos/management/commands/`)
-ежедневно ходит по всем угодьям и проверяет два паттерна на окне 30
-дней сглаженной серии NDVI (`VegetationIndex.mean_smooth` с fallback
-на `mean`):
+Два уровня алертов с одинаковыми детекторами, но разной
+гранулярностью и разными источниками данных:
+
+**District-level (MODIS) — основной режим, в крон-расписании.**
+Команда `detect_district_ndvi_alerts` читает
+предагрегат `DistrictNdviSeries` (area-weighted NDVI по
+`district × crop_type × acquired_date`, source=`modis`) и считает
+z-score против `NdviBaseline` (district + crop_type + DOY).
+Scope по умолчанию ограничен районами, на которые есть
+`AgroSubscription.notify_anomalies=True` (region-подписки
+разворачиваются в районы региона) — это убирает массовый ночной
+обход всех угодий РФ. Флаг `--all` запускает полный sweep.
+
+**Per-farmland (S2/L8) — legacy, на паузе.** Команда
+`detect_vegetation_alerts` оставлена в репозитории для будущего
+кейса с растровыми снимками 10–30 м (где per-farmland разрешение
+оправдано), но **из cron убрана** — MODIS 250 м per-farmland
+статистически шумный и порождает слишком много дублирующих строк.
+
+Оба детектора смотрят на окно ~30–45 дней и проверяют два паттерна:
 
 | Тип | Условие | Severity |
 |---|---|---|
 | `baseline_deviation` | 2 наблюдения подряд с z-score ≤ −1.5 vs `NdviBaseline` района/культуры | `warning` (z ≤ −1.5) / `critical` (z ≤ −2.0) |
 | `rapid_drop` | Падение NDVI ≥ 0.15 относительно точки ≥16 дней назад | `warning` (≥ 0.15) / `critical` (≥ 0.20) |
 
-Дедупликация: один активный `VegetationAlert` на пару
-`(farmland, alert_type)`. Новое детектирование **обновляет** severity /
-`context` существующей записи, без дублей. Когда метрика восстанавливается
-— алерт автоматически переходит в `resolved`.
+Дедупликация:
 
-Пороги и окна захардкожены в начале файла `detect_vegetation_alerts.py`
-(константы `Z_WARN / Z_CRIT / DROP_WARN / DROP_CRIT / LOOKBACK_DAYS`)
+- District-level: один активный `VegetationAlert` на
+  `(district, crop_type, alert_type, source=modis)`.
+- Per-farmland (legacy): на `(farmland, alert_type)`.
+
+Новое детектирование **обновляет** severity / `context` существующей
+записи, без дублей. Когда метрика восстанавливается — алерт
+автоматически переходит в `resolved` без email.
+
+Пороги и окна захардкожены в начале каждой команды (константы
+`Z_WARN / Z_CRIT / DROP_WARN / DROP_CRIT / LOOKBACK_DAYS`)
 — тонкая настройка через подмену констант.
 
 ### 15.2 Подписки (`AgroSubscription`)
@@ -614,7 +635,8 @@ Partial-индекс выигрывает за счёт того, что в ре
 
 - **Scope**: либо весь регион (`district=NULL`), либо один район
 - **`notify_anomalies`**: email при появлении / эскалации
-  `VegetationAlert` на угодьях этого scope
+  `VegetationAlert` — как per-farmland (legacy), так и
+  district-level (MODIS) — на угодьях/районах этого scope
 - **`notify_updates`**: ежедневный дайджест свежих NDVI-данных
   (команда `send_agrocosmos_updates`)
 
@@ -649,7 +671,7 @@ Partial-индекс выигрывает за счёт того, что в ре
 | `07:00 / 04:00` | `fetch_news --count 3` | RSS → GigaChat рерайт в `News` |
 | `09:00 / 06:00` | `check_monitoring` | Запуск MODIS-пайплайнов по `MonitoringTask` |
 | `10:00 / 07:00` | `check_raster_monitoring` | S2 + L8 оперативный NDVI |
-| `11:00 / 08:00` | `detect_vegetation_alerts` | Детекция аномалий, email подписчикам |
+| `11:00 / 08:00` | `detect_district_ndvi_alerts` | District-level MODIS-алерты по подписанным районам, email подписчикам |
 | `12:00 / 09:00` | `send_agrocosmos_updates` | Ежедневный дайджест свежих NDVI |
 | `*/10 min` | `cleanup_stale_runs --timeout-min 15` | Закрытие зависших `PipelineRun` |
 | `01 Jan 03:00 MSK` | `ensure_all_regions_monitored` | Годовой roll-over `MonitoringTask` |

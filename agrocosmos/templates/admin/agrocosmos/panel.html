@@ -100,17 +100,29 @@
             {% for a in alerts_active %}
             <tr>
               <td>
-                <a href="{% url 'admin:agrocosmos_farmland_change' a.farmland_id %}">
-                  #{{ a.farmland_id }}
-                </a>
-                <span style="color:#888; font-size:11px;">
-                  ({{ a.farmland.get_crop_type_display }},
-                  {{ a.farmland.area_ha|floatformat:1 }} га)
-                </span>
+                {% if a.farmland_id %}
+                  <a href="{% url 'admin:agrocosmos_farmland_change' a.farmland_id %}">
+                    #{{ a.farmland_id }}
+                  </a>
+                  <span style="color:#888; font-size:11px;">
+                    ({{ a.farmland.get_crop_type_display }},
+                    {{ a.farmland.area_ha|floatformat:1 }} га)
+                  </span>
+                {% else %}
+                  <span style="color:#0369a1; font-weight:600;">район</span>
+                  <span style="color:#888; font-size:11px;">
+                    ({{ a.get_crop_type_display|default:"все культуры" }}, MODIS)
+                  </span>
+                {% endif %}
               </td>
               <td style="font-size:12px;">
-                {{ a.farmland.district.name }}
-                <span style="color:#888;">· {{ a.farmland.district.region.name }}</span>
+                {% if a.farmland_id %}
+                  {{ a.farmland.district.name }}
+                  <span style="color:#888;">· {{ a.farmland.district.region.name }}</span>
+                {% else %}
+                  {{ a.district.name }}
+                  <span style="color:#888;">· {{ a.district.region.name }}</span>
+                {% endif %}
               </td>
               <td style="font-size:12px;">{{ a.get_alert_type_display }}</td>
               <td>
