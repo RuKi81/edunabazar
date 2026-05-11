@@ -398,6 +398,13 @@
         <canvas id="ndvi-region-chart" style="max-height:200px;"></canvas>
       </div>
 
+      <!-- Per-crop NDVI breakdown (shown when a district is selected) -->
+      <div id="ndvi-crop-breakdown-wrap" style="display:none; padding:12px; border-top:1px solid rgba(0,0,0,.08);">
+        <h3 style="font-size:13px; font-weight:700; margin:0 0 8px 0;">По типам угодий</h3>
+        <div id="ndvi-crop-breakdown-loader" class="ndvi-loader"><div class="bar"></div></div>
+        <div id="ndvi-crop-breakdown-list"></div>
+      </div>
+
       <!-- Phenology info panel -->
       <div id="phenology-panel" style="display:none; padding:10px 12px; border-top:1px solid rgba(0,0,0,.08);">
         <h3 style="font-size:13px; font-weight:700; margin:0 0 6px 0;">
@@ -850,6 +857,11 @@
                     + (p.region ? ', ' + p.region : '') + ')';
                 }
                 loadMultiYearChart(p.region_id, p.id, years);
+                // Per-crop breakdown — uses the most recent selected
+                // year to keep each mini-chart legible (one year per
+                // crop). The full multi-year comparison stays in the
+                // main chart above.
+                loadCropBreakdown(p.region_id, p.id, years[years.length - 1]);
               });
             },
           }).addTo(map);
@@ -920,6 +932,8 @@
       if (mvtLayer) { map.removeLayer(mvtLayer); mvtLayer = null; }
       document.getElementById('crop-type-checkboxes').innerHTML = '';
       document.getElementById('stat-count').textContent = '—';
+      // Region scope changed — district-specific breakdown is stale.
+      if (typeof hideCropBreakdown === 'function') hideCropBreakdown();
 
       var bordersCb = document.getElementById('agro-toggle-borders');
 
@@ -990,6 +1004,33 @@
       if (document.getElementById('agro-toggle-farmlands').checked) {
         loadMVT(regionId, districtId || null);
         loadNdviStats();
+      }
+
+      // Mirror the map-click behaviour: any time the user lands on a
+      // district (via dropdown or via map) the right sidebar shows the
+      // overall NDVI chart plus the per-crop breakdown.
+      var years = (typeof getSelectedYears === 'function') ? getSelectedYears() : [];
+      if (!years.length) years = [new Date().getFullYear()];
+      if (districtId && regionId) {
+        var distOpt = districtSel.options[districtSel.selectedIndex];
+        var distName = distOpt ? distOpt.textContent : '';
+        var regOpt = regionSel.options[regionSel.selectedIndex];
+        var regName = regOpt ? regOpt.textContent : '';
+        var title = document.getElementById('ndvi-region-title');
+        if (title) {
+          title.textContent = 'Динамика NDVI (' + distName + (regName ? ', ' + regName : '') + ')';
+        }
+        loadMultiYearChart(regionId, districtId, years);
+        loadCropBreakdown(regionId, districtId, years[years.length - 1]);
+      } else if (regionId) {
+        // District cleared — fall back to region-wide chart and hide
+        // the per-crop breakdown (only meaningful at district scope).
+        hideCropBreakdown();
+        var regOpt2 = regionSel.options[regionSel.selectedIndex];
+        var regName2 = regOpt2 ? regOpt2.textContent.trim() : '';
+        var title2 = document.getElementById('ndvi-region-title');
+        if (title2) title2.textContent = 'Динамика NDVI (' + regName2 + ')';
+        loadMultiYearChart(regionId, null, years);
       }
     });
 
@@ -1231,6 +1272,7 @@
         if (mvtLayer) { map.removeLayer(mvtLayer); mvtLayer = null; }
         farmlandLayer = clearLayer(farmlandLayer);
         document.getElementById('ndvi-region-chart-wrap').style.display = 'none';
+        if (typeof hideCropBreakdown === 'function') hideCropBreakdown();
         setFarmlandsInfoVisible(false);
         setDistrictsChoroplethFillVisible(true);
       }
@@ -1314,6 +1356,10 @@
       // Multi-year regional chart
       loadMultiYearChart(regionId, districtId, years);
 
+      // Per-crop breakdown (only meaningful at district scope; hides
+      // itself when ``districtId`` is empty).
+      loadCropBreakdown(regionId, districtId, years[years.length - 1]);
+
       // Phenology panel
       loadPhenology(regionId, districtId, years[0]);
     }
@@ -1350,6 +1396,156 @@
     document.querySelectorAll('.agro-usage-cb').forEach(function (cb) {
       cb.addEventListener('change', onUsageChange);
     });
+
+    /* ── Per-crop NDVI breakdown ──────────────────
+     * Renders a column of small per-crop charts in the right sidebar
+     * whenever a district is active. Driven by a single fetch with
+     * ``breakdown=crop`` against the existing ``/api/ndvi-stats/``;
+     * the response already contains per-crop time series + baseline
+     * built off the pre-aggregated ``agro_district_ndvi_series``, so
+     * even Moscow Oblast renders in tens of ms.
+     */
+    var _cropBreakdownCharts = {};   // crop_type -> Chart instance
+    var _cropBreakdownReq = 0;        // request token; rejects stale responses
+
+    function clearCropBreakdownCharts() {
+      Object.keys(_cropBreakdownCharts).forEach(function (k) {
+        try { _cropBreakdownCharts[k].destroy(); } catch (e) {}
+      });
+      _cropBreakdownCharts = {};
+    }
+
+    function hideCropBreakdown() {
+      clearCropBreakdownCharts();
+      var wrap = document.getElementById('ndvi-crop-breakdown-wrap');
+      if (wrap) wrap.style.display = 'none';
+      var list = document.getElementById('ndvi-crop-breakdown-list');
+      if (list) list.innerHTML = '';
+    }
+
+    function loadCropBreakdown(regionId, districtId, year) {
+      if (!regionId || !districtId) { hideCropBreakdown(); return; }
+      var wrap = document.getElementById('ndvi-crop-breakdown-wrap');
+      var list = document.getElementById('ndvi-crop-breakdown-list');
+      var loader = document.getElementById('ndvi-crop-breakdown-loader');
+      if (!wrap || !list) return;
+      wrap.style.display = 'block';
+      if (loader) loader.classList.add('active');
+
+      // fact_isp falls back to the raw-VI path on the server (the
+      // pre-aggregate does not have that dimension); we still forward
+      // it so the breakdown stays consistent with the main chart.
+      var fiParam = '';
+      var selFi = (typeof getSelectedUsage === 'function') ? getSelectedUsage() : new Set();
+      if (selFi.size === 1) {
+        if (selFi.has('used')) fiParam = '&fact_isp=used';
+        else if (selFi.has('unused')) fiParam = '&fact_isp=unused';
+      }
+      var url = '/agrocosmos/api/ndvi-stats/?region=' + regionId
+        + '&district=' + districtId
+        + '&year=' + year
+        + '&source=' + SOURCE
+        + '&breakdown=crop' + fiParam;
+
+      var token = ++_cropBreakdownReq;
+      fetch(url).then(function (r) { return r.json(); }).then(function (resp) {
+        if (token !== _cropBreakdownReq) return;  // a newer request superseded us
+        if (loader) loader.classList.remove('active');
+        var crops = (resp && resp.ok && resp.stats && resp.stats.crop_breakdown)
+          ? resp.stats.crop_breakdown.filter(function (c) { return c.by_period && c.by_period.length; })
+          : [];
+        if (!crops.length) {
+          list.innerHTML = '<div style="color:#888;font-size:11px;padding:6px 0;">Нет данных по типам угодий</div>';
+          return;
+        }
+        clearCropBreakdownCharts();
+        var html = '';
+        crops.forEach(function (c) {
+          var canvasId = 'crop-chart-' + c.crop_type;
+          var mean = (c.mean_ndvi !== null && c.mean_ndvi !== undefined)
+            ? c.mean_ndvi.toFixed(2) : '—';
+          html += '<div style="margin-bottom:14px;">'
+            + '<div style="display:flex;justify-content:space-between;align-items:baseline;font-size:11px;margin-bottom:2px;">'
+            + '<span style="font-weight:600;">' + esc(c.label) + '</span>'
+            + '<span style="color:#666;">NDVI <b>' + mean + '</b> · '
+            + (c.area_ha || 0).toLocaleString('ru', { maximumFractionDigits: 0 }) + ' га'
+            + '</span>'
+            + '</div>'
+            + '<canvas id="' + canvasId + '" style="max-height:110px;"></canvas>'
+            + '</div>';
+        });
+        list.innerHTML = html;
+
+        crops.forEach(function (c, idx) {
+          var canvas = document.getElementById('crop-chart-' + c.crop_type);
+          if (!canvas) return;
+          // Union of current + baseline MM-DD labels.
+          var allLabels = {};
+          c.by_period.forEach(function (d) { allLabels[d.date.substring(5)] = 1; });
+          (c.baseline || []).forEach(function (b) { allLabels[b.date] = 1; });
+          var labels = Object.keys(allLabels).sort();
+
+          var cropLookup = {};
+          c.by_period.forEach(function (d) { cropLookup[d.date.substring(5)] = d.mean_ndvi; });
+          var cropVals = labels.map(function (l) {
+            return cropLookup[l] !== undefined ? cropLookup[l] : null;
+          });
+
+          var datasets = [];
+          if (c.baseline && c.baseline.length) {
+            var blLookup = {};
+            c.baseline.forEach(function (b) {
+              blLookup[b.date] = { mean: b.mean_ndvi, std: b.std_ndvi || 0 };
+            });
+            var blVals = labels.map(function (l) { return blLookup[l] ? blLookup[l].mean : null; });
+            var blUpper = labels.map(function (l) {
+              return blLookup[l] ? Math.min(blLookup[l].mean + blLookup[l].std, 1.0) : null;
+            });
+            datasets.push({
+              label: 'Baseline +σ', data: blUpper,
+              borderColor: 'transparent',
+              backgroundColor: 'rgba(158,158,158,0.15)',
+              borderWidth: 0, fill: '+1', pointRadius: 0,
+              tension: 0.3, spanGaps: true, order: 12,
+            });
+            datasets.push({
+              label: 'Архив', data: blVals,
+              borderColor: '#9E9E9E', backgroundColor: 'transparent',
+              borderWidth: 1.5, borderDash: [5, 3],
+              pointRadius: 0, tension: 0.3, spanGaps: true, order: 11,
+            });
+          }
+          datasets.push({
+            label: String(year), data: cropVals,
+            borderColor: yearColors[idx % yearColors.length],
+            backgroundColor: 'transparent',
+            borderWidth: 2, pointRadius: 2,
+            tension: 0.3, spanGaps: true, order: 1,
+          });
+
+          _cropBreakdownCharts[c.crop_type] = new Chart(canvas, {
+            type: 'line',
+            data: { labels: labels, datasets: datasets },
+            options: {
+              responsive: true, maintainAspectRatio: false,
+              plugins: {
+                legend: { display: false },
+                tooltip: { intersect: false, mode: 'index' },
+              },
+              scales: {
+                x: { ticks: { font: { size: 8 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 6 } },
+                y: { min: 0, max: 1, ticks: { font: { size: 8 }, stepSize: 0.25 } },
+              },
+            },
+          });
+        });
+      }).catch(function (err) {
+        if (token !== _cropBreakdownReq) return;
+        if (loader) loader.classList.remove('active');
+        console.error('crop breakdown error:', err);
+        list.innerHTML = '<div style="color:#c62828;font-size:11px;padding:6px 0;">Ошибка загрузки</div>';
+      });
+    }
 
     function loadMultiYearChart(regionId, districtId, years) {
       var loader = document.getElementById('ndvi-region-loader');
