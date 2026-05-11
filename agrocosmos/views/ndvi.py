@@ -151,33 +151,11 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
     elif fact_isp_filter == 'unused':
         fl_qs = fl_qs.filter(properties__Fact_isp='Не используется')
 
-    # Resolve the satellite filter into an explicit ``scene_id__in`` instead
-    # of ``scene__satellite__in``: the latter forces a JOIN with
-    # ``agro_satellite_scene`` over the entire VI table, which the planner
-    # was estimating with a full hash join for big regions like Moscow
-    # Oblast (timeout >120 s). Pre-filtered scene IDs come from the
-    # ``scene_sat_date_idx`` btree (~thousands of rows for one year of MODIS)
-    # and let Postgres use the partial ``vi_ndvi_active_idx`` cleanly.
-    from ..models import SatelliteScene  # local import to avoid cycles
-    scene_qs = SatelliteScene.objects.all()
-    if 'scene__satellite__in' in sat_kw:
-        scene_qs = scene_qs.filter(satellite__in=sat_kw['scene__satellite__in'])
-    if year:
-        try:
-            scene_qs = scene_qs.filter(acquired_date__year=int(year))
-        except (TypeError, ValueError):
-            pass
-    if date_from:
-        scene_qs = scene_qs.filter(acquired_date__gte=date_from)
-    if date_to:
-        scene_qs = scene_qs.filter(acquired_date__lte=date_to)
-    scene_ids = list(scene_qs.values_list('id', flat=True))
-
     vi_qs = VegetationIndex.objects.filter(
         farmland__in=fl_qs, index_type='ndvi',
         mean__gte=-0.2, mean__lte=1,         # physical NDVI range
         is_outlier=False,                     # exclude detected spikes (snow/cloud)
-        scene_id__in=scene_ids,
+        **sat_kw,
     )
     if year:
         try:
