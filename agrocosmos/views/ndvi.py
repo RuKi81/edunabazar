@@ -10,7 +10,8 @@ from django.http import HttpRequest, JsonResponse
 from django.views.decorators.cache import cache_page
 
 from ..models import (
-    Farmland, FarmlandPhenology, NdviBaseline, VegetationIndex,
+    DistrictNdviSeries, Farmland, FarmlandPhenology, NdviBaseline,
+    VegetationIndex,
 )
 from ._helpers import _satellite_filter, _safe_round, rate_limit
 
@@ -140,6 +141,7 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
         })
 
     # Apply crop_types filter
+    ct_list: list[str] = []
     if crop_types:
         ct_list = [ct.strip() for ct in crop_types.split(',') if ct.strip()]
         if ct_list:
@@ -151,43 +153,21 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
     elif fact_isp_filter == 'unused':
         fl_qs = fl_qs.filter(properties__Fact_isp='Не используется')
 
-    vi_qs = VegetationIndex.objects.filter(
-        farmland__in=fl_qs, index_type='ndvi',
-        mean__gte=-0.2, mean__lte=1,         # physical NDVI range
-        is_outlier=False,                     # exclude detected spikes (snow/cloud)
-        **sat_kw,
-    )
-    if year:
-        try:
-            vi_qs = vi_qs.filter(acquired_date__year=int(year))
-        except (TypeError, ValueError):
-            pass
-    if date_from:
-        vi_qs = vi_qs.filter(acquired_date__gte=date_from)
-    if date_to:
-        vi_qs = vi_qs.filter(acquired_date__lte=date_to)
-
     crop_labels = dict(Farmland.CropType.choices)
 
-    # --- SQL-level aggregation ---
-    # Streaming raw rows into Python was the previous strategy; for a large
-    # region-year (e.g. Moscow Oblast) the join VegetationIndex ⨝ Farmland
-    # ⨝ SatelliteScene returns millions of rows and the endpoint times out
-    # after 120 s. Pushing the aggregation into Postgres (``GROUP BY``)
-    # collapses the result set to at most ~(periods × crop_types) ≈ 150
-    # rows and runs in seconds even for the biggest subjects.
-    weighted_ndvi = Sum(
-        F('mean') * F('farmland__area_ha'),
-        output_field=FloatField(),
-    )
-    by_period_period_crop = (
-        vi_qs
-        .values('acquired_date', 'farmland__crop_type')
-        .annotate(
-            sum_w_ndvi=weighted_ndvi,
-            sum_area=Sum('farmland__area_ha'),
-            count=Count('id'),
-        )
+    # --- Aggregation source selection ---
+    # Prefer the pre-aggregated ``agro_district_ndvi_series`` table
+    # (populated daily by ``recompute_district_ndvi_series``): it has
+    # at most ``districts × composites × crop_types`` rows per source,
+    # so even for Moscow Oblast a region query scans ~7 k rows instead
+    # of ~14 M raw VI rows.
+    #
+    # Fall back to raw VI aggregation when the pre-aggregate cannot
+    # answer the request — currently only when ``fact_isp`` is set
+    # (that dimension is intentionally not materialised).
+    use_series = (
+        source in ('modis', 'raster', 'fused')
+        and not fact_isp_filter
     )
 
     by_period_acc = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0, 'count': 0})
@@ -195,22 +175,100 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
     global_ndvi_area = 0.0
     global_area = 0.0
 
-    for r in by_period_period_crop.iterator(chunk_size=2000):
-        s_area = float(r['sum_area'] or 0)
-        s_w = float(r['sum_w_ndvi'] or 0)
-        if not s_area:
-            continue
-        ct = r['farmland__crop_type']
-        d = r['acquired_date']
-        p = by_period_acc[d]
-        p['sum_ndvi_area'] += s_w
-        p['sum_area'] += s_area
-        p['count'] += r['count']
-        c = by_crop_acc[ct]
-        c['sum_ndvi_area'] += s_w
-        c['sum_area'] += s_area
-        global_ndvi_area += s_w
-        global_area += s_area
+    if use_series:
+        series_qs = DistrictNdviSeries.objects.filter(
+            district__region_id=region_id,
+            source=source,
+        )
+        if district_id:
+            try:
+                series_qs = series_qs.filter(district_id=int(district_id))
+            except (TypeError, ValueError):
+                pass
+        if year:
+            try:
+                series_qs = series_qs.filter(acquired_date__year=int(year))
+            except (TypeError, ValueError):
+                pass
+        if date_from:
+            series_qs = series_qs.filter(acquired_date__gte=date_from)
+        if date_to:
+            series_qs = series_qs.filter(acquired_date__lte=date_to)
+        if ct_list:
+            series_qs = series_qs.filter(crop_type__in=ct_list)
+
+        agg = (
+            series_qs
+            .values('acquired_date', 'crop_type')
+            .annotate(
+                sum_w=Sum('sum_ndvi_area'),
+                sum_a=Sum('sum_area'),
+                cnt=Sum('obs_count'),
+            )
+        )
+        for r in agg.iterator(chunk_size=2000):
+            s_area = float(r['sum_a'] or 0)
+            s_w = float(r['sum_w'] or 0)
+            if not s_area:
+                continue
+            ct = r['crop_type']
+            d = r['acquired_date']
+            p = by_period_acc[d]
+            p['sum_ndvi_area'] += s_w
+            p['sum_area'] += s_area
+            p['count'] += int(r['cnt'] or 0)
+            c = by_crop_acc[ct]
+            c['sum_ndvi_area'] += s_w
+            c['sum_area'] += s_area
+            global_ndvi_area += s_w
+            global_area += s_area
+    else:
+        # Raw VI path — slow for big regions, but handles ``fact_isp``.
+        vi_qs = VegetationIndex.objects.filter(
+            farmland__in=fl_qs, index_type='ndvi',
+            mean__gte=-0.2, mean__lte=1,         # physical NDVI range
+            is_outlier=False,                     # detected spikes (snow/cloud)
+            **sat_kw,
+        )
+        if year:
+            try:
+                vi_qs = vi_qs.filter(acquired_date__year=int(year))
+            except (TypeError, ValueError):
+                pass
+        if date_from:
+            vi_qs = vi_qs.filter(acquired_date__gte=date_from)
+        if date_to:
+            vi_qs = vi_qs.filter(acquired_date__lte=date_to)
+
+        weighted_ndvi = Sum(
+            F('mean') * F('farmland__area_ha'),
+            output_field=FloatField(),
+        )
+        agg = (
+            vi_qs
+            .values('acquired_date', 'farmland__crop_type')
+            .annotate(
+                sum_w_ndvi=weighted_ndvi,
+                sum_area=Sum('farmland__area_ha'),
+                count=Count('id'),
+            )
+        )
+        for r in agg.iterator(chunk_size=2000):
+            s_area = float(r['sum_area'] or 0)
+            s_w = float(r['sum_w_ndvi'] or 0)
+            if not s_area:
+                continue
+            ct = r['farmland__crop_type']
+            d = r['acquired_date']
+            p = by_period_acc[d]
+            p['sum_ndvi_area'] += s_w
+            p['sum_area'] += s_area
+            p['count'] += r['count']
+            c = by_crop_acc[ct]
+            c['sum_ndvi_area'] += s_w
+            c['sum_area'] += s_area
+            global_ndvi_area += s_w
+            global_area += s_area
 
     # Per-crop farmland counts: reuse the cheap ``fl_summary`` (queried over
     # the small ``agro_farmland`` table). It counts *all* farmlands of that

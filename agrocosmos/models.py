@@ -359,6 +359,82 @@ class DistrictNdviStatus(models.Model):
         return f'{self.district.name}: {self.current_ndvi:.3f} ({pct})'
 
 
+class DistrictNdviSeries(models.Model):
+    """Предагрегированный временной ряд NDVI по району × дате × культуре.
+
+    Позволяет регион-уровневой диагностике (``/api/ndvi-stats/?region=…``)
+    работать за десятки миллисекунд даже для крупных субъектов
+    (Московская область: ~56 районов × ~23 MODIS-композиты × 5 типов
+    угодий ≈ 6 500 строк/год вместо ~14 M сырых VI).
+
+    Хранятся суммы, а не средние, чтобы региональную среднюю можно было
+    корректно получить как ``SUM(sum_ndvi_area) / SUM(sum_area)`` без
+    двойного взвешивания по районам разного размера.
+
+    Пересчитывается командой ``recompute_district_ndvi_series``:
+    полностью (``--rebuild``) или инкрементально за последние N дней.
+    Вызывается тем же ежедневным пайплайном, что ``recompute_district_ndvi_status``.
+    """
+
+    class Source(models.TextChoices):
+        MODIS = 'modis', 'MODIS'
+        RASTER = 'raster', 'Sentinel-2 / Landsat'
+        FUSED = 'fused', 'HLS Fused'
+
+    district = models.ForeignKey(
+        District, on_delete=models.CASCADE,
+        related_name='ndvi_series',
+    )
+    acquired_date = models.DateField(verbose_name='Дата композиты')
+    crop_type = models.CharField(
+        max_length=20,
+        choices=Farmland.CropType.choices,
+        verbose_name='Тип угодья',
+    )
+    source = models.CharField(
+        max_length=10, choices=Source.choices, default=Source.MODIS,
+        verbose_name='Источник',
+    )
+    sum_ndvi_area = models.FloatField(
+        verbose_name='Σ (mean_ndvi × area_ha)',
+        help_text='Числитель area-weighted среднего NDVI.',
+    )
+    sum_area = models.FloatField(
+        verbose_name='Σ area_ha угодий с данными',
+        help_text='Знаменатель area-weighted среднего NDVI.',
+    )
+    obs_count = models.IntegerField(
+        default=0,
+        verbose_name='Количество VI-строк в агрегате',
+    )
+    computed_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'agro_district_ndvi_series'
+        unique_together = [('district', 'acquired_date', 'crop_type', 'source')]
+        indexes = [
+            # Хот-пас для региона за год: по всем районам региона
+            # фильтр по дате + источнику, группировка по acquired_date.
+            models.Index(
+                fields=['district', 'source', 'acquired_date'],
+                name='dns_district_src_date_idx',
+            ),
+            models.Index(
+                fields=['source', 'acquired_date'],
+                name='dns_src_date_idx',
+            ),
+        ]
+        verbose_name = 'Временной ряд NDVI по району'
+        verbose_name_plural = 'Временные ряды NDVI по районам'
+
+    def __str__(self):
+        mean = (self.sum_ndvi_area / self.sum_area) if self.sum_area else 0
+        return (
+            f'{self.district_id}/{self.acquired_date}/{self.crop_type or "all"}: '
+            f'{mean:.3f} ({self.obs_count} obs)'
+        )
+
+
 class PipelineRun(models.Model):
     """Лог запуска любого процесса пайплайна."""
 

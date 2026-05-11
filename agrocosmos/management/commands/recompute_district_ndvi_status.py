@@ -152,6 +152,25 @@ class Command(BaseCommand):
                 f'  GeoJSON cache refresh failed (non-fatal): {exc}'
             ))
 
+        # Refresh the pre-aggregated district × date × crop NDVI series.
+        # Keeps the region-level dashboard chart (``/api/ndvi-stats/``)
+        # fast even for huge subjects (Moscow Oblast: ~56 districts ×
+        # ~23 composites × 5 crop types instead of millions of raw VI
+        # rows). Covers a 70-day window to absorb any late-arriving MODIS
+        # composite from the last 60-day look-back used above.
+        try:
+            from agrocosmos.services import district_ndvi_series
+            res = district_ndvi_series.refresh_recent(days=70, source='modis')
+            self.stdout.write(self.style.SUCCESS(
+                f'district_ndvi_series ({res["source"]} {res["date_from"]}'
+                f'..{res["date_to"]}): inserted={res["inserted"]} '
+                f'deleted={res["deleted"]} in {res["elapsed_s"]}s'
+            ))
+        except Exception as exc:
+            self.stderr.write(self.style.WARNING(
+                f'  district_ndvi_series refresh failed (non-fatal): {exc}'
+            ))
+
         # Pre-build the most recent timeline snapshots so the dashboard
         # slider is instant for the dates users actually scrub through
         # right after a fresh MODIS ingest. Older dates remain lazy —
