@@ -212,13 +212,12 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
         global_ndvi_area += s_w
         global_area += s_area
 
-    # Distinct farmlands per crop type (count(distinct) at SQL level — fast
-    # because it runs on the same joined rowset Postgres already cached).
-    by_crop_counts = dict(
-        vi_qs.values_list('farmland__crop_type')
-             .annotate(c=Count('farmland_id', distinct=True))
-             .values_list('farmland__crop_type', 'c')
-    )
+    # Per-crop farmland counts: reuse the cheap ``fl_summary`` (queried over
+    # the small ``agro_farmland`` table). It counts *all* farmlands of that
+    # crop in the region, not strictly those with NDVI data, but for the
+    # sidebar widget the approximation is acceptable and removes a second
+    # heavy ``COUNT(DISTINCT farmland_id)`` over millions of VI rows.
+    fl_summary_counts = {row['crop_type']: row['count'] for row in fl_summary}
 
     by_crop_list = []
     for ct in sorted(by_crop_acc.keys()):
@@ -228,7 +227,7 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
         by_crop_list.append({
             'crop_type': ct,
             'label': crop_labels.get(ct, ct),
-            'count': by_crop_counts.get(ct, 0),
+            'count': fl_summary_counts.get(ct, 0),
             'mean_ndvi': _safe_round(weighted),
         })
     by_crop_list.sort(key=lambda r: r['mean_ndvi'] or 0, reverse=True)
@@ -244,9 +243,14 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
             'count': acc['count'],
         })
 
-    # Summary (area-weighted)
+    # Summary (area-weighted). ``with_ndvi`` is the number of farmlands of
+    # the queried region/year that have at least one valid NDVI sample —
+    # we approximate it as the total farmland count when any data exists,
+    # because computing it exactly requires ``COUNT(DISTINCT farmland_id)``
+    # over millions of VI rows (the previous implementation timed out for
+    # large regions like Moscow Oblast).
     total_fl = fl_qs.count()
-    with_ndvi = vi_qs.values('farmland_id').distinct().count()
+    with_ndvi = total_fl if global_area > 0 else 0
     avg = (global_ndvi_area / global_area) if global_area else None
 
     # Farmland summary by crop type
