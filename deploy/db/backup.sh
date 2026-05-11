@@ -6,7 +6,7 @@ set -euo pipefail
 
 # --- Config ---
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/postgres}"
-KEEP_DAYS="${KEEP_DAYS:-14}"
+KEEP_DAYS="${KEEP_DAYS:-7}"
 DB_CONTAINER="${DB_CONTAINER:-edunabazar-db-db-1}"
 DB_NAME="${DB_NAME:-enb_DB}"
 DB_USER="${DB_USER:-enb_app}"
