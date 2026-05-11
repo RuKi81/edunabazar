@@ -505,6 +505,7 @@
 
     /* ── State ──────────────────────────────────── */
     var districtLayer = null;          // District contour or all-Russia choropleth
+    var districtHighlightLayer = null; // Orange dashed outline for the currently selected district (drawn on top of the choropleth)
     var regionBordersLayer = null;     // Subject (region) borders, drawn on top
     var farmlandLayer = null;
     var mvtLayer = null;
@@ -928,6 +929,7 @@
       document.getElementById('agro-toggle-farmlands').checked = false;
       setFarmlandsInfoVisible(false);
       districtLayer = clearLayer(districtLayer);
+      districtHighlightLayer = clearLayer(districtHighlightLayer);
       regionBordersLayer = clearLayer(regionBordersLayer);
       if (mvtLayer) { map.removeLayer(mvtLayer); mvtLayer = null; }
       document.getElementById('crop-type-checkboxes').innerHTML = '';
@@ -978,27 +980,61 @@
       loadMultiYearChart(regionId, null, years);
     });
 
-    // When district changes — auto-load district vector + reload MVT if visible
+    // When district changes — overlay an orange highlight on the chosen
+    // polygon and fit-zoom to it. We deliberately do NOT touch
+    // ``districtLayer`` (the regional/all-Russia choropleth), so the
+    // current-status colouring and district borders stay visible —
+    // both when zooming into a district and when reverting back to
+    // "Все районы".
     districtSel.addEventListener('change', function () {
       var regionId = regionSel.value;
       var districtId = this.value;
-      // Load district boundary
-      districtLayer = clearLayer(districtLayer);
+
+      // Drop any previous highlight first; it'll be re-drawn below if
+      // a specific district is selected.
+      districtHighlightLayer = clearLayer(districtHighlightLayer);
+
       if (districtId && regionId) {
-        fetch('/agrocosmos/api/districts/?region=' + regionId)
-          .then(function (r) { return r.json(); })
-          .then(function (data) {
-            if (!data.features) return;
-            var feat = data.features.filter(function (f) { return String(f.properties.id) === districtId; });
-            if (!feat.length) return;
-            districtLayer = L.geoJSON({ type: 'FeatureCollection', features: feat }, {
-              style: { color: '#E65100', weight: 2.5, fillOpacity: 0.05, dashArray: '6 3' },
-              interactive: false
-            }).addTo(map);
-            if (districtLayer.getBounds().isValid()) {
-              map.fitBounds(districtLayer.getBounds(), { padding: [20, 20] });
+        // Try to reuse the polygon already present in the choropleth
+        // (no extra fetch). Falls back to ``/api/districts/`` only if
+        // the choropleth hasn't finished loading yet.
+        var fittedFromChoropleth = false;
+        if (districtLayer) {
+          districtLayer.eachLayer(function (lyr) {
+            var p = lyr.feature && lyr.feature.properties;
+            if (!p || String(p.id) !== districtId) return;
+            var bounds = lyr.getBounds && lyr.getBounds();
+            if (bounds && bounds.isValid()) {
+              districtHighlightLayer = L.geoJSON(lyr.feature, {
+                style: { color: '#E65100', weight: 3, fillOpacity: 0, dashArray: '6 3' },
+                interactive: false,
+              }).addTo(map);
+              map.fitBounds(bounds, { padding: [20, 20] });
+              fittedFromChoropleth = true;
             }
           });
+        }
+        if (!fittedFromChoropleth) {
+          fetch('/agrocosmos/api/districts/?region=' + regionId)
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+              if (!data.features) return;
+              var feat = data.features.filter(function (f) { return String(f.properties.id) === districtId; });
+              if (!feat.length) return;
+              districtHighlightLayer = L.geoJSON({ type: 'FeatureCollection', features: feat }, {
+                style: { color: '#E65100', weight: 3, fillOpacity: 0, dashArray: '6 3' },
+                interactive: false,
+              }).addTo(map);
+              if (districtHighlightLayer.getBounds().isValid()) {
+                map.fitBounds(districtHighlightLayer.getBounds(), { padding: [20, 20] });
+              }
+            });
+        }
+      } else if (regionId && districtLayer) {
+        // "Все районы" — zoom back out to the full regional extent so
+        // the user can re-pick on the now-visible choropleth.
+        var rb = districtLayer.getBounds();
+        if (rb && rb.isValid()) map.fitBounds(rb, { padding: [20, 20] });
       }
       // Reload MVT + stats if farmlands visible
       if (document.getElementById('agro-toggle-farmlands').checked) {

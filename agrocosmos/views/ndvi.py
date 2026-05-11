@@ -449,9 +449,17 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
                 row['std_ndvi'] or 0,
             )
 
-        # Stable order: same ranking as ``by_crop_list`` so the UI
-        # consistently shows the strongest-NDVI crop first.
-        ordered_crops = [c['crop_type'] for c in by_crop_list if c['crop_type'] in by_crop_period_acc]
+        # Fixed UI ordering requested by the product side: пашня →
+        # сенокос → пастбище → многолетние насаждения → залежь, then
+        # any remaining crop types in NDVI-desc order (same ranking as
+        # ``by_crop_list``).
+        _CROP_ORDER_HEAD = ('arable', 'hayfield', 'pasture', 'perennial', 'fallow')
+        _present = set(by_crop_period_acc.keys())
+        ordered_crops = [ct for ct in _CROP_ORDER_HEAD if ct in _present]
+        for c in by_crop_list:
+            ct = c['crop_type']
+            if ct in _present and ct not in _CROP_ORDER_HEAD:
+                ordered_crops.append(ct)
         for ct in ordered_crops:
             dates_acc = by_crop_period_acc[ct]
             period = []
