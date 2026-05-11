@@ -8,9 +8,10 @@ from django.http import HttpRequest, JsonResponse
 from django.views.decorators.cache import cache_page
 
 from ..models import (
-    Region, District, Farmland, FarmlandPhenology, NdviBaseline, VegetationIndex,
+    Region, District, DistrictNdviSeries, Farmland, FarmlandPhenology,
+    NdviBaseline,
 )
-from ._helpers import MODIS_SATELLITES, _safe_round, rate_limit
+from ._helpers import _safe_round, rate_limit
 
 
 def _ndvi_assessment(mean_ndvi, z_score=None):
@@ -63,36 +64,38 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
     districts = District.objects.filter(region=region).order_by('name')
     district_names = {d.pk: d.name for d in districts}
 
-    # NDVI time series per district (area-weighted mean per date).
-    # Single-pass aggregation: fetch raw rows once, build both the
-    # per-district series and the region-wide overall series in Python.
-    vi_qs = VegetationIndex.objects.filter(
-        farmland__district__region_id=region_id,
-        index_type='ndvi',
+    # NDVI time series per district (area-weighted mean per date) —
+    # read from the DistrictNdviSeries pre-aggregate instead of raw
+    # VegetationIndex. The pre-aggregate is built with the same filters
+    # (modis, is_outlier=false, mean∈[-0.2,1], index_type=ndvi) by
+    # services.district_ndvi_series.refresh_range, so results are
+    # byte-equivalent but ~3 orders of magnitude cheaper to read
+    # (≈6 500 rows / region / year vs. tens of millions of raw VI).
+    series_rows = DistrictNdviSeries.objects.filter(
+        district__region_id=region_id,
+        source=DistrictNdviSeries.Source.MODIS,
         acquired_date__year=year,
-        is_outlier=False,
-        mean__gte=-0.2, mean__lte=1,
-        scene__satellite__in=MODIS_SATELLITES,
+        sum_area__gt=0,
     ).values_list(
-        'acquired_date', 'mean', 'farmland__district_id', 'farmland__area_ha',
+        'acquired_date', 'sum_ndvi_area', 'sum_area', 'district_id',
     )
 
     per_district_date = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0})
     per_region_date = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0})
 
-    for acq_date, mean_v, did, area_ha in vi_qs.iterator(chunk_size=5000):
-        if mean_v is None or area_ha is None:
+    # Series rows are already aggregated per (district, date, crop_type) — we
+    # sum across crop_types here to collapse to (district, date) and
+    # (region, date) levels.
+    for acq_date, sum_ndvi_area, sum_area, did in series_rows.iterator(chunk_size=5000):
+        if not sum_area:
             continue
-        area_f = float(area_ha)
-        ndvi_area = float(mean_v) * area_f
-
         dd = per_district_date[(did, acq_date)]
-        dd['sum_ndvi_area'] += ndvi_area
-        dd['sum_area'] += area_f
+        dd['sum_ndvi_area'] += float(sum_ndvi_area)
+        dd['sum_area'] += float(sum_area)
 
         rd = per_region_date[acq_date]
-        rd['sum_ndvi_area'] += ndvi_area
-        rd['sum_area'] += area_f
+        rd['sum_ndvi_area'] += float(sum_ndvi_area)
+        rd['sum_area'] += float(sum_area)
 
     # Baseline lookup: district_id → {doy: (mean, std)}
     baseline_qs = NdviBaseline.objects.filter(
@@ -256,33 +259,29 @@ def api_report_district(request: HttpRequest) -> JsonResponse:
             'area_ha': round(row['total_area'] or 0, 1),
         }
 
-    # NDVI time series by crop type AND overall (area-weighted).
-    # Single fetch + single Python pass replaces two heavy GROUP BY queries.
-    vi_rows = VegetationIndex.objects.filter(
-        farmland__district=district,
-        index_type='ndvi',
+    # NDVI time series by crop type AND overall (area-weighted) —
+    # served from the DistrictNdviSeries pre-aggregate (same filters as
+    # raw VI, see api_report_region). ~120 rows / district / year.
+    series_rows = DistrictNdviSeries.objects.filter(
+        district=district,
+        source=DistrictNdviSeries.Source.MODIS,
         acquired_date__year=year,
-        is_outlier=False,
-        mean__gte=-0.2, mean__lte=1,
-        scene__satellite__in=MODIS_SATELLITES,
-    ).values_list('acquired_date', 'mean', 'farmland__crop_type', 'farmland__area_ha')
+        sum_area__gt=0,
+    ).values_list('acquired_date', 'crop_type', 'sum_ndvi_area', 'sum_area')
 
     per_crop_date = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0})
     per_overall_date = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0})
 
-    for acq_date, mean_v, ct, area_ha in vi_rows.iterator(chunk_size=5000):
-        if mean_v is None or area_ha is None:
+    for acq_date, ct, sum_ndvi_area, sum_area in series_rows:
+        if not sum_area:
             continue
-        area_f = float(area_ha)
-        ndvi_area = float(mean_v) * area_f
-
         cd = per_crop_date[(ct, acq_date)]
-        cd['sum_ndvi_area'] += ndvi_area
-        cd['sum_area'] += area_f
+        cd['sum_ndvi_area'] += float(sum_ndvi_area)
+        cd['sum_area'] += float(sum_area)
 
         od = per_overall_date[acq_date]
-        od['sum_ndvi_area'] += ndvi_area
-        od['sum_area'] += area_f
+        od['sum_ndvi_area'] += float(sum_ndvi_area)
+        od['sum_area'] += float(sum_area)
 
     overall_series = []
     for acq_date in sorted(per_overall_date.keys()):
@@ -422,25 +421,22 @@ def api_report_district(request: HttpRequest) -> JsonResponse:
         crop_bl = bl_by_crop.get(cd['crop_type'], bl_lookup)
         cd['baseline'] = _bl_to_series(crop_bl) if isinstance(crop_bl, dict) else []
 
-    # Region-level overall NDVI series (area-weighted across ALL districts).
-    # Same single-pass optimisation as above.
-    region_rows = VegetationIndex.objects.filter(
-        farmland__district__region=district.region,
-        index_type='ndvi',
+    # Region-level overall NDVI series (area-weighted across ALL
+    # districts in the same region) — read from the pre-aggregate.
+    region_rows = DistrictNdviSeries.objects.filter(
+        district__region=district.region,
+        source=DistrictNdviSeries.Source.MODIS,
         acquired_date__year=year,
-        is_outlier=False,
-        mean__gte=-0.2, mean__lte=1,
-        scene__satellite__in=MODIS_SATELLITES,
-    ).values_list('acquired_date', 'mean', 'farmland__area_ha')
+        sum_area__gt=0,
+    ).values_list('acquired_date', 'sum_ndvi_area', 'sum_area')
 
     region_by_date = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0})
-    for acq_date, mean_v, area_ha in region_rows.iterator(chunk_size=5000):
-        if mean_v is None or area_ha is None:
+    for acq_date, sum_ndvi_area, sum_area in region_rows.iterator(chunk_size=5000):
+        if not sum_area:
             continue
-        area_f = float(area_ha)
         acc = region_by_date[acq_date]
-        acc['sum_ndvi_area'] += float(mean_v) * area_f
-        acc['sum_area'] += area_f
+        acc['sum_ndvi_area'] += float(sum_ndvi_area)
+        acc['sum_area'] += float(sum_area)
 
     region_overall = []
     for acq_date in sorted(region_by_date.keys()):
