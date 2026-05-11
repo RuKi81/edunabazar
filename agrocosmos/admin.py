@@ -146,12 +146,140 @@ class VegetationAlertAdmin(admin.ModelAdmin):
 
 @admin.register(AgroSubscription)
 class AgroSubscriptionAdmin(admin.ModelAdmin):
-    """User subscriptions for Agrocosmos email notifications."""
-    list_display = ('id', 'legacy_user_id', 'region', 'district',
-                    'notify_anomalies', 'notify_updates', 'last_update_notified_at')
+    """User subscriptions for Agrocosmos email notifications.
+
+    ``AgroSubscription.legacy_user_id`` is a plain ``IntegerField`` (the
+    target ``LegacyUser`` is ``managed=False``, so Django won't build a
+    real FK + migration). We resolve user attributes (username / email /
+    name) in-Python with a single bulk lookup per changelist render —
+    much cheaper than N×LegacyUser queries via a property.
+    """
+    list_display = (
+        'id', 'user_username', 'user_email', 'user_name', 'scope_label',
+        'notify_anomalies', 'notify_updates',
+        'last_update_notified_at', 'created_at',
+    )
     list_filter = ('notify_anomalies', 'notify_updates', 'region')
-    search_fields = ('legacy_user_id',)
+    search_fields = ('legacy_user_id',)  # extended dynamically in get_search_results
     autocomplete_fields = ('region', 'district')
+    ordering = ('-created_at',)
+    list_select_related = ('region', 'district')
+
+    # ------------------------------------------------------------------
+    # LegacyUser resolution
+    # ------------------------------------------------------------------
+
+    def get_queryset(self, request):
+        """Stash a per-request {legacy_user_id: LegacyUser} map.
+
+        The changelist calls each ``user_*`` accessor for every visible
+        row; a dict lookup is O(1) and avoids N+1 SELECTs to a table
+        that has no FK relationship.
+        """
+        qs = super().get_queryset(request)
+        from legacy.models import LegacyUser
+        ids = list(qs.values_list('legacy_user_id', flat=True).distinct())
+        users = (
+            LegacyUser.objects
+            .filter(pk__in=ids)
+            .values('id', 'username', 'email', 'name')
+        )
+        request._agrosub_user_map = {u['id']: u for u in users}
+        return qs
+
+    def _user_field(self, obj, key):
+        cache = getattr(self, '_user_map_fallback', None)
+        # In contexts where ``get_queryset`` wasn't invoked first (e.g.
+        # change-form rendering of a single row), fall back to a direct
+        # one-off SELECT — still cheap.
+        u = None
+        req = getattr(self, '_current_request', None)
+        if req is not None and hasattr(req, '_agrosub_user_map'):
+            u = req._agrosub_user_map.get(obj.legacy_user_id)
+        if u is None:
+            from legacy.models import LegacyUser
+            u = (LegacyUser.objects
+                 .filter(pk=obj.legacy_user_id)
+                 .values('id', 'username', 'email', 'name')
+                 .first())
+        return (u or {}).get(key, '') or ''
+
+    def changelist_view(self, request, extra_context=None):
+        # Surface the request to ``_user_field`` without threading it
+        # through every Django admin internal call.
+        self._current_request = request
+        try:
+            return super().changelist_view(request, extra_context)
+        finally:
+            self._current_request = None
+
+    def user_username(self, obj):
+        return self._user_field(obj, 'username') or f'#{obj.legacy_user_id}'
+    user_username.short_description = 'Логин'
+    user_username.admin_order_field = 'legacy_user_id'
+
+    def user_email(self, obj):
+        email = self._user_field(obj, 'email')
+        if not email:
+            return '—'
+        return format_html('<a href="mailto:{0}">{0}</a>', email)
+    user_email.short_description = 'Email'
+
+    def user_name(self, obj):
+        return self._user_field(obj, 'name') or '—'
+    user_name.short_description = 'Имя'
+
+    def scope_label(self, obj):
+        if obj.district_id:
+            reg = obj.district.region.name if obj.district.region_id else ''
+            return format_html(
+                '<span title="Район">{}</span><span style="color:#888;"> · {}</span>',
+                obj.district.name, reg,
+            )
+        if obj.region_id:
+            return format_html(
+                '<span title="Весь субъект" style="font-weight:600;">{}</span>'
+                '<span style="color:#888;"> (весь субъект)</span>',
+                obj.region.name,
+            )
+        return '—'
+    scope_label.short_description = 'Объект подписки'
+    scope_label.admin_order_field = 'region__name'
+
+    # ------------------------------------------------------------------
+    # Search across LegacyUser fields without an FK
+    # ------------------------------------------------------------------
+
+    def get_search_results(self, request, queryset, search_term):
+        """Allow searching by username / email / name / phone.
+
+        Resolves the term against ``LegacyUser`` first, then narrows the
+        AgroSubscription queryset to matching ``legacy_user_id`` values.
+        Numeric terms still match the raw ``legacy_user_id`` (preserves
+        the default behaviour).
+        """
+        qs, may_have_duplicates = super().get_search_results(
+            request, queryset, search_term,
+        )
+        term = (search_term or '').strip()
+        if not term:
+            return qs, may_have_duplicates
+
+        from django.db.models import Q
+        from legacy.models import LegacyUser
+        user_ids = list(
+            LegacyUser.objects
+            .filter(
+                Q(username__icontains=term)
+                | Q(email__icontains=term)
+                | Q(name__icontains=term)
+                | Q(phone__icontains=term)
+            )
+            .values_list('pk', flat=True)[:500]
+        )
+        if user_ids:
+            qs = (queryset.filter(legacy_user_id__in=user_ids) | qs).distinct()
+        return qs, True
 
 
 @admin.register(GeeApiMetric)
