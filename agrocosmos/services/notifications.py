@@ -51,13 +51,13 @@ def _district_report_url(region_id: int, district_id: int, year: int | None = No
     # The dedicated ``report_district`` page was merged into ``report_region``.
     # The unified page renders the per-district view when ``district`` is set.
     year = year or date.today().year
-    path = reverse('report_region')
+    path = reverse('agrocosmos:report_region')
     return f'{_site_url()}{path}?region={region_id}&district={district_id}&year={year}'
 
 
 def _region_report_url(region_id: int, year: int | None = None) -> str:
     year = year or date.today().year
-    path = reverse('report_region')
+    path = reverse('agrocosmos:report_region')
     return f'{_site_url()}{path}?region={region_id}&year={year}'
 
 
