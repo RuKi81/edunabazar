@@ -103,6 +103,11 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
     crop_types = request.GET.get('crop_types')  # comma-separated, e.g. 'arable,hayfield'
     fact_isp_filter = request.GET.get('fact_isp')  # 'used', 'unused', or empty for all
     source = request.GET.get('source')  # 'modis', 'raster', or empty
+    # ``breakdown=crop`` — additionally emit a per-crop time series, so the
+    # right-sidebar can render one small chart per crop type when a
+    # district is clicked. The series is built from the same accumulators
+    # we already maintain for ``by_crop_type``; no extra SQL.
+    breakdown = request.GET.get('breakdown', '')
     sat_kw = _satellite_filter(source)
 
     # Base queryset
@@ -187,6 +192,13 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
 
     by_period_acc = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0, 'count': 0})
     by_crop_acc = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0})
+    # crop_type -> { acquired_date -> {sum_w, sum_a, count} }. Only populated
+    # when ``breakdown=crop``; otherwise the inner allocation is skipped to
+    # keep the common path allocation-free.
+    by_crop_period_acc: dict = defaultdict(
+        lambda: defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0, 'count': 0})
+    )
+    want_crop_breakdown = breakdown == 'crop'
     global_ndvi_area = 0.0
     global_area = 0.0
 
@@ -235,6 +247,11 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
             c = by_crop_acc[ct]
             c['sum_ndvi_area'] += s_w
             c['sum_area'] += s_area
+            if want_crop_breakdown:
+                cp = by_crop_period_acc[ct][d]
+                cp['sum_ndvi_area'] += s_w
+                cp['sum_area'] += s_area
+                cp['count'] += int(r['cnt'] or 0)
             global_ndvi_area += s_w
             global_area += s_area
     else:
@@ -282,6 +299,11 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
             c = by_crop_acc[ct]
             c['sum_ndvi_area'] += s_w
             c['sum_area'] += s_area
+            if want_crop_breakdown:
+                cp = by_crop_period_acc[ct][d]
+                cp['sum_ndvi_area'] += s_w
+                cp['sum_area'] += s_area
+                cp['count'] += r['count']
             global_ndvi_area += s_w
             global_area += s_area
 
@@ -397,7 +419,92 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
         except Exception:
             pass
 
-    return JsonResponse({
+    # --- Per-crop breakdown (``breakdown=crop``) ---
+    # Emitted only when requested. Each entry contains its own time series
+    # plus a per-crop baseline pulled from ``NdviBaseline`` (falling back
+    # to the global baseline when the per-crop row is missing — i.e. the
+    # baseline command has not yet been re-run for crop-specific DOYs).
+    crop_breakdown_list = []
+    if want_crop_breakdown and by_crop_period_acc:
+        # Per-crop baselines for the same region/district scope, in one
+        # query — keyed (crop_type, day_of_year). Empty crop_type rows
+        # serve as fallback below.
+        per_crop_bl_qs = NdviBaseline.objects.filter(
+            district__region_id=region_id,
+            crop_type__in=list(by_crop_period_acc.keys()),
+        )
+        if district_id:
+            try:
+                per_crop_bl_qs = per_crop_bl_qs.filter(district_id=int(district_id))
+            except (TypeError, ValueError):
+                pass
+        per_crop_bl = defaultdict(dict)  # crop_type -> {doy: (mean, std)}
+        for row in (
+            per_crop_bl_qs
+            .values('crop_type', 'day_of_year')
+            .annotate(mean_ndvi=Avg('mean_ndvi'), std_ndvi=Avg('std_ndvi'))
+        ):
+            per_crop_bl[row['crop_type']][row['day_of_year']] = (
+                row['mean_ndvi'] or 0,
+                row['std_ndvi'] or 0,
+            )
+
+        # Stable order: same ranking as ``by_crop_list`` so the UI
+        # consistently shows the strongest-NDVI crop first.
+        ordered_crops = [c['crop_type'] for c in by_crop_list if c['crop_type'] in by_crop_period_acc]
+        for ct in ordered_crops:
+            dates_acc = by_crop_period_acc[ct]
+            period = []
+            for acq_date in sorted(dates_acc.keys()):
+                acc = dates_acc[acq_date]
+                s_area = acc['sum_area']
+                weighted = (acc['sum_ndvi_area'] / s_area) if s_area else None
+                period.append({
+                    'date': str(acq_date),
+                    'mean_ndvi': _safe_round(weighted),
+                    'count': acc['count'],
+                })
+
+            # Pick the per-crop baseline if any rows exist for this crop,
+            # otherwise reuse the global ``baseline_list`` — gives a
+            # meaningful "архив" line even before per-crop baselines
+            # are computed.
+            crop_bl_map = per_crop_bl.get(ct) or {}
+            if crop_bl_map:
+                crop_bl = []
+                for doy in sorted(crop_bl_map.keys()):
+                    bl_mean, bl_std = crop_bl_map[doy]
+                    try:
+                        mm_dd = (date(2024, 1, 1) + timedelta(days=doy - 1)).strftime('%m-%d')
+                    except Exception:
+                        mm_dd = f'{doy:03d}'
+                    crop_bl.append({
+                        'date': mm_dd,
+                        'mean_ndvi': _safe_round(bl_mean),
+                        'std_ndvi': _safe_round(bl_std),
+                    })
+            else:
+                crop_bl = baseline_list
+
+            # Area/count from ``fl_summary`` (consistent with ``by_crop_list``).
+            fl_row = next(
+                (r for r in fl_summary_list if r['crop_type'] == ct),
+                {'count': 0, 'area_ha': 0},
+            )
+            crop_breakdown_list.append({
+                'crop_type': ct,
+                'label': crop_labels.get(ct, ct),
+                'count': fl_row['count'],
+                'area_ha': fl_row['area_ha'],
+                'mean_ndvi': next(
+                    (c['mean_ndvi'] for c in by_crop_list if c['crop_type'] == ct),
+                    None,
+                ),
+                'by_period': period,
+                'baseline': crop_bl,
+            })
+
+    response = {
         'ok': True,
         'stats': {
             'by_crop_type': by_crop_list,
@@ -412,7 +519,10 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
             'farmland_summary': fl_summary_list,
             'usage_summary': usage_summary,
         },
-    })
+    }
+    if want_crop_breakdown:
+        response['stats']['crop_breakdown'] = crop_breakdown_list
+    return JsonResponse(response)
 
 
 @rate_limit('30/m')
