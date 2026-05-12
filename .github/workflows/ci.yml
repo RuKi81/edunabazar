@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [main, master]
 
+# Cancel older in-flight runs when a new commit lands on the same ref.
+# Without this a series of fast pushes leaves multiple ~20 min Test jobs
+# competing for runners; only the latest commit's result matters anyway.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   PYTHON_VERSION: "3.13"
   DJANGO_SETTINGS_MODULE: enb_django.settings
@@ -45,7 +52,10 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 30 min — accumulated migration weight (47+ migrations, several with
+    # heavy PostGIS DDL) regularly puts us over the previous 20-min cap.
+    # Track-down work is in docs/TODO_infra.md.
+    timeout-minutes: 30
 
     services:
       postgres:
