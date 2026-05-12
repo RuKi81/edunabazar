@@ -4,55 +4,150 @@ import logging
 import time
 
 from django.contrib.gis.db.models.functions import AsGeoJSON
+from django.core.cache import cache
 from django.http import HttpRequest, JsonResponse
 
 from ..models import Region, District, Farmland, VegetationIndex
 from ..services import districts_status_geojson
+from ..services.districts_status_geojson import _SimplifyPreserveTopology
 from ._helpers import _satellite_filter, rate_limit
 
 logger = logging.getLogger(__name__)
 
 
-def api_regions(request: HttpRequest) -> JsonResponse:
-    """GeoJSON FeatureCollection of regions (simplified geometry).
-    Optional ?id=<pk> to return a single region."""
+# Static admin-boundary geometries are cached in Redis. Both keys are
+# versioned (``:v3``) so a tolerance/precision change in code automatically
+# invalidates the cache without manual ``cache.clear()`` on deploy.
+_REGIONS_CACHE_KEY   = 'agro:regions:geojson:v3'
+_DISTRICTS_CACHE_KEY = 'agro:districts:geojson:v3:region={region_id}'
+_GEOJSON_CACHE_TTL   = 60 * 60 * 24 * 7  # 1 week — these geometries do not change
+
+# Tolerances picked to match the existing choropleth (0.01° ≈ 1 km) for the
+# country overview, and a tighter 0.005° (≈ 500 m) within a region. Precision
+# 3 is plenty for Leaflet rendering at any zoom we expose on the map.
+_REGION_SIMPLIFY_TOL   = 0.01
+_DISTRICT_SIMPLIFY_TOL = 0.005
+_GEOJSON_PRECISION     = 4
+
+
+def _build_regions_payload(region_id: int | None) -> dict:
     qs = Region.objects.all()
-    region_id = request.GET.get('id')
-    if region_id:
-        try:
-            qs = qs.filter(pk=int(region_id))
-        except (TypeError, ValueError):
-            pass
-    rows = qs.annotate(geojson=AsGeoJSON('geom', precision=5)).values('id', 'name', 'code', 'geojson')
+    if region_id is not None:
+        qs = qs.filter(pk=region_id)
+    rows = qs.annotate(
+        geojson=AsGeoJSON(
+            _SimplifyPreserveTopology('geom', _REGION_SIMPLIFY_TOL),
+            precision=_GEOJSON_PRECISION,
+        ),
+    ).values('id', 'name', 'code', 'geojson')
     features = []
     for r in rows:
+        if not r['geojson']:
+            continue
         features.append({
             'type': 'Feature',
             'properties': {'id': r['id'], 'name': r['name'], 'code': r['code']},
             'geometry': json.loads(r['geojson']),
         })
-    return JsonResponse({'type': 'FeatureCollection', 'features': features})
+    return {'type': 'FeatureCollection', 'features': features}
+
+
+def api_regions(request: HttpRequest) -> JsonResponse:
+    """GeoJSON FeatureCollection of regions (topology-simplified).
+
+    Previously this endpoint claimed to return simplified geometry but
+    only trimmed coordinate precision (``AsGeoJSON(precision=5)``),
+    producing a ~20 MB payload that took ~6 s to serialise and blocked
+    page load. We now call ``ST_SimplifyPreserveTopology`` with a 1 km
+    tolerance and cache the full FeatureCollection in Redis for a week
+    — the geometries are static.
+
+    Optional ``?id=<pk>`` returns a single region (also cached, but
+    bypassing the all-regions key so the warm full payload is reused
+    in-place when callers want everything).
+    """
+    region_id_raw = request.GET.get('id')
+    region_id: int | None = None
+    if region_id_raw:
+        try:
+            region_id = int(region_id_raw)
+        except (TypeError, ValueError):
+            region_id = None
+
+    overall_t = time.time()
+    if region_id is None:
+        payload = cache.get(_REGIONS_CACHE_KEY)
+        if payload is None:
+            payload = _build_regions_payload(None)
+            cache.set(_REGIONS_CACHE_KEY, payload, _GEOJSON_CACHE_TTL)
+            logger.info(
+                'api_regions: cold rebuild  features=%d  %.2fs',
+                len(payload['features']), time.time() - overall_t,
+            )
+    else:
+        # Single-region fetches are rare and tiny; serve them out of the
+        # cached full payload to avoid a separate cache entry per id.
+        full = cache.get(_REGIONS_CACHE_KEY)
+        if full is None:
+            full = _build_regions_payload(None)
+            cache.set(_REGIONS_CACHE_KEY, full, _GEOJSON_CACHE_TTL)
+        payload = {
+            'type': 'FeatureCollection',
+            'features': [
+                f for f in full['features']
+                if (f.get('properties') or {}).get('id') == region_id
+            ],
+        }
+    return JsonResponse(payload)
+
+
+def _build_districts_payload(region_id: int) -> dict:
+    rows = (
+        District.objects
+        .filter(region_id=region_id)
+        .annotate(geojson=AsGeoJSON(
+            _SimplifyPreserveTopology('geom', _DISTRICT_SIMPLIFY_TOL),
+            precision=_GEOJSON_PRECISION,
+        ))
+        .values('id', 'name', 'code', 'geojson')
+    )
+    features = []
+    for r in rows:
+        if not r['geojson']:
+            continue
+        features.append({
+            'type': 'Feature',
+            'properties': {'id': r['id'], 'name': r['name'], 'code': r['code']},
+            'geometry': json.loads(r['geojson']),
+        })
+    return {'type': 'FeatureCollection', 'features': features}
 
 
 def api_districts(request: HttpRequest) -> JsonResponse:
-    """GeoJSON districts filtered by region."""
-    region_id = request.GET.get('region')
-    if not region_id:
+    """GeoJSON districts within a region (topology-simplified, cached).
+
+    Same fix as ``api_regions`` — switch from coord-precision-only to
+    ``ST_SimplifyPreserveTopology`` (500 m tolerance) + Redis cache.
+    """
+    region_id_raw = request.GET.get('region')
+    if not region_id_raw:
         return JsonResponse({'type': 'FeatureCollection', 'features': []})
     try:
-        qs = District.objects.filter(region_id=int(region_id))
+        region_id = int(region_id_raw)
     except (TypeError, ValueError):
         return JsonResponse({'type': 'FeatureCollection', 'features': []})
 
-    rows = qs.annotate(geojson=AsGeoJSON('geom', precision=5)).values('id', 'name', 'code', 'geojson')
-    features = []
-    for r in rows:
-        features.append({
-            'type': 'Feature',
-            'properties': {'id': r['id'], 'name': r['name'], 'code': r['code']},
-            'geometry': json.loads(r['geojson']),
-        })
-    return JsonResponse({'type': 'FeatureCollection', 'features': features})
+    cache_key = _DISTRICTS_CACHE_KEY.format(region_id=region_id)
+    payload = cache.get(cache_key)
+    if payload is None:
+        overall_t = time.time()
+        payload = _build_districts_payload(region_id)
+        cache.set(cache_key, payload, _GEOJSON_CACHE_TTL)
+        logger.info(
+            'api_districts: cold rebuild region=%d features=%d  %.2fs',
+            region_id, len(payload['features']), time.time() - overall_t,
+        )
+    return JsonResponse(payload)
 
 
 @rate_limit('60/m')
