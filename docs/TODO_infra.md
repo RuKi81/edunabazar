@@ -5,6 +5,37 @@
 
 ---
 
+## [ ] CI Test job медленный (~20 мин)
+
+После коммита `a0452d1` (2026-05-12) Test job в GitHub Actions упёрся в
+20-минутный таймаут на свежем `postgis/postgis:16-3.4`. Изменения в
+коммите не трогали тесты — это накопительный эффект от ~100 коммитов
+с момента последней настройки CI (`d9035b8`). Временно таймаут поднят
+до 30 мин.
+
+**Гипотезы**:
+- 47 миграций, несколько тяжёлых PostGIS-DDL (`0026`/`0027` rename
+  indexes, `agro_district_ndvi_series`) — `migrate --noinput` +
+  `setup_databases` на тестовой БД могут занимать 5–10 мин на холодном
+  postgis-контейнере.
+- Кастомный `UnmanagedModelTestRunner` форсирует `managed=True` на всех
+  unmanaged-моделях; если их число выросло, время `setup_databases`
+  тоже.
+- Тесты дискаверятся через `manage.py test legacy agrocosmos` — может
+  быть, появились интеграционные тесты, которые делают много ORM
+  операций.
+
+**План отладки** (когда руки дойдут):
+1. Локально: `time python manage.py test legacy agrocosmos --verbosity=2`,
+   замерить отдельно (а) `setup_databases`, (б) сами тесты.
+2. Если узкое место — миграции, в CI можно `--keepdb` либо собрать
+   pre-baked test DB как сервис.
+3. Если узкое место — тесты, найти топ-5 самых медленных через
+   `--testrunner=django.test.runner.DiscoverRunner` + `--debug-sql` или
+   `pytest --durations=10`.
+
+---
+
 ## [x] DONE: OOM-killer на pve, убивающий VM 101 (DB)
 
 **Корневая причина крахов БД при baseline-прогоне (май 2026):**
