@@ -183,6 +183,14 @@
       .agro-ui__right { width: 270px; }
       #agro-collapse-left  { left: 210px; }
       #agro-collapse-right { right: 270px; }
+      /* Tabs no longer fit 3 labels with icons in 210 px — drop the icon,
+         allow wrapping, shrink the type. Each tab gets ~70 px which is
+         enough for "Региональ-/ный монито-/ринг" across two lines. */
+      .agro-page-tabs a {
+        padding: 5px 3px; font-size: 10px; line-height: 1.15;
+        white-space: normal; word-break: break-word;
+      }
+      .agro-page-tabs a i.material-icons { display: none; }
     }
 
     /* Tablet / phone in portrait — right sidebar is genuinely too cramped,
