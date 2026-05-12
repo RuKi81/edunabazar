@@ -173,7 +173,22 @@
       border-bottom: 1px solid rgba(0,0,0,0.08);
     }
 
-    @media (max-width: 992px) {
+    /* Tablet / phone in landscape — keep BOTH sidebars visible (just slimmer)
+       so the right-hand chart panel still works. The previous rule hid the
+       right sidebar at any width < 992px regardless of orientation, which
+       killed the panel on every phone in landscape PWA mode. */
+    @media (max-width: 992px) and (orientation: landscape) {
+      :root { --map-header-h: 50px; }
+      .agro-ui__left  { width: 210px; }
+      .agro-ui__right { width: 270px; }
+      #agro-collapse-left  { left: 210px; }
+      #agro-collapse-right { right: 270px; }
+    }
+
+    /* Tablet / phone in portrait — right sidebar is genuinely too cramped,
+       hide it. We also surface the orientation-rotate overlay (in the
+       _orientation_overlay.html partial) below 900px portrait. */
+    @media (max-width: 992px) and (orientation: portrait) {
       :root { --map-header-h: 56px; }
       .agro-ui__left { width: 220px; }
       .agro-ui__right { width: 0; display: none; }
@@ -207,6 +222,7 @@
 {% endblock %}
 
 {% block content %}
+  {% include 'agrocosmos/_orientation_overlay.html' %}
   <div class="agro-ui">
     <div id="agro-map"></div>
 
