@@ -192,7 +192,19 @@
       border-radius: 4px; font-size: 13px; font-weight: 600; display: none;
     }
 
-    @media (max-width: 992px) {
+    /* Tablet / phone in landscape — keep BOTH sidebars visible (slimmer).
+       See dashboard.html for context: the previous single rule hid the
+       right sidebar on every phone regardless of orientation. */
+    @media (max-width: 992px) and (orientation: landscape) {
+      :root { --map-header-h: 50px; }
+      .agro-ui__left  { width: 210px; }
+      .agro-ui__right { width: 270px; }
+      #agro-collapse-left  { left: 210px; }
+      #agro-collapse-right { right: 270px; }
+    }
+
+    /* Portrait phones / narrow tablets — right sidebar genuinely too cramped. */
+    @media (max-width: 992px) and (orientation: portrait) {
       :root { --map-header-h: 56px; }
       .agro-ui__left { width: 220px; }
       .agro-ui__right { width: 0; display: none; }
@@ -213,6 +225,7 @@
 {% endblock %}
 
 {% block content %}
+  {% include 'agrocosmos/_orientation_overlay.html' %}
   <div class="agro-ui">
     <div id="agro-map"></div>
 

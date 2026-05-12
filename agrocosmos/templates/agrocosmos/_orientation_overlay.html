@@ -1,0 +1,60 @@
+{% comment %}
+Fullscreen overlay shown only on narrow screens in portrait orientation
+(typically PWA on phone). The visibility is purely CSS-driven — we don't
+toggle anything from JS, so when the user rotates the device the media
+query no longer matches and the overlay disappears immediately.
+
+Both Agrocosmos map dashboards (dashboard.html, raster_dashboard.html)
+include this partial inside ``{% block content %}``. ``<style>`` inside
+``<body>`` is valid HTML5 and works in every browser we target.
+{% endcomment %}
+<style>
+  #agro-orient-warning { display: none; }
+
+  @media (max-width: 900px) and (orientation: portrait) {
+    #agro-orient-warning {
+      display: flex;
+      position: fixed; inset: 0;
+      z-index: 99999;
+      background: linear-gradient(160deg, #0d2818 0%, #1a3d28 100%);
+      color: #fff;
+      flex-direction: column;
+      align-items: center; justify-content: center;
+      padding: 32px 24px; text-align: center;
+      font-family: 'Segoe UI', Roboto, Arial, sans-serif;
+      /* Keep the overlay above Leaflet, popups and our sidebars. */
+      pointer-events: auto;
+    }
+    #agro-orient-warning .agro-orient-icon {
+      width: 96px; height: 96px;
+      display: flex; align-items: center; justify-content: center;
+      margin-bottom: 28px;
+      animation: agro-rotate-hint 2.4s ease-in-out infinite;
+    }
+    #agro-orient-warning .agro-orient-icon i {
+      font-size: 80px !important;
+      color: #a5d6a7;
+    }
+    #agro-orient-warning h2 {
+      font-size: 22px; font-weight: 600;
+      margin: 0 0 12px; line-height: 1.25;
+    }
+    #agro-orient-warning p {
+      font-size: 14px; opacity: 0.85; line-height: 1.5;
+      margin: 0; max-width: 320px;
+    }
+  }
+
+  @keyframes agro-rotate-hint {
+    0%, 35%, 100% { transform: rotate(0deg); }
+    55%, 80%      { transform: rotate(-90deg); }
+  }
+</style>
+
+<div id="agro-orient-warning" role="alertdialog" aria-live="polite">
+  <div class="agro-orient-icon">
+    <i class="material-icons">screen_rotation</i>
+  </div>
+  <h2>Поверните устройство горизонтально</h2>
+  <p>Карта Агрокосмоса предназначена для альбомной ориентации — поверните телефон, чтобы продолжить.</p>
+</div>
