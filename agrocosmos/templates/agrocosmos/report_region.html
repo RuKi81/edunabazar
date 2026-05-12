@@ -1,7 +1,12 @@
 {% extends 'legacy/base.html' %}
 {% load static %}
 
-{% block title %}Отчёт MODIS NDVI{% endblock %}
+{% block title %}Отчёт MODIS NDVI — Агрокосмос{% endblock %}
+{% block meta_description %}Динамика вегетации сельхозкультур района: NDVI, сравнение с многолетней нормой, фенология. Данные MODIS.{% endblock %}
+{% block og_title %}Отчёт MODIS NDVI по региону — Агрокосмос{% endblock %}
+{% block og_description %}Динамика вегетации сельхозкультур района и региона: NDVI, сравнение с многолетней нормой, фенологические метрики. Данные MODIS Terra + Aqua.{% endblock %}
+{% block og_image %}https://edunabazar.ru{% static 'legacy/images/og-agrocosmos.jpg' %}?v=1{% endblock %}
+{% block og_image_alt %}Агрокосмос — отчёт NDVI с графиком вегетации и базовой линией{% endblock %}
 
 {% block head %}
   <style>

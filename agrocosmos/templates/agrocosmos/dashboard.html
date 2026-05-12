@@ -2,6 +2,11 @@
 {% load static %}
 
 {% block title %}Агрокосмос — мониторинг с/х угодий{% endblock %}
+{% block meta_description %}Состояние посевов по России: NDVI по районам в реальном времени, исторические сравнения, аномалии вегетации.{% endblock %}
+{% block og_title %}Агрокосмос — мониторинг с/х угодий из космоса{% endblock %}
+{% block og_description %}Состояние посевов по районам России: NDVI в реальном времени, сравнение с многолетней нормой, аномалии вегетации.{% endblock %}
+{% block og_image %}https://edunabazar.ru{% static 'legacy/images/og-agrocosmos.jpg' %}?v=1{% endblock %}
+{% block og_image_alt %}Агрокосмос — карта-хороплет состояния посевов России по данным MODIS NDVI{% endblock %}
 
 {% block head %}
   <link rel="stylesheet" href="{% static 'legacy/css/leaflet.css' %}" />
