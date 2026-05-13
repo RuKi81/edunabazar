@@ -236,8 +236,13 @@ S2/L8-фьюжны и т.п.). Не срочно, но желательно.
 
 ---
 
-## [ ] FIX: медленный DISTINCT YEAR на главном дашборде
+## [x] DONE: медленный DISTINCT YEAR на главном дашборде
 **Файл:** `agrocosmos/views/pages.py` (view главного дашборда Agrocosmos)
+
+Заменено на дешёвый `MIN/MAX(acquired_date)` + Redis-кеш на 1 час
+(`_available_ndvi_years`, `_available_modis_ndvi_years`,
+`_available_raster_years`). 60–80 с full-scan → миллисекунды.
+Описание ниже сохранено как исторический контекст.
 
 **Симптом:** каждый заход на главную `/agrocosmos/` запускает запрос
 
