@@ -159,31 +159,41 @@ _SNAPSHOT_KEY = 'agro:districts_status:snapshot:v2:{date}'
 
 def list_available_dates(year: int) -> list[str]:
     """List of distinct MODIS NDVI ``acquired_date`` values within ``year``
-    that have at least one row in ``agro_vegetation_index``.
+    that have data in the district pre-aggregate.
 
-    Cached for 1 hour — new dates only appear once per biweekly cycle and
-    the timeline UI does not need second-level freshness.
+    Reads from ``agro_district_ndvi_series`` via the
+    ``dns_src_date_idx`` index on ``(source, acquired_date)`` —
+    millisecond-level even on cold cache. The previous implementation
+    walked the raw ``agro_vegetation_index`` table (~10⁸ rows) with
+    ``EXTRACT(YEAR FROM acquired_date) = %s`` which defeats the index
+    on ``acquired_date`` and timed out at >120 s on cold Redis (the
+    1 h Redis cache merely hid the bug).
+
+    Cached for 1 hour — new dates appear once per biweekly cycle.
     """
     key = _AVAILABLE_DATES_KEY.format(year=int(year))
     cached = cache.get(key)
     if cached is not None:
         return cached
 
-    from django.db import connection
-    sql = """
-        SELECT DISTINCT vi.acquired_date
-        FROM agro_vegetation_index vi
-        JOIN agro_satellite_scene s ON s.id = vi.scene_id
-        WHERE vi.index_type = 'ndvi'
-          AND vi.is_outlier = false
-          AND vi.mean BETWEEN -0.2 AND 1
-          AND s.satellite IN ('modis_terra', 'modis_aqua')
-          AND EXTRACT(YEAR FROM vi.acquired_date) = %s
-        ORDER BY vi.acquired_date
-    """
-    with connection.cursor() as cur:
-        cur.execute(sql, [int(year)])
-        dates = [str(row[0]) for row in cur.fetchall()]
+    from datetime import date as _date
+    # Lazy import: this module is imported during Django startup, the
+    # model layer is fine to import at function-call time.
+    from ..models import DistrictNdviSeries
+
+    rows = (
+        DistrictNdviSeries.objects
+        .filter(
+            source=DistrictNdviSeries.Source.MODIS,
+            acquired_date__gte=_date(int(year), 1, 1),
+            acquired_date__lte=_date(int(year), 12, 31),
+            sum_area__gt=0,
+        )
+        .order_by('acquired_date')
+        .values_list('acquired_date', flat=True)
+        .distinct()
+    )
+    dates = [str(d) for d in rows]
 
     cache.set(key, dates, timeout=3600)
     return dates
