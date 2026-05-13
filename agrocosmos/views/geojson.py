@@ -32,6 +32,31 @@ _DISTRICT_SIMPLIFY_TOL = 0.001
 _GEOJSON_PRECISION     = 4
 
 
+def _conditional_json(
+    request: HttpRequest,
+    payload: dict,
+    *,
+    etag: str,
+    cache_control: str,
+):
+    """Return a JsonResponse with ETag/Cache-Control, honouring If-None-Match.
+
+    Centralises the HTTP-cache plumbing so each GeoJSON endpoint just has
+    to pass a stable fingerprint string and a freshness policy. On a
+    cache hit on the client side we return ``304 Not Modified`` (~50
+    bytes, no body, no JSON encode), otherwise the full JsonResponse.
+    """
+    if request.headers.get('If-None-Match') == etag:
+        resp = HttpResponseNotModified()
+        resp['ETag'] = etag
+        resp['Cache-Control'] = cache_control
+        return resp
+    resp = JsonResponse(payload)
+    resp['ETag'] = etag
+    resp['Cache-Control'] = cache_control
+    return resp
+
+
 def _build_regions_payload(region_id: int | None) -> dict:
     qs = Region.objects.all()
     if region_id is not None:
@@ -100,7 +125,20 @@ def api_regions(request: HttpRequest) -> JsonResponse:
                 if (f.get('properties') or {}).get('id') == region_id
             ],
         }
-    return JsonResponse(payload)
+    # Region geometries are static (cache key bumps on schema changes),
+    # so a strong long-lived browser cache is safe. The fingerprint is
+    # tied to the Redis cache key version + filter so it auto-rotates
+    # whenever simplification settings change.
+    etag = 'W/"{key}-{rg}-{n}"'.format(
+        key=_REGIONS_CACHE_KEY,
+        rg=region_id if region_id is not None else 'all',
+        n=len(payload.get('features', [])),
+    )
+    return _conditional_json(
+        request, payload,
+        etag=etag,
+        cache_control='public, max-age=604800, stale-while-revalidate=86400',
+    )
 
 
 def _build_districts_payload(region_id: int) -> dict:
@@ -149,7 +187,15 @@ def api_districts(request: HttpRequest) -> JsonResponse:
             'api_districts: cold rebuild region=%d features=%d  %.2fs',
             region_id, len(payload['features']), time.time() - overall_t,
         )
-    return JsonResponse(payload)
+    etag = 'W/"{key}-{n}"'.format(
+        key=cache_key,
+        n=len(payload.get('features', [])),
+    )
+    return _conditional_json(
+        request, payload,
+        etag=etag,
+        cache_control='public, max-age=604800, stale-while-revalidate=86400',
+    )
 
 
 @rate_limit('60/m')
@@ -189,7 +235,19 @@ def api_districts_status_timeline(request: HttpRequest) -> JsonResponse:
         except Exception:
             payload['dates'] = []
         payload['ok'] = True
-        return JsonResponse(payload)
+        # Per-date snapshots are immutable: a 16-day MODIS composite,
+        # once published, never changes. Long-lived strong cache, and
+        # the ETag fingerprint includes the date so any dates-list
+        # revision still revalidates correctly.
+        etag = 'W/"agro-snap-v2-{d}-{n}"'.format(
+            d=payload.get('date') or target_date,
+            n=len(payload.get('districts') or {}),
+        )
+        return _conditional_json(
+            request, payload,
+            etag=etag,
+            cache_control='public, max-age=86400, stale-while-revalidate=604800',
+        )
 
     # Dates list mode
     try:
@@ -197,7 +255,19 @@ def api_districts_status_timeline(request: HttpRequest) -> JsonResponse:
     except (TypeError, ValueError):
         return JsonResponse({'ok': False, 'error': 'invalid year'}, status=400)
     dates = districts_status_geojson.list_available_dates(year)
-    return JsonResponse({'ok': True, 'year': year, 'dates': dates})
+    payload = {'ok': True, 'year': year, 'dates': dates}
+    # Dates list grows by one entry every 16 days. Hourly browser cache
+    # is plenty; the fingerprint flips the moment a new composite lands.
+    etag = 'W/"agro-dates-v1-{y}-{n}-{last}"'.format(
+        y=year,
+        n=len(dates),
+        last=(dates[-1] if dates else 'none'),
+    )
+    return _conditional_json(
+        request, payload,
+        etag=etag,
+        cache_control='public, max-age=3600, stale-while-revalidate=86400',
+    )
 
 
 @rate_limit('20/m')
@@ -247,8 +317,6 @@ def api_districts_status(request: HttpRequest) -> JsonResponse:
     # ETag fingerprint = (max latest_date across districts,
     #                     features count, region filter).
     # Changes the moment fresh NDVI data is published; otherwise stable.
-    # We use a *weak* ETag (W/) because JsonResponse may add whitespace
-    # variations across Django versions and we only need semantic match.
     features = payload.get('features', [])
     latest = ''
     for f in features:
@@ -260,30 +328,15 @@ def api_districts_status(request: HttpRequest) -> JsonResponse:
         n=len(features),
         rg=region_id or 'all',
     )
-    if request.headers.get('If-None-Match') == etag:
-        # 304 ≈ 100 bytes, RTT-bound. Saves the entire 1 MB transfer
-        # *and* the JsonResponse encode cost on the server.
-        resp = HttpResponseNotModified()
-        resp['ETag'] = etag
-        resp['Cache-Control'] = 'public, max-age=3600, stale-while-revalidate=86400'
-        logger.info(
-            'api_districts_status: 304 not-modified region=%s in %.3fs',
-            region_id or '-', time.time() - overall_t,
-        )
-        return resp
-
     logger.info(
         'api_districts_status: features=%d  total=%.3fs region=%s',
         len(features), time.time() - overall_t, region_id or '-',
     )
-    resp = JsonResponse(payload)
-    resp['ETag'] = etag
-    # Public so an upstream CDN/Nginx can also cache it. 1-hour fresh
-    # window covers the typical user session; ``stale-while-revalidate``
-    # lets the browser serve the stale copy instantly on the next visit
-    # while it revalidates in the background.
-    resp['Cache-Control'] = 'public, max-age=3600, stale-while-revalidate=86400'
-    return resp
+    return _conditional_json(
+        request, payload,
+        etag=etag,
+        cache_control='public, max-age=3600, stale-while-revalidate=86400',
+    )
 
 
 @rate_limit('60/m')
