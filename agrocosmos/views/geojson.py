@@ -16,17 +16,19 @@ logger = logging.getLogger(__name__)
 
 
 # Static admin-boundary geometries are cached in Redis. Both keys are
-# versioned (``:v3``) so a tolerance/precision change in code automatically
+# versioned (``:v4``) so a tolerance/precision change in code automatically
 # invalidates the cache without manual ``cache.clear()`` on deploy.
-_REGIONS_CACHE_KEY   = 'agro:regions:geojson:v3'
-_DISTRICTS_CACHE_KEY = 'agro:districts:geojson:v3:region={region_id}'
+_REGIONS_CACHE_KEY   = 'agro:regions:geojson:v4'
+_DISTRICTS_CACHE_KEY = 'agro:districts:geojson:v4:region={region_id}'
 _GEOJSON_CACHE_TTL   = 60 * 60 * 24 * 7  # 1 week — these geometries do not change
 
-# Tolerances picked to match the existing choropleth (0.01° ≈ 1 km) for the
-# country overview, and a tighter 0.005° (≈ 500 m) within a region. Precision
-# 3 is plenty for Leaflet rendering at any zoom we expose on the map.
-_REGION_SIMPLIFY_TOL   = 0.01
-_DISTRICT_SIMPLIFY_TOL = 0.005
+# Tolerances tightened after ETag/browser caching was added: payload is now
+# only paid once per visitor per day, so we can afford crisper outlines.
+# 0.002° (≈ 200 m) for regions and 0.001° (≈ 100 m) for districts within a
+# region — both well below one screen pixel at the zoom levels they render
+# at, so the boundary looks like the true geometry to the eye.
+_REGION_SIMPLIFY_TOL   = 0.002
+_DISTRICT_SIMPLIFY_TOL = 0.001
 _GEOJSON_PRECISION     = 4
 
 

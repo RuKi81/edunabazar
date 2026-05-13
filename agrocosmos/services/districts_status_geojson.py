@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # (extra properties, different precision, etc.) — old cached payloads
 # from previous deploys then become unreachable and are eventually
 # evicted by Redis LRU.
-CACHE_KEY = 'agro:districts_status:geojson:v2'
+CACHE_KEY = 'agro:districts_status:geojson:v3'
 
 
 class _SimplifyPreserveTopology(Func):
@@ -67,9 +67,15 @@ def build_geojson_payload() -> dict:
     overall_t = time.time()
     rows = (
         District.objects
+        # Tolerance 0.003° ≈ 300 m — fine enough that district outlines
+        # look smooth even on a desktop overview of European Russia (one
+        # screen pixel ≈ 5-10 km at zoom 5). The previous 0.01° (~1 km)
+        # was visible as jagged zigzags on the Cabinet → Map transition.
+        # Payload grows roughly 3× (1.1 → ~3 MB) but with browser ETag
+        # caching that cost is paid once per day per visitor.
         .annotate(geojson=AsGeoJSON(
-            _SimplifyPreserveTopology('geom', 0.01),
-            precision=3,
+            _SimplifyPreserveTopology('geom', 0.003),
+            precision=4,
         ))
         .values(
             'id', 'name', 'region_id', 'region__name', 'geojson',
