@@ -488,7 +488,17 @@
     // Default extent: full Russia overview. Specific region/district
     // selectors call ``fitBounds`` later to zoom in. Country bbox below
     // is intentionally generous (covers Kaliningrad → Chukotka).
-    var map = L.map('agro-map', { scrollWheelZoom: true, zoomControl: false });
+    // Canvas renderer: 2300+ district polygons in the all-Russia choropleth
+    // overwhelm Leaflet's default SVG renderer (one DOM node per polygon —
+    // browser layout/paint takes 1-2 s of main-thread time on first render,
+    // showing up as a UI "freeze" right after the page transition). Canvas
+    // collapses everything into one bitmap, ~10× faster on this load.
+    var _agroCanvas = L.canvas({ padding: 0.5 });
+    var map = L.map('agro-map', {
+      scrollWheelZoom: true, zoomControl: false,
+      renderer: _agroCanvas,
+      preferCanvas: true,
+    });
     var RUSSIA_BOUNDS = L.latLngBounds([[41.0, 19.0], [82.0, 180.0]]);
     // The all-Russia choropleth concentrates data density in European Russia
     // (agriculture is sparse east of the Urals), so the default view zooms
@@ -858,11 +868,15 @@
             onEachFeature: function (f, layer) {
               var p = f.properties;
               // Popup (not tooltip): Leaflet enforces a single open popup at
-              // a time, auto-closes on map click / pan / new selection. The
-              // previous sticky-tooltip approach piled up on touch devices
-              // and on fast cursor movement because mouseout doesn't fire
-              // reliably between touch taps.
-              layer.bindPopup(buildDistrictPopupHtml(p), {
+              // a time, auto-closes on map click / pan / new selection.
+              //
+              // Lazy content function: building popup HTML for all 2300
+              // districts up front cost ~600 ms of main-thread work even
+              // though most popups are never opened. Pass a function and
+              // Leaflet only invokes it when the popup actually opens.
+              layer.bindPopup(function () {
+                return buildDistrictPopupHtml(p);
+              }, {
                 closeButton: true,
                 autoPan: false,
                 maxWidth: 280,
