@@ -5,7 +5,7 @@ import time
 
 from django.contrib.gis.db.models.functions import AsGeoJSON
 from django.core.cache import cache
-from django.http import HttpRequest, JsonResponse
+from django.http import HttpRequest, HttpResponseNotModified, JsonResponse
 
 from ..models import Region, District, Farmland, VegetationIndex
 from ..services import districts_status_geojson
@@ -235,12 +235,53 @@ def api_districts_status(request: HttpRequest) -> JsonResponse:
             ]
             payload = {'type': 'FeatureCollection', 'features': features}
 
+    # Browser-side caching via ETag.
+    #
+    # The choropleth payload only changes once a day, when the MODIS
+    # pipeline finishes and ``recompute_district_ndvi_status`` rotates
+    # the per-district status table. Within that window the payload is
+    # byte-identical for every visitor → ideal for an HTTP cache.
+    #
+    # ETag fingerprint = (max latest_date across districts,
+    #                     features count, region filter).
+    # Changes the moment fresh NDVI data is published; otherwise stable.
+    # We use a *weak* ETag (W/) because JsonResponse may add whitespace
+    # variations across Django versions and we only need semantic match.
+    features = payload.get('features', [])
+    latest = ''
+    for f in features:
+        d = (f.get('properties') or {}).get('current_date') or ''
+        if d > latest:
+            latest = d
+    etag = 'W/"agro-ds-{date}-{n}-{rg}"'.format(
+        date=latest or 'none',
+        n=len(features),
+        rg=region_id or 'all',
+    )
+    if request.headers.get('If-None-Match') == etag:
+        # 304 ≈ 100 bytes, RTT-bound. Saves the entire 1 MB transfer
+        # *and* the JsonResponse encode cost on the server.
+        resp = HttpResponseNotModified()
+        resp['ETag'] = etag
+        resp['Cache-Control'] = 'public, max-age=3600, stale-while-revalidate=86400'
+        logger.info(
+            'api_districts_status: 304 not-modified region=%s in %.3fs',
+            region_id or '-', time.time() - overall_t,
+        )
+        return resp
+
     logger.info(
         'api_districts_status: features=%d  total=%.3fs region=%s',
-        len(payload.get('features', [])), time.time() - overall_t,
-        region_id or '-',
+        len(features), time.time() - overall_t, region_id or '-',
     )
-    return JsonResponse(payload)
+    resp = JsonResponse(payload)
+    resp['ETag'] = etag
+    # Public so an upstream CDN/Nginx can also cache it. 1-hour fresh
+    # window covers the typical user session; ``stale-while-revalidate``
+    # lets the browser serve the stale copy instantly on the next visit
+    # while it revalidates in the background.
+    resp['Cache-Control'] = 'public, max-age=3600, stale-while-revalidate=86400'
+    return resp
 
 
 @rate_limit('60/m')
