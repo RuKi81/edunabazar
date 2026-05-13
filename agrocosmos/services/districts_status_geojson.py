@@ -39,6 +39,15 @@ logger = logging.getLogger(__name__)
 # from previous deploys then become unreachable and are eventually
 # evicted by Redis LRU.
 CACHE_KEY = 'agro:districts_status:geojson:v3'
+# Companion key holding the *pre-encoded* JSON body + matching ETag for the
+# unfiltered all-Russia choropleth. The view that serves the no-?region=
+# fast path skips both pickle.loads of the dict (~300 ms for 3 MB) and the
+# subsequent json.dumps re-encoding (~1.5 s) and just streams the bytes
+# straight into an HttpResponse.
+#
+# Tuple shape: ``(etag: str, body: bytes)``. ``body`` is the same JSON the
+# slow ``JsonResponse(payload)`` path would produce.
+CACHE_KEY_FAST = 'agro:districts_status:geojson:v3:fast'
 
 
 class _SimplifyPreserveTopology(Func):
@@ -119,16 +128,47 @@ def build_geojson_payload() -> dict:
     return {'type': 'FeatureCollection', 'features': features}
 
 
+def _build_fast_blob(payload: dict) -> tuple[str, bytes]:
+    """Pre-encode JSON body + matching ETag for the unfiltered fast path.
+
+    Done once per refresh so that on each request the view can stream the
+    bytes directly without paying for ``json.dumps`` of a 3 MB structure.
+    """
+    # ``separators`` mirrors what JsonResponse would produce by default
+    # apart from a couple of whitespace characters (negligible). We use
+    # the compact form to shave ~3 % off the wire size.
+    body = json.dumps(payload, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
+    features = payload.get('features', [])
+    latest = ''
+    for f in features:
+        d = (f.get('properties') or {}).get('current_date') or ''
+        if d > latest:
+            latest = d
+    # Same fingerprint formula the view's slow path uses, so a client
+    # that warmed the cache on the slow path keeps a valid ETag here.
+    etag = 'W/"agro-ds-{date}-{n}-all"'.format(
+        date=latest or 'none',
+        n=len(features),
+    )
+    return etag, body
+
+
 def refresh_cache() -> dict:
     """Rebuild the GeoJSON and atomically replace the cached copy.
 
     Called by ``recompute_district_ndvi_status`` after the SQL upsert,
     and by the ``prewarm_agro_caches`` management command on deploy.
     Returns the freshly built payload so callers can log / inspect it.
+    Populates *two* Redis entries:
+
+    * ``CACHE_KEY``      — the dict (used for ``?region=<id>`` filter).
+    * ``CACHE_KEY_FAST`` — pre-encoded ``(etag, bytes)`` for the
+      no-filter fast path that bypasses pickle + json round-tripping.
     """
     payload = build_geojson_payload()
     # ``timeout=None`` → no expiry; only the recompute command rotates it.
     cache.set(CACHE_KEY, payload, timeout=None)
+    cache.set(CACHE_KEY_FAST, _build_fast_blob(payload), timeout=None)
     return payload
 
 
@@ -143,6 +183,27 @@ def get_or_build() -> dict:
         return payload
     logger.warning('districts_status_geojson cache miss — rebuilding inline')
     return refresh_cache()
+
+
+def get_fast_blob() -> tuple[str, bytes]:
+    """Pre-encoded ``(etag, json_bytes)`` for the unfiltered choropleth.
+
+    Used by the view's fast path. Lazily rebuilds on a cache miss; the
+    caller can rely on always getting a ready-to-stream tuple.
+    """
+    blob = cache.get(CACHE_KEY_FAST)
+    if blob is not None:
+        return blob
+    logger.warning('districts_status_geojson fast-blob cache miss — rebuilding inline')
+    refresh_cache()
+    blob = cache.get(CACHE_KEY_FAST)
+    if blob is None:
+        # Defensive: refresh_cache wrote both keys, but in case of a
+        # truly broken cache backend (e.g. write succeeds, read returns
+        # None) build the blob inline from the just-built dict instead
+        # of crashing the request.
+        return _build_fast_blob(get_or_build())
+    return blob
 
 
 # ── Timeline support: per-date snapshots & list of available dates ───────
