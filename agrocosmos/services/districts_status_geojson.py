@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # (extra properties, different precision, etc.) — old cached payloads
 # from previous deploys then become unreachable and are eventually
 # evicted by Redis LRU.
-CACHE_KEY = 'agro:districts_status:geojson:v3'
+CACHE_KEY = 'agro:districts_status:geojson:v4'
 # Companion key holding the *pre-encoded* JSON body + matching ETag for the
 # unfiltered all-Russia choropleth. The view that serves the no-?region=
 # fast path skips both pickle.loads of the dict (~300 ms for 3 MB) and the
@@ -47,7 +47,7 @@ CACHE_KEY = 'agro:districts_status:geojson:v3'
 #
 # Tuple shape: ``(etag: str, body: bytes)``. ``body`` is the same JSON the
 # slow ``JsonResponse(payload)`` path would produce.
-CACHE_KEY_FAST = 'agro:districts_status:geojson:v3:fast'
+CACHE_KEY_FAST = 'agro:districts_status:geojson:v4:fast'
 
 
 class _SimplifyPreserveTopology(Func):
@@ -92,6 +92,13 @@ def build_geojson_payload() -> dict:
             'ndvi_status__current_ndvi',
             'ndvi_status__baseline_ndvi',
             'ndvi_status__pct_of_baseline',
+            # Coverage counters — exposed in every payload so the
+            # admin overlay can compute the trust ratio client-side
+            # without an extra round-trip. Negligible JSON cost
+            # (~12 bytes per district) but only rendered when the
+            # user is an administrator (gated in the template).
+            'ndvi_status__farmlands_with_data',
+            'ndvi_status__farmlands_total',
         )
     )
 
@@ -104,6 +111,8 @@ def build_geojson_payload() -> dict:
         cur_d = r['ndvi_status__latest_date']
         bl_v = r['ndvi_status__baseline_ndvi']
         pct = r['ndvi_status__pct_of_baseline']
+        fl_with = r['ndvi_status__farmlands_with_data']
+        fl_total = r['ndvi_status__farmlands_total']
         if cur_v is not None:
             with_data += 1
         features.append({
@@ -117,6 +126,12 @@ def build_geojson_payload() -> dict:
                 'current_date': str(cur_d) if cur_d else None,
                 'baseline_ndvi': round(bl_v, 3) if bl_v is not None else None,
                 'pct_of_baseline': pct,
+                # Coverage. ``None`` for districts without a status
+                # row at all (e.g. zero farmlands ingested), 0 when
+                # the row exists but the latest composite gave no
+                # valid pixels in the district.
+                'farmlands_with_data': int(fl_with) if fl_with is not None else None,
+                'farmlands_total': int(fl_total) if fl_total is not None else None,
             },
             'geometry': json.loads(r['geojson']),
         })
@@ -221,7 +236,10 @@ _AVAILABLE_DATES_KEY = 'agro:districts_status:dates:v1:{year}'
 # v2: snapshot now uses as-of semantics (carry-forward over 60 days)
 # instead of exact date match — old v1 payloads (with grey holes for
 # any district missing on the exact composite date) must not be served.
-_SNAPSHOT_KEY = 'agro:districts_status:snapshot:v2:{date}'
+# v3: payload now carries ``farmlands_with_data`` / ``farmlands_total``
+# per district for the admin coverage overlay; v2 entries lack those
+# keys and would render an empty trust ratio in the popup.
+_SNAPSHOT_KEY = 'agro:districts_status:snapshot:v3:{date}'
 
 
 def list_available_dates(year: int) -> list[str]:
@@ -314,7 +332,13 @@ def build_snapshot(target_date: str) -> dict:
             SELECT  l.district_id,
                     l.as_of,
                     SUM(vi.mean * f.area_ha)
-                      / NULLIF(SUM(f.area_ha), 0) AS w_ndvi
+                      / NULLIF(SUM(f.area_ha), 0) AS w_ndvi,
+                    -- Same coverage counter the always-on choropleth
+                    -- exposes; computed here per (district, as_of) so
+                    -- the slider's popup reflects the trust ratio of
+                    -- the actually-shown composite, not just the most
+                    -- recent one.
+                    COUNT(DISTINCT vi.farmland_id) AS fl_with_data
             FROM   latest_per_district l
             JOIN   agro_farmland f ON f.district_id = l.district_id
             JOIN   agro_vegetation_index vi
@@ -326,6 +350,12 @@ def build_snapshot(target_date: str) -> dict:
               AND  vi.mean BETWEEN -0.2 AND 1
               AND  s.satellite IN ('modis_terra', 'modis_aqua')
             GROUP BY l.district_id, l.as_of
+        ),
+        farmlands_total AS (
+            SELECT f.district_id, COUNT(*) AS total
+            FROM   agro_farmland f
+            WHERE  f.district_id IN (SELECT district_id FROM current_ndvi)
+            GROUP BY f.district_id
         ),
         matched_baseline AS (
             SELECT DISTINCT ON (cn.district_id)
@@ -350,21 +380,26 @@ def build_snapshot(target_date: str) -> dict:
                 CASE WHEN mb.baseline_ndvi IS NOT NULL
                       AND mb.baseline_ndvi > 0.05
                      THEN ROUND((cn.w_ndvi / mb.baseline_ndvi * 100.0)::numeric, 1)
-                     ELSE NULL END AS pct_of_baseline
+                     ELSE NULL END AS pct_of_baseline,
+                COALESCE(cn.fl_with_data, 0) AS farmlands_with_data,
+                COALESCE(ft.total, 0)        AS farmlands_total
         FROM    current_ndvi cn
-        LEFT JOIN matched_baseline mb USING (district_id)
+        LEFT JOIN matched_baseline mb  USING (district_id)
+        LEFT JOIN farmlands_total  ft  USING (district_id)
         WHERE   cn.w_ndvi IS NOT NULL
     """
     overall_t = time.time()
     districts = {}
     with connection.cursor() as cur:
         cur.execute(sql, [target_iso, target_iso])
-        for d_id, as_of, cur_v, bl_v, pct in cur.fetchall():
+        for d_id, as_of, cur_v, bl_v, pct, fl_with, fl_total in cur.fetchall():
             districts[d_id] = {
                 'as_of': str(as_of) if as_of else None,
                 'current_ndvi': float(cur_v) if cur_v is not None else None,
                 'baseline_ndvi': float(bl_v) if bl_v is not None else None,
                 'pct_of_baseline': float(pct) if pct is not None else None,
+                'farmlands_with_data': int(fl_with) if fl_with is not None else None,
+                'farmlands_total': int(fl_total) if fl_total is not None else None,
             }
 
     payload = {'date': target_iso, 'districts': districts}
