@@ -347,6 +347,19 @@ class DistrictNdviStatus(models.Model):
         null=True, blank=True,
         verbose_name='% от нормы (current / baseline * 100)',
     )
+    # Сколько полей реально дали валидный NDVI на latest_date (числитель)
+    # и сколько полей зарегистрировано в районе всего (знаменатель).
+    # Отношение — "доверительность" показанного по району значения:
+    # при покрытии 5 % одно крупное поле может полностью определить
+    # цвет района на карте, что в админке нужно видеть отдельно.
+    farmlands_with_data = models.IntegerField(
+        default=0,
+        verbose_name='Полей с данными на latest_date',
+    )
+    farmlands_total = models.IntegerField(
+        default=0,
+        verbose_name='Всего полей в районе',
+    )
     computed_at = models.DateTimeField(auto_now=True)
 
     class Meta:

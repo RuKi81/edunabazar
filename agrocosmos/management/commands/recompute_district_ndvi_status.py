@@ -40,7 +40,13 @@ WITH latest_per_district AS (
 current_ndvi AS (
     SELECT  l.district_id,
             l.latest_date,
-            SUM(vi.mean * f.area_ha) / NULLIF(SUM(f.area_ha), 0) AS w_ndvi
+            SUM(vi.mean * f.area_ha) / NULLIF(SUM(f.area_ha), 0) AS w_ndvi,
+            -- Number of distinct farmlands in this district that
+            -- actually contributed a valid VI row to the weighted
+            -- mean above. Surfaced in the admin overlay so the
+            -- operator can spot districts coloured by a handful of
+            -- fields after a cloudy composite.
+            COUNT(DISTINCT vi.farmland_id) AS fl_with_data
     FROM   latest_per_district l
     JOIN   agro_farmland f ON f.district_id = l.district_id
     JOIN   agro_vegetation_index vi
@@ -52,6 +58,17 @@ current_ndvi AS (
       AND  vi.mean BETWEEN -0.2 AND 1
       AND  s.satellite IN ('modis_terra', 'modis_aqua')
     GROUP BY l.district_id, l.latest_date
+),
+-- Total farmlands per district (denominator of the coverage ratio).
+-- Counted independently of any composite / date so the figure is
+-- stable even when ingestion is patchy. Restricted to districts that
+-- ended up with current NDVI data so we don't compute counts the
+-- INSERT below would discard anyway.
+farmlands_total AS (
+    SELECT f.district_id, COUNT(*) AS total
+    FROM   agro_farmland f
+    WHERE  f.district_id IN (SELECT district_id FROM current_ndvi)
+    GROUP BY f.district_id
 ),
 matched_baseline AS (
     -- Try the exact DOY first; if missing, fall back to ±8 / ±16 to
@@ -72,7 +89,9 @@ matched_baseline AS (
 )
 INSERT INTO agro_district_ndvi_status
         (district_id, latest_date, current_ndvi,
-         baseline_ndvi, pct_of_baseline, computed_at)
+         baseline_ndvi, pct_of_baseline,
+         farmlands_with_data, farmlands_total,
+         computed_at)
 SELECT  cn.district_id,
         cn.latest_date,
         cn.w_ndvi,
@@ -82,16 +101,21 @@ SELECT  cn.district_id,
             THEN ROUND((cn.w_ndvi / mb.baseline_ndvi * 100.0)::numeric, 1)
             ELSE NULL
         END,
+        COALESCE(cn.fl_with_data, 0),
+        COALESCE(ft.total, 0),
         NOW()
 FROM    current_ndvi cn
-LEFT JOIN matched_baseline mb USING (district_id)
+LEFT JOIN matched_baseline mb  USING (district_id)
+LEFT JOIN farmlands_total  ft  USING (district_id)
 WHERE   cn.w_ndvi IS NOT NULL
 ON CONFLICT (district_id) DO UPDATE
-SET     latest_date     = EXCLUDED.latest_date,
-        current_ndvi    = EXCLUDED.current_ndvi,
-        baseline_ndvi   = EXCLUDED.baseline_ndvi,
-        pct_of_baseline = EXCLUDED.pct_of_baseline,
-        computed_at     = EXCLUDED.computed_at
+SET     latest_date          = EXCLUDED.latest_date,
+        current_ndvi         = EXCLUDED.current_ndvi,
+        baseline_ndvi        = EXCLUDED.baseline_ndvi,
+        pct_of_baseline      = EXCLUDED.pct_of_baseline,
+        farmlands_with_data  = EXCLUDED.farmlands_with_data,
+        farmlands_total      = EXCLUDED.farmlands_total,
+        computed_at          = EXCLUDED.computed_at
 """
 
 

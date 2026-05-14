@@ -542,6 +542,14 @@
       });
     }
 
+    // ── Admin overlay flag ─────────────────────────
+    // Server-side decision (legacy session: superuser OR username 'admin').
+    // Templated as a hard JS literal — no runtime check, no extra request.
+    // Used to gate the data-coverage block in district popups: regular
+    // users see a clean NDVI / baseline / % readout, the operator sees
+    // the trust ratio underneath ("сколько полей реально дали данные").
+    var AGRO_IS_ADMIN = {{ is_admin_user|yesno:"true,false" }};
+
     /* ── State ──────────────────────────────────── */
     var districtLayer = null;          // District contour or all-Russia choropleth
     var districtHighlightLayer = null; // Orange dashed outline for the currently selected district (drawn on top of the choropleth)
@@ -706,6 +714,31 @@
       if (p.pct_of_baseline != null) {
         html += '% от среднего многолетнего: <b>' + p.pct_of_baseline.toFixed(1) + '%</b>';
       }
+      // Admin-only: data-coverage trust ratio. Lets the operator spot
+      // districts whose colour is driven by a handful of fields after a
+      // cloudy MODIS composite — a 0.7 NDVI based on 5 % of fields is
+      // very different from one based on 90 %.
+      if (AGRO_IS_ADMIN && p.farmlands_total != null && p.farmlands_total > 0) {
+        var withN = p.farmlands_with_data || 0;
+        var totN = p.farmlands_total;
+        var pctCov = (withN / totN) * 100;
+        // Colour the badge red/yellow/green by trust band so the
+        // operator can scan a row of popups quickly. Thresholds match
+        // the choropleth's perception study: <30 % is unreliable,
+        // 30–70 % "with caveats", >70 % trustworthy.
+        var covColor = pctCov >= 70 ? '#2e7d32'
+                     : pctCov >= 30 ? '#f57c00'
+                     :                 '#c62828';
+        html += '<div style="margin-top:6px; padding-top:6px; '
+          + 'border-top:1px dashed #bbb; font-size:11px; color:#666;">'
+          + '<i class="material-icons" style="font-size:13px; '
+          + 'vertical-align:-2px; color:#888;">admin_panel_settings</i> '
+          + 'Покрытие: <b style="color:' + covColor + '">'
+          + withN.toLocaleString('ru-RU') + ' / '
+          + totN.toLocaleString('ru-RU') + '</b>'
+          + ' (' + pctCov.toFixed(0) + '%)'
+          + '</div>';
+      }
       return html;
     }
 
@@ -727,6 +760,15 @@
           p.current_ndvi   = stat.current_ndvi;
           p.baseline_ndvi  = stat.baseline_ndvi;
           p.pct_of_baseline = stat.pct_of_baseline;
+          // Coverage counters travel with the snapshot so the admin
+          // popup reflects the trust ratio of *the selected date*,
+          // not the always-on latest composite.
+          p.farmlands_with_data = (stat.farmlands_with_data != null)
+            ? stat.farmlands_with_data
+            : p.farmlands_with_data;
+          p.farmlands_total = (stat.farmlands_total != null)
+            ? stat.farmlands_total
+            : p.farmlands_total;
           // Backend returns the actual observation date per district
           // (carry-forward), so the popup reflects when the value was
           // last measured rather than the slider position.
@@ -739,6 +781,13 @@
           p.current_ndvi = null;
           p.baseline_ndvi = null;
           p.pct_of_baseline = null;
+          // Snapshot has no data for this district on this date —
+          // wipe coverage too so the admin badge doesn't display a
+          // stale ratio from the previous slider position.
+          p.farmlands_with_data = null;
+          // Keep ``farmlands_total`` (per-district constant) so the
+          // popup can still say "0 / 1100" instead of "0 / 0" when
+          // a composite truly has zero coverage.
           p.current_date = null;
           lyr.setStyle({ fillColor: pctToColor(null) });
         }
