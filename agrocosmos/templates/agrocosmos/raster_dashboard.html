@@ -259,10 +259,10 @@
 
       <div class="agro-page-tabs">
         <a href="{% url 'agrocosmos:dashboard' %}" class="{% if active_page == 'modis' %}active{% endif %}">
-          <i class="material-icons" style="font-size:14px; vertical-align:-2px;">timeline</i> MODIS
+          <i class="material-icons" style="font-size:14px; vertical-align:-2px;">timeline</i> Региональный мониторинг
         </a>
         <a href="{% url 'agrocosmos:raster_dashboard' %}" class="{% if active_page == 'raster' %}active{% endif %}">
-          <i class="material-icons" style="font-size:14px; vertical-align:-2px;">satellite</i> Sentinel / Landsat
+          <i class="material-icons" style="font-size:14px; vertical-align:-2px;">satellite</i> Детальный мониторинг
         </a>
         <a href="{% url 'agrocosmos:report_region' %}" class="{% if active_page == 'report_region' %}active{% endif %}">
           <i class="material-icons" style="font-size:14px; vertical-align:-2px;">assessment</i> Отчёты
