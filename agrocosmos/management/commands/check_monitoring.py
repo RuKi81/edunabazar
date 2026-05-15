@@ -96,8 +96,37 @@ class Command(BaseCommand):
 
         self.stdout.write(f'Found {tasks.count()} active task(s), today={today}')
 
+        # Aggregate counter — drives the single global district-status
+        # refresh at the end of the batch. We only pay the ~10-minute
+        # SQL once (or skip it entirely if no region produced new VI
+        # rows), instead of once per region.
+        total_periods_processed = 0
         for task in tasks:
-            self._process_task(task, today, dry_run, force, max_periods_per_task)
+            total_periods_processed += self._process_task(
+                task, today, dry_run, force, max_periods_per_task,
+            ) or 0
+
+        # Single global refresh of the cached district NDVI status used
+        # by /agrocosmos/api/districts/status/. Each ``modis_ndvi`` run
+        # was called with ``--skip-status-refresh`` precisely so this
+        # batch-tail call replaces the per-region refresh that used to
+        # cost ~14 hours per cron run on a fully active 85-region setup.
+        # Skipped on dry-runs and when no new data was ingested.
+        if total_periods_processed > 0 and not dry_run:
+            try:
+                self.stdout.write(
+                    f'\n📌 Refreshing district NDVI status cache once '
+                    f'(total periods processed: {total_periods_processed})…'
+                )
+                call_command('recompute_district_ndvi_status', stdout=self.stdout)
+            except Exception as exc:
+                self.stderr.write(self.style.WARNING(
+                    f'  batch status refresh failed (non-fatal): {exc}'
+                ))
+        elif total_periods_processed == 0:
+            self.stdout.write(
+                '\nNo new periods processed — skipping status refresh.'
+            )
 
     def _process_task(self, task, today, dry_run, force, max_periods_per_task):
         region = task.region
@@ -156,7 +185,15 @@ class Command(BaseCommand):
                     break
                 continue
 
-            # Run NDVI pipeline for this specific period
+            # Run NDVI pipeline for this specific period.
+            #
+            # ``skip_status_refresh=True`` is the critical flag here:
+            # the global ``recompute_district_ndvi_status`` SQL costs
+            # ~10 minutes on cold DB cache and rewrites all 2200
+            # districts of all 85 regions. Calling it after every
+            # region pile-up to ~14 hours of pure SQL per cron run.
+            # The single batch-tail refresh in ``handle()`` covers
+            # everything this loop wrote in one shot instead.
             t0 = time.time()
             out = StringIO()
             try:
@@ -165,6 +202,7 @@ class Command(BaseCommand):
                     region_id=region.pk,
                     date_from=next_from.isoformat(),
                     date_to=next_to.isoformat(),
+                    skip_status_refresh=True,
                     stdout=out,
                     stderr=out,
                 )
@@ -238,3 +276,6 @@ class Command(BaseCommand):
             f'  [{region.name} {year}] Finished: {periods_done} period(s) processed, '
             f'total records: {task.records_total}'
         )
+        # Returned to ``handle()`` so it knows whether to run the
+        # single batch-tail ``recompute_district_ndvi_status``.
+        return periods_done
