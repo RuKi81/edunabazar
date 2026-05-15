@@ -59,6 +59,15 @@ class Command(BaseCommand):
                             help='Min valid pixel ratio (default: 0.5)')
         parser.add_argument('--overwrite', action='store_true',
                             help='Re-download existing rasters')
+        # Batch callers (check_monitoring) should pass this flag so the
+        # 10-minute global ``recompute_district_ndvi_status`` runs ONCE
+        # at the end of the batch instead of after every region. With 85
+        # regions the per-region refresh used to cost ~14 hours of pure
+        # SQL per cron run on top of the actual data processing.
+        parser.add_argument('--skip-status-refresh', action='store_true',
+                            help='Do not refresh district NDVI status '
+                                 'cache after this run (caller will do '
+                                 'it once at the end of a batch).')
 
     def handle(self, *args, **options):
         from agrocosmos.services.satellite_modis_raster import (
@@ -105,6 +114,7 @@ class Command(BaseCommand):
         stats_only = options['stats_only']
         min_valid = options['min_valid_ratio']
         overwrite = options['overwrite']
+        skip_status_refresh = options['skip_status_refresh']
 
         # Use region bbox for download, district or region for farmlands
         region_extent = region.geom.extent  # (xmin, ymin, xmax, ymax)
@@ -367,11 +377,25 @@ class Command(BaseCommand):
         # cached status would lag one MODIS composite behind. Failure
         # here must NOT fail the pipeline — the status cache is only
         # used by a non-critical map view.
-        try:
-            self.stdout.write('\n📌 Refreshing district NDVI status cache…')
-            from django.core.management import call_command
-            call_command('recompute_district_ndvi_status', stdout=self.stdout)
-        except Exception as exc:
-            self.stderr.write(self.style.WARNING(
-                f'  district status refresh failed (non-fatal): {exc}'
-            ))
+        #
+        # Batch callers (``check_monitoring`` walking ~85 regions in
+        # one cron run) MUST pass ``--skip-status-refresh`` and call
+        # ``recompute_district_ndvi_status`` themselves exactly once
+        # at the end of the batch. The refresh is GLOBAL (all 2200
+        # districts of all 85 regions, ~10 min on cold DB cache) so
+        # invoking it once per region multiplied a 15-minute pipeline
+        # by 85 and consumed ~14 hours of pure SQL per cron run.
+        if skip_status_refresh:
+            self.stdout.write(
+                '\n📌 District NDVI status cache: skipped '
+                '(--skip-status-refresh; caller will refresh once at end)'
+            )
+        else:
+            try:
+                self.stdout.write('\n📌 Refreshing district NDVI status cache…')
+                from django.core.management import call_command
+                call_command('recompute_district_ndvi_status', stdout=self.stdout)
+            except Exception as exc:
+                self.stderr.write(self.style.WARNING(
+                    f'  district status refresh failed (non-fatal): {exc}'
+                ))
