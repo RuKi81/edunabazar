@@ -304,6 +304,34 @@ def build_snapshot(target_date: str) -> dict:
     if cached is not None:
         return cached
 
+    # Dogpile guard: the SQL below scans up to 60 days of
+    # ``agro_vegetation_index`` (~25 M rows) and joins to ~2 200
+    # districts; on a cold buffer pool it takes 30-90 s. Without a
+    # mutex, N concurrent web hits during/after a fresh MODIS ingest
+    # spawn N copies of this query, each thrashing the same pages
+    # and slowing every other request to a crawl (observed: 12
+    # parallel queries waiting on ``BufferIO`` for 30+ minutes).
+    # We use ``cache.add`` (atomic SET-if-not-exists) as the lock;
+    # the loser waits for the winner's payload to land in the
+    # snapshot cache instead of running its own SQL.
+    lock_key = key + ':build_lock'
+    LOCK_TTL = 180          # generous: covers worst-case cold SQL
+    POLL_INTERVAL = 0.5
+    POLL_MAX = 120          # up to 60 s of waiting for the winner
+    if not cache.add(lock_key, '1', timeout=LOCK_TTL):
+        # Another worker is already building this snapshot. Poll the
+        # snapshot cache (not the lock — the lock auto-expires) until
+        # the payload appears or we time out. On timeout we fall
+        # through and build it ourselves; the duplicated work is
+        # bounded to one extra query, not N.
+        import time as _time
+        for _ in range(POLL_MAX):
+            _time.sleep(POLL_INTERVAL)
+            cached = cache.get(key)
+            if cached is not None:
+                return cached
+        # Winner died / timed out — fall through and build it.
+
     from django.db import connection
     # As-of semantics: for each district, pick the most recent MODIS
     # composite with NDVI data on or before ``target_date`` within a
@@ -409,6 +437,10 @@ def build_snapshot(target_date: str) -> dict:
     )
     # Eternal cache — past composites are immutable.
     cache.set(key, payload, timeout=None)
+    # Release the dogpile lock so we don't keep it for ``LOCK_TTL``
+    # seconds longer than necessary; harmless if it's already gone
+    # (e.g. expired because the SQL took longer than expected).
+    cache.delete(lock_key)
     return payload
 
 
