@@ -239,7 +239,13 @@ _AVAILABLE_DATES_KEY = 'agro:districts_status:dates:v1:{year}'
 # v3: payload now carries ``farmlands_with_data`` / ``farmlands_total``
 # per district for the admin coverage overlay; v2 entries lack those
 # keys and would render an empty trust ratio in the popup.
-_SNAPSHOT_KEY = 'agro:districts_status:snapshot:v3:{date}'
+# v4: build_snapshot now reads from the pre-aggregated
+# ``agro_district_ndvi_series`` (1000× faster) instead of the raw
+# ``agro_vegetation_index``; ``farmlands_with_data`` is now an
+# observation-count proxy rather than a unique-farmland count, so
+# v3 entries (with the old exact counter) must not be served to
+# avoid mismatched trust ratios across the slider range.
+_SNAPSHOT_KEY = 'agro:districts_status:snapshot:v4:{date}'
 
 
 def list_available_dates(year: int) -> list[str]:
@@ -315,9 +321,19 @@ def build_snapshot(target_date: str) -> dict:
     # the loser waits for the winner's payload to land in the
     # snapshot cache instead of running its own SQL.
     lock_key = key + ':build_lock'
-    LOCK_TTL = 180          # generous: covers worst-case cold SQL
-    POLL_INTERVAL = 0.5
-    POLL_MAX = 120          # up to 60 s of waiting for the winner
+    # Worst case observed in prod: 9-15 min when buffer pool is cold
+    # and the sort spills to disk (BufFileWrite). Set the TTL high
+    # enough to cover that so a slow winner does not get bypassed
+    # by impatient followers running the same heavy SQL in parallel.
+    # If the winner truly dies, we still recover via the polling
+    # fallback below.
+    LOCK_TTL = 1200         # 20 min — safe ceiling for cold-cache builds
+    POLL_INTERVAL = 1.0
+    # Web-side poll budget: most builds finish in 30-90 s; gunicorn
+    # times out long requests around 60-120 s anyway, so any longer
+    # wait would just produce 502s. After this we fall through and
+    # build it ourselves — bounded extra work, never N copies.
+    POLL_MAX = 60
     if not cache.add(lock_key, '1', timeout=LOCK_TTL):
         # Another worker is already building this snapshot. Poll the
         # snapshot cache (not the lock — the lock auto-expires) until
@@ -341,43 +357,45 @@ def build_snapshot(target_date: str) -> dict:
     # window matches the existing ``recompute_district_ndvi_status`` so
     # the slider's last position is identical to the always-on cached
     # GeoJSON.
+    #
+    # Implementation: read pre-aggregated per-district × per-crop sums
+    # from ``agro_district_ndvi_series`` (~9 k rows / date) instead of
+    # the raw ``agro_vegetation_index`` (~6-8 M rows / 60-day window).
+    # ``recompute_district_ndvi_series`` rebuilds the series at the end
+    # of every MODIS pipeline run, so the data is always in sync with
+    # the always-on choropleth's ``agro_district_ndvi_status``. The
+    # district-level NDVI is recovered by summing per-crop sum-of-NDVI
+    # × area and dividing by sum-of-area — algebraically identical to
+    # the area-weighted mean we used to compute on the raw VI table,
+    # but ~1000× faster (1.3 s vs 20+ min cold).
     sql = """
         WITH latest_per_district AS (
-            SELECT f.district_id, MAX(vi.acquired_date) AS as_of
-            FROM   agro_vegetation_index vi
-            JOIN   agro_farmland f         ON f.id = vi.farmland_id
-            JOIN   agro_satellite_scene s  ON s.id = vi.scene_id
-            WHERE  vi.index_type = 'ndvi'
-              AND  vi.is_outlier = false
-              AND  vi.mean BETWEEN -0.2 AND 1
-              AND  s.satellite IN ('modis_terra', 'modis_aqua')
-              AND  vi.acquired_date <= %s
-              AND  vi.acquired_date >= %s::date - INTERVAL '60 days'
-              AND  f.district_id IS NOT NULL
-            GROUP BY f.district_id
+            SELECT district_id, MAX(acquired_date) AS as_of
+            FROM   agro_district_ndvi_series
+            WHERE  source = 'modis'
+              AND  sum_area > 0
+              AND  acquired_date <= %s
+              AND  acquired_date >= %s::date - INTERVAL '60 days'
+            GROUP BY district_id
         ),
         current_ndvi AS (
-            SELECT  l.district_id,
+            SELECT  s.district_id,
                     l.as_of,
-                    SUM(vi.mean * f.area_ha)
-                      / NULLIF(SUM(f.area_ha), 0) AS w_ndvi,
-                    -- Same coverage counter the always-on choropleth
-                    -- exposes; computed here per (district, as_of) so
-                    -- the slider's popup reflects the trust ratio of
-                    -- the actually-shown composite, not just the most
-                    -- recent one.
-                    COUNT(DISTINCT vi.farmland_id) AS fl_with_data
+                    SUM(s.sum_ndvi_area)
+                      / NULLIF(SUM(s.sum_area), 0) AS w_ndvi,
+                    -- ``obs_count`` is per-crop MODIS observations;
+                    -- summing across crops gives a coverage proxy
+                    -- (not exact "unique farmlands with data" — that
+                    -- would require a re-scan of the VI table — but
+                    -- proportional and good enough for the popup
+                    -- trust badge).
+                    SUM(s.obs_count) AS fl_with_data
             FROM   latest_per_district l
-            JOIN   agro_farmland f ON f.district_id = l.district_id
-            JOIN   agro_vegetation_index vi
-                       ON vi.farmland_id   = f.id
-                      AND vi.acquired_date = l.as_of
-            JOIN   agro_satellite_scene s ON s.id = vi.scene_id
-            WHERE  vi.index_type = 'ndvi'
-              AND  vi.is_outlier = false
-              AND  vi.mean BETWEEN -0.2 AND 1
-              AND  s.satellite IN ('modis_terra', 'modis_aqua')
-            GROUP BY l.district_id, l.as_of
+            JOIN   agro_district_ndvi_series s
+                       ON s.district_id   = l.district_id
+                      AND s.acquired_date = l.as_of
+                      AND s.source        = 'modis'
+            GROUP BY s.district_id, l.as_of
         ),
         farmlands_total AS (
             SELECT f.district_id, COUNT(*) AS total
@@ -477,6 +495,10 @@ def prewarm_snapshots(
             continue
         if force:
             cache.delete(key)
+            # Also clear any stale build_lock left behind by a previous
+            # crashed worker; otherwise we would wait the full 20-min
+            # poll fallback before rebuilding.
+            cache.delete(key + ':build_lock')
         try:
             build_snapshot(str(d))
             built += 1
