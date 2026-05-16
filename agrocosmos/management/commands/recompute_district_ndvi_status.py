@@ -211,10 +211,25 @@ class Command(BaseCommand):
                 dates = svc.list_available_dates(year)
                 if dates:
                     recent = dates[-prewarm_recent:]
-                    built, skipped, elapsed = svc.prewarm_snapshots(recent)
+                    # ``force=True``: snapshots for the freshest composites
+                    # may have been cached *during* the ingest pipeline,
+                    # while ``agro_vegetation_index`` still held only a
+                    # subset of regions. The 60-day carry-forward in
+                    # ``build_snapshot`` would then have backfilled those
+                    # missing regions with stale values from older
+                    # composites and stored the partial snapshot
+                    # eternally (``timeout=None``). Past-cycle dates are
+                    # truly immutable, but the last few are not — we
+                    # always rebuild them at the end of the pipeline so
+                    # the slider stays consistent with the always-on
+                    # choropleth.
+                    built, skipped, elapsed = svc.prewarm_snapshots(
+                        recent, force=True,
+                    )
                     self.stdout.write(self.style.SUCCESS(
-                        f'timeline prewarm ({year}, last {len(recent)}): '
-                        f'{built} built, {skipped} cached in {elapsed:.1f}s'
+                        f'timeline prewarm ({year}, last {len(recent)}, '
+                        f'force=True): {built} built, {skipped} cached '
+                        f'in {elapsed:.1f}s'
                     ))
                 else:
                     self.stdout.write(
