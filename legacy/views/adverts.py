@@ -23,7 +23,7 @@ from .helpers import (
     _get_current_legacy_user, _is_admin_user, _get_admin_identity,
     _can_edit_advert, _can_manage_advert,
     _no_store, _update_advert_status, _normalize_extra_contacts,
-    _send_advert_published_email, logger,
+    _send_advert_published_email, _send_admin_new_advert_email, logger,
 )
 from .reviews import _get_reviews, _avg_points
 
@@ -467,6 +467,11 @@ def advert_create(request: HttpRequest) -> HttpResponse:
                     photo.thumbnail.save(thumb.name, thumb, save=False)
                 photo.save()
             invalidate_advert_caches()
+            try:
+                advert_url = request.build_absolute_uri(f"/adverts/{int(advert.id)}/")
+                _send_admin_new_advert_email(advert, advert_url)
+            except Exception:
+                logger.exception('Failed to send admin notification for new advert id=%s', advert.id)
             return redirect(f"/adverts/{int(advert.id)}/")
 
     resp = render(

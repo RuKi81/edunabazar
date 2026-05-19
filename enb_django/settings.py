@@ -232,6 +232,12 @@ EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
 EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
 
+# Recipient for admin/moderation notifications (e.g. new ads pending review).
+# Override via env for staging/preview hosts.
+ADMIN_NOTIFICATION_EMAIL = os.getenv(
+    'ADMIN_NOTIFICATION_EMAIL', 'edunabazar2017@yandex.ru',
+)
+
 # SMSC.ru SMS gateway
 SMSC_LOGIN = os.getenv('SMSC_LOGIN', '')
 SMSC_PASSWORD = os.getenv('SMSC_PASSWORD', '')
