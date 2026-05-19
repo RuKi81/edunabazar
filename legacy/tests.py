@@ -741,6 +741,64 @@ class MessagesUnreadApiTests(TestCase):
         self.assertEqual(data['count'], 0)
 
 
+class AdminNewAdvertEmailTests(TestCase):
+    """``_send_admin_new_advert_email`` notifies the admin recipient with
+    advert title, author and link so a moderator can review quickly."""
+
+    def setUp(self):
+        from django.utils import timezone
+        from django.contrib.gis.geos import Point
+        from .models import Advert, LegacyUser, Catalog, Categories
+        now = timezone.now()
+        self.user = LegacyUser.objects.create(
+            type=0, username='seller42', auth_key='', password_hash='',
+            email='seller42@test.com', currency='RUB', name='Иван Иванов',
+            address='', phone='', inn='', status=USER_STATUS_ACTIVE,
+            created_at=now, updated_at=now, contacts='',
+        )
+        catalog = Catalog.objects.create(title='Cat', sort=0, active=1)
+        category = Categories.objects.create(catalog=catalog, title='Grains', active=1)
+        self.advert = Advert.objects.create(
+            type=0, category=category, author=self.user,
+            location=Point(37.6, 55.7, srid=4326), contacts='+79991234567',
+            title='Пшеница, 10т', text='Свежий урожай',
+            price=15.0, wholesale_price=0, min_volume=0,
+            wholesale_volume=0, volume=10, priority=0,
+            created_at=now, updated_at=now, status=ADVERT_STATUS_MODERATION,
+        )
+
+    @override_settings(
+        ADMIN_NOTIFICATION_EMAIL='moderator@example.com',
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        DEFAULT_FROM_EMAIL='noreply@example.com',
+    )
+    def test_sends_to_admin(self):
+        from django.core import mail
+        from .views.helpers import _send_admin_new_advert_email
+        mail.outbox = []
+        ok = _send_admin_new_advert_email(self.advert, 'https://edunabazar.ru/adverts/1/')
+        self.assertTrue(ok)
+        self.assertEqual(len(mail.outbox), 1)
+        msg = mail.outbox[0]
+        self.assertEqual(msg.to, ['moderator@example.com'])
+        self.assertIn('Пшеница, 10т', msg.subject)
+        self.assertIn('Пшеница, 10т', msg.body)
+        self.assertIn('Иван Иванов', msg.body)
+        self.assertIn('https://edunabazar.ru/adverts/1/', msg.body)
+
+    @override_settings(
+        ADMIN_NOTIFICATION_EMAIL='',
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+    )
+    def test_no_recipient_configured_is_noop(self):
+        from django.core import mail
+        from .views.helpers import _send_admin_new_advert_email
+        mail.outbox = []
+        ok = _send_admin_new_advert_email(self.advert, 'https://x/y')
+        self.assertFalse(ok)
+        self.assertEqual(len(mail.outbox), 0)
+
+
 class SmokeTests(TestCase):
     """Smoke tests: public pages return 200 and contain expected content."""
 

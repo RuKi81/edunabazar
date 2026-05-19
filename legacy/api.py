@@ -14,6 +14,7 @@ from .serializers import (
     MessageSerializer,
 )
 from .views import _get_current_legacy_user, _is_admin_user
+from .views.helpers import _send_admin_new_advert_email, logger as _helpers_logger
 from .constants import (
     ADVERT_STATUS_DELETED, ADVERT_STATUS_MODERATION, ADVERT_STATUS_PUBLISHED,
     REVIEW_STATUS_DELETED, REVIEW_STATUS_MODERATION, REVIEW_STATUS_PUBLISHED,
@@ -125,6 +126,13 @@ class AdvertViewSet(viewsets.GenericViewSet,
             updated_at=now,
             status=ADVERT_STATUS_MODERATION,
         )
+        try:
+            advert_url = request.build_absolute_uri(f"/adverts/{int(advert.id)}/")
+            _send_admin_new_advert_email(advert, advert_url)
+        except Exception:
+            _helpers_logger.exception(
+                'Failed to send admin notification for new advert id=%s (API)', advert.id,
+            )
         out = AdvertDetailSerializer(advert, context={'request': request})
         return Response(out.data, status=status.HTTP_201_CREATED)
 

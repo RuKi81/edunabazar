@@ -292,3 +292,34 @@ def _send_advert_published_email(user_email: str, advert_title: str, advert_url:
         f'Ссылка: {advert_url}\n'
     )
     return _send_email(user_email, subject, body)
+
+
+def _send_admin_new_advert_email(advert, advert_url: str) -> bool:
+    """Notify the admin that a new advert was just submitted for moderation.
+
+    Recipient is ``settings.ADMIN_NOTIFICATION_EMAIL`` (default
+    ``edunabazar2017@yandex.ru``). Includes title, author, and link so the
+    moderator can review and publish quickly. Fails silently — failure to
+    notify the admin must never block the user's create flow.
+    """
+    to_email = (getattr(settings, 'ADMIN_NOTIFICATION_EMAIL', '') or '').strip()
+    if not to_email:
+        return False
+    author = getattr(advert, 'author', None)
+    author_label = ''
+    if author is not None:
+        parts = [
+            (getattr(author, 'name', '') or '').strip(),
+            (getattr(author, 'username', '') or '').strip(),
+            (getattr(author, 'email', '') or '').strip(),
+        ]
+        author_label = ' / '.join(p for p in parts if p) or f'id={getattr(author, "id", "?")}'
+    title = (getattr(advert, 'title', '') or '').strip() or '(без заголовка)'
+    subject = f'Новое объявление на модерации: {title}'
+    body = (
+        'На сайте создано новое объявление, ожидающее модерации.\n\n'
+        f'Заголовок: {title}\n'
+        f'Автор: {author_label or "—"}\n'
+        f'Ссылка: {advert_url}\n'
+    )
+    return _send_email(to_email, subject, body)
