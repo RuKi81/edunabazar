@@ -316,6 +316,11 @@
           <span style="font-size:11px;"><i class="material-icons" style="font-size:14px; vertical-align:-2px; color:#43A047;">layers</i> Границы угодий</span>
         </label>
       </div>
+      <!-- Farmland vector layer opacity -->
+      <div id="farmland-controls" style="display:none; margin:2px 0 6px 22px; padding:6px 8px; background:rgba(67,160,71,.06); border-radius:4px;">
+        <label style="font-size:10px; color:#555;">Прозрачность угодий</label>
+        <input type="range" id="farmland-opacity" min="10" max="100" value="100" style="width:100%;">
+      </div>
       {% else %}
       {% comment %}Farmland borders are admin-only. Hidden stub keeps JS .checked refs alive.{% endcomment %}
       <input type="checkbox" id="agro-toggle-farmlands" style="display:none" />
@@ -488,6 +493,8 @@
       districtSel.innerHTML = '<option value="">— Все районы —</option>';
       document.getElementById('agro-toggle-borders').checked = false;
       document.getElementById('agro-toggle-farmlands').checked = false;
+      var _flCtl = document.getElementById('farmland-controls');
+      if (_flCtl) _flCtl.style.display = 'none';
       districtLayer = clearLayer(districtLayer);
       if (mvtLayer) { map.removeLayer(mvtLayer); mvtLayer = null; }
       document.getElementById('crop-type-checkboxes').innerHTML = '';
@@ -651,6 +658,22 @@
       });
 
       mvtLayer.addTo(map);
+      // Apply current opacity slider value
+      if (farmlandOpacity) {
+        try { mvtLayer.setOpacity(parseInt(farmlandOpacity.value, 10) / 100); } catch (e) {}
+      }
+    }
+
+    /* ── Farmland vector layer opacity ──────────────── */
+    var farmlandOpacity = document.getElementById('farmland-opacity');
+    var farmlandControls = document.getElementById('farmland-controls');
+    if (farmlandOpacity) {
+      farmlandOpacity.addEventListener('input', function () {
+        var op = parseInt(this.value, 10) / 100;
+        if (mvtLayer) {
+          try { mvtLayer.setOpacity(op); } catch (e) {}
+        }
+      });
     }
 
     document.getElementById('agro-toggle-farmlands').addEventListener('change', function () {
@@ -660,9 +683,11 @@
         if (!regionId && !districtId) { this.checked = false; return; }
         loadMVT(regionId, districtId || null);
         loadNdviStats();
+        if (farmlandControls) farmlandControls.style.display = '';
       } else {
         if (mvtLayer) { map.removeLayer(mvtLayer); mvtLayer = null; }
         document.getElementById('ndvi-region-chart-wrap').style.display = 'none';
+        if (farmlandControls) farmlandControls.style.display = 'none';
       }
     });
 
