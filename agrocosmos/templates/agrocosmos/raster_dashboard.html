@@ -317,9 +317,9 @@
         </label>
       </div>
       <!-- Farmland vector layer opacity -->
-      <div id="farmland-controls" style="display:none; margin:2px 0 6px 22px; padding:6px 8px; background:rgba(67,160,71,.06); border-radius:4px;">
-        <label style="font-size:10px; color:#555;">Прозрачность угодий</label>
-        <input type="range" id="farmland-opacity" min="10" max="100" value="100" style="width:100%;">
+      <div id="farmland-controls" style="display:none; margin:2px 0 6px 0; padding:6px 8px; background:rgba(67,160,71,.06); border-radius:4px;">
+        <label style="font-size:9px; color:#555; display:block; line-height:1.2;">Прозрачность угодий</label>
+        <input type="range" id="farmland-opacity" min="10" max="100" value="100" style="width:100%; margin-top:2px;">
       </div>
       {% else %}
       {% comment %}Farmland borders are admin-only. Hidden stub keeps JS .checked refs alive.{% endcomment %}
@@ -345,8 +345,8 @@
         </select>
         <div style="font-size:10px; color:#888; margin-top:4px;" id="raster-info"></div>
         <div style="margin-top:6px;">
-          <label style="font-size:10px; color:#555;">Прозрачность</label>
-          <input type="range" id="raster-opacity" min="10" max="100" value="70" style="width:100%;">
+          <label style="font-size:9px; color:#555; display:block; line-height:1.2;">Прозрачность растра</label>
+          <input type="range" id="raster-opacity" min="10" max="100" value="70" style="width:100%; margin-top:2px;">
         </div>
       </div>
 
@@ -658,6 +658,8 @@
       });
 
       mvtLayer.addTo(map);
+      // Keep farmland vectors above the NDVI raster within tilePane.
+      try { mvtLayer.setZIndex(450); } catch (e) {}
       // Apply current opacity slider value
       if (farmlandOpacity) {
         try { mvtLayer.setOpacity(parseInt(farmlandOpacity.value, 10) / 100); } catch (e) {}
@@ -1014,8 +1016,14 @@
 
       rasterTileLayer = L.tileLayer(
         '/agrocosmos/api/raster-tile/{z}/{x}/{y}.png?sensor=' + sensor + '&scope=' + scope + '&date=' + dateRange,
-        { opacity: opacity, maxZoom: 18, tileSize: 256, zIndex: 500 }
+        // zIndex:1 keeps the raster below the farmland vector layer
+        // (mvtLayer defaults to zIndex>1 in the same tilePane).
+        { opacity: opacity, maxZoom: 18, tileSize: 256, zIndex: 1 }
       ).addTo(map);
+      // If the farmland vector layer exists, bring it to the top of tilePane.
+      if (mvtLayer && typeof mvtLayer.setZIndex === 'function') {
+        try { mvtLayer.setZIndex(450); } catch (e) {}
+      }
       rasterLegend.style.display = '';
     }
 
