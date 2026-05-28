@@ -750,3 +750,387 @@ class GeeApiMetric(models.Model):
 
     def __str__(self):
         return f'{self.day}: {self.calls} calls, {self.errors} err'
+
+
+# ───────────────────────────────────────────────────────────────────────
+#  Прогноз урожайности (yield forecasting)
+#
+#  V1: модель на уровне «вся РФ × культура», обучаемая на региональных
+#  данных Росстата (ЕМИСС). Прогноз применяется и на регион, и на район
+#  (гибридная схема — см. план в чате 28.05.2026).
+#
+#  Все урожайности хранятся в т/га (SI). ЕМИСС публикует в ц/га,
+#  конвертируется при загрузке (÷ 10).
+# ───────────────────────────────────────────────────────────────────────
+
+
+class YieldCrop(models.TextChoices):
+    """Культуры в моделях прогноза урожайности.
+
+    Отдельный TextChoices, а не Farmland.CropType — здесь конкретные
+    с/х культуры (что выращиваем), а не категория угодья (пашня/
+    сенокос/пастбище).
+    """
+    GRAINS_TOTAL = 'grains_total', 'Зерновые и зернобобовые (всего)'
+    WHEAT = 'wheat', 'Пшеница (все)'
+    WHEAT_WINTER = 'wheat_winter', 'Пшеница озимая'
+    WHEAT_SPRING = 'wheat_spring', 'Пшеница яровая'
+    BARLEY = 'barley', 'Ячмень'
+    CORN_GRAIN = 'corn_grain', 'Кукуруза на зерно'
+    SUNFLOWER = 'sunflower', 'Подсолнечник'
+    SOY = 'soy', 'Соя'
+    RAPESEED = 'rapeseed', 'Рапс'
+    SUGAR_BEET = 'sugar_beet', 'Сахарная свёкла'
+
+
+class CropYieldStat(models.Model):
+    """Эталонная (фактическая) урожайность из доверенного источника.
+
+    «Y» при обучении моделей прогноза. Поддерживает гранулярность
+    «регион» (для данных Росстата/ЕМИСС) ИЛИ «район» (для региональных
+    МСХ и партнёрских данных). Ровно один из ``region``/``district``
+    должен быть заполнен (см. CheckConstraint).
+    """
+
+    class Source(models.TextChoices):
+        EMISS = 'emiss', 'ЕМИСС (Росстат)'
+        REGIONAL_MSX = 'regional_msx', 'Региональный Минсельхоз'
+        MANUAL = 'manual', 'Ручная загрузка'
+        PARTNER = 'partner', 'Партнёр (агрохолдинг/страховщик)'
+
+    region = models.ForeignKey(
+        Region, null=True, blank=True, on_delete=models.CASCADE,
+        related_name='yield_stats',
+        verbose_name='Субъект (если данные регионального уровня)',
+    )
+    district = models.ForeignKey(
+        District, null=True, blank=True, on_delete=models.CASCADE,
+        related_name='yield_stats',
+        verbose_name='Район (если данные районного уровня)',
+    )
+    year = models.PositiveSmallIntegerField(verbose_name='Год')
+    crop = models.CharField(
+        max_length=20, choices=YieldCrop.choices, verbose_name='Культура',
+    )
+    yield_t_per_ha = models.FloatField(
+        verbose_name='Урожайность, т/га',
+        help_text='Хранится в т/га. ЕМИСС публикует в ц/га — конвертируется ÷10 при загрузке.',
+    )
+    area_ha = models.FloatField(
+        null=True, blank=True, verbose_name='Убранная площадь, га',
+    )
+    gross_t = models.FloatField(
+        null=True, blank=True, verbose_name='Валовой сбор, т',
+    )
+    source = models.CharField(
+        max_length=30, choices=Source.choices, verbose_name='Источник',
+    )
+    source_note = models.TextField(
+        blank=True, default='',
+        verbose_name='Комментарий к источнику',
+        help_text='Напр. имя XLS-файла, ссылка на отчёт, дата выгрузки.',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'agro_crop_yield_stat'
+        verbose_name = 'Урожайность (факт)'
+        verbose_name_plural = 'Урожайности (факт)'
+        ordering = ['-year', 'crop']
+        constraints = [
+            # Ровно один из region/district заполнен — иначе строка
+            # бессмысленна (нельзя одновременно регион и район;
+            # район принадлежит региону через FK).
+            models.CheckConstraint(
+                condition=(
+                    models.Q(region__isnull=False, district__isnull=True)
+                    | models.Q(region__isnull=True, district__isnull=False)
+                ),
+                name='cys_exactly_one_scope',
+            ),
+            # PostgreSQL трактует NULL != NULL в unique, поэтому два
+            # частичных UniqueConstraint — на каждый scope отдельно.
+            models.UniqueConstraint(
+                fields=['region', 'year', 'crop', 'source'],
+                condition=models.Q(district__isnull=True),
+                name='cys_unique_region',
+            ),
+            models.UniqueConstraint(
+                fields=['district', 'year', 'crop', 'source'],
+                condition=models.Q(region__isnull=True),
+                name='cys_unique_district',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['region', 'crop', 'year'], name='cys_region_crop_year_idx'),
+            models.Index(fields=['district', 'crop', 'year'], name='cys_district_crop_year_idx'),
+        ]
+
+    def __str__(self):
+        scope = (
+            self.region.name if self.region_id
+            else (self.district.name if self.district_id else '?')
+        )
+        return f'{scope} / {self.crop} / {self.year}: {self.yield_t_per_ha:.2f} т/га'
+
+
+class YieldFeatures(models.Model):
+    """Снимок фичей для (scope × год × культура).
+
+    Считается из ``DistrictNdviSeries``/``FarmlandPhenology`` после
+    окончания сезона (либо инкрементально в течение сезона — тогда
+    ``season_complete=False``, фичи fill-forward).
+
+    Только записи с ``season_complete=True`` используются для обучения.
+    """
+    region = models.ForeignKey(
+        Region, null=True, blank=True, on_delete=models.CASCADE,
+        related_name='yield_features',
+    )
+    district = models.ForeignKey(
+        District, null=True, blank=True, on_delete=models.CASCADE,
+        related_name='yield_features',
+    )
+    year = models.PositiveSmallIntegerField()
+    crop = models.CharField(max_length=20, choices=YieldCrop.choices)
+    features = models.JSONField(
+        verbose_name='Фичи',
+        help_text='{ "indvi_total": 12.3, "peak_ndvi": 0.78, ... }',
+    )
+    feature_set_version = models.CharField(
+        max_length=20, default='v1',
+        verbose_name='Версия набора фичей',
+        help_text='При смене состава фичей увеличиваем — старые записи не теряем.',
+    )
+    season_complete = models.BooleanField(
+        default=False,
+        verbose_name='Сезон завершён',
+        help_text='True после EOS — годится для обучения; False — только для прогноза.',
+    )
+    computed_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'agro_yield_features'
+        verbose_name = 'Фичи для прогноза урожайности'
+        verbose_name_plural = 'Фичи для прогноза урожайности'
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(region__isnull=False, district__isnull=True)
+                    | models.Q(region__isnull=True, district__isnull=False)
+                ),
+                name='yf_exactly_one_scope',
+            ),
+            models.UniqueConstraint(
+                fields=['region', 'year', 'crop', 'feature_set_version'],
+                condition=models.Q(district__isnull=True),
+                name='yf_unique_region',
+            ),
+            models.UniqueConstraint(
+                fields=['district', 'year', 'crop', 'feature_set_version'],
+                condition=models.Q(region__isnull=True),
+                name='yf_unique_district',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['region', 'crop', 'year']),
+            models.Index(fields=['district', 'crop', 'year']),
+        ]
+
+
+class YieldForecastModel(models.Model):
+    """Обученная модель прогноза урожайности.
+
+    V1: одна production-модель на культуру, scope=national (обучена на
+    региональных данных ЕМИСС). В V2 добавятся scope=fed_okrug и
+    scope=region для уточнения.
+
+    Коэффициенты ridge regression и масштабирующий scaler хранятся
+    как JSON — модель полностью самодостаточна, никакого pickle на
+    диске.
+    """
+
+    class Scope(models.TextChoices):
+        NATIONAL = 'national', 'Вся РФ'
+        FED_OKRUG = 'fed_okrug', 'Федеральный округ'
+        REGION = 'region', 'Субъект РФ'
+
+    scope = models.CharField(
+        max_length=10, choices=Scope.choices, default=Scope.NATIONAL,
+        verbose_name='Область применения',
+    )
+    region = models.ForeignKey(
+        Region, null=True, blank=True, on_delete=models.CASCADE,
+        related_name='yield_models',
+        verbose_name='Регион (если scope=region)',
+    )
+    crop = models.CharField(max_length=20, choices=YieldCrop.choices)
+    model_version = models.CharField(
+        max_length=30, default='ridge_v1',
+        help_text='ridge_v1 / rf_v1 / lgbm_v1 …',
+    )
+
+    # Коэффициенты ridge regression.
+    coefficients = models.JSONField(
+        verbose_name='Коэффициенты β',
+        help_text='{"indvi_total": 0.412, "peak_ndvi": 1.23, ...}',
+    )
+    intercept = models.FloatField(verbose_name='Свободный член α')
+    feature_names = models.JSONField(
+        verbose_name='Порядок фичей',
+        help_text='Список имён фичей в том порядке, в котором подаются в модель.',
+    )
+    feature_scaler = models.JSONField(
+        verbose_name='Параметры StandardScaler',
+        help_text='{"means": {feat: μ}, "stds": {feat: σ}}',
+    )
+
+    # Метрики качества.
+    r2_train = models.FloatField(verbose_name='R² на обучении')
+    r2_cv = models.FloatField(verbose_name='R² leave-one-year-out CV')
+    rmse_cv = models.FloatField(verbose_name='RMSE CV, т/га')
+    rmse_pct = models.FloatField(
+        verbose_name='RMSE % от средней урожайности',
+        help_text='RMSE / mean(y_train) — для сравнения качества по культурам.',
+    )
+    n_samples = models.PositiveIntegerField(verbose_name='Точек обучения')
+    train_years = models.JSONField(verbose_name='Годы обучающей выборки')
+
+    # Остатки CV для построения CI прогноза (bootstrap уже сделан при обучении).
+    residuals_cv = models.JSONField(
+        verbose_name='Остатки CV',
+        help_text='Список (y_actual - y_pred) на leave-one-year-out — '
+                  'используется для эмпирических квантилей при расчёте CI.',
+    )
+
+    is_production = models.BooleanField(
+        default=False,
+        verbose_name='В продакшене',
+        help_text='Только одна модель может быть production для пары (scope, region, crop).',
+    )
+    diagnostics = models.JSONField(
+        blank=True, null=True,
+        verbose_name='Диагностика',
+        help_text='Полная диагностика: per-year errors, важности фичей, и т.д.',
+    )
+    trained_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'agro_yield_forecast_model'
+        verbose_name = 'Модель прогноза урожайности'
+        verbose_name_plural = 'Модели прогноза урожайности'
+        ordering = ['-trained_at']
+        constraints = [
+            # Если scope=region — region обязателен, иначе должен быть null.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(scope='region', region__isnull=False)
+                    | (~models.Q(scope='region') & models.Q(region__isnull=True))
+                ),
+                name='yfm_scope_region_consistent',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['scope', 'crop', 'is_production'], name='yfm_lookup_idx'),
+            models.Index(fields=['region', 'crop', 'is_production'], name='yfm_region_lookup_idx'),
+        ]
+
+    def __str__(self):
+        scope = (
+            f'{self.region.name}' if self.region_id
+            else self.get_scope_display()
+        )
+        flag = ' [PROD]' if self.is_production else ''
+        return f'{scope} / {self.crop} / {self.model_version}{flag} (R²={self.r2_cv:.2f})'
+
+
+class YieldForecast(models.Model):
+    """Прогноз урожайности для (scope × год × культура) на момент времени.
+
+    Может относиться к субъекту (region) или к району (district).
+    При каждом пересчёте новая запись помечается ``is_latest=True``,
+    предыдущая того же (scope, year, crop) — ``False``. Это даёт
+    историю «как уточнялся прогноз в течение сезона».
+    """
+    region = models.ForeignKey(
+        Region, null=True, blank=True, on_delete=models.CASCADE,
+        related_name='yield_forecasts',
+    )
+    district = models.ForeignKey(
+        District, null=True, blank=True, on_delete=models.CASCADE,
+        related_name='yield_forecasts',
+    )
+    year = models.PositiveSmallIntegerField()
+    crop = models.CharField(max_length=20, choices=YieldCrop.choices)
+    forecasted_at = models.DateField(verbose_name='Дата расчёта прогноза')
+    season_progress = models.FloatField(
+        default=0.0,
+        verbose_name='Прогресс сезона (0..1)',
+        help_text='0 = до сева, 1 = после уборки. Эвристика по DOY.',
+    )
+
+    forecast_t_per_ha = models.FloatField(verbose_name='Прогноз, т/га')
+    ci_lower = models.FloatField(
+        verbose_name='Нижняя граница CI80',
+        help_text='10-й перцентиль из bootstrap-остатков модели.',
+    )
+    ci_upper = models.FloatField(verbose_name='Верхняя граница CI80')
+
+    features_used = models.JSONField(
+        verbose_name='Снимок фичей',
+        help_text='Точная копия фичей, на которых построен прогноз — для аудита.',
+    )
+    features_completeness = models.FloatField(
+        default=1.0,
+        verbose_name='Полнота фичей (0..1)',
+        help_text='Доля фичей, заполненных реальными данными (а не fallback-средним).',
+    )
+
+    model = models.ForeignKey(
+        YieldForecastModel, on_delete=models.PROTECT,
+        related_name='forecasts',
+    )
+    is_latest = models.BooleanField(
+        default=True,
+        help_text='Последний прогноз для (scope, year, crop). См. сервис forecast_yield.',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'agro_yield_forecast'
+        verbose_name = 'Прогноз урожайности'
+        verbose_name_plural = 'Прогнозы урожайности'
+        ordering = ['-forecasted_at']
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(region__isnull=False, district__isnull=True)
+                    | models.Q(region__isnull=True, district__isnull=False)
+                ),
+                name='yfc_exactly_one_scope',
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=['region', 'year', 'crop', 'is_latest'],
+                name='yfc_region_latest_idx',
+            ),
+            models.Index(
+                fields=['district', 'year', 'crop', 'is_latest'],
+                name='yfc_district_latest_idx',
+            ),
+            models.Index(fields=['year', 'is_latest'], name='yfc_year_latest_idx'),
+        ]
+
+    def __str__(self):
+        scope = (
+            self.region.name if self.region_id
+            else (self.district.name if self.district_id else '?')
+        )
+        return (
+            f'{scope} / {self.crop} / {self.year}: '
+            f'{self.forecast_t_per_ha:.2f} ± '
+            f'[{self.ci_lower:.2f}; {self.ci_upper:.2f}] т/га '
+            f'(at {self.forecasted_at})'
+        )
