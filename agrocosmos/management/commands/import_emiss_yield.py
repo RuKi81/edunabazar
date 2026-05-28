@@ -50,6 +50,10 @@ _EXCL_PARENTHETICAL_RE = re.compile(r'\s*\(кроме\b.*?\)\s*$', re.IGNORECASE
 # Любая концевая скобка вида «(Адыгея)», «(с 29.07.2016)» и т.п.
 _TAIL_PARENS_RE = re.compile(r'\s*\([^()]*\)\s*$')
 
+# Дефисный «двойник»: «Кемеровская область - Кузбасс» → «Кемеровская область».
+# Сохраняем дефис БЕЗ окружающих пробелов («Северная Осетия-Алания» не трогаем).
+_TAIL_DASH_ALIAS_RE = re.compile(r'\s+-\s+\S.*$')
+
 
 def _normalize_region_name(raw: str) -> str:
     """Подготовить название из XLS к матчингу с ``Region.name``."""
@@ -58,6 +62,17 @@ def _normalize_region_name(raw: str) -> str:
     s = _TAIL_PARENS_RE.sub('', s).strip()
     # Двойные пробелы внутри
     s = re.sub(r'\s+', ' ', s)
+    return s
+
+
+def _normalize_region_name_aggressive(raw: str) -> str:
+    """Более жёсткая нормализация — fallback, когда обычная не сработала.
+
+    Дополнительно убирает «двойное» название через ` - …` суффикс
+    («Кемеровская область - Кузбасс» → «Кемеровская область»).
+    """
+    s = _normalize_region_name(raw)
+    s = _TAIL_DASH_ALIAS_RE.sub('', s).strip()
     return s
 
 
@@ -227,6 +242,9 @@ class Command(BaseCommand):
                 regions_by_name.get(label)
                 or regions_by_name.get(norm)
                 or regions_by_norm.get(norm.lower())
+                # Fallback: убрать « - …» суффикс
+                # («Кемеровская область - Кузбасс» → «Кемеровская область»).
+                or regions_by_norm.get(_normalize_region_name_aggressive(label).lower())
             )
             if region is None:
                 stats['unmatched_regions'].append(label)
