@@ -30,11 +30,13 @@ from django.db import transaction
 
 from agrocosmos.models import YieldCrop, YieldForecastModel
 from agrocosmos.services.yield_model import (
-    compute_regional_baselines, prepare_training_data, train_full_model,
+    compute_regional_baselines, prepare_training_data,
+    train_full_model, train_trivial_model,
 )
 
 
-MODEL_VERSION = 'ridge_v1'
+MODEL_VERSION_RIDGE = 'ridge_v1'
+MODEL_VERSION_TRIVIAL = 'trivial_v1'
 
 
 class Command(BaseCommand):
@@ -58,6 +60,11 @@ class Command(BaseCommand):
             help='Список α для перебора (default: 0.01 0.1 1 3 10 30 100)',
         )
         parser.add_argument(
+            '--trivial', action='store_true',
+            help='Trivial baseline без NDVI-фичей (forecast = regional trend). '
+                 'Используется как honest baseline, когда NDVI-сигнал слаб.',
+        )
+        parser.add_argument(
             '--activate', action='store_true',
             help='Сделать новую модель PRODUCTION (предыдущую снять с прода)',
         )
@@ -70,8 +77,9 @@ class Command(BaseCommand):
         crop = opts['crop']
         version = opts['feature_set_version']
 
+        model_version = MODEL_VERSION_TRIVIAL if opts['trivial'] else MODEL_VERSION_RIDGE
         self.stdout.write(self.style.MIGRATE_HEADING(
-            f'═══ Обучение {MODEL_VERSION} / {crop} (features={version}) ═══'
+            f'═══ Обучение {model_version} / {crop} (features={version}) ═══'
         ))
 
         # ── Подготовка данных ───────────────────────────────────────
@@ -107,17 +115,21 @@ class Command(BaseCommand):
         )
 
         # ── Обучение ────────────────────────────────────────────────
-        result = train_full_model(
-            data, alpha=opts['alpha'], alpha_grid=opts['alpha_grid'],
-        )
+        if opts['trivial']:
+            result = train_trivial_model(data)
+        else:
+            result = train_full_model(
+                data, alpha=opts['alpha'], alpha_grid=opts['alpha_grid'],
+            )
 
         self.stdout.write(self.style.MIGRATE_HEADING('═══ Результат ═══'))
-        if result['alpha_grid_scores']:
+        if result.get('alpha_grid_scores'):
             self.stdout.write('  α grid search (LOYO RMSE на аномалиях):')
             for a, rmse in sorted(result['alpha_grid_scores'].items()):
                 marker = ' ← best' if a == result['alpha'] else ''
                 self.stdout.write(f'    α={a:>7.3f}  rmse={rmse:.4f}{marker}')
-        self.stdout.write(f'  Лучший α: {result["alpha"]}')
+        if result.get('alpha') is not None:
+            self.stdout.write(f'  Лучший α: {result["alpha"]}')
         self.stdout.write('')
         self.stdout.write('  Метрики на обучении:')
         self.stdout.write(f'    R²_train  = {result["r2_train"]:.3f}')
@@ -135,12 +147,15 @@ class Command(BaseCommand):
                 f'    {yr}: n={m["n"]:3d}  rmse={m["rmse"]:.3f}  mae={m["mae"]:.3f}'
             )
         self.stdout.write('')
-        self.stdout.write('  Коэффициенты (на стандартизованных фичах):')
-        for name in result['feature_names']:
-            self.stdout.write(
-                f'    {name:>20s} : {result["coefficients"][name]:+.4f}'
-            )
-        self.stdout.write(f'    {"intercept":>20s} : {result["intercept"]:+.4f}')
+        if result['feature_names']:
+            self.stdout.write('  Коэффициенты (на стандартизованных фичах):')
+            for name in result['feature_names']:
+                self.stdout.write(
+                    f'    {name:>20s} : {result["coefficients"][name]:+.4f}'
+                )
+            self.stdout.write(f'    {"intercept":>20s} : {result["intercept"]:+.4f}')
+        else:
+            self.stdout.write('  Фичи не используются (trivial baseline).')
 
         # ── Сохранение ──────────────────────────────────────────────
         if opts['dry_run']:
@@ -162,7 +177,7 @@ class Command(BaseCommand):
                 scope=YieldForecastModel.Scope.NATIONAL,
                 region=None,
                 crop=crop,
-                model_version=MODEL_VERSION,
+                model_version=model_version,
                 coefficients=result['coefficients'],
                 intercept=result['intercept'],
                 feature_names=result['feature_names'],

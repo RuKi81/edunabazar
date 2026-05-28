@@ -377,6 +377,67 @@ def train_full_model(
     }
 
 
+# ── Trivial baseline (без NDVI-фичей) ────────────────────────────────
+def train_trivial_model(data: dict) -> dict:
+    """Trivial-модель: forecast = regional baseline (линейный тренд по году).
+
+    Не использует NDVI-фичи. Эквивалент «всегда предсказывать аномалию = 0».
+    RMSE_cv ≈ σ(аномалий), R²_cv = 0 по определению.
+
+    Полезна как honest baseline когда NDVI-сигнал слабее baseline-тренда.
+    Сохраняется как полноценная YieldForecastModel с пустыми coefficients,
+    чтобы predict_yield мог её использовать единообразно.
+    """
+    y = data['y']
+    y_actual = data['y_actual']
+    years = data['years']
+
+    # Per-year «predictions» (всегда 0 — это и есть trivial).
+    # residuals = y - 0 = y (аномалия).
+    residuals = y.copy()
+
+    rmse = float(np.sqrt(np.mean(y ** 2)))
+    mae = float(np.mean(np.abs(y)))
+    ss_res = float(np.sum(y ** 2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    # R²=0 если y центрирован вокруг 0; небольшой сдвиг даёт R²<0.
+    r2_cv = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+
+    per_year = {}
+    for yr in sorted(set(years.tolist())):
+        m = (years == yr)
+        per_year[int(yr)] = {
+            'n': int(m.sum()),
+            'rmse': float(np.sqrt(np.mean(y[m] ** 2))),
+            'mae': float(np.mean(np.abs(y[m]))),
+        }
+
+    rmse_pct = float(rmse / y_actual.mean() * 100.0) if y_actual.mean() > 0 else 0.0
+
+    return {
+        'alpha': None,
+        'alpha_grid_scores': None,
+        'feature_names': [],
+        'coefficients': {},
+        'intercept': 0.0,
+        'feature_scaler': {'means': {}, 'stds': {}},
+        'r2_train': r2_cv,
+        'rmse_train': rmse,
+        'r2_cv': r2_cv,
+        'rmse_cv': rmse,
+        'mae_cv': mae,
+        'rmse_pct': rmse_pct,
+        'residuals_cv': residuals.tolist(),
+        'per_year_cv': per_year,
+        'n_samples': int(len(y)),
+        'train_years': sorted(set(years.tolist())),
+        'regional_baselines': {
+            int(rid): {k: v for k, v in bl.items()}
+            for rid, bl in data['baselines'].items()
+        },
+    }
+
+
 # ── Применение модели для прогноза ───────────────────────────────────
 def model_predict(
     features: dict, model_state: dict, region_id: int, year: int,
