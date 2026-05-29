@@ -364,6 +364,45 @@
       <input type="checkbox" id="agro-toggle-farmlands" style="display:none" />
       {% endif %}
 
+      <!-- Yield forecast layer toggle (V1.5) -->
+      <div class="agro-cb-row" style="margin-bottom:2px;">
+        <label>
+          <input type="checkbox" id="agro-toggle-yield" />
+          <span style="font-size:11px;"><i class="material-icons" style="font-size:14px; vertical-align:-2px; color:#558B2F;">grain</i> Прогноз урожайности</span>
+        </label>
+      </div>
+
+      <!-- Yield forecast controls + legend (hidden until toggle is on) -->
+      <div id="agro-yield-controls" style="display:none; margin:4px 0 10px; padding:8px 10px; background:rgba(85,139,47,.06); border:1px solid rgba(85,139,47,.20); border-radius:4px;">
+        <div style="display:flex; gap:6px; margin-bottom:6px;">
+          <select id="agro-yield-crop" class="browser-default" style="flex:1; height:28px; font-size:11px;">
+            <option value="grains_total">Зерновые (всего)</option>
+          </select>
+          <select id="agro-yield-year" class="browser-default" style="width:78px; height:28px; font-size:11px;">
+            <option value="2025" selected>2025</option>
+            <option value="2024">2024</option>
+          </select>
+        </div>
+        <div id="agro-yield-loader" style="display:none; font-size:10px; color:#6d4c41; margin-bottom:4px;">
+          <i class="material-icons" style="font-size:11px; vertical-align:-1px;">hourglass_empty</i> Загрузка прогноза…
+        </div>
+        <div id="agro-yield-meta" style="font-size:10px; color:#555; margin-bottom:6px; line-height:1.35;">—</div>
+        <div style="font-weight:700; margin-bottom:4px; font-size:11px;">Прогноз, т/га</div>
+        <div style="display:flex; flex-direction:column; gap:3px; font-size:10px;">
+          <div><span style="display:inline-block; width:18px; height:12px; background:#004529; vertical-align:middle; margin-right:4px;"></span> &ge; 6.0</div>
+          <div><span style="display:inline-block; width:18px; height:12px; background:#238443; vertical-align:middle; margin-right:4px;"></span> 5.0&nbsp;&ndash;&nbsp;6.0</div>
+          <div><span style="display:inline-block; width:18px; height:12px; background:#78c679; vertical-align:middle; margin-right:4px;"></span> 4.0&nbsp;&ndash;&nbsp;5.0</div>
+          <div><span style="display:inline-block; width:18px; height:12px; background:#c2e699; vertical-align:middle; margin-right:4px;"></span> 3.0&nbsp;&ndash;&nbsp;4.0</div>
+          <div><span style="display:inline-block; width:18px; height:12px; background:#ffffb2; vertical-align:middle; margin-right:4px;"></span> 2.0&nbsp;&ndash;&nbsp;3.0</div>
+          <div><span style="display:inline-block; width:18px; height:12px; background:#fec44f; vertical-align:middle; margin-right:4px;"></span> 1.0&nbsp;&ndash;&nbsp;2.0</div>
+          <div><span style="display:inline-block; width:18px; height:12px; background:#d95f0e; vertical-align:middle; margin-right:4px;"></span> &lt; 1.0</div>
+          <div><span style="display:inline-block; width:18px; height:12px; background:#bdbdbd; vertical-align:middle; margin-right:4px;"></span> нет прогноза</div>
+        </div>
+        <div style="font-size:9px; color:#777; margin-top:6px; line-height:1.3;">
+          Источник: Росстат (ЕМИСС). Базовая модель — региональный тренд.
+        </div>
+      </div>
+
       <!--
         Farmlands info block: stats, crop/usage filters and the bottom legend
         are only meaningful when the farmlands raster layer is active. We
@@ -1224,6 +1263,173 @@
           if (regionBordersLayer.bringToFront) regionBordersLayer.bringToFront();
         });
     });
+
+    /* ── Yield forecast choropleth (V1.5) ──────────────────────────────
+     * Region-level (~80 polygons) sequential YlGn choropleth coloured by
+     * forecast_t_per_ha. Two parallel fetches:
+     *   1. /agrocosmos/api/regions/         — region polygons (cached 1 wk).
+     *   2. /agrocosmos/api/yield/forecast/  — per-region forecast for (year, crop).
+     * The layer is independent of the NDVI choropleth and lives in its own
+     * pane drawn above ``overlayPane`` so subject borders / district NDVI
+     * remain visible underneath if the user keeps them on.
+     */
+    var yieldLayer = null;
+    var yieldForecastById = {};   // region_id -> forecast row
+    var yieldModelMeta = null;    // model metadata (shared across regions)
+
+    // Sequential YlGn (cb-safe). Thresholds match the sidebar legend.
+    function yieldColor(v) {
+      if (v == null || isNaN(v)) return '#bdbdbd';
+      if (v >= 6.0) return '#004529';
+      if (v >= 5.0) return '#238443';
+      if (v >= 4.0) return '#78c679';
+      if (v >= 3.0) return '#c2e699';
+      if (v >= 2.0) return '#ffffb2';
+      if (v >= 1.0) return '#fec44f';
+      return '#d95f0e';
+    }
+
+    function setYieldLoader(show) {
+      var el = document.getElementById('agro-yield-loader');
+      if (el) el.style.display = show ? '' : 'none';
+    }
+
+    function renderYieldMeta(forecastPayload) {
+      var el = document.getElementById('agro-yield-meta');
+      if (!el) return;
+      if (!forecastPayload || !forecastPayload.ok) {
+        el.textContent = '—';
+        return;
+      }
+      var m = forecastPayload.model || {};
+      var s = forecastPayload.summary || {};
+      var modelTxt = (m.version || '—');
+      if (m.rmse_cv_t_per_ha != null) {
+        modelTxt += ' · ±' + m.rmse_cv_t_per_ha.toFixed(2) + ' т/га';
+      }
+      if (m.rmse_pct != null) {
+        modelTxt += ' (' + m.rmse_pct.toFixed(1) + '%)';
+      }
+      var summaryTxt = '';
+      if (s.n_regions != null) {
+        summaryTxt = s.n_regions + ' регионов · ср. '
+          + (s.mean_t_per_ha != null ? s.mean_t_per_ha.toFixed(2) : '—') + ' т/га';
+      }
+      el.innerHTML = '<b>Модель:</b> ' + esc(modelTxt)
+        + (summaryTxt ? '<br>' + esc(summaryTxt) : '');
+    }
+
+    function yieldPopupHtml(props, fc) {
+      // ``fc`` is the forecast row for this region (may be undefined).
+      var title = '<b>' + esc(props.name) + '</b>';
+      if (!fc) {
+        return title + '<br><span style="color:#888;">Нет прогноза для этого региона.</span>';
+      }
+      var val = (fc.forecast_t_per_ha != null) ? fc.forecast_t_per_ha.toFixed(2) : '—';
+      var lo = (fc.ci_lower != null) ? fc.ci_lower.toFixed(2) : null;
+      var hi = (fc.ci_upper != null) ? fc.ci_upper.toFixed(2) : null;
+      var ci = (lo != null && hi != null) ? ' <span style="color:#666;">(95% CI: ' + lo + '–' + hi + ')</span>' : '';
+      var base = (fc.baseline_t_per_ha != null) ? fc.baseline_t_per_ha.toFixed(2) : null;
+      var anom = (fc.anomaly_t_per_ha != null && fc.anomaly_t_per_ha !== 0)
+        ? ' · аномалия ' + (fc.anomaly_t_per_ha > 0 ? '+' : '') + fc.anomaly_t_per_ha.toFixed(2)
+        : '';
+      var mv = (fc.model && fc.model.version) ? fc.model.version : '';
+      var rmse = (fc.model && fc.model.rmse_cv_t_per_ha != null)
+        ? ' · RMSE ±' + fc.model.rmse_cv_t_per_ha.toFixed(2) : '';
+      return title
+        + '<br><span style="font-size:13px;"><b>' + val + ' т/га</b>' + ci + '</span>'
+        + (base != null ? '<br><span style="color:#666; font-size:11px;">Базовая линия: ' + base + ' т/га' + anom + '</span>' : '')
+        + '<br><span style="color:#888; font-size:11px;">Год: ' + fc.year + ' · ' + esc(mv) + rmse + '</span>';
+    }
+
+    function buildYieldLayer(regionsFC) {
+      if (yieldLayer) { map.removeLayer(yieldLayer); yieldLayer = null; }
+      yieldLayer = L.geoJSON(regionsFC, {
+        style: function (f) {
+          var fc = yieldForecastById[(f.properties || {}).id];
+          var v = fc ? fc.forecast_t_per_ha : null;
+          return {
+            color: '#555', weight: 0.6,
+            fillColor: yieldColor(v), fillOpacity: fc ? 0.78 : 0.25,
+          };
+        },
+        onEachFeature: function (f, layer) {
+          var props = f.properties || {};
+          var fc = yieldForecastById[props.id];
+          layer.bindTooltip(props.name + (fc && fc.forecast_t_per_ha != null
+            ? ' — ' + fc.forecast_t_per_ha.toFixed(2) + ' т/га' : ''),
+            { sticky: true, direction: 'top' });
+          layer.bindPopup(yieldPopupHtml(props, fc), { maxWidth: 280 });
+        },
+      }).addTo(map);
+      // Keep subject borders (if toggled) on top of the choropleth fill.
+      if (regionBordersLayer && regionBordersLayer.bringToFront) {
+        regionBordersLayer.bringToFront();
+      }
+    }
+
+    function loadYieldChoropleth() {
+      var cropSel = document.getElementById('agro-yield-crop');
+      var yearSel = document.getElementById('agro-yield-year');
+      var crop = cropSel ? cropSel.value : 'grains_total';
+      var year = yearSel ? yearSel.value : '2025';
+
+      setYieldLoader(true);
+      var regionsPromise = fetch('/agrocosmos/api/regions/')
+        .then(function (r) { return r.json(); });
+      var forecastPromise = fetch(
+        '/agrocosmos/api/yield/forecast/?year=' + encodeURIComponent(year)
+        + '&crop=' + encodeURIComponent(crop)
+      ).then(function (r) { return r.json(); });
+
+      Promise.all([regionsPromise, forecastPromise])
+        .then(function (results) {
+          var regionsFC = results[0];
+          var forecastPayload = results[1];
+          yieldForecastById = {};
+          if (forecastPayload && forecastPayload.ok && forecastPayload.forecasts) {
+            forecastPayload.forecasts.forEach(function (fc) {
+              if (fc && fc.region_id != null) yieldForecastById[fc.region_id] = fc;
+            });
+            yieldModelMeta = forecastPayload.model || null;
+          } else {
+            yieldModelMeta = null;
+          }
+          renderYieldMeta(forecastPayload);
+          if (regionsFC && regionsFC.features) {
+            buildYieldLayer(regionsFC);
+          }
+        })
+        .catch(function (err) {
+          console.error('Yield choropleth load error:', err);
+          renderYieldMeta(null);
+        })
+        .then(function () { setYieldLoader(false); });
+    }
+
+    document.getElementById('agro-toggle-yield').addEventListener('change', function () {
+      var controls = document.getElementById('agro-yield-controls');
+      if (this.checked) {
+        if (controls) controls.style.display = '';
+        loadYieldChoropleth();
+      } else {
+        if (controls) controls.style.display = 'none';
+        if (yieldLayer) { map.removeLayer(yieldLayer); yieldLayer = null; }
+        yieldForecastById = {};
+        yieldModelMeta = null;
+      }
+    });
+
+    // Crop / year changes reload the layer if the toggle is active.
+    var _yieldReload = function () {
+      if (document.getElementById('agro-toggle-yield').checked) {
+        loadYieldChoropleth();
+      }
+    };
+    var _yieldCropSel = document.getElementById('agro-yield-crop');
+    var _yieldYearSel = document.getElementById('agro-yield-year');
+    if (_yieldCropSel) _yieldCropSel.addEventListener('change', _yieldReload);
+    if (_yieldYearSel) _yieldYearSel.addEventListener('change', _yieldReload);
 
     /* ── Checkbox: Границы угодий (MVT) ────────── */
     var cropColors = {
