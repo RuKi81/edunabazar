@@ -1378,9 +1378,15 @@
       setYieldLoader(true);
       var regionsPromise = fetch('/agrocosmos/api/regions/')
         .then(function (r) { return r.json(); });
+      // Cache-buster: forecasts могут пересчитываться чаще чем CF max-age
+      // (1 ч). Без него после каждого ``predict_yield`` фронт продолжает
+      // получать устаревший пустой ответ. Шаг 60 с — компромисс между
+      // свежестью и попаданием в кэш при перерисовке слоя.
+      var bust = Math.floor(Date.now() / 60000);
       var forecastPromise = fetch(
         '/agrocosmos/api/yield/forecast/?year=' + encodeURIComponent(year)
         + '&crop=' + encodeURIComponent(crop)
+        + '&_=' + bust
       ).then(function (r) { return r.json(); });
 
       Promise.all([regionsPromise, forecastPromise])
