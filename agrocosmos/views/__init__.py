@@ -40,6 +40,11 @@ from .reports import (
     api_report_district,
     _ndvi_assessment,
 )
+from .yield_forecast import (
+    api_yield_forecast,
+    api_yield_forecast_region,
+    api_yield_models,
+)
 from .cabinet import me_agrocosmos
 
 __all__ = [
@@ -57,6 +62,8 @@ __all__ = [
     'api_raster_composites',
     # reports
     'api_report_region', 'api_report_district',
+    # yield forecast
+    'api_yield_forecast', 'api_yield_forecast_region', 'api_yield_models',
     # cabinet
     'me_agrocosmos',
     # private helpers (exported for tests / legacy callers)
