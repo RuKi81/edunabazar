@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import datetime as _dt
 
 from django.core.management.base import BaseCommand
@@ -28,6 +29,19 @@ from agrocosmos.models import (
 )
 from agrocosmos.services.yield_features import SEASON_DOY_END, SEASON_DOY_START
 from agrocosmos.services.yield_model import model_predict
+
+
+@dataclasses.dataclass
+class _SyntheticYF:
+    """In-memory stand-in for ``YieldFeatures`` used by the trivial-model
+    fallback path. Only fields actually read by ``predict_yield`` are
+    populated — ``region``, ``region_id`` and an empty ``features`` dict.
+    The trivial model ignores ``features`` (no NDVI-coefficients), so this
+    is sufficient to drive the prediction loop and the persistence step.
+    """
+    region: object
+    region_id: int
+    features: dict
 
 
 class Command(BaseCommand):
@@ -102,6 +116,29 @@ class Command(BaseCommand):
 
         yf_list = list(yf_qs)
         self.stdout.write(f'YieldFeatures найдено: {len(yf_list)}')
+
+        # Trivial-модель (feature_names == []) не использует NDVI-фичи —
+        # прогноз = baseline по году. Если YieldFeatures для запрошенного
+        # года ещё не посчитаны (типичный сценарий для текущего года, где
+        # сезон не завершён), генерируем синтетический список из самих
+        # регионов, для которых известна baseline. Это позволяет получить
+        # ранний прогноз тренда сразу после обновления EMISS-данных.
+        if not yf_list and not model.feature_names:
+            rb = model_state.get('regional_baselines') or {}
+            baseline_ids = {int(k) for k in rb.keys()}
+            regions_qs = Region.objects.filter(id__in=baseline_ids)
+            if opts['region']:
+                regions_qs = regions_qs.filter(name=opts['region']) | \
+                             regions_qs.filter(code=opts['region'])
+            yf_list = [
+                _SyntheticYF(region=r, region_id=r.id, features={})
+                for r in regions_qs
+            ]
+            self.stdout.write(self.style.WARNING(
+                f'  [trivial-fallback] YieldFeatures отсутствуют — '
+                f'итерируем по {len(yf_list)} регионам с известной baseline.'
+            ))
+
         if not yf_list:
             return
 

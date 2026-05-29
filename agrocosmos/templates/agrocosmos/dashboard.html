@@ -379,7 +379,8 @@
             <option value="grains_total">Зерновые (всего)</option>
           </select>
           <select id="agro-yield-year" class="browser-default" style="width:78px; height:28px; font-size:11px;">
-            <option value="2025" selected>2025</option>
+            <option value="2026" selected>2026</option>
+            <option value="2025">2025</option>
             <option value="2024">2024</option>
           </select>
         </div>
@@ -1350,7 +1351,7 @@
           var v = fc ? fc.forecast_t_per_ha : null;
           return {
             color: '#555', weight: 0.6,
-            fillColor: yieldColor(v), fillOpacity: fc ? 0.78 : 0.25,
+            fillColor: yieldColor(v), fillOpacity: fc ? 1.0 : 0.25,
           };
         },
         onEachFeature: function (f, layer) {
@@ -1372,7 +1373,7 @@
       var cropSel = document.getElementById('agro-yield-crop');
       var yearSel = document.getElementById('agro-yield-year');
       var crop = cropSel ? cropSel.value : 'grains_total';
-      var year = yearSel ? yearSel.value : '2025';
+      var year = yearSel ? yearSel.value : '2026';
 
       setYieldLoader(true);
       var regionsPromise = fetch('/agrocosmos/api/regions/')
