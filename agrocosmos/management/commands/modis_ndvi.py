@@ -394,7 +394,15 @@ class Command(BaseCommand):
             try:
                 self.stdout.write('\n📌 Refreshing district NDVI status cache…')
                 from django.core.management import call_command
-                call_command('recompute_district_ndvi_status', stdout=self.stdout)
+                # Scope the upsert to the region we just ingested — no
+                # point rescanning the other 84 regions' VI rows when we
+                # only changed this one. The post-steps (GeoJSON refresh,
+                # series, prewarm) still run once and cover everything.
+                call_command(
+                    'recompute_district_ndvi_status',
+                    region_id=region_id,
+                    stdout=self.stdout,
+                )
             except Exception as exc:
                 self.stderr.write(self.style.WARNING(
                     f'  district status refresh failed (non-fatal): {exc}'
