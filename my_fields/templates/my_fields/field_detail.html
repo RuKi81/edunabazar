@@ -1,0 +1,408 @@
+{% extends 'legacy/base.html' %}
+{% load static %}
+
+{% block title %}{{ field.name }} — Моё поле{% endblock %}
+
+{% block head %}
+  {% include 'legacy/_cabinet_styles.html' %}
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    .myf-detail-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+    }
+    @media (max-width: 900px) { .myf-detail-grid { grid-template-columns: 1fr; } }
+    #myf-detail-map {
+      height: 360px; border-radius: 10px; overflow: hidden;
+      border: 1px solid var(--cab-border); background: #eef3f7;
+    }
+    .myf-stat {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+      margin-top: 10px;
+    }
+    .myf-stat .stat {
+      background: #f9fafb; border: 1px solid var(--cab-border);
+      border-radius: 8px; padding: 10px 12px;
+    }
+    .myf-stat .stat .lbl { color: var(--cab-muted); font-size: 11px;
+      text-transform: uppercase; letter-spacing: .4px; font-weight: 600; }
+    .myf-stat .stat .val { font-size: 15px; color: var(--cab-text); margin-top: 4px; font-weight: 500; }
+
+    .myf-journal-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin: 22px 0 12px;
+    }
+    .myf-journal-header h3 { margin: 0; font-size: 16px; }
+
+    .myf-event {
+      border: 1px solid var(--cab-border); border-radius: 8px;
+      padding: 12px 14px; margin-bottom: 10px; background: #fff;
+    }
+    .myf-event .top {
+      display: flex; justify-content: space-between; align-items: baseline;
+      margin-bottom: 4px;
+    }
+    .myf-event .ev-type {
+      display: inline-block; padding: 2px 10px; border-radius: 12px;
+      background: var(--cab-accent-soft, #e8f5e9); color: var(--cab-accent, #2e7d32);
+      font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.4px;
+    }
+    .myf-event .ev-date { color: var(--cab-muted); font-size: 12px; }
+    .myf-event .ev-title { font-weight: 600; font-size: 14px; margin-bottom: 2px; }
+    .myf-event .ev-desc { color: var(--cab-text); font-size: 13px; white-space: pre-wrap; }
+    .myf-event .ev-meta { color: var(--cab-muted); font-size: 12px; margin-top: 4px; }
+    .myf-event .ev-actions { margin-top: 6px; }
+    .myf-event .ev-actions button {
+      background: none; border: 0; color: #c62828; cursor: pointer;
+      font-size: 12px; padding: 0;
+    }
+
+    .myf-fab {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--cab-accent, #2e7d32); color: #fff;
+      border: 0; padding: 7px 12px; border-radius: 6px;
+      cursor: pointer; font-size: 13px;
+    }
+    .myf-fab:hover { filter: brightness(0.95); }
+    .btn-sec {
+      background: #f1f3f5; color: var(--cab-text); border: 0;
+      padding: 7px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;
+    }
+    .danger { background: #fff; color: #c62828; border: 1px solid #f4cdcd; }
+
+    /* Modal (reused from list page) */
+    .myf-modal-bg {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+      display: none; align-items: center; justify-content: center; z-index: 9999;
+    }
+    .myf-modal-bg.open { display: flex; }
+    .myf-modal {
+      background: #fff; border-radius: 10px; padding: 22px 24px;
+      width: 100%; max-width: 460px; box-shadow: 0 12px 40px rgba(0,0,0,0.25);
+    }
+    .myf-modal h3 { margin: 0 0 14px; font-size: 17px; }
+    .myf-modal label { display: block; margin: 10px 0 4px;
+      font-size: 11px; font-weight: 600; color: var(--cab-muted);
+      text-transform: uppercase; letter-spacing: 0.5px; }
+    .myf-modal input, .myf-modal select, .myf-modal textarea {
+      width: 100%; padding: 8px 10px; border: 1px solid var(--cab-border);
+      border-radius: 6px; font-size: 14px; box-sizing: border-box;
+      background: #fff; color: var(--cab-text);
+    }
+    .myf-modal .actions {
+      display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px;
+    }
+    .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+    .myf-toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: #333; color: #fff; padding: 10px 16px; border-radius: 6px;
+      font-size: 14px; opacity: 0; transition: opacity .25s; z-index: 10000;
+      pointer-events: none;
+    }
+    .myf-toast.show { opacity: 1; }
+    .myf-toast.error { background: #c62828; }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <h1 style="font-size: 26px; font-weight: 600; margin: 8px 0 4px;">Личный кабинет</h1>
+  <p style="color:var(--cab-muted); margin: 0 0 8px; font-size: 14px;">
+    <a href="{% url 'my_fields:ui_fields_list' %}" style="color: inherit;">← Все мои поля</a>
+  </p>
+
+  <div class="cab-layout">
+    {% include 'legacy/_cabinet_sidebar.html' %}
+
+    <div class="cab-main">
+      <section class="cab-section">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap: 12px; flex-wrap: wrap;">
+          <div>
+            <h2 style="margin: 0;">🌾 {{ field.name }}</h2>
+            <p class="cab-sub" style="margin: 4px 0 0;">
+              {{ field.get_crop_type_display }}
+              {% if field.region %} · {{ field.region.name }}{% endif %}
+              {% if field.district %} · {{ field.district.name }}{% endif %}
+            </p>
+          </div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn-sec" type="button" id="myf-edit-btn">Редактировать</button>
+            <button class="danger" type="button" id="myf-delete-btn">Удалить</button>
+          </div>
+        </div>
+
+        <div class="myf-detail-grid" style="margin-top: 16px;">
+          <div id="myf-detail-map"></div>
+          <div>
+            <div class="myf-stat">
+              <div class="stat"><div class="lbl">Площадь</div><div class="val">{{ field.area_ha|floatformat:2 }} га</div></div>
+              <div class="stat"><div class="lbl">Тип угодья</div><div class="val">{{ field.get_crop_type_display }}</div></div>
+              <div class="stat"><div class="lbl">Субъект</div><div class="val">{{ field.region.name|default:"—" }}</div></div>
+              <div class="stat"><div class="lbl">Район</div><div class="val">{{ field.district.name|default:"—" }}</div></div>
+              <div class="stat"><div class="lbl">Кадастр</div><div class="val">{{ field.cadastral_number|default:"—" }}</div></div>
+              <div class="stat"><div class="lbl">Создано</div><div class="val">{{ field.created_at|date:"d.m.Y" }}</div></div>
+            </div>
+            {% if field.notes %}
+              <div style="margin-top:12px; padding: 10px 12px; background: #fffdf3; border: 1px solid #f0e7c1; border-radius: 8px; font-size: 13px;">
+                {{ field.notes|linebreaksbr }}
+              </div>
+            {% endif %}
+          </div>
+        </div>
+
+        <!-- Journal -->
+        <div class="myf-journal-header">
+          <h3>Журнал событий</h3>
+          <button class="myf-fab" type="button" id="myf-add-event-btn">+ Добавить событие</button>
+        </div>
+        <div id="myf-events">
+          <div style="color: var(--cab-muted); font-size: 13px;">Загрузка…</div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- Event modal -->
+  <div class="myf-modal-bg" id="myf-event-modal">
+    <div class="myf-modal">
+      <h3 id="myf-event-modal-title">Новое событие</h3>
+      <div class="row2">
+        <div>
+          <label>Тип события</label>
+          <select id="ev-type">
+            <option value="sowing">Сев</option>
+            <option value="fertilize">Внесение удобрений</option>
+            <option value="protect">Обработка СЗР</option>
+            <option value="tillage">Обработка почвы</option>
+            <option value="irrigate">Полив</option>
+            <option value="scout">Осмотр / разведка</option>
+            <option value="issue">Проблема</option>
+            <option value="harvest">Уборка</option>
+            <option value="soil_test">Анализ почвы</option>
+            <option value="other">Прочее</option>
+          </select>
+        </div>
+        <div>
+          <label>Дата</label>
+          <input type="date" id="ev-date">
+        </div>
+      </div>
+      <label>Заголовок</label>
+      <input type="text" id="ev-title" placeholder="Например: внесение аммофоса" maxlength="180">
+      <label>Описание</label>
+      <textarea id="ev-desc" rows="3"></textarea>
+      <div class="row2">
+        <div>
+          <label>Препарат / удобрение</label>
+          <input type="text" id="ev-product" maxlength="180">
+        </div>
+        <div>
+          <label>Затраты, ₽</label>
+          <input type="number" id="ev-cost" step="0.01">
+        </div>
+      </div>
+      <div class="row2">
+        <div>
+          <label>Количество</label>
+          <input type="number" id="ev-qty" step="0.01">
+        </div>
+        <div>
+          <label>Ед. изм.</label>
+          <input type="text" id="ev-qty-unit" placeholder="кг/га, л/га..." maxlength="20">
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn-sec" type="button" id="ev-cancel">Отмена</button>
+        <button class="myf-fab" type="button" id="ev-save">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Field edit modal -->
+  <div class="myf-modal-bg" id="myf-field-modal">
+    <div class="myf-modal">
+      <h3>Редактировать поле</h3>
+      <label>Название</label>
+      <input type="text" id="f-name" maxlength="120" value="{{ field.name }}">
+      <label>Тип угодья</label>
+      <select id="f-crop">
+        {% for code, label in field.CropType.choices %}
+          <option value="{{ code }}" {% if code == field.crop_type %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+      <label>Кадастровый номер</label>
+      <input type="text" id="f-cad" maxlength="50" value="{{ field.cadastral_number }}">
+      <label>Заметки</label>
+      <textarea id="f-notes" rows="3">{{ field.notes }}</textarea>
+      <div class="actions">
+        <button class="btn-sec" type="button" id="f-cancel">Отмена</button>
+        <button class="myf-fab" type="button" id="f-save">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="myf-toast" id="myf-toast"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script id="myf-geom" type="application/json">{{ field.geom.geojson|safe }}</script>
+  <script>
+  (function() {
+    var FIELD_ID = {{ field.id }};
+
+    function getCookie(name) {
+      var v = document.cookie.split('; ').find(function(r){ return r.indexOf(name+'=')===0; });
+      return v ? decodeURIComponent(v.split('=')[1]) : '';
+    }
+    var CSRF = getCookie('csrftoken');
+
+    function toast(msg, isErr) {
+      var t = document.getElementById('myf-toast');
+      t.textContent = msg;
+      t.className = 'myf-toast show' + (isErr ? ' error' : '');
+      setTimeout(function() { t.className = 'myf-toast'; }, 3500);
+    }
+    function escapeHTML(s) {
+      return String(s || '').replace(/[&<>"']/g, function(c) {
+        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+      });
+    }
+
+    // ── Map ──
+    var map = L.map('myf-detail-map', { zoomControl: true, scrollWheelZoom: false });
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap', maxZoom: 19,
+    }).addTo(map);
+    var geom = JSON.parse(document.getElementById('myf-geom').textContent);
+    var layer = L.geoJSON(geom, { style: { color: '#2e7d32', weight: 2, fillOpacity: 0.20 } }).addTo(map);
+    map.fitBounds(layer.getBounds(), { padding: [20, 20], maxZoom: 14 });
+
+    // ── Events ──
+    function loadEvents() {
+      fetch('/api/my/fields/' + FIELD_ID + '/events/', { credentials: 'same-origin' })
+        .then(function(r){ return r.json(); })
+        .then(renderEvents)
+        .catch(function(e){ toast('Не удалось загрузить журнал', true); });
+    }
+    function renderEvents(data) {
+      var el = document.getElementById('myf-events');
+      var events = data.results || [];
+      if (events.length === 0) {
+        el.innerHTML = '<div style="color: var(--cab-muted); font-size: 13px;">' +
+          'Пока нет записей. Добавьте первое событие.</div>';
+        return;
+      }
+      el.innerHTML = events.map(function(e) {
+        var d = new Date(e.event_date).toLocaleDateString('ru-RU',
+          { day:'2-digit', month:'long', year:'numeric' });
+        var meta = [];
+        if (e.product_name) meta.push('Препарат: ' + escapeHTML(e.product_name));
+        if (e.quantity != null) meta.push('Кол-во: ' + e.quantity + ' ' + escapeHTML(e.quantity_unit || ''));
+        if (e.cost_rub != null) meta.push('Затраты: ' + e.cost_rub + ' ₽');
+        return '<div class="myf-event" data-id="'+e.id+'">' +
+          '<div class="top">' +
+            '<span class="ev-type">' + escapeHTML(e.event_type_display) + '</span>' +
+            '<span class="ev-date">' + d + '</span>' +
+          '</div>' +
+          (e.title ? '<div class="ev-title">' + escapeHTML(e.title) + '</div>' : '') +
+          (e.description ? '<div class="ev-desc">' + escapeHTML(e.description) + '</div>' : '') +
+          (meta.length ? '<div class="ev-meta">' + meta.join(' · ') + '</div>' : '') +
+          '<div class="ev-actions"><button data-del="'+e.id+'">Удалить</button></div>' +
+        '</div>';
+      }).join('');
+      el.querySelectorAll('button[data-del]').forEach(function(b) {
+        b.addEventListener('click', function() { deleteEvent(b.getAttribute('data-del')); });
+      });
+    }
+    function deleteEvent(id) {
+      if (!confirm('Удалить запись?')) return;
+      fetch('/api/my/fields/' + FIELD_ID + '/events/' + id + '/', {
+        method: 'DELETE', credentials: 'same-origin',
+        headers: { 'X-CSRFToken': CSRF },
+      }).then(function(r){
+        if (r.ok) { toast('Удалено'); loadEvents(); }
+        else toast('Ошибка удаления', true);
+      });
+    }
+
+    // ── Event modal ──
+    document.getElementById('myf-add-event-btn').addEventListener('click', function() {
+      document.getElementById('ev-date').value = new Date().toISOString().slice(0,10);
+      ['ev-title','ev-desc','ev-product','ev-cost','ev-qty','ev-qty-unit'].forEach(function(id){
+        document.getElementById(id).value = '';
+      });
+      document.getElementById('ev-type').value = 'scout';
+      document.getElementById('myf-event-modal').classList.add('open');
+    });
+    document.getElementById('ev-cancel').addEventListener('click', function() {
+      document.getElementById('myf-event-modal').classList.remove('open');
+    });
+    document.getElementById('ev-save').addEventListener('click', function() {
+      var body = {
+        event_type: document.getElementById('ev-type').value,
+        event_date: document.getElementById('ev-date').value,
+        title: document.getElementById('ev-title').value.trim(),
+        description: document.getElementById('ev-desc').value.trim(),
+        product_name: document.getElementById('ev-product').value.trim(),
+        quantity: parseFloat(document.getElementById('ev-qty').value) || null,
+        quantity_unit: document.getElementById('ev-qty-unit').value.trim(),
+        cost_rub: parseFloat(document.getElementById('ev-cost').value) || null,
+      };
+      if (!body.event_type || !body.event_date) {
+        toast('Заполните тип и дату', true); return;
+      }
+      fetch('/api/my/fields/' + FIELD_ID + '/events/', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+        body: JSON.stringify(body),
+      }).then(function(r){ return r.json().then(function(d){ return {s:r.status,d:d}; }); })
+        .then(function(res){
+          if (res.s === 201) {
+            toast('Событие добавлено');
+            document.getElementById('myf-event-modal').classList.remove('open');
+            loadEvents();
+          } else { toast(res.d.detail || res.d.error || 'Ошибка', true); }
+        });
+    });
+
+    // ── Edit field ──
+    document.getElementById('myf-edit-btn').addEventListener('click', function() {
+      document.getElementById('myf-field-modal').classList.add('open');
+    });
+    document.getElementById('f-cancel').addEventListener('click', function() {
+      document.getElementById('myf-field-modal').classList.remove('open');
+    });
+    document.getElementById('f-save').addEventListener('click', function() {
+      var body = {
+        properties: {
+          name: document.getElementById('f-name').value.trim(),
+          crop_type: document.getElementById('f-crop').value,
+          cadastral_number: document.getElementById('f-cad').value.trim(),
+          notes: document.getElementById('f-notes').value,
+        },
+      };
+      fetch('/api/my/fields/' + FIELD_ID + '/', {
+        method: 'PATCH', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+        body: JSON.stringify(body),
+      }).then(function(r){
+        if (r.ok) { toast('Сохранено'); setTimeout(function(){ location.reload(); }, 600); }
+        else toast('Ошибка сохранения', true);
+      });
+    });
+
+    // ── Delete field ──
+    document.getElementById('myf-delete-btn').addEventListener('click', function() {
+      if (!confirm('Удалить поле «{{ field.name|escapejs }}» и весь его журнал? Действие необратимо.')) return;
+      fetch('/api/my/fields/' + FIELD_ID + '/', {
+        method: 'DELETE', credentials: 'same-origin',
+        headers: { 'X-CSRFToken': CSRF },
+      }).then(function(r){
+        if (r.ok) { window.location.href = "{% url 'my_fields:ui_fields_list' %}"; }
+        else toast('Ошибка удаления', true);
+      });
+    });
+
+    loadEvents();
+  })();
+  </script>
+{% endblock %}

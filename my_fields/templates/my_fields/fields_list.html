@@ -1,0 +1,370 @@
+{% extends 'legacy/base.html' %}
+{% load static %}
+
+{% block title %}Мои поля — Агрокабинет{% endblock %}
+{% block meta_description %}Цифровка ваших угодий, агрожурнал, мониторинг NDVI.{% endblock %}
+
+{% block head %}
+  {% include 'legacy/_cabinet_styles.html' %}
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css">
+  <style>
+    .myf-toolbar {
+      display: flex; justify-content: space-between; align-items: center;
+      flex-wrap: wrap; gap: 10px; margin-bottom: 16px;
+    }
+    .myf-toolbar .myf-quota {
+      color: var(--cab-muted); font-size: 12px;
+    }
+    .myf-layout {
+      display: grid; grid-template-columns: 1fr 360px;
+      gap: 16px; align-items: stretch;
+    }
+    @media (max-width: 900px) { .myf-layout { grid-template-columns: 1fr; } }
+    #myf-map {
+      height: 560px; border-radius: 10px; overflow: hidden;
+      border: 1px solid var(--cab-border); background: #eef3f7;
+    }
+    .myf-side {
+      border: 1px solid var(--cab-border); border-radius: 10px;
+      background: #fff; padding: 0; overflow: hidden;
+      display: flex; flex-direction: column; max-height: 560px;
+    }
+    .myf-side-header {
+      padding: 12px 14px; border-bottom: 1px solid var(--cab-border);
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 13px; font-weight: 600; color: var(--cab-text);
+      background: #f9fafb;
+    }
+    .myf-side-list { flex: 1; overflow-y: auto; }
+    .myf-field-row {
+      padding: 12px 14px; border-bottom: 1px solid var(--cab-border);
+      cursor: pointer; transition: background .12s;
+    }
+    .myf-field-row:hover { background: #f5f9fc; }
+    .myf-field-row.active { background: var(--cab-accent-soft, #e3f2fd); }
+    .myf-field-name { font-weight: 600; font-size: 14px; color: var(--cab-text); }
+    .myf-field-meta { color: var(--cab-muted); font-size: 12px; margin-top: 2px; }
+    .myf-empty { padding: 24px; text-align: center; color: var(--cab-muted); font-size: 13px; }
+
+    .myf-fab {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--cab-accent, #2e7d32); color: #fff;
+      border: 0; padding: 8px 14px; border-radius: 6px;
+      cursor: pointer; font-size: 13px; font-weight: 500;
+    }
+    .myf-fab:hover { filter: brightness(0.95); }
+    .myf-fab.cancel { background: #c62828; }
+
+    /* Modal */
+    .myf-modal-bg {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+      display: none; align-items: center; justify-content: center; z-index: 9999;
+    }
+    .myf-modal-bg.open { display: flex; }
+    .myf-modal {
+      background: #fff; border-radius: 10px; padding: 22px 24px;
+      width: 100%; max-width: 440px; box-shadow: 0 12px 40px rgba(0,0,0,0.25);
+    }
+    .myf-modal h3 { margin: 0 0 14px; font-size: 17px; }
+    .myf-modal label { display: block; margin: 10px 0 4px;
+      font-size: 11px; font-weight: 600; color: var(--cab-muted);
+      text-transform: uppercase; letter-spacing: 0.5px; }
+    .myf-modal input, .myf-modal select, .myf-modal textarea {
+      width: 100%; padding: 8px 10px; border: 1px solid var(--cab-border);
+      border-radius: 6px; font-size: 14px; box-sizing: border-box;
+      background: #fff; color: var(--cab-text);
+    }
+    .myf-modal .area-info {
+      background: #f0f7ff; border: 1px solid #d6e7f5;
+      padding: 8px 12px; border-radius: 6px; font-size: 13px;
+      color: #1565c0; margin-top: 8px;
+    }
+    .myf-modal .actions {
+      display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px;
+    }
+    .myf-modal .btn-sec {
+      background: #f1f3f5; color: var(--cab-text); border: 0;
+      padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
+    }
+    .myf-toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: #333; color: #fff; padding: 10px 16px; border-radius: 6px;
+      font-size: 14px; opacity: 0; transition: opacity .25s; z-index: 10000;
+      pointer-events: none;
+    }
+    .myf-toast.show { opacity: 1; }
+    .myf-toast.error { background: #c62828; }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <h1 style="font-size: 26px; font-weight: 600; margin: 8px 0 4px;">Личный кабинет</h1>
+  <p style="color:var(--cab-muted); margin: 0 0 8px; font-size: 14px;">
+    Управляйте угодьями, ведите журнал агроопераций.
+  </p>
+
+  <div class="cab-layout">
+    {% include 'legacy/_cabinet_sidebar.html' %}
+
+    <div class="cab-main">
+      <section class="cab-section">
+        <h2>🌾 Мои поля</h2>
+        <p class="cab-sub">
+          Нарисуйте границы поля на карте — мы автоматически посчитаем площадь
+          и привяжем регион. По каждому полю ведётся журнал агроопераций.
+        </p>
+
+        <div class="myf-toolbar">
+          <div>
+            <button id="myf-draw-btn" class="myf-fab" type="button">
+              <span>+</span> <span>Добавить поле</span>
+            </button>
+          </div>
+          <div class="myf-quota">
+            Тариф: <strong>{{ plan.name|default:"Бесплатный" }}</strong>
+            · Полей: {{ fields_count }}{% if plan.max_fields %} из {{ plan.max_fields }}{% endif %}
+            {% if plan.max_total_area_ha %} · Лимит площади: {{ plan.max_total_area_ha|floatformat:0 }} га{% endif %}
+          </div>
+        </div>
+
+        <div class="myf-layout">
+          <div id="myf-map"></div>
+
+          <div class="myf-side">
+            <div class="myf-side-header">
+              <span>Угодья</span>
+              <span id="myf-side-count" style="color: var(--cab-muted); font-weight: 400;"></span>
+            </div>
+            <div class="myf-side-list" id="myf-side-list">
+              <div class="myf-empty">Загрузка…</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ── Modal for new field ── -->
+  <div class="myf-modal-bg" id="myf-modal">
+    <div class="myf-modal">
+      <h3>Новое поле</h3>
+      <div class="area-info" id="myf-modal-area">Площадь: — га</div>
+      <label for="myf-name">Название</label>
+      <input id="myf-name" type="text" placeholder="Поле №3 у реки" maxlength="120">
+
+      <label for="myf-crop">Тип угодья</label>
+      <select id="myf-crop">
+        <option value="arable" selected>Пашня</option>
+        <option value="fallow">Залежь</option>
+        <option value="hayfield">Сенокос</option>
+        <option value="pasture">Пастбище</option>
+        <option value="perennial">Многолетние насаждения</option>
+        <option value="garden">Сад / огород</option>
+        <option value="other">Прочее</option>
+      </select>
+
+      <label for="myf-notes">Заметки (необязательно)</label>
+      <textarea id="myf-notes" rows="2" maxlength="1000"></textarea>
+
+      <div class="actions">
+        <button class="btn-sec" type="button" id="myf-cancel">Отмена</button>
+        <button class="myf-fab" type="button" id="myf-save">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="myf-toast" id="myf-toast"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <script>
+  (function() {
+    // ─── CSRF: пробрасываем из cookie ───
+    function getCookie(name) {
+      var v = document.cookie.split('; ').find(function(r){ return r.indexOf(name+'=')===0; });
+      return v ? decodeURIComponent(v.split('=')[1]) : '';
+    }
+    var CSRF = getCookie('csrftoken');
+
+    var DETAIL_URL = "{% url 'my_fields:ui_field_detail' 0 %}".replace('/0/', '/');
+
+    // ─── Map ───
+    var map = L.map('myf-map', { zoomControl: true }).setView([55.75, 37.62], 9);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap',
+      maxZoom: 19,
+    }).addTo(map);
+
+    var drawnItems = L.featureGroup().addTo(map);
+    var fieldsLayer = L.featureGroup().addTo(map);
+
+    var drawControl = new L.Control.Draw({
+      draw: {
+        polygon: { allowIntersection: false, showArea: true,
+                   shapeOptions: { color: '#2e7d32', weight: 2 } },
+        polyline: false, rectangle: false, circle: false,
+        marker: false, circlemarker: false,
+      },
+      edit: { featureGroup: drawnItems, edit: false, remove: false },
+    });
+
+    var pendingGeometry = null;
+
+    function toast(msg, isErr) {
+      var t = document.getElementById('myf-toast');
+      t.textContent = msg;
+      t.className = 'myf-toast show' + (isErr ? ' error' : '');
+      setTimeout(function() { t.className = 'myf-toast'; }, 3500);
+    }
+
+    function openModal(layer) {
+      pendingGeometry = layer.toGeoJSON().geometry;
+      // Compute area client-side as a rough hint (real value from API).
+      var area_m2 = 0;
+      try { area_m2 = L.GeometryUtil ? L.GeometryUtil.geodesicArea(layer.getLatLngs()[0]) : 0; }
+      catch (e) {}
+      var hint = area_m2 > 0 ? (area_m2 / 10000).toFixed(2) + ' га (примерно)' : '—';
+      document.getElementById('myf-modal-area').textContent = 'Площадь: ' + hint;
+      document.getElementById('myf-name').value = '';
+      document.getElementById('myf-notes').value = '';
+      document.getElementById('myf-crop').value = 'arable';
+      document.getElementById('myf-modal').classList.add('open');
+      setTimeout(function(){ document.getElementById('myf-name').focus(); }, 50);
+    }
+
+    function closeModal() {
+      document.getElementById('myf-modal').classList.remove('open');
+      pendingGeometry = null;
+      drawnItems.clearLayers();
+    }
+
+    document.getElementById('myf-cancel').addEventListener('click', closeModal);
+
+    document.getElementById('myf-save').addEventListener('click', function() {
+      var name = document.getElementById('myf-name').value.trim();
+      if (!name) { toast('Введите название поля', true); return; }
+      if (!pendingGeometry) { toast('Геометрия не задана', true); return; }
+
+      var body = {
+        name: name,
+        properties: {
+          crop_type: document.getElementById('myf-crop').value,
+          notes: document.getElementById('myf-notes').value.trim(),
+        },
+        geometry: pendingGeometry,
+      };
+
+      fetch('/api/my/fields/', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+        body: JSON.stringify(body),
+      }).then(function(r) {
+        return r.json().then(function(data) { return { status: r.status, data: data }; });
+      }).then(function(res) {
+        if (res.status === 201) {
+          toast('Поле сохранено: ' + name);
+          closeModal();
+          loadFields();
+        } else {
+          toast(res.data.detail || res.data.error || 'Ошибка сохранения', true);
+        }
+      }).catch(function(e) {
+        toast('Сеть: ' + e.message, true);
+      });
+    });
+
+    // ─── Draw mode toggle ───
+    var drawing = false;
+    var drawHandler = null;
+    document.getElementById('myf-draw-btn').addEventListener('click', function() {
+      if (!drawing) {
+        drawHandler = new L.Draw.Polygon(map, drawControl.options.draw.polygon);
+        drawHandler.enable();
+        this.classList.add('cancel');
+        this.querySelector('span:last-child').textContent = 'Отмена';
+        drawing = true;
+      } else {
+        if (drawHandler) drawHandler.disable();
+        this.classList.remove('cancel');
+        this.querySelector('span:last-child').textContent = 'Добавить поле';
+        drawing = false;
+      }
+    });
+
+    map.on(L.Draw.Event.CREATED, function(e) {
+      drawnItems.addLayer(e.layer);
+      var btn = document.getElementById('myf-draw-btn');
+      btn.classList.remove('cancel');
+      btn.querySelector('span:last-child').textContent = 'Добавить поле';
+      drawing = false;
+      openModal(e.layer);
+    });
+
+    // ─── Load existing fields ───
+    function loadFields() {
+      fetch('/api/my/fields/', { credentials: 'same-origin' })
+        .then(function(r){ return r.json(); })
+        .then(function(fc) {
+          renderFields(fc.features || []);
+        })
+        .catch(function(e) { toast('Не удалось загрузить поля: '+e.message, true); });
+    }
+
+    function renderFields(features) {
+      fieldsLayer.clearLayers();
+      var listEl = document.getElementById('myf-side-list');
+      document.getElementById('myf-side-count').textContent = features.length + ' шт.';
+      if (features.length === 0) {
+        listEl.innerHTML = '<div class="myf-empty">Полей пока нет. ' +
+          'Нажмите «Добавить поле» и нарисуйте границы на карте.</div>';
+        return;
+      }
+      listEl.innerHTML = '';
+      var bounds = null;
+      features.forEach(function(f) {
+        var layer = L.geoJSON(f.geometry, {
+          style: { color: '#2e7d32', weight: 2, fillOpacity: 0.20 }
+        });
+        layer.bindTooltip(f.properties.name);
+        layer.on('click', function(){ window.location.href = DETAIL_URL + f.id + '/'; });
+        layer.addTo(fieldsLayer);
+        var b = layer.getBounds();
+        bounds = bounds ? bounds.extend(b) : b;
+
+        var row = document.createElement('div');
+        row.className = 'myf-field-row';
+        row.innerHTML =
+          '<div class="myf-field-name">' + escapeHTML(f.properties.name) + '</div>' +
+          '<div class="myf-field-meta">' +
+            f.properties.area_ha.toFixed(2) + ' га · ' +
+            escapeHTML(f.properties.crop_type_display) +
+            (f.properties.region_name ? ' · ' + escapeHTML(f.properties.region_name) : '') +
+          '</div>';
+        row.addEventListener('click', function(){
+          window.location.href = DETAIL_URL + f.id + '/';
+        });
+        row.addEventListener('mouseenter', function(){
+          layer.setStyle({ weight: 3, fillOpacity: 0.40 });
+        });
+        row.addEventListener('mouseleave', function(){
+          layer.setStyle({ weight: 2, fillOpacity: 0.20 });
+        });
+        listEl.appendChild(row);
+      });
+      if (bounds && bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [30, 30], maxZoom: 14 });
+      }
+    }
+
+    function escapeHTML(s) {
+      return String(s || '').replace(/[&<>"']/g, function(c) {
+        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+      });
+    }
+
+    loadFields();
+  })();
+  </script>
+{% endblock %}
