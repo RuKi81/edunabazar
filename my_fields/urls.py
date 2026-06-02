@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from django.urls import path
 
-from . import api
+from . import api, views
 
 app_name = 'my_fields'
 
@@ -21,7 +21,7 @@ urlpatterns = [
     path('api/my/fields/<int:pk>/seasons/', api.seasons_collection, name='api_seasons'),
     path('api/my/fields/<int:pk>/seasons/<int:sid>/', api.season_detail, name='api_season_detail'),
 
-    # ── UI (этапы 5-6) ──
-    # path('me/fields/', views.fields_list, name='ui_fields_list'),
-    # path('me/fields/<int:pk>/', views.field_detail_page, name='ui_field_detail'),
+    # ── UI ──
+    path('me/fields/', views.fields_list_page, name='ui_fields_list'),
+    path('me/fields/<int:pk>/', views.field_detail_page, name='ui_field_detail'),
 ]
