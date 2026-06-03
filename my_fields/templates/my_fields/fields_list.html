@@ -50,16 +50,30 @@
       font-size: 15px; font-weight: 700; margin: 0 0 12px 0;
       display: flex; align-items: center; gap: 6px;
     }
-    .myf-nav { display: flex; flex-direction: column; gap: 2px; margin-bottom: 14px; }
+    /* Сброс Materialize для навигации — без !important эти стили пробиваются. */
+    .myf-nav {
+      display: flex; flex-direction: column; gap: 2px;
+      margin: 0 0 14px 0; padding: 0;
+      background: transparent !important; height: auto !important;
+      box-shadow: none !important; line-height: normal !important;
+    }
     .myf-nav a {
-      display: flex; align-items: center; gap: 8px;
-      padding: 8px 10px; border-radius: 6px;
-      font-size: 13px; color: #424242; text-decoration: none;
+      display: flex !important; align-items: center; gap: 8px;
+      padding: 8px 10px !important; border-radius: 6px;
+      font-size: 13px !important; color: #424242 !important;
+      text-decoration: none !important;
+      background: transparent !important;
+      height: auto !important; line-height: 1.3 !important;
       transition: background .12s;
     }
-    .myf-nav a:hover { background: #f0f4f8; }
-    .myf-nav a.active { background: #e8f5e9; color: #2e7d32; font-weight: 600; }
-    .myf-nav .ico { font-size: 16px; }
+    .myf-nav a:hover { background: #f0f4f8 !important; color: #222 !important; }
+    .myf-nav a.active { background: #e8f5e9 !important; color: #2e7d32 !important; font-weight: 600; }
+    .myf-nav .ico { font-size: 16px; flex-shrink: 0; }
+
+    /* Разделитель перед кнопкой */
+    .myf-divider {
+      height: 1px; background: #e3e8ee; margin: 4px 0 12px 0;
+    }
 
     .myf-fab {
       width: 100%; display: flex; align-items: center; justify-content: center;
@@ -280,29 +294,31 @@
     </div>
 
     <!-- ── Левый сайдбар ── -->
-    <aside class="myf-ui__left" id="myf-left">
+    <div class="myf-ui__left" id="myf-left">
       <h2><i class="material-icons" style="font-size:20px; color:#2e7d32;">grass</i> Мои поля</h2>
 
-      <nav class="myf-nav">
+      <div class="myf-nav">
         <a href="{% url 'legacy_me' %}">
-          <i class="material-icons ico">person</i> Мои учётные данные
+          <i class="material-icons ico">person</i><span>Мои учётные данные</span>
         </a>
         <a href="{% url 'legacy_me_agrocosmos' %}">
-          <i class="material-icons ico" style="color:#2e7d32;">satellite_alt</i> Агрокосмос
+          <i class="material-icons ico" style="color:#2e7d32;">satellite_alt</i><span>Агрокосмос</span>
         </a>
         <a href="{% url 'my_fields:ui_fields_list' %}" class="active">
-          <i class="material-icons ico" style="color:#558B2F;">grass</i> Мои поля
+          <i class="material-icons ico" style="color:#558B2F;">grass</i><span>Мои поля</span>
         </a>
         <a href="{% url 'legacy_me' %}#adverts">
-          <i class="material-icons ico">list_alt</i> Мои объявления
+          <i class="material-icons ico">list_alt</i><span>Мои объявления</span>
         </a>
         <a href="{% url 'legacy_me' %}#messages">
-          <i class="material-icons ico">forum</i> Сообщения
+          <i class="material-icons ico">forum</i><span>Сообщения</span>
         </a>
         <a href="{% url 'legacy_me' %}#reviews">
-          <i class="material-icons ico">star_rate</i> Мои отзывы
+          <i class="material-icons ico">star_rate</i><span>Мои отзывы</span>
         </a>
-      </nav>
+      </div>
+
+      <div class="myf-divider"></div>
 
       <button id="myf-draw-btn" class="myf-fab" type="button">
         <i class="material-icons" style="font-size:18px;">add_location_alt</i>
@@ -322,10 +338,10 @@
           </div>
         {% endif %}
       </div>
-    </aside>
+    </div>
 
     <!-- ── Правый сайдбар ── -->
-    <aside class="myf-ui__right" id="myf-right">
+    <div class="myf-ui__right" id="myf-right">
       <div class="myf-side-header">
         <span>Угодья</span>
         <span id="myf-side-count" style="color:#888; font-weight:400;"></span>
@@ -336,7 +352,7 @@
       <div class="myf-side-list" id="myf-side-list">
         <div class="myf-empty">Загрузка…</div>
       </div>
-    </aside>
+    </div>
   </div>
 
   <!-- ── Модал создания поля ── -->
