@@ -63,7 +63,17 @@ def _parse_json(request: HttpRequest) -> tuple[Any, JsonResponse | None]:
 
 
 def _field_to_feature(f: UserField) -> dict:
-    """Сериализация ``UserField`` → GeoJSON Feature."""
+    """Сериализация ``UserField`` → GeoJSON Feature.
+
+    ``current_season`` подмешиваем в properties, чтобы UI правого
+    сайдбара мог сразу показать актуальную культуру без N+1 на
+    отдельный эндпоинт. Берём «свежий» сезон по году DESC + created DESC.
+    Безопасно: если сезонов нет — поле просто отсутствует.
+    """
+    season = (
+        f.seasons.order_by('-year', '-created_at').first()
+        if f.pk else None
+    )
     return {
         'type': 'Feature',
         'id': f.id,
@@ -82,6 +92,7 @@ def _field_to_feature(f: UserField) -> dict:
             'district_name': f.district.name if f.district_id else None,
             'created_at': f.created_at.isoformat(),
             'updated_at': f.updated_at.isoformat(),
+            'current_season': _season_to_dict(season) if season else None,
         },
     }
 
@@ -209,7 +220,34 @@ def fields_collection(request: HttpRequest) -> JsonResponse:
     if err:
         return err
     field.save()
-    return JsonResponse(_field_to_feature(field), status=201)
+
+    # Опционально — создаём сезон одной транзакцией. Все поля сезона
+    # необязательны, кроме ``year`` и ``crop`` — без них запись
+    # бессмысленна. Любая ошибка парсинга дат/чисел в сезоне НЕ должна
+    # откатывать создание поля; собираем такие случаи в ``season_warnings``.
+    season_payload = payload.get('season')
+    season_warning: str | None = None
+    if season_payload and season_payload.get('year') and season_payload.get('crop'):
+        try:
+            FieldSeason.objects.create(
+                field=field,
+                year=int(season_payload['year']),
+                crop=season_payload['crop'],
+                variety=(season_payload.get('variety') or '')[:120],
+                sowing_date=parse_date(season_payload.get('sowing_date') or ''),
+                planned_harvest_date=parse_date(
+                    season_payload.get('planned_harvest_date') or '',
+                ),
+                planned_yield_t_per_ha=season_payload.get('planned_yield_t_per_ha') or None,
+                notes=season_payload.get('notes', ''),
+            )
+        except (ValueError, TypeError) as exc:
+            season_warning = f'Сезон не создан: {exc}'
+
+    feature = _field_to_feature(field)
+    if season_warning:
+        feature['properties']['season_warning'] = season_warning
+    return JsonResponse(feature, status=201)
 
 
 # ─────────────────────────────────────────────────────────────────────
