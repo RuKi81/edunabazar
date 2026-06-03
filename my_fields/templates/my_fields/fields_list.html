@@ -858,7 +858,6 @@
     loadFields();
 
     /* ── Выделение поля по клику: zoom + inline detail ── */
-    try {
     var rightPanel = document.getElementById('myf-right');
     var currentField = null;
     var currentLayer = null;
@@ -1133,10 +1132,6 @@
         else { toast('Не удалось удалить', true); }
       });
     });
-    } catch (e) {
-      console.error('[my_fields] detail wiring failed:', e);
-      toast('Ошибка инициализации деталей: ' + e.message, true);
-    }
 
     /* ── Search ── */
     document.getElementById('myf-search').addEventListener('input', function () {
