@@ -20,7 +20,7 @@ from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, render
 
-from .models import UserField
+from .models import FieldSeason, UserField
 from .permissions import can_view_field
 from .services.quotas import get_user_plan
 
@@ -31,7 +31,8 @@ def fields_list_page(request: HttpRequest) -> HttpResponse:
 
     Сами поля подгружаются с ``/api/my/fields/`` JS-ом, чтобы не
     дублировать GeoJSON-сериализацию в шаблоне. Контекст содержит лишь
-    данные для шапки (текущий тариф + квоты).
+    данные для шапки (текущий тариф + квоты) и справочники (типы
+    угодий, культуры) для модала создания.
     """
     plan = get_user_plan(request.user)
     fields_count = UserField.objects.filter(
@@ -41,6 +42,8 @@ def fields_list_page(request: HttpRequest) -> HttpResponse:
         'active_section': 'my_fields',
         'plan': plan,
         'fields_count': fields_count,
+        'crop_type_choices': UserField.CropType.choices,
+        'crop_choices': FieldSeason.Crop.choices,
     })
 
 

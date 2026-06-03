@@ -1,247 +1,562 @@
 {% extends 'legacy/base.html' %}
 {% load static %}
 
-{% block title %}Мои поля — Агрокабинет{% endblock %}
+{% block title %}Мои поля — Агрокосмос{% endblock %}
 {% block meta_description %}Цифровка ваших угодий, агрожурнал, мониторинг NDVI.{% endblock %}
 
 {% block head %}
-  {% include 'legacy/_cabinet_styles.html' %}
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css">
+  <link rel="stylesheet" href="{% static 'legacy/css/leaflet.css' %}" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
   <style>
-    .myf-toolbar {
-      display: flex; justify-content: space-between; align-items: center;
-      flex-wrap: wrap; gap: 10px; margin-bottom: 16px;
+    :root { --map-header-h: 64px; }
+    html, body { height: 100%; }
+    .content { background: transparent !important; }
+    .content > .container { width: 100% !important; min-width: 0 !important; padding: 0 !important; margin-top: 0 !important; }
+    .hide-on-med-and-down { position: absolute; top: 0; left: 0; right: 0; z-index: 2000; }
+    .hide-on-large-only { position: absolute; top: 0; left: 0; right: 0; z-index: 2000; }
+    .leaflet-control-zoom { display: none !important; }
+    .leaflet-control-layers { display: none !important; }
+    .brand-logo, .brand-logo__img, .sidenav-logo { display: none !important; }
+    .hide-on-large-only .container { justify-content: flex-end; }
+
+    /* ── Basemap switcher (карта/спутник/гибрид) ── */
+    .basemap-bar {
+      position: fixed; bottom: 12px; right: 14px; z-index: 1100;
+      display: flex; gap: 3px; background: rgba(255,255,255,.92);
+      border-radius: 6px; box-shadow: 0 1px 6px rgba(0,0,0,.2); padding: 3px;
     }
-    .myf-toolbar .myf-quota {
-      color: var(--cab-muted); font-size: 12px;
+    .basemap-btn {
+      border: none; background: transparent; cursor: pointer; border-radius: 4px;
+      padding: 5px 10px; font-size: 11px; font-weight: 600; color: #555;
+      display: flex; align-items: center; gap: 4px; white-space: nowrap;
     }
-    .myf-layout {
-      display: grid; grid-template-columns: 1fr 360px;
-      gap: 16px; align-items: stretch;
+    .basemap-btn:hover { background: #e8f5e9; }
+    .basemap-btn.active { background: #c8e6c9; color: #2e7d32; }
+
+    .myf-ui { position: fixed; left: 0; right: 0; top: 0; bottom: 0; min-height: 600px; }
+    #myf-map { position: absolute; left: 0; right: 0; top: 0; bottom: 0; }
+
+    /* ── Левый сайдбар: меню + кнопка + квоты ── */
+    .myf-ui__left {
+      position: fixed; left: 0; top: 0; bottom: 0; width: 285px;
+      padding: calc(var(--map-header-h) + 12px) 14px 14px 14px;
+      background: rgba(255,255,255,0.96);
+      border-right: 1px solid rgba(0,0,0,0.08);
+      overflow-y: auto; z-index: 1000;
+      transition: transform .25s ease;
     }
-    @media (max-width: 900px) { .myf-layout { grid-template-columns: 1fr; } }
-    #myf-map {
-      height: 560px; border-radius: 10px; overflow: hidden;
-      border: 1px solid var(--cab-border); background: #eef3f7;
+    .myf-ui__left.collapsed { transform: translateX(-100%); }
+    .myf-ui__left h2 {
+      font-size: 15px; font-weight: 700; margin: 0 0 12px 0;
+      display: flex; align-items: center; gap: 6px;
     }
-    .myf-side {
-      border: 1px solid var(--cab-border); border-radius: 10px;
-      background: #fff; padding: 0; overflow: hidden;
-      display: flex; flex-direction: column; max-height: 560px;
+    .myf-nav { display: flex; flex-direction: column; gap: 2px; margin-bottom: 14px; }
+    .myf-nav a {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 10px; border-radius: 6px;
+      font-size: 13px; color: #424242; text-decoration: none;
+      transition: background .12s;
     }
-    .myf-side-header {
-      padding: 12px 14px; border-bottom: 1px solid var(--cab-border);
-      display: flex; justify-content: space-between; align-items: center;
-      font-size: 13px; font-weight: 600; color: var(--cab-text);
-      background: #f9fafb;
-    }
-    .myf-side-list { flex: 1; overflow-y: auto; }
-    .myf-field-row {
-      padding: 12px 14px; border-bottom: 1px solid var(--cab-border);
-      cursor: pointer; transition: background .12s;
-    }
-    .myf-field-row:hover { background: #f5f9fc; }
-    .myf-field-row.active { background: var(--cab-accent-soft, #e3f2fd); }
-    .myf-field-name { font-weight: 600; font-size: 14px; color: var(--cab-text); }
-    .myf-field-meta { color: var(--cab-muted); font-size: 12px; margin-top: 2px; }
-    .myf-empty { padding: 24px; text-align: center; color: var(--cab-muted); font-size: 13px; }
+    .myf-nav a:hover { background: #f0f4f8; }
+    .myf-nav a.active { background: #e8f5e9; color: #2e7d32; font-weight: 600; }
+    .myf-nav .ico { font-size: 16px; }
 
     .myf-fab {
-      display: inline-flex; align-items: center; gap: 6px;
-      background: var(--cab-accent, #2e7d32); color: #fff;
-      border: 0; padding: 8px 14px; border-radius: 6px;
-      cursor: pointer; font-size: 13px; font-weight: 500;
+      width: 100%; display: flex; align-items: center; justify-content: center;
+      gap: 8px; background: #2e7d32; color: #fff;
+      border: 0; padding: 10px 14px; border-radius: 6px;
+      cursor: pointer; font-size: 14px; font-weight: 600;
+      box-shadow: 0 1px 3px rgba(0,0,0,.12);
     }
     .myf-fab:hover { filter: brightness(0.95); }
     .myf-fab.cancel { background: #c62828; }
 
-    /* Modal */
+    .myf-quota-card {
+      margin-top: 14px; padding: 10px 12px;
+      background: #f7f9fc; border: 1px solid #e3e8ee;
+      border-radius: 6px; font-size: 12px; line-height: 1.45;
+    }
+    .myf-quota-card .row { display: flex; justify-content: space-between; padding: 2px 0; }
+    .myf-quota-card .lbl { color: #666; }
+    .myf-quota-card .val { font-weight: 600; color: #222; }
+
+    /* ── Правый сайдбар: список полей ── */
+    .myf-ui__right {
+      position: fixed; right: 0; top: 0; bottom: 0; width: 340px;
+      padding-top: calc(var(--map-header-h) + 8px);
+      background: rgba(255,255,255,0.98);
+      border-left: 1px solid rgba(0,0,0,0.08);
+      display: flex; flex-direction: column; z-index: 1000;
+      transition: transform .25s ease;
+    }
+    .myf-ui__right.collapsed { transform: translateX(100%); }
+    .myf-side-header {
+      padding: 8px 14px; border-bottom: 1px solid rgba(0,0,0,0.08);
+      font-size: 12px; font-weight: 700; color: #555;
+      background: rgba(0,0,0,0.03);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .myf-side-search { padding: 8px 12px; border-bottom: 1px solid rgba(0,0,0,0.08); }
+    .myf-side-search input {
+      width: 100%; box-sizing: border-box;
+      padding: 6px 10px; border: 1px solid #d0d7de; border-radius: 5px;
+      font-size: 13px; background: #fff;
+    }
+    .myf-side-list { flex: 1; overflow-y: auto; }
+    .myf-empty { padding: 24px; text-align: center; color: #888; font-size: 13px; }
+
+    .myf-card {
+      padding: 10px 12px; border-bottom: 1px solid rgba(0,0,0,0.08);
+      cursor: pointer; display: flex; gap: 10px; transition: background .12s;
+    }
+    .myf-card:hover { background: #f5f9f5; }
+    .myf-card.active { background: #e8f5e9; }
+    .myf-card__icon {
+      width: 42px; height: 42px; flex: 0 0 auto;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 4px; font-size: 20px; color: #fff;
+    }
+    .myf-card__icon--arable { background: #8BC34A; }
+    .myf-card__icon--fallow { background: #BCAAA4; }
+    .myf-card__icon--hayfield { background: #FFC107; }
+    .myf-card__icon--pasture { background: #FF9800; }
+    .myf-card__icon--perennial { background: #4CAF50; }
+    .myf-card__icon--garden { background: #66BB6A; }
+    .myf-card__icon--other { background: #9E9E9E; }
+    .myf-card__body { flex: 1 1 auto; min-width: 0; }
+    .myf-card__title { font-size: 13px; font-weight: 600; color: #2e7d32; line-height: 1.3; }
+    .myf-card__meta { font-size: 11px; color: #666; margin-top: 2px; line-height: 1.35; }
+    .myf-card__crop { font-size: 11px; font-weight: 600; color: #1565C0; margin-top: 2px; }
+
+    /* ── Кнопки сворачивания сайдбаров ── */
+    .myf-collapse-btn {
+      position: fixed; top: calc(var(--map-header-h) + 12px); z-index: 1100;
+      width: 24px; height: 48px;
+      background: rgba(255,255,255,.92); border: 1px solid rgba(0,0,0,.12);
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      font-size: 16px; color: #555; padding: 0;
+      transition: left .25s ease, right .25s ease;
+    }
+    .myf-collapse-btn:hover { background: #f0f0f0; }
+    #myf-collapse-left { left: 285px; border-radius: 0 4px 4px 0; border-left: none; }
+    #myf-collapse-right { right: 340px; border-radius: 4px 0 0 4px; border-right: none; }
+    #myf-collapse-left.shifted { left: 0; }
+    #myf-collapse-right.shifted { right: 0; }
+
+    /* ── Подсказка во время рисования ── */
+    .myf-draw-hint {
+      position: fixed; top: calc(var(--map-header-h) + 14px); left: 50%;
+      transform: translateX(-50%);
+      background: rgba(46,125,50,.95); color: #fff;
+      padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 500;
+      box-shadow: 0 2px 8px rgba(0,0,0,.2); z-index: 1100; display: none;
+    }
+    .myf-draw-hint.show { display: block; }
+
+    /* ── Modal ── */
     .myf-modal-bg {
-      position: fixed; inset: 0; background: rgba(0,0,0,0.45);
-      display: none; align-items: center; justify-content: center; z-index: 9999;
+      position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+      display: none; align-items: center; justify-content: center;
+      z-index: 9999; padding: 20px;
     }
     .myf-modal-bg.open { display: flex; }
     .myf-modal {
       background: #fff; border-radius: 10px; padding: 22px 24px;
-      width: 100%; max-width: 440px; box-shadow: 0 12px 40px rgba(0,0,0,0.25);
+      width: 100%; max-width: 520px; max-height: calc(100vh - 40px);
+      overflow-y: auto; box-shadow: 0 12px 40px rgba(0,0,0,0.3);
     }
-    .myf-modal h3 { margin: 0 0 14px; font-size: 17px; }
-    .myf-modal label { display: block; margin: 10px 0 4px;
-      font-size: 11px; font-weight: 600; color: var(--cab-muted);
-      text-transform: uppercase; letter-spacing: 0.5px; }
-    .myf-modal input, .myf-modal select, .myf-modal textarea {
-      width: 100%; padding: 8px 10px; border: 1px solid var(--cab-border);
-      border-radius: 6px; font-size: 14px; box-sizing: border-box;
-      background: #fff; color: var(--cab-text);
-    }
+    .myf-modal h3 { margin: 0 0 4px; font-size: 18px; color: #222; }
+    .myf-modal .sub { font-size: 12px; color: #888; margin-bottom: 14px; }
     .myf-modal .area-info {
       background: #f0f7ff; border: 1px solid #d6e7f5;
       padding: 8px 12px; border-radius: 6px; font-size: 13px;
-      color: #1565c0; margin-top: 8px;
+      color: #1565c0; margin-bottom: 12px;
     }
+    .myf-modal label {
+      display: block; margin: 8px 0 3px;
+      font-size: 11px; font-weight: 600; color: #666;
+      text-transform: uppercase; letter-spacing: 0.4px;
+    }
+    .myf-modal input, .myf-modal select, .myf-modal textarea {
+      width: 100%; padding: 8px 10px; border: 1px solid #d0d7de;
+      border-radius: 5px; font-size: 14px; box-sizing: border-box;
+      background: #fff; color: #222; font-family: inherit;
+    }
+    .myf-modal input:focus, .myf-modal select:focus, .myf-modal textarea:focus {
+      outline: none; border-color: #2e7d32;
+      box-shadow: 0 0 0 2px rgba(46,125,50,.15);
+    }
+    .myf-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .myf-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    .myf-section {
+      margin-top: 14px; padding-top: 12px; border-top: 1px dashed #e0e4ea;
+    }
+    .myf-section h4 {
+      margin: 0 0 8px; font-size: 13px; font-weight: 700; color: #2e7d32;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .myf-section .toggle {
+      margin-left: auto; font-size: 11px; color: #888; font-weight: 500;
+      text-transform: none; letter-spacing: 0; cursor: pointer; user-select: none;
+    }
+    .myf-section .toggle:hover { color: #2e7d32; }
+    .myf-section.collapsed .myf-section-body { display: none; }
     .myf-modal .actions {
-      display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px;
+      display: flex; gap: 10px; justify-content: flex-end;
+      margin-top: 18px; padding-top: 14px; border-top: 1px solid #eef0f3;
     }
     .myf-modal .btn-sec {
-      background: #f1f3f5; color: var(--cab-text); border: 0;
-      padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
+      background: #f1f3f5; color: #333; border: 0;
+      padding: 9px 16px; border-radius: 6px; cursor: pointer;
+      font-size: 13px; font-weight: 500;
     }
+    .myf-modal .btn-pri {
+      background: #2e7d32; color: #fff; border: 0;
+      padding: 9px 18px; border-radius: 6px; cursor: pointer;
+      font-size: 13px; font-weight: 600;
+    }
+
     .myf-toast {
-      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-      background: #333; color: #fff; padding: 10px 16px; border-radius: 6px;
-      font-size: 14px; opacity: 0; transition: opacity .25s; z-index: 10000;
-      pointer-events: none;
+      position: fixed; bottom: 60px; left: 50%; transform: translateX(-50%);
+      background: #333; color: #fff; padding: 10px 18px; border-radius: 6px;
+      font-size: 14px; opacity: 0; transition: opacity .25s;
+      z-index: 10000; pointer-events: none; max-width: 80%;
     }
     .myf-toast.show { opacity: 1; }
     .myf-toast.error { background: #c62828; }
+
+    @media (max-width: 992px) and (orientation: landscape) {
+      :root { --map-header-h: 50px; }
+      .myf-ui__left { width: 220px; }
+      .myf-ui__right { width: 230px; }
+      #myf-collapse-left { left: 220px; }
+      #myf-collapse-right { right: 230px; }
+    }
+    @media (max-width: 992px) and (orientation: portrait) {
+      :root { --map-header-h: 56px; }
+      .myf-ui__left { width: 220px; }
+      .myf-ui__right { width: 0; display: none; }
+    }
+    @media (max-width: 600px) {
+      .myf-ui__left {
+        width: 260px; transform: translateX(-110%);
+        transition: transform .25s ease;
+        box-shadow: 2px 0 8px rgba(0,0,0,.15);
+      }
+      .myf-ui__left.open { transform: translateX(0); }
+      .basemap-bar { bottom: 56px; }
+    }
   </style>
 {% endblock %}
 
 {% block content %}
-  <h1 style="font-size: 26px; font-weight: 600; margin: 8px 0 4px;">Личный кабинет</h1>
-  <p style="color:var(--cab-muted); margin: 0 0 8px; font-size: 14px;">
-    Управляйте угодьями, ведите журнал агроопераций.
-  </p>
+  <div class="myf-ui">
+    <div id="myf-map"></div>
 
-  <div class="cab-layout">
-    {% include 'legacy/_cabinet_sidebar.html' %}
+    <button class="myf-collapse-btn" id="myf-collapse-left" title="Свернуть">
+      <i class="material-icons" style="font-size:18px;">chevron_left</i>
+    </button>
+    <button class="myf-collapse-btn" id="myf-collapse-right" title="Свернуть">
+      <i class="material-icons" style="font-size:18px;">chevron_right</i>
+    </button>
 
-    <div class="cab-main">
-      <section class="cab-section">
-        <h2>🌾 Мои поля</h2>
-        <p class="cab-sub">
-          Нарисуйте границы поля на карте — мы автоматически посчитаем площадь
-          и привяжем регион. По каждому полю ведётся журнал агроопераций.
-        </p>
-
-        <div class="myf-toolbar">
-          <div>
-            <button id="myf-draw-btn" class="myf-fab" type="button">
-              <span>+</span> <span>Добавить поле</span>
-            </button>
-          </div>
-          <div class="myf-quota">
-            Тариф: <strong>{{ plan.name|default:"Бесплатный" }}</strong>
-            · Полей: {{ fields_count }}{% if plan.max_fields %} из {{ plan.max_fields }}{% endif %}
-            {% if plan.max_total_area_ha %} · Лимит площади: {{ plan.max_total_area_ha|floatformat:0 }} га{% endif %}
-          </div>
-        </div>
-
-        <div class="myf-layout">
-          <div id="myf-map"></div>
-
-          <div class="myf-side">
-            <div class="myf-side-header">
-              <span>Угодья</span>
-              <span id="myf-side-count" style="color: var(--cab-muted); font-weight: 400;"></span>
-            </div>
-            <div class="myf-side-list" id="myf-side-list">
-              <div class="myf-empty">Загрузка…</div>
-            </div>
-          </div>
-        </div>
-      </section>
+    <!-- Basemap switcher -->
+    <div class="basemap-bar">
+      <button class="basemap-btn active" data-mode="map">
+        <i class="material-icons" style="font-size:16px;">map</i> Карта
+      </button>
+      <button class="basemap-btn" data-mode="satellite">
+        <i class="material-icons" style="font-size:16px;">satellite</i> Спутник
+      </button>
+      <button class="basemap-btn" data-mode="hybrid">
+        <i class="material-icons" style="font-size:16px;">satellite_alt</i> Гибрид
+      </button>
     </div>
+
+    <!-- Drawing hint -->
+    <div class="myf-draw-hint" id="myf-draw-hint">
+      <i class="material-icons" style="font-size:16px; vertical-align:-3px;">touch_app</i>
+      Кликайте по карте, чтобы поставить точки. Двойной клик — завершить.
+    </div>
+
+    <!-- ── Левый сайдбар ── -->
+    <aside class="myf-ui__left" id="myf-left">
+      <h2><i class="material-icons" style="font-size:20px; color:#2e7d32;">grass</i> Мои поля</h2>
+
+      <nav class="myf-nav">
+        <a href="{% url 'legacy_me' %}">
+          <i class="material-icons ico">person</i> Мои учётные данные
+        </a>
+        <a href="{% url 'legacy_me_agrocosmos' %}">
+          <i class="material-icons ico" style="color:#2e7d32;">satellite_alt</i> Агрокосмос
+        </a>
+        <a href="{% url 'my_fields:ui_fields_list' %}" class="active">
+          <i class="material-icons ico" style="color:#558B2F;">grass</i> Мои поля
+        </a>
+        <a href="{% url 'legacy_me' %}#adverts">
+          <i class="material-icons ico">list_alt</i> Мои объявления
+        </a>
+        <a href="{% url 'legacy_me' %}#messages">
+          <i class="material-icons ico">forum</i> Сообщения
+        </a>
+        <a href="{% url 'legacy_me' %}#reviews">
+          <i class="material-icons ico">star_rate</i> Мои отзывы
+        </a>
+      </nav>
+
+      <button id="myf-draw-btn" class="myf-fab" type="button">
+        <i class="material-icons" style="font-size:18px;">add_location_alt</i>
+        <span>Добавить поле</span>
+      </button>
+
+      <div class="myf-quota-card">
+        <div class="row"><span class="lbl">Тариф:</span><span class="val">{{ plan.name|default:"Бесплатный" }}</span></div>
+        <div class="row">
+          <span class="lbl">Полей:</span>
+          <span class="val">{{ fields_count }}{% if plan.max_fields %} / {{ plan.max_fields }}{% endif %}</span>
+        </div>
+        {% if plan.max_total_area_ha %}
+          <div class="row">
+            <span class="lbl">Лимит площади:</span>
+            <span class="val">{{ plan.max_total_area_ha|floatformat:0 }} га</span>
+          </div>
+        {% endif %}
+      </div>
+    </aside>
+
+    <!-- ── Правый сайдбар ── -->
+    <aside class="myf-ui__right" id="myf-right">
+      <div class="myf-side-header">
+        <span>Угодья</span>
+        <span id="myf-side-count" style="color:#888; font-weight:400;"></span>
+      </div>
+      <div class="myf-side-search">
+        <input id="myf-search" type="search" placeholder="Поиск по названию, культуре…" autocomplete="off">
+      </div>
+      <div class="myf-side-list" id="myf-side-list">
+        <div class="myf-empty">Загрузка…</div>
+      </div>
+    </aside>
   </div>
 
-  <!-- ── Modal for new field ── -->
+  <!-- ── Модал создания поля ── -->
   <div class="myf-modal-bg" id="myf-modal">
     <div class="myf-modal">
       <h3>Новое поле</h3>
+      <div class="sub">Заполните основные данные. Сезон можно добавить сейчас или позже.</div>
+
       <div class="area-info" id="myf-modal-area">Площадь: — га</div>
-      <label for="myf-name">Название</label>
-      <input id="myf-name" type="text" placeholder="Поле №3 у реки" maxlength="120">
 
-      <label for="myf-crop">Тип угодья</label>
-      <select id="myf-crop">
-        <option value="arable" selected>Пашня</option>
-        <option value="fallow">Залежь</option>
-        <option value="hayfield">Сенокос</option>
-        <option value="pasture">Пастбище</option>
-        <option value="perennial">Многолетние насаждения</option>
-        <option value="garden">Сад / огород</option>
-        <option value="other">Прочее</option>
-      </select>
+      <label for="myf-name">Название *</label>
+      <input id="myf-name" type="text" placeholder="Поле №3 у реки" maxlength="120" autocomplete="off">
 
-      <label for="myf-notes">Заметки (необязательно)</label>
-      <textarea id="myf-notes" rows="2" maxlength="1000"></textarea>
+      <div class="myf-row-2">
+        <div>
+          <label for="myf-crop-type">Тип угодья *</label>
+          <select id="myf-crop-type">
+            {% for code, label in crop_type_choices %}
+              <option value="{{ code }}" {% if code == 'arable' %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label for="myf-cadastral">Кадастровый номер</label>
+          <input id="myf-cadastral" type="text" placeholder="00:00:0000000:0000" maxlength="50">
+        </div>
+      </div>
+
+      <label for="myf-notes">Заметки</label>
+      <textarea id="myf-notes" rows="2" maxlength="1000" placeholder="Особенности рельефа, подъезды, ориентиры…"></textarea>
+
+      <!-- ── Текущий сезон ── -->
+      <div class="myf-section" id="myf-season-section">
+        <h4>
+          <i class="material-icons" style="font-size:16px;">eco</i>
+          Текущий сезон
+          <span class="toggle" id="myf-season-toggle">скрыть</span>
+        </h4>
+        <div class="myf-section-body">
+          <div class="myf-row-2">
+            <div>
+              <label for="myf-season-year">Год</label>
+              <input id="myf-season-year" type="number" min="2000" max="2100" value="{% now 'Y' %}">
+            </div>
+            <div>
+              <label for="myf-season-crop">Культура (поиск)</label>
+              <input id="myf-season-crop" type="text" list="myf-crop-list" placeholder="начните вводить…" autocomplete="off">
+              <datalist id="myf-crop-list">
+                {% for code, label in crop_choices %}
+                  <option value="{{ label }}" data-code="{{ code }}">{{ label }}</option>
+                {% endfor %}
+              </datalist>
+            </div>
+          </div>
+
+          <label for="myf-season-variety">Сорт / гибрид</label>
+          <input id="myf-season-variety" type="text" placeholder="напр. Гром, Pioneer P0216, Скиф" maxlength="120">
+
+          <div class="myf-row-3">
+            <div>
+              <label for="myf-season-sowing">Дата сева</label>
+              <input id="myf-season-sowing" type="date">
+            </div>
+            <div>
+              <label for="myf-season-harvest">План. уборка</label>
+              <input id="myf-season-harvest" type="date">
+            </div>
+            <div>
+              <label for="myf-season-yield">План, т/га</label>
+              <input id="myf-season-yield" type="number" step="0.01" min="0" placeholder="напр. 5.5">
+            </div>
+          </div>
+        </div>
+      </div>
 
       <div class="actions">
         <button class="btn-sec" type="button" id="myf-cancel">Отмена</button>
-        <button class="myf-fab" type="button" id="myf-save">Сохранить</button>
+        <button class="btn-pri" type="button" id="myf-save">Сохранить поле</button>
       </div>
     </div>
   </div>
 
   <div class="myf-toast" id="myf-toast"></div>
+{% endblock %}
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+{% block site_footer %}{% endblock %}
+
+{% block scripts %}
+  <script src="{% static 'legacy/js/leaflet.js' %}"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
   <script>
-  (function() {
-    // ─── CSRF: пробрасываем из cookie ───
-    function getCookie(name) {
-      var v = document.cookie.split('; ').find(function(r){ return r.indexOf(name+'=')===0; });
+  (function () {
+    /* ── CSRF ── */
+    function getCookie(n) {
+      var v = document.cookie.split('; ').find(function (r) { return r.indexOf(n + '=') === 0; });
       return v ? decodeURIComponent(v.split('=')[1]) : '';
     }
     var CSRF = getCookie('csrftoken');
-
     var DETAIL_URL = "{% url 'my_fields:ui_field_detail' 0 %}".replace('/0/', '/');
 
-    // ─── Map ───
-    var map = L.map('myf-map', { zoomControl: true }).setView([55.75, 37.62], 9);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '© OpenStreetMap',
-      maxZoom: 19,
-    }).addTo(map);
-
-    var drawnItems = L.featureGroup().addTo(map);
-    var fieldsLayer = L.featureGroup().addTo(map);
-
-    var drawControl = new L.Control.Draw({
-      draw: {
-        polygon: { allowIntersection: false, showArea: true,
-                   shapeOptions: { color: '#2e7d32', weight: 2 } },
-        polyline: false, rectangle: false, circle: false,
-        marker: false, circlemarker: false,
-      },
-      edit: { featureGroup: drawnItems, edit: false, remove: false },
+    /* ── Crop label ⇆ code mapping (from datalist) ── */
+    var CROP_LABEL_TO_CODE = {};
+    document.querySelectorAll('#myf-crop-list option').forEach(function (o) {
+      CROP_LABEL_TO_CODE[o.value.toLowerCase()] = o.getAttribute('data-code');
     });
 
-    var pendingGeometry = null;
+    /* ── Map init ── */
+    var map = L.map('myf-map', { zoomControl: false, scrollWheelZoom: true })
+      .setView([55.75, 37.62], 9);
+    L.control.zoom({ position: 'topright' }).addTo(map);
+    map.createPane('basemapPane');
+    map.getPane('basemapPane').style.zIndex = 150;
 
+    /* ── 3 basemaps ── */
+    var osmLayer = L.tileLayer(
+      'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+      { maxZoom: 19, attribution: '&copy; OSM &copy; CARTO', pane: 'basemapPane' }
+    ).addTo(map);
+    var satLayer = L.tileLayer(
+      'https://mt{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+      { maxZoom: 20, subdomains: '0123', attribution: '&copy; Google', pane: 'basemapPane' }
+    );
+    var hybridSat = L.tileLayer(
+      'https://mt{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+      { maxZoom: 20, subdomains: '0123', attribution: '&copy; Google', pane: 'basemapPane' }
+    );
+    var hybridLabels = L.tileLayer(
+      'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png',
+      { maxZoom: 19, attribution: '&copy; CARTO', pane: 'overlayPane' }
+    );
+    function switchBase(mode) {
+      [osmLayer, satLayer, hybridSat, hybridLabels].forEach(function (l) { map.removeLayer(l); });
+      if (mode === 'satellite') { satLayer.addTo(map); }
+      else if (mode === 'hybrid') { hybridSat.addTo(map); hybridLabels.addTo(map); }
+      else { osmLayer.addTo(map); }
+      document.querySelectorAll('.basemap-btn').forEach(function (b) {
+        b.classList.toggle('active', b.getAttribute('data-mode') === mode);
+      });
+    }
+    document.querySelectorAll('.basemap-btn').forEach(function (b) {
+      b.addEventListener('click', function () { switchBase(b.getAttribute('data-mode')); });
+    });
+
+    /* ── Layers / state ── */
+    var fieldsLayer = L.featureGroup().addTo(map);
+    var drawnItems = L.featureGroup().addTo(map);
+    var allFeatures = [];
+    var fieldLayersById = {};
+    var pendingGeometry = null;
+    var drawing = false;
+    var drawHandler = null;
+
+    /* ── Toast ── */
     function toast(msg, isErr) {
       var t = document.getElementById('myf-toast');
       t.textContent = msg;
       t.className = 'myf-toast show' + (isErr ? ' error' : '');
-      setTimeout(function() { t.className = 'myf-toast'; }, 3500);
+      setTimeout(function () { t.className = 'myf-toast' + (isErr ? ' error' : ''); }, 3500);
+    }
+    function escHTML(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+        return ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c];
+      });
     }
 
+    /* ── Sidebar collapse ── */
+    (function () {
+      var leftPanel = document.getElementById('myf-left');
+      var rightPanel = document.getElementById('myf-right');
+      var btnL = document.getElementById('myf-collapse-left');
+      var btnR = document.getElementById('myf-collapse-right');
+      btnL.addEventListener('click', function () {
+        leftPanel.classList.toggle('collapsed');
+        btnL.classList.toggle('shifted');
+        btnL.querySelector('i').textContent = leftPanel.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
+        setTimeout(function () { map.invalidateSize(); }, 300);
+      });
+      btnR.addEventListener('click', function () {
+        rightPanel.classList.toggle('collapsed');
+        btnR.classList.toggle('shifted');
+        btnR.querySelector('i').textContent = rightPanel.classList.contains('collapsed') ? 'chevron_left' : 'chevron_right';
+        setTimeout(function () { map.invalidateSize(); }, 300);
+      });
+    })();
+
+    /* ── Season section toggle ── */
+    document.getElementById('myf-season-toggle').addEventListener('click', function () {
+      var sec = document.getElementById('myf-season-section');
+      sec.classList.toggle('collapsed');
+      this.textContent = sec.classList.contains('collapsed') ? 'показать' : 'скрыть';
+    });
+
+    /* ── Modal helpers ── */
     function openModal(layer) {
       pendingGeometry = layer.toGeoJSON().geometry;
-      // Compute area client-side as a rough hint (real value from API).
       var area_m2 = 0;
       try { area_m2 = L.GeometryUtil ? L.GeometryUtil.geodesicArea(layer.getLatLngs()[0]) : 0; }
       catch (e) {}
       var hint = area_m2 > 0 ? (area_m2 / 10000).toFixed(2) + ' га (примерно)' : '—';
       document.getElementById('myf-modal-area').textContent = 'Площадь: ' + hint;
-      document.getElementById('myf-name').value = '';
-      document.getElementById('myf-notes').value = '';
-      document.getElementById('myf-crop').value = 'arable';
-      document.getElementById('myf-modal').classList.add('open');
-      setTimeout(function(){ document.getElementById('myf-name').focus(); }, 50);
-    }
 
+      // reset
+      ['myf-name','myf-cadastral','myf-notes','myf-season-crop','myf-season-variety',
+       'myf-season-sowing','myf-season-harvest','myf-season-yield'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      document.getElementById('myf-crop-type').value = 'arable';
+      document.getElementById('myf-modal').classList.add('open');
+      setTimeout(function () { document.getElementById('myf-name').focus(); }, 50);
+    }
     function closeModal() {
       document.getElementById('myf-modal').classList.remove('open');
       pendingGeometry = null;
       drawnItems.clearLayers();
     }
-
     document.getElementById('myf-cancel').addEventListener('click', closeModal);
 
-    document.getElementById('myf-save').addEventListener('click', function() {
+    /* ── Save field (with optional season) ── */
+    document.getElementById('myf-save').addEventListener('click', function () {
       var name = document.getElementById('myf-name').value.trim();
       if (!name) { toast('Введите название поля', true); return; }
       if (!pendingGeometry) { toast('Геометрия не задана', true); return; }
@@ -249,20 +564,40 @@
       var body = {
         name: name,
         properties: {
-          crop_type: document.getElementById('myf-crop').value,
+          crop_type: document.getElementById('myf-crop-type').value,
+          cadastral_number: document.getElementById('myf-cadastral').value.trim(),
           notes: document.getElementById('myf-notes').value.trim(),
         },
         geometry: pendingGeometry,
       };
 
+      // Optional season: send only if user picked a known crop label.
+      var cropTxt = document.getElementById('myf-season-crop').value.trim().toLowerCase();
+      var cropCode = CROP_LABEL_TO_CODE[cropTxt] || null;
+      if (cropCode) {
+        var year = parseInt(document.getElementById('myf-season-year').value, 10);
+        if (year) {
+          var pyld = parseFloat(document.getElementById('myf-season-yield').value);
+          body.season = {
+            year: year,
+            crop: cropCode,
+            variety: document.getElementById('myf-season-variety').value.trim(),
+            sowing_date: document.getElementById('myf-season-sowing').value || null,
+            planned_harvest_date: document.getElementById('myf-season-harvest').value || null,
+            planned_yield_t_per_ha: isNaN(pyld) ? null : pyld,
+          };
+        }
+      } else if (cropTxt) {
+        toast('Выберите культуру из списка', true); return;
+      }
+
       fetch('/api/my/fields/', {
-        method: 'POST',
-        credentials: 'same-origin',
+        method: 'POST', credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
         body: JSON.stringify(body),
-      }).then(function(r) {
-        return r.json().then(function(data) { return { status: r.status, data: data }; });
-      }).then(function(res) {
+      }).then(function (r) {
+        return r.json().then(function (data) { return { status: r.status, data: data }; });
+      }).then(function (res) {
         if (res.status === 201) {
           toast('Поле сохранено: ' + name);
           closeModal();
@@ -270,99 +605,146 @@
         } else {
           toast(res.data.detail || res.data.error || 'Ошибка сохранения', true);
         }
-      }).catch(function(e) {
-        toast('Сеть: ' + e.message, true);
-      });
+      }).catch(function (e) { toast('Сеть: ' + e.message, true); });
     });
 
-    // ─── Draw mode toggle ───
-    var drawing = false;
-    var drawHandler = null;
-    document.getElementById('myf-draw-btn').addEventListener('click', function() {
+    /* ── Draw mode ── */
+    var drawBtn = document.getElementById('myf-draw-btn');
+    var drawHint = document.getElementById('myf-draw-hint');
+    drawBtn.addEventListener('click', function () {
       if (!drawing) {
-        drawHandler = new L.Draw.Polygon(map, drawControl.options.draw.polygon);
+        drawHandler = new L.Draw.Polygon(map, {
+          allowIntersection: false, showArea: true,
+          shapeOptions: { color: '#2e7d32', weight: 3, fillOpacity: 0.18 },
+        });
         drawHandler.enable();
-        this.classList.add('cancel');
-        this.querySelector('span:last-child').textContent = 'Отмена';
+        drawBtn.classList.add('cancel');
+        drawBtn.querySelector('span').textContent = 'Отмена рисования';
+        drawHint.classList.add('show');
         drawing = true;
       } else {
         if (drawHandler) drawHandler.disable();
-        this.classList.remove('cancel');
-        this.querySelector('span:last-child').textContent = 'Добавить поле';
+        drawBtn.classList.remove('cancel');
+        drawBtn.querySelector('span').textContent = 'Добавить поле';
+        drawHint.classList.remove('show');
+        drawing = false;
+      }
+    });
+    map.on(L.Draw.Event.CREATED, function (e) {
+      drawnItems.addLayer(e.layer);
+      drawBtn.classList.remove('cancel');
+      drawBtn.querySelector('span').textContent = 'Добавить поле';
+      drawHint.classList.remove('show');
+      drawing = false;
+      openModal(e.layer);
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && drawing) {
+        drawHandler.disable();
+        drawBtn.classList.remove('cancel');
+        drawBtn.querySelector('span').textContent = 'Добавить поле';
+        drawHint.classList.remove('show');
         drawing = false;
       }
     });
 
-    map.on(L.Draw.Event.CREATED, function(e) {
-      drawnItems.addLayer(e.layer);
-      var btn = document.getElementById('myf-draw-btn');
-      btn.classList.remove('cancel');
-      btn.querySelector('span:last-child').textContent = 'Добавить поле';
-      drawing = false;
-      openModal(e.layer);
-    });
+    /* ── Load + render ── */
+    function cropTypeIconClass(t) { return 'myf-card__icon--' + (t || 'other'); }
+    var CROP_TYPE_EMOJI = {
+      arable: '🌾', fallow: '🟫', hayfield: '🌿', pasture: '🐄',
+      perennial: '🌳', garden: '🍅', other: '📐'
+    };
 
-    // ─── Load existing fields ───
     function loadFields() {
       fetch('/api/my/fields/', { credentials: 'same-origin' })
-        .then(function(r){ return r.json(); })
-        .then(function(fc) {
-          renderFields(fc.features || []);
+        .then(function (r) { return r.json(); })
+        .then(function (fc) {
+          allFeatures = fc.features || [];
+          renderFields(allFeatures);
         })
-        .catch(function(e) { toast('Не удалось загрузить поля: '+e.message, true); });
+        .catch(function (e) { toast('Не удалось загрузить поля: ' + e.message, true); });
     }
 
     function renderFields(features) {
       fieldsLayer.clearLayers();
+      fieldLayersById = {};
       var listEl = document.getElementById('myf-side-list');
       document.getElementById('myf-side-count').textContent = features.length + ' шт.';
+
       if (features.length === 0) {
-        listEl.innerHTML = '<div class="myf-empty">Полей пока нет. ' +
-          'Нажмите «Добавить поле» и нарисуйте границы на карте.</div>';
+        listEl.innerHTML = '<div class="myf-empty">Полей пока нет.<br>Нажмите «Добавить поле» и нарисуйте границы на карте.</div>';
         return;
       }
       listEl.innerHTML = '';
       var bounds = null;
-      features.forEach(function(f) {
+      features.forEach(function (f) {
+        var p = f.properties || {};
         var layer = L.geoJSON(f.geometry, {
           style: { color: '#2e7d32', weight: 2, fillOpacity: 0.20 }
         });
-        layer.bindTooltip(f.properties.name);
-        layer.on('click', function(){ window.location.href = DETAIL_URL + f.id + '/'; });
+        layer.bindTooltip(p.name);
+        layer.on('click', function () { window.location.href = DETAIL_URL + f.id + '/'; });
         layer.addTo(fieldsLayer);
+        fieldLayersById[f.id] = layer;
         var b = layer.getBounds();
         bounds = bounds ? bounds.extend(b) : b;
 
+        var cs = p.current_season;
+        var cropLine = cs
+          ? '<div class="myf-card__crop">🌱 ' + escHTML(cs.crop_display)
+              + (cs.variety ? ' · ' + escHTML(cs.variety) : '')
+              + ' (' + cs.year + ')</div>'
+          : '';
+        var emoji = CROP_TYPE_EMOJI[p.crop_type] || '📐';
+
         var row = document.createElement('div');
-        row.className = 'myf-field-row';
+        row.className = 'myf-card';
+        row.dataset.id = f.id;
         row.innerHTML =
-          '<div class="myf-field-name">' + escapeHTML(f.properties.name) + '</div>' +
-          '<div class="myf-field-meta">' +
-            f.properties.area_ha.toFixed(2) + ' га · ' +
-            escapeHTML(f.properties.crop_type_display) +
-            (f.properties.region_name ? ' · ' + escapeHTML(f.properties.region_name) : '') +
+          '<div class="myf-card__icon ' + cropTypeIconClass(p.crop_type) + '">' + emoji + '</div>' +
+          '<div class="myf-card__body">' +
+            '<div class="myf-card__title">' + escHTML(p.name) + '</div>' +
+            '<div class="myf-card__meta">' +
+              (p.area_ha != null ? p.area_ha.toFixed(2) + ' га' : '—') +
+              ' · ' + escHTML(p.crop_type_display) +
+              (p.region_name ? ' · ' + escHTML(p.region_name) : '') +
+            '</div>' +
+            cropLine +
           '</div>';
-        row.addEventListener('click', function(){
+        row.addEventListener('click', function () {
           window.location.href = DETAIL_URL + f.id + '/';
         });
-        row.addEventListener('mouseenter', function(){
-          layer.setStyle({ weight: 3, fillOpacity: 0.40 });
+        row.addEventListener('mouseenter', function () {
+          layer.setStyle({ weight: 3, fillOpacity: 0.40, color: '#1B5E20' });
+          row.classList.add('active');
         });
-        row.addEventListener('mouseleave', function(){
-          layer.setStyle({ weight: 2, fillOpacity: 0.20 });
+        row.addEventListener('mouseleave', function () {
+          layer.setStyle({ weight: 2, fillOpacity: 0.20, color: '#2e7d32' });
+          row.classList.remove('active');
         });
         listEl.appendChild(row);
       });
       if (bounds && bounds.isValid()) {
-        map.fitBounds(bounds, { padding: [30, 30], maxZoom: 14 });
+        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
       }
     }
 
-    function escapeHTML(s) {
-      return String(s || '').replace(/[&<>"']/g, function(c) {
-        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+    /* ── Search ── */
+    document.getElementById('myf-search').addEventListener('input', function () {
+      var q = this.value.trim().toLowerCase();
+      if (!q) { renderFields(allFeatures); return; }
+      var filtered = allFeatures.filter(function (f) {
+        var p = f.properties || {};
+        var hay = [
+          p.name, p.crop_type_display, p.region_name, p.district_name,
+          p.cadastral_number, p.notes,
+          p.current_season ? p.current_season.crop_display : '',
+          p.current_season ? p.current_season.variety : ''
+        ].join(' ').toLowerCase();
+        return hay.indexOf(q) !== -1;
       });
-    }
+      renderFields(filtered);
+    });
 
     loadFields();
   })();
