@@ -141,6 +141,14 @@
     .myf-card__title { font-size: 13px; font-weight: 600; color: #2e7d32; line-height: 1.3; }
     .myf-card__meta { font-size: 11px; color: #666; margin-top: 2px; line-height: 1.35; }
     .myf-card__crop { font-size: 11px; font-weight: 600; color: #1565C0; margin-top: 2px; }
+    .myf-card__open {
+      flex: 0 0 auto; align-self: center;
+      width: 28px; height: 28px; border-radius: 4px;
+      display: flex !important; align-items: center; justify-content: center;
+      color: #888 !important; text-decoration: none !important;
+      transition: background .12s, color .12s;
+    }
+    .myf-card__open:hover { background: #e8f5e9; color: #2e7d32 !important; }
 
     /* ── Кнопки сворачивания сайдбаров ── */
     .myf-collapse-btn {
@@ -726,23 +734,49 @@
               (p.region_name ? ' · ' + escHTML(p.region_name) : '') +
             '</div>' +
             cropLine +
-          '</div>';
-        row.addEventListener('click', function () {
-          window.location.href = DETAIL_URL + f.id + '/';
+          '</div>' +
+          '<a class="myf-card__open" href="' + DETAIL_URL + f.id + '/" title="Открыть карточку поля">' +
+            '<i class="material-icons" style="font-size:18px;">open_in_new</i></a>';
+        // Клик по карточке — зум на поле + подсветка. Переход на detail-страницу
+        // вынесён в отдельную иконку в углу карточки (`.myf-card__open`).
+        row.addEventListener('click', function (ev) {
+          if (ev.target.closest('.myf-card__open')) return; // не перехватываем click по иконке
+          selectField(f, layer, row);
         });
         row.addEventListener('mouseenter', function () {
-          layer.setStyle({ weight: 3, fillOpacity: 0.40, color: '#1B5E20' });
-          row.classList.add('active');
+          if (!row.classList.contains('active')) {
+            layer.setStyle({ weight: 3, fillOpacity: 0.35, color: '#1B5E20' });
+          }
         });
         row.addEventListener('mouseleave', function () {
-          layer.setStyle({ weight: 2, fillOpacity: 0.20, color: '#2e7d32' });
-          row.classList.remove('active');
+          if (!row.classList.contains('active')) {
+            layer.setStyle({ weight: 2, fillOpacity: 0.20, color: '#2e7d32' });
+          }
         });
+        // Тот же эффект и при клике на полигон на карте
+        layer.off('click');
+        layer.on('click', function () { selectField(f, layer, row); });
         listEl.appendChild(row);
       });
       if (bounds && bounds.isValid()) {
         map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
       }
+    }
+
+    /* ── Выделение поля по клику на карточку / полигон ── */
+    function selectField(f, layer, row) {
+      // Сбрасываем предыдущее выделение.
+      Object.keys(fieldLayersById).forEach(function (id) {
+        fieldLayersById[id].setStyle({ weight: 2, fillOpacity: 0.20, color: '#2e7d32' });
+      });
+      document.querySelectorAll('.myf-card.active').forEach(function (r) { r.classList.remove('active'); });
+      // Подсвечиваем выбранное.
+      layer.setStyle({ weight: 3, fillOpacity: 0.45, color: '#1B5E20' });
+      if (row) row.classList.add('active');
+      try {
+        map.fitBounds(layer.getBounds(), { padding: [60, 60], maxZoom: 16 });
+      } catch (e) {}
+      layer.openTooltip();
     }
 
     /* ── Search ── */
