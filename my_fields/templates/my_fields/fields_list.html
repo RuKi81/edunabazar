@@ -853,7 +853,12 @@
       }
     }
 
+    // Загружаем список ДО привязки обработчиков детальной панели,
+    // чтобы возможная ошибка при wiring не блокировала отображение полей.
+    loadFields();
+
     /* ── Выделение поля по клику: zoom + inline detail ── */
+    try {
     var rightPanel = document.getElementById('myf-right');
     var currentField = null;
     var currentLayer = null;
@@ -1128,6 +1133,10 @@
         else { toast('Не удалось удалить', true); }
       });
     });
+    } catch (e) {
+      console.error('[my_fields] detail wiring failed:', e);
+      toast('Ошибка инициализации деталей: ' + e.message, true);
+    }
 
     /* ── Search ── */
     document.getElementById('myf-search').addEventListener('input', function () {
