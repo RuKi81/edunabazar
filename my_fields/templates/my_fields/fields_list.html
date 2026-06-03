@@ -150,6 +150,76 @@
     }
     .myf-card__open:hover { background: #e8f5e9; color: #2e7d32 !important; }
 
+    /* ── Detail panel внутри правого сайдбара ── */
+    .myf-detail { flex: 1; display: none; flex-direction: column; min-height: 0; }
+    .myf-ui__right.detail-mode .myf-side-header,
+    .myf-ui__right.detail-mode .myf-side-search,
+    .myf-ui__right.detail-mode .myf-side-list { display: none; }
+    .myf-ui__right.detail-mode .myf-detail { display: flex; }
+    .myf-detail__head {
+      padding: 10px 12px; border-bottom: 1px solid rgba(0,0,0,.08);
+      background: #f7f9fc; display: flex; align-items: center; gap: 6px;
+    }
+    .myf-detail__back, .myf-detail__actions button {
+      background: transparent; border: 0; cursor: pointer;
+      width: 28px; height: 28px; border-radius: 4px;
+      display: flex; align-items: center; justify-content: center;
+      color: #555;
+    }
+    .myf-detail__back:hover, .myf-detail__actions button:hover { background: #e8f5e9; color: #2e7d32; }
+    .myf-detail__actions .danger:hover { background: #fdecea; color: #c62828; }
+    .myf-detail__title {
+      flex: 1; font-size: 14px; font-weight: 700; color: #2e7d32;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .myf-detail__actions { display: flex; gap: 2px; }
+    .myf-detail__body { flex: 1; overflow-y: auto; padding: 12px 14px; }
+
+    .myf-meta { font-size: 12px; line-height: 1.5; color: #444; }
+    .myf-meta .row { display: flex; gap: 8px; padding: 3px 0; }
+    .myf-meta .lbl { color: #888; min-width: 90px; flex: 0 0 auto; }
+    .myf-meta .val { color: #222; word-break: break-word; }
+
+    .myf-block { margin-top: 16px; padding-top: 10px; border-top: 1px solid #eef0f3; }
+    .myf-block__head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+    .myf-block__head h5 {
+      margin: 0; font-size: 12px; font-weight: 700; color: #2e7d32;
+      text-transform: uppercase; letter-spacing: .4px;
+    }
+    .myf-block__head .add {
+      margin-left: auto; background: #e8f5e9; color: #2e7d32; border: 0;
+      cursor: pointer; padding: 4px 9px; border-radius: 4px;
+      font-size: 11px; font-weight: 600;
+      display: inline-flex; align-items: center; gap: 3px;
+    }
+    .myf-block__head .add:hover { background: #c8e6c9; }
+    .myf-empty-block {
+      padding: 12px; text-align: center; color: #999; font-size: 12px;
+      background: #f7f9fc; border-radius: 6px;
+    }
+    .myf-item {
+      padding: 8px 10px 8px 10px; border: 1px solid #e3e8ee;
+      border-radius: 6px; margin-bottom: 6px; font-size: 12px; position: relative;
+    }
+    .myf-item__title { font-weight: 600; color: #222; padding-right: 24px; }
+    .myf-item__meta { color: #777; font-size: 11px; margin-top: 2px; line-height: 1.4; }
+    .myf-item__del {
+      position: absolute; top: 4px; right: 4px;
+      background: transparent; border: 0; cursor: pointer; color: #bbb;
+      width: 22px; height: 22px; border-radius: 4px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .myf-item__del:hover { background: #fdecea; color: #c62828; }
+    .myf-event { border-left: 3px solid #2e7d32; padding-left: 10px; }
+    .myf-event[data-type="sowing"]    { border-color: #4CAF50; }
+    .myf-event[data-type="fertilize"] { border-color: #FFC107; }
+    .myf-event[data-type="protect"]   { border-color: #FF5722; }
+    .myf-event[data-type="tillage"]   { border-color: #795548; }
+    .myf-event[data-type="irrigate"]  { border-color: #03A9F4; }
+    .myf-event[data-type="scout"]     { border-color: #9C27B0; }
+    .myf-event[data-type="issue"]     { border-color: #c62828; }
+    .myf-event[data-type="harvest"]   { border-color: #FF9800; }
+
     /* ── Кнопки сворачивания сайдбаров ── */
     .myf-collapse-btn {
       position: fixed; top: calc(var(--map-header-h) + 12px); z-index: 1100;
@@ -359,6 +429,30 @@
       </div>
       <div class="myf-side-list" id="myf-side-list">
         <div class="myf-empty">Загрузка…</div>
+      </div>
+
+      <!-- Inline detail-панель -->
+      <div class="myf-detail" id="myf-detail">
+        <div class="myf-detail__head">
+          <button class="myf-detail__back" id="myf-detail-back" title="К списку">
+            <i class="material-icons" style="font-size:20px;">arrow_back</i>
+          </button>
+          <div class="myf-detail__title" id="myf-detail-title">—</div>
+          <div class="myf-detail__actions">
+            <button id="myf-detail-edit" title="Редактировать">
+              <i class="material-icons" style="font-size:18px;">edit</i>
+            </button>
+            <button id="myf-detail-archive" title="Архив">
+              <i class="material-icons" style="font-size:18px;">archive</i>
+            </button>
+            <button id="myf-detail-delete" class="danger" title="Удалить">
+              <i class="material-icons" style="font-size:18px;">delete_outline</i>
+            </button>
+          </div>
+        </div>
+        <div class="myf-detail__body" id="myf-detail-body">
+          <div class="myf-empty">Загрузка…</div>
+        </div>
       </div>
     </div>
   </div>
@@ -734,13 +828,9 @@
               (p.region_name ? ' · ' + escHTML(p.region_name) : '') +
             '</div>' +
             cropLine +
-          '</div>' +
-          '<a class="myf-card__open" href="' + DETAIL_URL + f.id + '/" title="Открыть карточку поля">' +
-            '<i class="material-icons" style="font-size:18px;">open_in_new</i></a>';
-        // Клик по карточке — зум на поле + подсветка. Переход на detail-страницу
-        // вынесён в отдельную иконку в углу карточки (`.myf-card__open`).
-        row.addEventListener('click', function (ev) {
-          if (ev.target.closest('.myf-card__open')) return; // не перехватываем click по иконке
+          '</div>';
+        // Клик по карточке — zoom + inline detail panel.
+        row.addEventListener('click', function () {
           selectField(f, layer, row);
         });
         row.addEventListener('mouseenter', function () {
@@ -763,21 +853,281 @@
       }
     }
 
-    /* ── Выделение поля по клику на карточку / полигон ── */
+    /* ── Выделение поля по клику: zoom + inline detail ── */
+    var rightPanel = document.getElementById('myf-right');
+    var currentField = null;
+    var currentLayer = null;
+
     function selectField(f, layer, row) {
-      // Сбрасываем предыдущее выделение.
+      currentField = f;
+      currentLayer = layer;
+      // Сброс стилей на всех полигонах + подсветка выбранного.
       Object.keys(fieldLayersById).forEach(function (id) {
         fieldLayersById[id].setStyle({ weight: 2, fillOpacity: 0.20, color: '#2e7d32' });
       });
       document.querySelectorAll('.myf-card.active').forEach(function (r) { r.classList.remove('active'); });
-      // Подсвечиваем выбранное.
       layer.setStyle({ weight: 3, fillOpacity: 0.45, color: '#1B5E20' });
       if (row) row.classList.add('active');
-      try {
-        map.fitBounds(layer.getBounds(), { padding: [60, 60], maxZoom: 16 });
-      } catch (e) {}
-      layer.openTooltip();
+      try { map.fitBounds(layer.getBounds(), { padding: [60, 60], maxZoom: 16 }); } catch (e) {}
+      openDetail(f);
     }
+
+    /* ── Inline detail panel ── */
+    function openDetail(f) {
+      rightPanel.classList.add('detail-mode');
+      document.getElementById('myf-detail-title').textContent = f.properties.name;
+      renderDetailMeta(f);
+      Promise.all([
+        fetch('/api/my/fields/' + f.id + '/seasons/', { credentials: 'same-origin' }).then(function (r) { return r.json(); }),
+        fetch('/api/my/fields/' + f.id + '/events/',  { credentials: 'same-origin' }).then(function (r) { return r.json(); }),
+      ]).then(function (res) {
+        renderDetailBlocks(f, res[0].results || [], res[1].results || []);
+      }).catch(function (e) { toast('Ошибка загрузки: ' + e.message, true); });
+    }
+    function closeDetail() {
+      rightPanel.classList.remove('detail-mode');
+      currentField = null; currentLayer = null;
+    }
+    document.getElementById('myf-detail-back').addEventListener('click', closeDetail);
+
+    function metaRow(lbl, val) {
+      return '<div class="row"><span class="lbl">' + lbl + '</span><span class="val">' + val + '</span></div>';
+    }
+    function renderDetailMeta(f) {
+      var p = f.properties || {};
+      var meta = '<div class="myf-meta">' +
+        metaRow('Площадь', (p.area_ha != null ? p.area_ha.toFixed(2) + ' га' : '—')) +
+        metaRow('Тип', escHTML(p.crop_type_display)) +
+        (p.region_name ? metaRow('Субъект', escHTML(p.region_name)) : '') +
+        (p.district_name ? metaRow('Район', escHTML(p.district_name)) : '') +
+        (p.cadastral_number ? metaRow('Кадастр', escHTML(p.cadastral_number)) : '') +
+        (p.notes ? metaRow('Заметки', escHTML(p.notes)) : '') +
+        '</div>';
+      document.getElementById('myf-detail-body').innerHTML = meta +
+        '<div class="myf-block" id="myf-detail-seasons"></div>' +
+        '<div class="myf-block" id="myf-detail-events"></div>';
+    }
+
+    function renderDetailBlocks(f, seasons, events) {
+      // ── Seasons ──
+      var sBox = document.getElementById('myf-detail-seasons');
+      var sHtml = '<div class="myf-block__head"><h5>Сезоны</h5>' +
+        '<button class="add" id="myf-add-season"><i class="material-icons" style="font-size:14px;">add</i>Добавить</button></div>';
+      if (!seasons.length) {
+        sHtml += '<div class="myf-empty-block">Сезонов пока нет</div>';
+      } else {
+        seasons.forEach(function (s) {
+          var line = [];
+          if (s.variety) line.push(escHTML(s.variety));
+          if (s.sowing_date) line.push('сев: ' + s.sowing_date);
+          if (s.planned_harvest_date) line.push('план: ' + s.planned_harvest_date);
+          if (s.planned_yield_t_per_ha) line.push(s.planned_yield_t_per_ha + ' т/га');
+          sHtml += '<div class="myf-item">' +
+            '<button class="myf-item__del" data-season-id="' + s.id + '" title="Удалить">' +
+              '<i class="material-icons" style="font-size:14px;">close</i></button>' +
+            '<div class="myf-item__title">' + s.year + ' · ' + escHTML(s.crop_display) + '</div>' +
+            (line.length ? '<div class="myf-item__meta">' + line.join(' · ') + '</div>' : '') +
+            '</div>';
+        });
+      }
+      sBox.innerHTML = sHtml;
+
+      // ── Events ──
+      var eBox = document.getElementById('myf-detail-events');
+      var eHtml = '<div class="myf-block__head"><h5>Журнал</h5>' +
+        '<button class="add" id="myf-add-event"><i class="material-icons" style="font-size:14px;">add</i>Запись</button></div>';
+      if (!events.length) {
+        eHtml += '<div class="myf-empty-block">Записей пока нет</div>';
+      } else {
+        events.forEach(function (e) {
+          var line = [];
+          if (e.product_name) line.push(escHTML(e.product_name));
+          if (e.quantity != null) line.push(e.quantity + (e.quantity_unit ? ' ' + escHTML(e.quantity_unit) : ''));
+          if (e.cost_rub != null) line.push(e.cost_rub + ' ₽');
+          eHtml += '<div class="myf-item myf-event" data-type="' + e.event_type + '">' +
+            '<button class="myf-item__del" data-event-id="' + e.id + '" title="Удалить">' +
+              '<i class="material-icons" style="font-size:14px;">close</i></button>' +
+            '<div class="myf-item__title">' + escHTML(e.event_type_display) +
+              (e.title ? ' — ' + escHTML(e.title) : '') + '</div>' +
+            '<div class="myf-item__meta">' + e.event_date +
+              (line.length ? ' · ' + line.join(' · ') : '') +
+              (e.description ? '<br>' + escHTML(e.description) : '') +
+            '</div></div>';
+        });
+      }
+      eBox.innerHTML = eHtml;
+
+      // Add buttons
+      document.getElementById('myf-add-season').addEventListener('click', function () { openModal_('myf-season-modal'); });
+      document.getElementById('myf-add-event').addEventListener('click', function () {
+        document.getElementById('myf-em-date').value = new Date().toISOString().slice(0, 10);
+        openModal_('myf-event-modal');
+      });
+      // Delete handlers (event delegation)
+      sBox.querySelectorAll('.myf-item__del').forEach(function (b) {
+        b.addEventListener('click', function () { deleteSeason(b.getAttribute('data-season-id')); });
+      });
+      eBox.querySelectorAll('.myf-item__del').forEach(function (b) {
+        b.addEventListener('click', function () { deleteEvent(b.getAttribute('data-event-id')); });
+      });
+    }
+
+    /* ── Modal helpers ── */
+    function openModal_(id) { document.getElementById(id).classList.add('open'); }
+    function closeModal_(id) { document.getElementById(id).classList.remove('open'); }
+    document.querySelectorAll('[data-close]').forEach(function (b) {
+      b.addEventListener('click', function () { closeModal_(b.getAttribute('data-close')); });
+    });
+
+    /* ── Season CRUD ── */
+    document.getElementById('myf-sm-save').addEventListener('click', function () {
+      if (!currentField) return;
+      var cropTxt = document.getElementById('myf-sm-crop').value.trim().toLowerCase();
+      var cropCode = CROP_LABEL_TO_CODE[cropTxt];
+      var year = parseInt(document.getElementById('myf-sm-year').value, 10);
+      if (!cropCode) { toast('Выберите культуру из списка', true); return; }
+      if (!year) { toast('Введите год', true); return; }
+      var pyld = parseFloat(document.getElementById('myf-sm-yield').value);
+      var body = {
+        year: year, crop: cropCode,
+        variety: document.getElementById('myf-sm-variety').value.trim(),
+        sowing_date: document.getElementById('myf-sm-sowing').value || null,
+        planned_harvest_date: document.getElementById('myf-sm-harvest').value || null,
+        planned_yield_t_per_ha: isNaN(pyld) ? null : pyld,
+      };
+      fetch('/api/my/fields/' + currentField.id + '/seasons/', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+        body: JSON.stringify(body),
+      }).then(function (r) {
+        return r.json().then(function (data) { return { status: r.status, data: data }; });
+      }).then(function (res) {
+        if (res.status === 200 || res.status === 201) {
+          toast('Сезон сохранён');
+          closeModal_('myf-season-modal');
+          ['myf-sm-crop','myf-sm-variety','myf-sm-sowing','myf-sm-harvest','myf-sm-yield'].forEach(function(id){ document.getElementById(id).value=''; });
+          openDetail(currentField);
+          loadFields();
+        } else { toast(res.data.detail || res.data.error || 'Ошибка', true); }
+      }).catch(function (e) { toast('Сеть: ' + e.message, true); });
+    });
+    function deleteSeason(sid) {
+      if (!currentField || !confirm('Удалить сезон?')) return;
+      fetch('/api/my/fields/' + currentField.id + '/seasons/' + sid + '/', {
+        method: 'DELETE', credentials: 'same-origin',
+        headers: { 'X-CSRFToken': CSRF },
+      }).then(function (r) {
+        if (r.ok) { toast('Сезон удалён'); openDetail(currentField); loadFields(); }
+        else { toast('Не удалось удалить', true); }
+      });
+    }
+
+    /* ── Event CRUD ── */
+    document.getElementById('myf-em-save').addEventListener('click', function () {
+      if (!currentField) return;
+      var date = document.getElementById('myf-em-date').value;
+      if (!date) { toast('Укажите дату', true); return; }
+      var qty = parseFloat(document.getElementById('myf-em-qty').value);
+      var cost = parseFloat(document.getElementById('myf-em-cost').value);
+      var body = {
+        event_type: document.getElementById('myf-em-type').value,
+        event_date: date,
+        title: document.getElementById('myf-em-title').value.trim(),
+        description: document.getElementById('myf-em-desc').value.trim(),
+        quantity: isNaN(qty) ? null : qty,
+        quantity_unit: document.getElementById('myf-em-unit').value.trim(),
+        product_name: document.getElementById('myf-em-product').value.trim(),
+        cost_rub: isNaN(cost) ? null : cost,
+      };
+      fetch('/api/my/fields/' + currentField.id + '/events/', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+        body: JSON.stringify(body),
+      }).then(function (r) {
+        return r.json().then(function (data) { return { status: r.status, data: data }; });
+      }).then(function (res) {
+        if (res.status === 201) {
+          toast('Запись добавлена');
+          closeModal_('myf-event-modal');
+          ['myf-em-title','myf-em-desc','myf-em-qty','myf-em-unit','myf-em-cost','myf-em-product'].forEach(function(id){ document.getElementById(id).value=''; });
+          openDetail(currentField);
+        } else { toast(res.data.detail || res.data.error || 'Ошибка', true); }
+      }).catch(function (e) { toast('Сеть: ' + e.message, true); });
+    });
+    function deleteEvent(eid) {
+      if (!currentField || !confirm('Удалить запись журнала?')) return;
+      fetch('/api/my/fields/' + currentField.id + '/events/' + eid + '/', {
+        method: 'DELETE', credentials: 'same-origin',
+        headers: { 'X-CSRFToken': CSRF },
+      }).then(function (r) {
+        if (r.ok) { toast('Удалено'); openDetail(currentField); }
+        else { toast('Не удалось удалить', true); }
+      });
+    }
+
+    /* ── Field edit / archive / delete ── */
+    document.getElementById('myf-detail-edit').addEventListener('click', function () {
+      if (!currentField) return;
+      var p = currentField.properties || {};
+      document.getElementById('myf-ed-name').value = p.name || '';
+      document.getElementById('myf-ed-crop-type').value = p.crop_type || 'arable';
+      document.getElementById('myf-ed-cadastral').value = p.cadastral_number || '';
+      document.getElementById('myf-ed-notes').value = p.notes || '';
+      openModal_('myf-edit-modal');
+    });
+    document.getElementById('myf-ed-save').addEventListener('click', function () {
+      if (!currentField) return;
+      var body = {
+        properties: {
+          name: document.getElementById('myf-ed-name').value.trim(),
+          crop_type: document.getElementById('myf-ed-crop-type').value,
+          cadastral_number: document.getElementById('myf-ed-cadastral').value.trim(),
+          notes: document.getElementById('myf-ed-notes').value.trim(),
+        }
+      };
+      fetch('/api/my/fields/' + currentField.id + '/', {
+        method: 'PATCH', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+        body: JSON.stringify(body),
+      }).then(function (r) {
+        return r.json().then(function (data) { return { status: r.status, data: data }; });
+      }).then(function (res) {
+        if (res.status === 200) {
+          toast('Сохранено');
+          closeModal_('myf-edit-modal');
+          currentField = res.data;
+          document.getElementById('myf-detail-title').textContent = res.data.properties.name;
+          renderDetailMeta(res.data);
+          openDetail(currentField);
+          loadFields();
+        } else { toast(res.data.detail || 'Ошибка', true); }
+      });
+    });
+    document.getElementById('myf-detail-archive').addEventListener('click', function () {
+      if (!currentField) return;
+      var archive = !currentField.properties.is_archived;
+      fetch('/api/my/fields/' + currentField.id + '/', {
+        method: 'PATCH', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+        body: JSON.stringify({ properties: { is_archived: archive } }),
+      }).then(function (r) {
+        if (r.ok) {
+          toast(archive ? 'В архиве' : 'Возвращено из архива');
+          closeDetail(); loadFields();
+        } else { toast('Ошибка', true); }
+      });
+    });
+    document.getElementById('myf-detail-delete').addEventListener('click', function () {
+      if (!currentField) return;
+      if (!confirm('Удалить поле «' + currentField.properties.name + '» вместе с журналом?')) return;
+      fetch('/api/my/fields/' + currentField.id + '/', {
+        method: 'DELETE', credentials: 'same-origin',
+        headers: { 'X-CSRFToken': CSRF },
+      }).then(function (r) {
+        if (r.ok) { toast('Поле удалено'); closeDetail(); loadFields(); }
+        else { toast('Не удалось удалить', true); }
+      });
+    });
 
     /* ── Search ── */
     document.getElementById('myf-search').addEventListener('input', function () {
