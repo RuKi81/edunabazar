@@ -979,12 +979,29 @@
     /* ── Modal helpers ── */
     function openModal_(id) { document.getElementById(id).classList.add('open'); }
     function closeModal_(id) { document.getElementById(id).classList.remove('open'); }
-    document.querySelectorAll('[data-close]').forEach(function (b) {
-      b.addEventListener('click', function () { closeModal_(b.getAttribute('data-close')); });
+
+    /* ── Event delegation для всех detail-кнопок и модалов.
+       Используется вместо addEventListener чтобы быть устойчивым к порядку
+       инициализации и к кнопкам, создаваемым через innerHTML. ── */
+    document.addEventListener('click', function (ev) {
+      var t = ev.target.closest('[data-close]');
+      if (t) { closeModal_(t.getAttribute('data-close')); return; }
+
+      if (ev.target.closest('#myf-add-season')) { openModal_('myf-season-modal'); return; }
+      if (ev.target.closest('#myf-add-event')) {
+        document.getElementById('myf-em-date').value = new Date().toISOString().slice(0, 10);
+        openModal_('myf-event-modal'); return;
+      }
+      if (ev.target.closest('#myf-detail-edit')) { handleEdit(); return; }
+      if (ev.target.closest('#myf-detail-archive')) { handleArchive(); return; }
+      if (ev.target.closest('#myf-detail-delete')) { handleDelete(); return; }
+      if (ev.target.closest('#myf-sm-save')) { handleSaveSeason(); return; }
+      if (ev.target.closest('#myf-em-save')) { handleSaveEvent(); return; }
+      if (ev.target.closest('#myf-ed-save')) { handleSaveEdit(); return; }
     });
 
     /* ── Season CRUD ── */
-    document.getElementById('myf-sm-save').addEventListener('click', function () {
+    function handleSaveSeason() {
       if (!currentField) return;
       var cropTxt = document.getElementById('myf-sm-crop').value.trim().toLowerCase();
       var cropCode = CROP_LABEL_TO_CODE[cropTxt];
@@ -1014,7 +1031,7 @@
           loadFields();
         } else { toast(res.data.detail || res.data.error || 'Ошибка', true); }
       }).catch(function (e) { toast('Сеть: ' + e.message, true); });
-    });
+    }
     function deleteSeason(sid) {
       if (!currentField || !confirm('Удалить сезон?')) return;
       fetch('/api/my/fields/' + currentField.id + '/seasons/' + sid + '/', {
@@ -1027,7 +1044,7 @@
     }
 
     /* ── Event CRUD ── */
-    document.getElementById('myf-em-save').addEventListener('click', function () {
+    function handleSaveEvent() {
       if (!currentField) return;
       var date = document.getElementById('myf-em-date').value;
       if (!date) { toast('Укажите дату', true); return; }
@@ -1057,7 +1074,7 @@
           openDetail(currentField);
         } else { toast(res.data.detail || res.data.error || 'Ошибка', true); }
       }).catch(function (e) { toast('Сеть: ' + e.message, true); });
-    });
+    }
     function deleteEvent(eid) {
       if (!currentField || !confirm('Удалить запись журнала?')) return;
       fetch('/api/my/fields/' + currentField.id + '/events/' + eid + '/', {
@@ -1070,7 +1087,7 @@
     }
 
     /* ── Field edit / archive / delete ── */
-    document.getElementById('myf-detail-edit').addEventListener('click', function () {
+    function handleEdit() {
       if (!currentField) return;
       var p = currentField.properties || {};
       document.getElementById('myf-ed-name').value = p.name || '';
@@ -1078,8 +1095,8 @@
       document.getElementById('myf-ed-cadastral').value = p.cadastral_number || '';
       document.getElementById('myf-ed-notes').value = p.notes || '';
       openModal_('myf-edit-modal');
-    });
-    document.getElementById('myf-ed-save').addEventListener('click', function () {
+    }
+    function handleSaveEdit() {
       if (!currentField) return;
       var body = {
         properties: {
@@ -1106,8 +1123,8 @@
           loadFields();
         } else { toast(res.data.detail || 'Ошибка', true); }
       });
-    });
-    document.getElementById('myf-detail-archive').addEventListener('click', function () {
+    }
+    function handleArchive() {
       if (!currentField) return;
       var archive = !currentField.properties.is_archived;
       fetch('/api/my/fields/' + currentField.id + '/', {
@@ -1120,8 +1137,8 @@
           closeDetail(); loadFields();
         } else { toast('Ошибка', true); }
       });
-    });
-    document.getElementById('myf-detail-delete').addEventListener('click', function () {
+    }
+    function handleDelete() {
       if (!currentField) return;
       if (!confirm('Удалить поле «' + currentField.properties.name + '» вместе с журналом?')) return;
       fetch('/api/my/fields/' + currentField.id + '/', {
@@ -1131,7 +1148,7 @@
         if (r.ok) { toast('Поле удалено'); closeDetail(); loadFields(); }
         else { toast('Не удалось удалить', true); }
       });
-    });
+    }
 
     /* ── Search ── */
     document.getElementById('myf-search').addEventListener('input', function () {
