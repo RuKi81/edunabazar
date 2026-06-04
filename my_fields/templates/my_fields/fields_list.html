@@ -661,6 +661,36 @@
       CROP_LABEL_TO_CODE[o.value.toLowerCase()] = o.getAttribute('data-code');
     });
 
+    /* ── Сопоставление: культура → тип угодья ── */
+    var CROP_TO_TYPE = {
+      wheat: 'arable', barley: 'arable', rye: 'arable', oats: 'arable',
+      corn: 'arable', sunflower: 'arable', rapeseed: 'arable', soybean: 'arable',
+      sugar_beet: 'arable', potato: 'arable', buckwheat: 'arable', flax: 'arable',
+      grapes: 'perennial', orchard: 'perennial',
+      perennial_grass: 'hayfield',
+      other: 'other',
+    };
+
+    /* ── Auto-fill crop_type when user picks a crop in the create-field modal.
+       Respects manual override via a "dirty" flag. ── */
+    (function () {
+      var cropInput = document.getElementById('myf-season-crop');
+      var typeSelect = document.getElementById('myf-crop-type');
+      if (!cropInput || !typeSelect) return;
+      var typeDirty = false;
+      typeSelect.addEventListener('change', function () { typeDirty = true; });
+      cropInput.addEventListener('input', function () {
+        if (typeDirty) return;
+        var code = CROP_LABEL_TO_CODE[cropInput.value.trim().toLowerCase()];
+        if (code && CROP_TO_TYPE[code]) {
+          typeSelect.value = CROP_TO_TYPE[code];
+        }
+      });
+      // Сбрасываем dirty при открытии модала "Новое поле".
+      var openBtn = document.getElementById('myf-draw-btn');
+      if (openBtn) openBtn.addEventListener('click', function () { typeDirty = false; });
+    })();
+
     /* ── Map init ── */
     var map = L.map('myf-map', { zoomControl: false, scrollWheelZoom: true })
       .setView([55.75, 37.62], 9);
