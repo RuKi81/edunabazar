@@ -537,6 +537,106 @@
     </div>
   </div>
 
+  <!-- Модал: сезон -->
+  <div class="myf-modal-bg" id="myf-season-modal">
+    <div class="myf-modal">
+      <h3>Новый сезон</h3>
+      <div class="myf-row-2">
+        <div>
+          <label>Год *</label>
+          <input id="myf-sm-year" type="number" min="2000" max="2100" value="{% now 'Y' %}">
+        </div>
+        <div>
+          <label>Культура *</label>
+          <input id="myf-sm-crop" type="text" list="myf-crop-list" placeholder="начните вводить…" autocomplete="off">
+        </div>
+      </div>
+      <label>Сорт / гибрид</label>
+      <input id="myf-sm-variety" type="text" maxlength="120">
+      <div class="myf-row-3">
+        <div><label>Дата сева</label><input id="myf-sm-sowing" type="date"></div>
+        <div><label>План. уборка</label><input id="myf-sm-harvest" type="date"></div>
+        <div><label>План, т/га</label><input id="myf-sm-yield" type="number" step="0.01" min="0"></div>
+      </div>
+      <div class="actions">
+        <button class="btn-sec" type="button" data-close="myf-season-modal">Отмена</button>
+        <button class="btn-pri" type="button" id="myf-sm-save">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модал: событие журнала -->
+  <div class="myf-modal-bg" id="myf-event-modal">
+    <div class="myf-modal">
+      <h3>Запись журнала</h3>
+      <div class="myf-row-2">
+        <div>
+          <label>Тип *</label>
+          <select id="myf-em-type">
+            <option value="sowing">Сев</option>
+            <option value="fertilize">Внесение удобрений</option>
+            <option value="protect">Обработка СЗР</option>
+            <option value="tillage">Обработка почвы</option>
+            <option value="irrigate">Полив</option>
+            <option value="scout" selected>Осмотр / разведка</option>
+            <option value="issue">Проблема</option>
+            <option value="harvest">Уборка</option>
+            <option value="soil_test">Анализ почвы</option>
+            <option value="other">Прочее</option>
+          </select>
+        </div>
+        <div>
+          <label>Дата *</label>
+          <input id="myf-em-date" type="date">
+        </div>
+      </div>
+      <label>Заголовок</label>
+      <input id="myf-em-title" type="text" maxlength="180" placeholder="кратко">
+      <label>Описание</label>
+      <textarea id="myf-em-desc" rows="2" placeholder="что сделано, что замечено…"></textarea>
+      <div class="myf-row-3">
+        <div><label>Кол-во</label><input id="myf-em-qty" type="number" step="0.01"></div>
+        <div><label>Ед.</label><input id="myf-em-unit" type="text" placeholder="кг/га" maxlength="20"></div>
+        <div><label>Затраты, ₽</label><input id="myf-em-cost" type="number" step="0.01"></div>
+      </div>
+      <label>Препарат / удобрение</label>
+      <input id="myf-em-product" type="text" maxlength="180">
+      <div class="actions">
+        <button class="btn-sec" type="button" data-close="myf-event-modal">Отмена</button>
+        <button class="btn-pri" type="button" id="myf-em-save">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модал: редактирование поля -->
+  <div class="myf-modal-bg" id="myf-edit-modal">
+    <div class="myf-modal">
+      <h3>Редактировать поле</h3>
+      <label>Название</label>
+      <input id="myf-ed-name" type="text" maxlength="120">
+      <div class="myf-row-2">
+        <div>
+          <label>Тип угодья</label>
+          <select id="myf-ed-crop-type">
+            {% for code, label in crop_type_choices %}
+              <option value="{{ code }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label>Кадастровый номер</label>
+          <input id="myf-ed-cadastral" type="text" maxlength="50">
+        </div>
+      </div>
+      <label>Заметки</label>
+      <textarea id="myf-ed-notes" rows="2" maxlength="1000"></textarea>
+      <div class="actions">
+        <button class="btn-sec" type="button" data-close="myf-edit-modal">Отмена</button>
+        <button class="btn-pri" type="button" id="myf-ed-save">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
   <div class="myf-toast" id="myf-toast"></div>
 {% endblock %}
 
