@@ -176,9 +176,42 @@
     .myf-detail__body { flex: 1; overflow-y: auto; padding: 12px 14px; }
 
     .myf-meta { font-size: 12px; line-height: 1.5; color: #444; }
-    .myf-meta .row { display: flex; gap: 8px; padding: 3px 0; }
-    .myf-meta .lbl { color: #888; min-width: 90px; flex: 0 0 auto; }
-    .myf-meta .val { color: #222; word-break: break-word; }
+    .myf-meta .row { display: flex; gap: 8px; padding: 4px 0; align-items: center; }
+    .myf-meta .lbl { color: #888; min-width: 90px; flex: 0 0 auto; padding-top: 2px; }
+    .myf-meta .val { color: #222; word-break: break-word; flex: 1 1 auto; }
+    .myf-meta .val.empty { color: #bbb; font-style: italic; }
+    .myf-meta input, .myf-meta select, .myf-meta textarea {
+      width: 100%; padding: 4px 6px; border: 1px solid #d0d7de;
+      border-radius: 4px; font-size: 12px; box-sizing: border-box;
+      background: #fff; color: #222; font-family: inherit;
+    }
+    .myf-meta input:focus, .myf-meta select:focus, .myf-meta textarea:focus {
+      outline: none; border-color: #2e7d32;
+      box-shadow: 0 0 0 2px rgba(46,125,50,.15);
+    }
+    .myf-meta textarea { resize: vertical; min-height: 32px; }
+    /* show/hide for view vs edit */
+    .myf-meta .view-only { display: inline; }
+    .myf-meta .edit-only { display: none; }
+    .myf-detail.editing .myf-meta .view-only { display: none; }
+    .myf-detail.editing .myf-meta .edit-only { display: block; }
+    /* header controls */
+    .myf-detail__actions.editor { display: none; }
+    .myf-detail.editing .myf-detail__actions.normal { display: none; }
+    .myf-detail.editing .myf-detail__actions.editor { display: flex; }
+    .myf-detail__title input {
+      width: 100%; padding: 4px 6px; border: 1px solid #d0d7de;
+      border-radius: 4px; font-size: 14px; font-weight: 700; color: #2e7d32;
+      box-sizing: border-box; background: #fff; font-family: inherit;
+    }
+    .myf-detail__title input:focus {
+      outline: none; border-color: #2e7d32;
+      box-shadow: 0 0 0 2px rgba(46,125,50,.15);
+    }
+    #myf-detail-name-input { display: none; }
+    .myf-detail.editing #myf-detail-name-text { display: none; }
+    .myf-detail.editing #myf-detail-name-input { display: block; }
+    .myf-detail__actions .save-btn:hover { background: #c8e6c9; color: #1B5E20; }
 
     .myf-block { margin-top: 16px; padding-top: 10px; border-top: 1px solid #eef0f3; }
     .myf-block__head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
@@ -437,8 +470,11 @@
           <button class="myf-detail__back" id="myf-detail-back" title="К списку">
             <i class="material-icons" style="font-size:20px;">arrow_back</i>
           </button>
-          <div class="myf-detail__title" id="myf-detail-title">—</div>
-          <div class="myf-detail__actions">
+          <div class="myf-detail__title">
+            <span id="myf-detail-name-text">—</span>
+            <input id="myf-detail-name-input" type="text" maxlength="120">
+          </div>
+          <div class="myf-detail__actions normal">
             <button id="myf-detail-edit" title="Редактировать">
               <i class="material-icons" style="font-size:18px;">edit</i>
             </button>
@@ -447,6 +483,14 @@
             </button>
             <button id="myf-detail-delete" class="danger" title="Удалить">
               <i class="material-icons" style="font-size:18px;">delete_outline</i>
+            </button>
+          </div>
+          <div class="myf-detail__actions editor">
+            <button id="myf-detail-save" class="save-btn" title="Сохранить" style="color:#2e7d32;">
+              <i class="material-icons" style="font-size:20px;">check</i>
+            </button>
+            <button id="myf-detail-cancel" title="Отмена">
+              <i class="material-icons" style="font-size:18px;">close</i>
             </button>
           </div>
         </div>
@@ -608,34 +652,12 @@
     </div>
   </div>
 
-  <!-- Модал: редактирование поля -->
-  <div class="myf-modal-bg" id="myf-edit-modal">
-    <div class="myf-modal">
-      <h3>Редактировать поле</h3>
-      <label>Название</label>
-      <input id="myf-ed-name" type="text" maxlength="120">
-      <div class="myf-row-2">
-        <div>
-          <label>Тип угодья</label>
-          <select id="myf-ed-crop-type">
-            {% for code, label in crop_type_choices %}
-              <option value="{{ code }}">{{ label }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div>
-          <label>Кадастровый номер</label>
-          <input id="myf-ed-cadastral" type="text" maxlength="50">
-        </div>
-      </div>
-      <label>Заметки</label>
-      <textarea id="myf-ed-notes" rows="2" maxlength="1000"></textarea>
-      <div class="actions">
-        <button class="btn-sec" type="button" data-close="myf-edit-modal">Отмена</button>
-        <button class="btn-pri" type="button" id="myf-ed-save">Сохранить</button>
-      </div>
-    </div>
-  </div>
+  <!-- Скрытый шаблон select типа угодья (используется JS для inline-edit). -->
+  <select id="myf-crop-type-template" hidden>
+    {% for code, label in crop_type_choices %}
+      <option value="{{ code }}">{{ label }}</option>
+    {% endfor %}
+  </select>
 
   <div class="myf-toast" id="myf-toast"></div>
 {% endblock %}
@@ -1009,7 +1031,9 @@
     /* ── Inline detail panel ── */
     function openDetail(f) {
       rightPanel.classList.add('detail-mode');
-      document.getElementById('myf-detail-title').textContent = f.properties.name;
+      rightPanel.querySelector('.myf-detail').classList.remove('editing');
+      document.getElementById('myf-detail-name-text').textContent = f.properties.name || '—';
+      document.getElementById('myf-detail-name-input').value = f.properties.name || '';
       renderDetailMeta(f);
       Promise.all([
         fetch('/api/my/fields/' + f.id + '/seasons/', { credentials: 'same-origin' }).then(function (r) { return r.json(); }),
@@ -1020,22 +1044,50 @@
     }
     function closeDetail() {
       rightPanel.classList.remove('detail-mode');
+      rightPanel.querySelector('.myf-detail').classList.remove('editing');
       currentField = null; currentLayer = null;
     }
     document.getElementById('myf-detail-back').addEventListener('click', closeDetail);
 
-    function metaRow(lbl, val) {
-      return '<div class="row"><span class="lbl">' + lbl + '</span><span class="val">' + val + '</span></div>';
+    function escAttr(s) {
+      return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    }
+    /* Render meta row with both view and edit variants in the same DOM.
+       CSS toggles which one is shown via the `.editing` class on the panel. */
+    function metaRow(lbl, viewHtml, editHtml) {
+      return '<div class="row">' +
+        '<span class="lbl">' + lbl + '</span>' +
+        '<span class="val">' +
+          '<span class="view-only">' + viewHtml + '</span>' +
+          (editHtml ? '<span class="edit-only">' + editHtml + '</span>' : '') +
+        '</span>' +
+      '</div>';
+    }
+    function valOrDash(v) {
+      return v ? escHTML(v) : '<span class="empty">не указано</span>';
     }
     function renderDetailMeta(f) {
       var p = f.properties || {};
-      var meta = '<div class="myf-meta">' +
+      // Build crop_type select options from hidden template.
+      var typeTemplate = document.getElementById('myf-crop-type-template');
+      var typeOptions = '';
+      Array.prototype.forEach.call(typeTemplate.options, function (o) {
+        typeOptions += '<option value="' + o.value + '"' +
+          (o.value === p.crop_type ? ' selected' : '') + '>' + escHTML(o.textContent) + '</option>';
+      });
+      var meta = '<div class="myf-meta" id="myf-detail-meta">' +
         metaRow('Площадь', (p.area_ha != null ? p.area_ha.toFixed(2) + ' га' : '—')) +
-        metaRow('Тип', escHTML(p.crop_type_display)) +
-        (p.region_name ? metaRow('Субъект', escHTML(p.region_name)) : '') +
-        (p.district_name ? metaRow('Район', escHTML(p.district_name)) : '') +
-        (p.cadastral_number ? metaRow('Кадастр', escHTML(p.cadastral_number)) : '') +
-        (p.notes ? metaRow('Заметки', escHTML(p.notes)) : '') +
+        metaRow('Тип',
+          valOrDash(p.crop_type_display),
+          '<select data-field="crop_type">' + typeOptions + '</select>') +
+        metaRow('Субъект', valOrDash(p.region_name)) +
+        metaRow('Район', valOrDash(p.district_name)) +
+        metaRow('Кадастр',
+          valOrDash(p.cadastral_number),
+          '<input type="text" data-field="cadastral_number" maxlength="50" value="' + escAttr(p.cadastral_number) + '">') +
+        metaRow('Заметки',
+          valOrDash(p.notes),
+          '<textarea data-field="notes" rows="2" maxlength="1000">' + escHTML(p.notes || '') + '</textarea>') +
         '</div>';
       document.getElementById('myf-detail-body').innerHTML = meta +
         '<div class="myf-block" id="myf-detail-seasons"></div>' +
@@ -1127,7 +1179,8 @@
       if (ev.target.closest('#myf-detail-delete')) { handleDelete(); return; }
       if (ev.target.closest('#myf-sm-save')) { handleSaveSeason(); return; }
       if (ev.target.closest('#myf-em-save')) { handleSaveEvent(); return; }
-      if (ev.target.closest('#myf-ed-save')) { handleSaveEdit(); return; }
+      if (ev.target.closest('#myf-detail-save')) { handleSaveEdit(); return; }
+      if (ev.target.closest('#myf-detail-cancel')) { handleCancelEdit(); return; }
     });
 
     /* ── Season CRUD ── */
@@ -1216,24 +1269,31 @@
       });
     }
 
-    /* ── Field edit / archive / delete ── */
+    /* ── Inline edit mode ── */
     function handleEdit() {
       if (!currentField) return;
-      var p = currentField.properties || {};
-      document.getElementById('myf-ed-name').value = p.name || '';
-      document.getElementById('myf-ed-crop-type').value = p.crop_type || 'arable';
-      document.getElementById('myf-ed-cadastral').value = p.cadastral_number || '';
-      document.getElementById('myf-ed-notes').value = p.notes || '';
-      openModal_('myf-edit-modal');
+      var panel = rightPanel.querySelector('.myf-detail');
+      panel.classList.add('editing');
+      // Focus the name input for quick editing.
+      var nameInput = document.getElementById('myf-detail-name-input');
+      nameInput.value = currentField.properties.name || '';
+      setTimeout(function () { nameInput.focus(); nameInput.select(); }, 50);
+    }
+    function handleCancelEdit() {
+      if (!currentField) return;
+      // Revert any unsaved input by re-rendering meta and resetting the name input.
+      rightPanel.querySelector('.myf-detail').classList.remove('editing');
+      document.getElementById('myf-detail-name-input').value = currentField.properties.name || '';
+      renderDetailMeta(currentField);
     }
     function handleSaveEdit() {
       if (!currentField) return;
       var body = {
         properties: {
-          name: document.getElementById('myf-ed-name').value.trim(),
-          crop_type: document.getElementById('myf-ed-crop-type').value,
-          cadastral_number: document.getElementById('myf-ed-cadastral').value.trim(),
-          notes: document.getElementById('myf-ed-notes').value.trim(),
+          name: document.getElementById('myf-detail-name-input').value.trim(),
+          crop_type: document.querySelector('[data-field="crop_type"]').value,
+          cadastral_number: document.querySelector('[data-field="cadastral_number"]').value.trim(),
+          notes: document.querySelector('[data-field="notes"]').value.trim(),
         }
       };
       fetch('/api/my/fields/' + currentField.id + '/', {
@@ -1245,11 +1305,11 @@
       }).then(function (res) {
         if (res.status === 200) {
           toast('Сохранено');
-          closeModal_('myf-edit-modal');
           currentField = res.data;
-          document.getElementById('myf-detail-title').textContent = res.data.properties.name;
+          rightPanel.querySelector('.myf-detail').classList.remove('editing');
+          document.getElementById('myf-detail-name-text').textContent = res.data.properties.name || '—';
+          document.getElementById('myf-detail-name-input').value = res.data.properties.name || '';
           renderDetailMeta(res.data);
-          openDetail(currentField);
           loadFields();
         } else { toast(res.data.detail || 'Ошибка', true); }
       });
