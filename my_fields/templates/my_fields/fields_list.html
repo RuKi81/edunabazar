@@ -181,32 +181,37 @@
     .myf-meta .val { color: #222; word-break: break-word; flex: 1 1 auto; }
     .myf-meta .val.empty { color: #bbb; font-style: italic; }
     .myf-meta input, .myf-meta select, .myf-meta textarea {
-      width: 100%; padding: 4px 6px; border: 1px solid #d0d7de;
-      border-radius: 4px; font-size: 12px; box-sizing: border-box;
+      width: 100%; padding: 5px 7px; border: 1.5px solid #a5d6a7;
+      border-radius: 5px; font-size: 12px; box-sizing: border-box;
       background: #fff; color: #222; font-family: inherit;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .myf-meta input:hover, .myf-meta select:hover, .myf-meta textarea:hover {
+      border-color: #66bb6a;
     }
     .myf-meta input:focus, .myf-meta select:focus, .myf-meta textarea:focus {
       outline: none; border-color: #2e7d32;
-      box-shadow: 0 0 0 2px rgba(46,125,50,.15);
+      box-shadow: 0 0 0 2px rgba(46,125,50,.18);
     }
     .myf-meta textarea { resize: vertical; min-height: 32px; }
-    /* show/hide for view vs edit */
+    /* show/hide for view vs edit. Read-only rows keep view-only visible. */
     .myf-meta .view-only { display: inline; }
     .myf-meta .edit-only { display: none; }
-    .myf-detail.editing .myf-meta .view-only { display: none; }
-    .myf-detail.editing .myf-meta .edit-only { display: block; }
+    .myf-detail.editing .myf-meta .row.editable .view-only { display: none; }
+    .myf-detail.editing .myf-meta .row.editable .edit-only { display: block; }
     /* header controls */
     .myf-detail__actions.editor { display: none; }
     .myf-detail.editing .myf-detail__actions.normal { display: none; }
     .myf-detail.editing .myf-detail__actions.editor { display: flex; }
     .myf-detail__title input {
-      width: 100%; padding: 4px 6px; border: 1px solid #d0d7de;
-      border-radius: 4px; font-size: 14px; font-weight: 700; color: #2e7d32;
+      width: 100%; padding: 5px 8px; border: 1.5px solid #a5d6a7;
+      border-radius: 5px; font-size: 14px; font-weight: 700; color: #2e7d32;
       box-sizing: border-box; background: #fff; font-family: inherit;
     }
+    .myf-detail__title input:hover { border-color: #66bb6a; }
     .myf-detail__title input:focus {
       outline: none; border-color: #2e7d32;
-      box-shadow: 0 0 0 2px rgba(46,125,50,.15);
+      box-shadow: 0 0 0 2px rgba(46,125,50,.18);
     }
     #myf-detail-name-input { display: none; }
     .myf-detail.editing #myf-detail-name-text { display: none; }
@@ -234,15 +239,19 @@
       padding: 8px 10px 8px 10px; border: 1px solid #e3e8ee;
       border-radius: 6px; margin-bottom: 6px; font-size: 12px; position: relative;
     }
-    .myf-item__title { font-weight: 600; color: #222; padding-right: 24px; }
+    .myf-item__title { font-weight: 600; color: #222; padding-right: 48px; }
     .myf-item__meta { color: #777; font-size: 11px; margin-top: 2px; line-height: 1.4; }
-    .myf-item__del {
+    .myf-item__actions {
       position: absolute; top: 4px; right: 4px;
+      display: flex; gap: 2px;
+    }
+    .myf-item__edit, .myf-item__del {
       background: transparent; border: 0; cursor: pointer; color: #bbb;
       width: 22px; height: 22px; border-radius: 4px;
       display: flex; align-items: center; justify-content: center;
     }
-    .myf-item__del:hover { background: #fdecea; color: #c62828; }
+    .myf-item__edit:hover { background: #e8f5e9; color: #2e7d32; }
+    .myf-item__del:hover  { background: #fdecea; color: #c62828; }
     .myf-event { border-left: 3px solid #2e7d32; padding-left: 10px; }
     .myf-event[data-type="sowing"]    { border-color: #4CAF50; }
     .myf-event[data-type="fertilize"] { border-color: #FFC107; }
@@ -1055,7 +1064,8 @@
     /* Render meta row with both view and edit variants in the same DOM.
        CSS toggles which one is shown via the `.editing` class on the panel. */
     function metaRow(lbl, viewHtml, editHtml) {
-      return '<div class="row">' +
+      var rowClass = editHtml ? 'row editable' : 'row';
+      return '<div class="' + rowClass + '">' +
         '<span class="lbl">' + lbl + '</span>' +
         '<span class="val">' +
           '<span class="view-only">' + viewHtml + '</span>' +
@@ -1094,23 +1104,35 @@
         '<div class="myf-block" id="myf-detail-events"></div>';
     }
 
+    /* Storage for currently shown seasons/events so that the edit handler
+       can fetch values without an extra round-trip. */
+    var seasonsCache = [];
+    var eventsCache = [];
+
     function renderDetailBlocks(f, seasons, events) {
+      seasonsCache = seasons || [];
+      eventsCache = events || [];
+
       // ── Seasons ──
       var sBox = document.getElementById('myf-detail-seasons');
       var sHtml = '<div class="myf-block__head"><h5>Сезоны</h5>' +
         '<button class="add" id="myf-add-season"><i class="material-icons" style="font-size:14px;">add</i>Добавить</button></div>';
-      if (!seasons.length) {
+      if (!seasonsCache.length) {
         sHtml += '<div class="myf-empty-block">Сезонов пока нет</div>';
       } else {
-        seasons.forEach(function (s) {
+        seasonsCache.forEach(function (s) {
           var line = [];
           if (s.variety) line.push(escHTML(s.variety));
           if (s.sowing_date) line.push('сев: ' + s.sowing_date);
           if (s.planned_harvest_date) line.push('план: ' + s.planned_harvest_date);
           if (s.planned_yield_t_per_ha) line.push(s.planned_yield_t_per_ha + ' т/га');
-          sHtml += '<div class="myf-item">' +
-            '<button class="myf-item__del" data-season-id="' + s.id + '" title="Удалить">' +
-              '<i class="material-icons" style="font-size:14px;">close</i></button>' +
+          sHtml += '<div class="myf-item" data-season-id="' + s.id + '">' +
+            '<div class="myf-item__actions">' +
+              '<button class="myf-item__edit" data-edit-season="' + s.id + '" title="Редактировать">' +
+                '<i class="material-icons" style="font-size:14px;">edit</i></button>' +
+              '<button class="myf-item__del" data-del-season="' + s.id + '" title="Удалить">' +
+                '<i class="material-icons" style="font-size:14px;">close</i></button>' +
+            '</div>' +
             '<div class="myf-item__title">' + s.year + ' · ' + escHTML(s.crop_display) + '</div>' +
             (line.length ? '<div class="myf-item__meta">' + line.join(' · ') + '</div>' : '') +
             '</div>';
@@ -1122,17 +1144,21 @@
       var eBox = document.getElementById('myf-detail-events');
       var eHtml = '<div class="myf-block__head"><h5>Журнал</h5>' +
         '<button class="add" id="myf-add-event"><i class="material-icons" style="font-size:14px;">add</i>Запись</button></div>';
-      if (!events.length) {
+      if (!eventsCache.length) {
         eHtml += '<div class="myf-empty-block">Записей пока нет</div>';
       } else {
-        events.forEach(function (e) {
+        eventsCache.forEach(function (e) {
           var line = [];
           if (e.product_name) line.push(escHTML(e.product_name));
           if (e.quantity != null) line.push(e.quantity + (e.quantity_unit ? ' ' + escHTML(e.quantity_unit) : ''));
           if (e.cost_rub != null) line.push(e.cost_rub + ' ₽');
-          eHtml += '<div class="myf-item myf-event" data-type="' + e.event_type + '">' +
-            '<button class="myf-item__del" data-event-id="' + e.id + '" title="Удалить">' +
-              '<i class="material-icons" style="font-size:14px;">close</i></button>' +
+          eHtml += '<div class="myf-item myf-event" data-type="' + e.event_type + '" data-event-id="' + e.id + '">' +
+            '<div class="myf-item__actions">' +
+              '<button class="myf-item__edit" data-edit-event="' + e.id + '" title="Редактировать">' +
+                '<i class="material-icons" style="font-size:14px;">edit</i></button>' +
+              '<button class="myf-item__del" data-del-event="' + e.id + '" title="Удалить">' +
+                '<i class="material-icons" style="font-size:14px;">close</i></button>' +
+            '</div>' +
             '<div class="myf-item__title">' + escHTML(e.event_type_display) +
               (e.title ? ' — ' + escHTML(e.title) : '') + '</div>' +
             '<div class="myf-item__meta">' + e.event_date +
@@ -1142,25 +1168,15 @@
         });
       }
       eBox.innerHTML = eHtml;
-
-      // Add buttons
-      document.getElementById('myf-add-season').addEventListener('click', function () { openModal_('myf-season-modal'); });
-      document.getElementById('myf-add-event').addEventListener('click', function () {
-        document.getElementById('myf-em-date').value = new Date().toISOString().slice(0, 10);
-        openModal_('myf-event-modal');
-      });
-      // Delete handlers (event delegation)
-      sBox.querySelectorAll('.myf-item__del').forEach(function (b) {
-        b.addEventListener('click', function () { deleteSeason(b.getAttribute('data-season-id')); });
-      });
-      eBox.querySelectorAll('.myf-item__del').forEach(function (b) {
-        b.addEventListener('click', function () { deleteEvent(b.getAttribute('data-event-id')); });
-      });
     }
 
     /* ── Modal helpers ── */
     function openModal_(id) { document.getElementById(id).classList.add('open'); }
     function closeModal_(id) { document.getElementById(id).classList.remove('open'); }
+
+    /* Состояние модалов: null = создание, иначе PATCH этой записи. */
+    var editingSeasonId = null;
+    var editingEventId = null;
 
     /* ── Event delegation для всех detail-кнопок и модалов.
        Используется вместо addEventListener чтобы быть устойчивым к порядку
@@ -1169,11 +1185,23 @@
       var t = ev.target.closest('[data-close]');
       if (t) { closeModal_(t.getAttribute('data-close')); return; }
 
-      if (ev.target.closest('#myf-add-season')) { openModal_('myf-season-modal'); return; }
-      if (ev.target.closest('#myf-add-event')) {
-        document.getElementById('myf-em-date').value = new Date().toISOString().slice(0, 10);
-        openModal_('myf-event-modal'); return;
+      // Items inside detail panel.
+      var btn;
+      if ((btn = ev.target.closest('[data-edit-season]'))) {
+        openSeasonForEdit(btn.getAttribute('data-edit-season')); return;
       }
+      if ((btn = ev.target.closest('[data-del-season]'))) {
+        deleteSeason(btn.getAttribute('data-del-season')); return;
+      }
+      if ((btn = ev.target.closest('[data-edit-event]'))) {
+        openEventForEdit(btn.getAttribute('data-edit-event')); return;
+      }
+      if ((btn = ev.target.closest('[data-del-event]'))) {
+        deleteEvent(btn.getAttribute('data-del-event')); return;
+      }
+
+      if (ev.target.closest('#myf-add-season')) { openSeasonForCreate(); return; }
+      if (ev.target.closest('#myf-add-event')) { openEventForCreate(); return; }
       if (ev.target.closest('#myf-detail-edit')) { handleEdit(); return; }
       if (ev.target.closest('#myf-detail-archive')) { handleArchive(); return; }
       if (ev.target.closest('#myf-detail-delete')) { handleDelete(); return; }
@@ -1182,6 +1210,59 @@
       if (ev.target.closest('#myf-detail-save')) { handleSaveEdit(); return; }
       if (ev.target.closest('#myf-detail-cancel')) { handleCancelEdit(); return; }
     });
+
+    /* ── Open season modal: create vs edit ── */
+    function openSeasonForCreate() {
+      editingSeasonId = null;
+      document.querySelector('#myf-season-modal h3').textContent = 'Новый сезон';
+      var thisYear = new Date().getFullYear();
+      ['myf-sm-crop','myf-sm-variety','myf-sm-sowing','myf-sm-harvest','myf-sm-yield'].forEach(function (id) {
+        document.getElementById(id).value = '';
+      });
+      document.getElementById('myf-sm-year').value = thisYear;
+      openModal_('myf-season-modal');
+    }
+    function openSeasonForEdit(sid) {
+      var s = seasonsCache.find(function (x) { return String(x.id) === String(sid); });
+      if (!s) return;
+      editingSeasonId = s.id;
+      document.querySelector('#myf-season-modal h3').textContent = 'Редактировать сезон';
+      document.getElementById('myf-sm-year').value = s.year || '';
+      // crop_display — уже локализованное название культуры; datalist ищет по value=label.
+      document.getElementById('myf-sm-crop').value = s.crop_display || '';
+      document.getElementById('myf-sm-variety').value = s.variety || '';
+      document.getElementById('myf-sm-sowing').value = s.sowing_date || '';
+      document.getElementById('myf-sm-harvest').value = s.planned_harvest_date || '';
+      document.getElementById('myf-sm-yield').value = s.planned_yield_t_per_ha || '';
+      openModal_('myf-season-modal');
+    }
+
+    /* ── Open event modal: create vs edit ── */
+    function openEventForCreate() {
+      editingEventId = null;
+      document.querySelector('#myf-event-modal h3').textContent = 'Запись журнала';
+      ['myf-em-title','myf-em-desc','myf-em-qty','myf-em-unit','myf-em-cost','myf-em-product'].forEach(function (id) {
+        document.getElementById(id).value = '';
+      });
+      document.getElementById('myf-em-type').value = 'scout';
+      document.getElementById('myf-em-date').value = new Date().toISOString().slice(0, 10);
+      openModal_('myf-event-modal');
+    }
+    function openEventForEdit(eid) {
+      var e = eventsCache.find(function (x) { return String(x.id) === String(eid); });
+      if (!e) return;
+      editingEventId = e.id;
+      document.querySelector('#myf-event-modal h3').textContent = 'Редактировать запись';
+      document.getElementById('myf-em-type').value = e.event_type || 'scout';
+      document.getElementById('myf-em-date').value = e.event_date || '';
+      document.getElementById('myf-em-title').value = e.title || '';
+      document.getElementById('myf-em-desc').value = e.description || '';
+      document.getElementById('myf-em-qty').value = (e.quantity != null ? e.quantity : '');
+      document.getElementById('myf-em-unit').value = e.quantity_unit || '';
+      document.getElementById('myf-em-cost').value = (e.cost_rub != null ? e.cost_rub : '');
+      document.getElementById('myf-em-product').value = e.product_name || '';
+      openModal_('myf-event-modal');
+    }
 
     /* ── Season CRUD ── */
     function handleSaveSeason() {
@@ -1199,17 +1280,20 @@
         planned_harvest_date: document.getElementById('myf-sm-harvest').value || null,
         planned_yield_t_per_ha: isNaN(pyld) ? null : pyld,
       };
-      fetch('/api/my/fields/' + currentField.id + '/seasons/', {
-        method: 'POST', credentials: 'same-origin',
+      var url = '/api/my/fields/' + currentField.id + '/seasons/';
+      var method = 'POST';
+      if (editingSeasonId) { url += editingSeasonId + '/'; method = 'PATCH'; }
+      fetch(url, {
+        method: method, credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
         body: JSON.stringify(body),
       }).then(function (r) {
         return r.json().then(function (data) { return { status: r.status, data: data }; });
       }).then(function (res) {
         if (res.status === 200 || res.status === 201) {
-          toast('Сезон сохранён');
+          toast(editingSeasonId ? 'Сезон обновлён' : 'Сезон сохранён');
           closeModal_('myf-season-modal');
-          ['myf-sm-crop','myf-sm-variety','myf-sm-sowing','myf-sm-harvest','myf-sm-yield'].forEach(function(id){ document.getElementById(id).value=''; });
+          editingSeasonId = null;
           openDetail(currentField);
           loadFields();
         } else { toast(res.data.detail || res.data.error || 'Ошибка', true); }
@@ -1243,17 +1327,20 @@
         product_name: document.getElementById('myf-em-product').value.trim(),
         cost_rub: isNaN(cost) ? null : cost,
       };
-      fetch('/api/my/fields/' + currentField.id + '/events/', {
-        method: 'POST', credentials: 'same-origin',
+      var url = '/api/my/fields/' + currentField.id + '/events/';
+      var method = 'POST';
+      if (editingEventId) { url += editingEventId + '/'; method = 'PATCH'; }
+      fetch(url, {
+        method: method, credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
         body: JSON.stringify(body),
       }).then(function (r) {
         return r.json().then(function (data) { return { status: r.status, data: data }; });
       }).then(function (res) {
-        if (res.status === 201) {
-          toast('Запись добавлена');
+        if (res.status === 200 || res.status === 201) {
+          toast(editingEventId ? 'Запись обновлена' : 'Запись добавлена');
           closeModal_('myf-event-modal');
-          ['myf-em-title','myf-em-desc','myf-em-qty','myf-em-unit','myf-em-cost','myf-em-product'].forEach(function(id){ document.getElementById(id).value=''; });
+          editingEventId = null;
           openDetail(currentField);
         } else { toast(res.data.detail || res.data.error || 'Ошибка', true); }
       }).catch(function (e) { toast('Сеть: ' + e.message, true); });
