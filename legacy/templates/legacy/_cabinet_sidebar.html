@@ -1,9 +1,11 @@
 {% comment %}
 Shared sidebar for the user cabinet (/me/, /me/agrocosmos/, /me/fields/).
 Requires context var ``active_section`` in
-{credentials|agrocosmos|my_fields|adverts|messages|reviews}.
+{credentials|agrocosmos|my_fields|gis|adverts|messages|reviews}.
 Menu items that live on the same page (/me/) use data-tab, so the JS on
 /me/ can switch sections without a full reload. External pages use href.
+The "ГИС" item is admin-only; it's rendered only when ``is_admin_user``
+is set by ``legacy.context_processors.legacy_user``.
 {% endcomment %}
 <aside class="cab-sidebar">
   <div class="cab-side-card">
@@ -16,7 +18,7 @@ Menu items that live on the same page (/me/) use data-tab, so the JS on
     </div>
 
     <div class="cab-nav">
-      {% if active_section == 'agrocosmos' or active_section == 'my_fields' %}
+      {% if active_section == 'agrocosmos' or active_section == 'my_fields' or active_section == 'gis' %}
         <a href="{% url 'legacy_me' %}" class="cab-nav-item">
           <span class="cab-nav-icon">👤</span>
           <span>Мои учетные данные</span>
@@ -41,7 +43,16 @@ Menu items that live on the same page (/me/) use data-tab, so the JS on
         <span>Мои поля</span>
       </a>
 
-      {% if active_section == 'agrocosmos' or active_section == 'my_fields' %}
+      {% if is_admin_user %}
+        <a href="{% url 'my_fields:ui_gis' %}"
+           class="cab-nav-item {% if active_section == 'gis' %}active{% endif %}">
+          <span class="cab-nav-icon">🗺️</span>
+          <span>ГИС</span>
+          <span class="cab-nav-badge">admin</span>
+        </a>
+      {% endif %}
+
+      {% if active_section == 'agrocosmos' or active_section == 'my_fields' or active_section == 'gis' %}
         <a href="{% url 'legacy_me' %}#adverts" class="cab-nav-item">
           <span class="cab-nav-icon">📋</span>
           <span>Мои объявления</span>

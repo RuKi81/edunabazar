@@ -24,4 +24,6 @@ urlpatterns = [
     # ── UI ──
     path('me/fields/', views.fields_list_page, name='ui_fields_list'),
     path('me/fields/<int:pk>/', views.field_detail_page, name='ui_field_detail'),
+    # Admin-only experimental MapLibre + MVT GIS page (см. views.gis_page).
+    path('me/gis/', views.gis_page, name='ui_gis'),
 ]
