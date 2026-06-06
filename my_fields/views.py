@@ -16,13 +16,30 @@ REST API (``GET/POST/PATCH/DELETE``) живёт в ``my_fields.api``. Здесь
 """
 from __future__ import annotations
 
+from django.conf import settings
 from django.contrib.auth.decorators import login_required
-from django.http import HttpRequest, HttpResponse
+from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, render
 
 from .models import FieldSeason, UserField
 from .permissions import can_view_field
 from .services.quotas import get_user_plan
+
+
+def _is_admin_legacy(request: HttpRequest) -> bool:
+    """Mirror of ``legacy.context_processors._is_admin`` and the gate
+    used in ``agrocosmos.views.tiles``: superuser OR username in
+    ``settings.ADMIN_USERNAMES``. Reads ``request.legacy_user`` set by
+    ``LegacyUserMiddleware``.
+    """
+    user = getattr(request, 'legacy_user', None)
+    if user is None:
+        return False
+    if bool(getattr(user, 'is_superuser', False)):
+        return True
+    username = (getattr(user, 'username', '') or '').strip().lower()
+    admin_usernames = getattr(settings, 'ADMIN_USERNAMES', {'admin'})
+    return username in {u.lower() for u in admin_usernames}
 
 
 @login_required(login_url='/login/')
@@ -55,9 +72,31 @@ def field_detail_page(request: HttpRequest, pk: int) -> HttpResponse:
     )
     if not can_view_field(request.user, field):
         # 404 а не 403 — чтобы не «утекало» наличие чужого поля.
-        from django.http import Http404
         raise Http404
     return render(request, 'my_fields/field_detail.html', {
         'active_section': 'my_fields',
         'field': field,
+    })
+
+
+@login_required(login_url='/login/')
+def gis_page(request: HttpRequest) -> HttpResponse:
+    """Экспериментальная страница «ГИС» — admin-only.
+
+    MapLibre GL JS поверх готового MVT-эндпоинта
+    ``agrocosmos:api_tile`` (``/agrocosmos/api/tiles/{z}/{x}/{y}.pbf``,
+    source-layer ``farmlands``), плюс ``mapbox-gl-draw`` для рисования
+    тестовой геометрии. Цель — обкатать стек векторных тайлов +
+    GPU-рендера для будущей полноценной замены Leaflet-страницы
+    «Мои поля» на массивах в десятки тысяч полигонов.
+
+    Доступ ограничен админом по тем же правилам, что и сам MVT-эндпоинт
+    (см. ``agrocosmos.views.tiles._is_admin_legacy``); 404 вместо 403
+    выбран сознательно — чтобы страница не «светилась» в навигации
+    обычным пользователям, даже если они подберут URL.
+    """
+    if not _is_admin_legacy(request):
+        raise Http404
+    return render(request, 'my_fields/gis.html', {
+        'active_section': 'gis',
     })

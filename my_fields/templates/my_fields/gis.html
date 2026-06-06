@@ -1,0 +1,308 @@
+{% extends 'legacy/base.html' %}
+{% load static %}
+
+{% block title %}ГИС — Эдунабазар{% endblock %}
+{% block meta_description %}Экспериментальный ГИС-инструмент: векторные тайлы угодий и редактор геометрии.{% endblock %}
+
+{% block head %}
+  {# MapLibre GL JS — open-source форк Mapbox GL без лицензионной возни. #}
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+  {# mapbox-gl-draw — редактор полигонов; работает с MapLibre через шим в самом плагине. #}
+  <link rel="stylesheet" href="https://unpkg.com/@mapbox/mapbox-gl-draw@1.5.0/dist/mapbox-gl-draw.css" />
+  <style>
+    html, body { height: 100%; }
+    .content { background: transparent !important; }
+    .content > .container { width: 100% !important; min-width: 0 !important; padding: 0 !important; margin-top: 0 !important; }
+    .hide-on-med-and-down,
+    .hide-on-large-only { position: absolute; top: 0; left: 0; right: 0; z-index: 2000; }
+    .brand-logo, .brand-logo__img, .sidenav-logo { display: none !important; }
+    .hide-on-large-only .container { justify-content: flex-end; }
+
+    .gis-ui { position: fixed; left: 0; right: 0; top: 0; bottom: 0; }
+    #gis-map { position: absolute; left: 0; right: 0; top: 0; bottom: 0; }
+
+    /* Топ-панель: бренд / возврат / счётчики. */
+    .gis-topbar {
+      position: absolute; left: 12px; top: 76px; z-index: 1100;
+      display: flex; align-items: center; gap: 10px;
+      background: rgba(255, 255, 255, 0.95);
+      border-radius: 10px; padding: 8px 12px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+      font-size: 13px;
+    }
+    .gis-topbar a { color: #2e7d32; text-decoration: none; font-weight: 600; }
+    .gis-topbar .pill { background: #c8e6c9; color: #1b5e20; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+    .gis-topbar .muted { color: #777; }
+
+    /* Правая панель — попап с атрибутами при клике. */
+    .gis-info {
+      position: absolute; right: 12px; top: 76px; z-index: 1100;
+      width: 280px; max-height: calc(100vh - 100px); overflow: auto;
+      background: rgba(255, 255, 255, 0.97);
+      border-radius: 10px; padding: 12px 14px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+      font-size: 13px; display: none;
+    }
+    .gis-info.visible { display: block; }
+    .gis-info h4 { margin: 0 0 8px; font-size: 14px; color: #2e7d32; }
+    .gis-info dl { margin: 0; display: grid; grid-template-columns: 110px 1fr; gap: 4px 8px; }
+    .gis-info dt { color: #777; font-weight: 500; }
+    .gis-info dd { margin: 0; word-break: break-word; }
+    .gis-info .close {
+      position: absolute; top: 6px; right: 8px; cursor: pointer;
+      background: transparent; border: none; font-size: 18px; color: #999; line-height: 1;
+    }
+
+    /* Базовая подложка-переключатель (внизу справа). */
+    .basemap-bar {
+      position: absolute; bottom: 18px; right: 14px; z-index: 1100;
+      display: flex; gap: 3px; background: rgba(255, 255, 255, 0.92);
+      border-radius: 6px; box-shadow: 0 1px 6px rgba(0, 0, 0, 0.2); padding: 3px;
+    }
+    .basemap-btn {
+      border: none; background: transparent; cursor: pointer; border-radius: 4px;
+      padding: 5px 10px; font-size: 11px; font-weight: 600; color: #555;
+    }
+    .basemap-btn:hover { background: #e8f5e9; }
+    .basemap-btn.active { background: #c8e6c9; color: #2e7d32; }
+
+    /* Подвыделение полигона по hover. */
+    .maplibregl-canvas-container { cursor: crosshair; }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <div class="gis-ui">
+    <div id="gis-map"></div>
+
+    <div class="gis-topbar">
+      <a href="{% url 'legacy_me' %}" title="Назад в кабинет">← Кабинет</a>
+      <span class="muted">|</span>
+      <strong>ГИС</strong>
+      <span class="pill">admin</span>
+      <span class="muted" id="gis-status">подложка: ЗСН (Росреестр-вектор)</span>
+    </div>
+
+    <aside class="gis-info" id="gis-info">
+      <button class="close" type="button" id="gis-info-close">×</button>
+      <h4 id="gis-info-title">Полигон</h4>
+      <dl id="gis-info-list"></dl>
+    </aside>
+
+    <div class="basemap-bar" role="group" aria-label="Базовая подложка">
+      <button class="basemap-btn active" data-basemap="osm" type="button">Карта</button>
+      <button class="basemap-btn" data-basemap="sat" type="button">Спутник</button>
+    </div>
+  </div>
+{% endblock %}
+
+{% block site_footer %}{% endblock %}
+
+{% block scripts %}
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/@mapbox/mapbox-gl-draw@1.5.0/dist/mapbox-gl-draw.js"></script>
+  <script>
+  (function () {
+    'use strict';
+
+    /* ── Конфигурация подложек ─────────────────────────────────────────
+       Используем растровые XYZ-источники как basemap, потому что:
+       — OSM и Esri World Imagery бесплатны, без ключей;
+       — растровая подложка не конкурирует с MVT-слоем `farmlands` за
+         одни и те же style-слои, что упрощает order/swap.
+    */
+    var BASEMAPS = {
+      osm: {
+        tiles: ['https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png'],
+        attribution: '© OpenStreetMap',
+      },
+      sat: {
+        tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+        attribution: 'Tiles © Esri — World Imagery',
+      },
+    };
+
+    /* ── Style-документ MapLibre ──
+       Сначала растровый basemap, поверх — векторные слои `farmlands`
+       (fill + line). Атрибуты тайла (id, crop_type, area_ha,
+       cadastral_number, district, is_used, fact_isp) задаются в
+       agrocosmos/views/tiles.py.
+    */
+    function buildStyle(basemapKey) {
+      var bm = BASEMAPS[basemapKey] || BASEMAPS.osm;
+      return {
+        version: 8,
+        glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+        sources: {
+          basemap: {
+            type: 'raster', tileSize: 256,
+            tiles: bm.tiles, attribution: bm.attribution,
+          },
+          farmlands: {
+            type: 'vector',
+            tiles: [location.origin + '/agrocosmos/api/tiles/{z}/{x}/{y}.pbf'],
+            minzoom: 6, maxzoom: 14,
+          },
+        },
+        layers: [
+          { id: 'basemap', type: 'raster', source: 'basemap' },
+          {
+            id: 'farmlands-fill',
+            type: 'fill', source: 'farmlands', 'source-layer': 'farmlands',
+            paint: {
+              /* Окраска по факту использования (is_used 1/0/-1):
+                 используется — зелёный, не используется — оранжевый,
+                 неизвестно — серо-голубой. */
+              'fill-color': [
+                'match', ['get', 'is_used'],
+                1, '#66bb6a',
+                0, '#ffa726',
+                /* default */ '#90a4ae',
+              ],
+              'fill-opacity': [
+                'case', ['boolean', ['feature-state', 'hover'], false],
+                0.55, 0.30,
+              ],
+            },
+          },
+          {
+            id: 'farmlands-outline',
+            type: 'line', source: 'farmlands', 'source-layer': 'farmlands',
+            paint: { 'line-color': '#37474f', 'line-width': 0.6 },
+          },
+        ],
+      };
+    }
+
+    /* ── Инициализация карты ── */
+    var map = new maplibregl.Map({
+      container: 'gis-map',
+      style: buildStyle('osm'),
+      center: [37.62, 55.75],   // Москва — стартовая точка по умолчанию
+      zoom: 9,
+      hash: true,               // координаты в URL — удобно для шаринга
+    });
+    map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), 'top-right');
+    map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
+
+    /* ── Переключатель подложки ── */
+    document.querySelectorAll('.basemap-btn').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        document.querySelectorAll('.basemap-btn').forEach(function (b) {
+          b.classList.toggle('active', b === btn);
+        });
+        var key = btn.getAttribute('data-basemap');
+        /* Подменяем источник basemap'а вместо setStyle, чтобы не сбрасывать
+           уже загруженные MVT-тайлы и состояние редактора. */
+        var src = map.getSource('basemap');
+        if (src) {
+          var bm = BASEMAPS[key] || BASEMAPS.osm;
+          src.tiles = bm.tiles;
+          /* Принудительный реренд: сохранить config — отдельного метода
+             setTiles в MapLibre нет, поэтому удалить и заново добавить. */
+          map.removeLayer('basemap'); map.removeSource('basemap');
+          map.addSource('basemap', { type: 'raster', tileSize: 256, tiles: bm.tiles, attribution: bm.attribution });
+          map.addLayer({ id: 'basemap', type: 'raster', source: 'basemap' }, 'farmlands-fill');
+        }
+      });
+    });
+
+    /* ── Hover-подсветка полигона ──
+       feature-state живёт между перерендерами тайлов, так что подсветка
+       не «слетает» при пане/зуме внутри одного тайла. */
+    var hoveredId = null;
+    map.on('mousemove', 'farmlands-fill', function (e) {
+      if (!e.features.length) return;
+      var f = e.features[0];
+      if (hoveredId !== null) {
+        map.setFeatureState({ source: 'farmlands', sourceLayer: 'farmlands', id: hoveredId }, { hover: false });
+      }
+      hoveredId = f.id;
+      map.setFeatureState({ source: 'farmlands', sourceLayer: 'farmlands', id: hoveredId }, { hover: true });
+      map.getCanvas().style.cursor = 'pointer';
+    });
+    map.on('mouseleave', 'farmlands-fill', function () {
+      if (hoveredId !== null) {
+        map.setFeatureState({ source: 'farmlands', sourceLayer: 'farmlands', id: hoveredId }, { hover: false });
+      }
+      hoveredId = null;
+      map.getCanvas().style.cursor = '';
+    });
+
+    /* ── Клик по полигону → правая панель с атрибутами ── */
+    var infoEl = document.getElementById('gis-info');
+    var infoTitle = document.getElementById('gis-info-title');
+    var infoList = document.getElementById('gis-info-list');
+    document.getElementById('gis-info-close').addEventListener('click', function () {
+      infoEl.classList.remove('visible');
+    });
+
+    var CROP_LABELS = {
+      arable: 'Пашня', fallow: 'Залежь', hayfield: 'Сенокос',
+      pasture: 'Пастбище', perennial: 'Многолетние насаждения',
+      other_agri: 'Иные с.-х. земли', other: 'Прочее',
+    };
+    var IS_USED_LABELS = { 1: 'Используется', 0: 'Не используется', '-1': 'Неизвестно' };
+
+    map.on('click', 'farmlands-fill', function (e) {
+      if (!e.features.length) return;
+      var p = e.features[0].properties || {};
+      infoTitle.textContent = 'Угодье #' + (p.id != null ? p.id : '—');
+      var rows = [
+        ['Тип', CROP_LABELS[p.crop_type] || p.crop_type || '—'],
+        ['Площадь, га', p.area_ha != null ? Number(p.area_ha).toFixed(2) : '—'],
+        ['Кадастровый номер', p.cadastral_number || '—'],
+        ['Район', p.district || '—'],
+        ['Использование', IS_USED_LABELS[String(p.is_used)] || '—'],
+      ];
+      if (p.fact_isp) rows.push(['Fact_isp', p.fact_isp]);
+      infoList.innerHTML = rows.map(function (r) {
+        return '<dt>' + r[0] + '</dt><dd>' + (r[1] === '' ? '—' : r[1]) + '</dd>';
+      }).join('');
+      infoEl.classList.add('visible');
+    });
+
+    /* ── Редактор геометрии (MVP) ──
+       Для начала — стандартные режимы mapbox-gl-draw без снаппинга и
+       без сохранения. После того как обкатаем стек на больших данных,
+       сюда придут кастомные режимы (snap к farmlands и т.п.) — см.
+       обсуждение архитектуры с Cascade.
+    */
+    var draw = new MapboxDraw({
+      displayControlsDefault: false,
+      controls: { polygon: true, line_string: true, point: true, trash: true },
+      defaultMode: 'simple_select',
+    });
+    /* mapbox-gl-draw использует Mapbox-специфичные классы (.mapboxgl-*),
+       которые в MapLibre переименованы в .maplibregl-*. Этот хак-патч
+       официально рекомендован в README плагина для совместимости. */
+    var origOnAdd = draw.onAdd.bind(draw);
+    draw.onAdd = function (m) {
+      var node = origOnAdd(m);
+      node.classList.add('maplibregl-ctrl', 'maplibregl-ctrl-group');
+      return node;
+    };
+    map.addControl(draw, 'top-left');
+
+    /* TODO (следующий шаг): обработчики draw.create / draw.update /
+       draw.delete с сохранением через POST/PATCH /api/my/fields/. */
+
+    /* ── Лог в статусную строку при каждой загрузке тайла, чтобы было
+       видно, что MVT-эндпоинт отдаёт данные, и заметно, если он начал
+       возвращать 403 / 5xx. */
+    var statusEl = document.getElementById('gis-status');
+    map.on('sourcedata', function (ev) {
+      if (ev.sourceId === 'farmlands' && ev.isSourceLoaded) {
+        statusEl.textContent = 'подложка: ЗСН (Росреестр-вектор) · загружено';
+      }
+    });
+    map.on('error', function (ev) {
+      var msg = (ev && ev.error && ev.error.message) || 'неизвестная ошибка';
+      statusEl.textContent = 'ошибка карты: ' + msg;
+      statusEl.style.color = '#c62828';
+    });
+  })();
+  </script>
+{% endblock %}
