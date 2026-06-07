@@ -981,76 +981,52 @@
       }
     });
 
-    /* Все кольца полигона (внешнее + дырки) как отдельные LineString-ы.
-       turf.polygonToLine для MultiPolygon отдаёт MultiLineString,
-       а turf.lineSplit умеет работать ТОЛЬКО с LineString — поэтому
-       извлекаем кольца вручную из coordinates. */
-    function polygonRingLines(polyFeature) {
-      var g = polyFeature.geometry;
-      var rings = [];
-      if (g.type === 'Polygon') {
-        g.coordinates.forEach(function (r) { rings.push(r); });
-      } else if (g.type === 'MultiPolygon') {
-        g.coordinates.forEach(function (poly) {
-          poly.forEach(function (r) { rings.push(r); });
-        });
-      }
-      return rings
-        .filter(function (r) { return r && r.length >= 2; })
-        .map(function (r) { return turf.lineString(r); });
-    }
+    /* Алгоритм разрезки: буферизуем линию в очень узкий полигон-«нож»,
+       вычитаем его из исходного полигона через turf.difference, затем
+       turf.flatten разделяет получившийся MultiPolygon на самостоятельные
+       Polygon-фичи. Это намного устойчивее, чем polygonize на noded
+       линиях (тот часто молча проваливается из-за FP-ошибок в lineSplit).
 
-    /* Алгоритм: ноделим границу полигона и саму режущую линию во всех
-       точках пересечения, скармливаем весь набор отрезков polygonize и
-       оставляем только те результирующие полигоны, центроид которых
-       лежит внутри исходного. Так корректно работает и для Polygon, и
-       для MultiPolygon, и для линии, выходящей за пределы. */
+       Ширина «ножа» подбирается от размера полигона: ~1/100000 диагонали
+       bbox, чтобы не съедать значимую площадь, но и не падать на
+       precision-проблемах JTS. */
     function splitPolygonByLine(polygonFeature, lineFeature) {
-      var ringLines = polygonRingLines(polygonFeature);
-      if (!ringLines.length) return [];
-      var noded = [];
-      ringLines.forEach(function (rl) {
-        var s;
-        try { s = turf.lineSplit(rl, lineFeature); } catch (_) { s = null; }
-        if (s && s.features && s.features.length) {
-          s.features.forEach(function (f) { noded.push(f); });
-        } else {
-          noded.push(rl);
-        }
-      });
-      /* Линию режем границей (для каждого кольца отдельно — иначе
-         lineSplit не увидит пересечения с дырками). Все части — внутри
-         и снаружи — отдаём polygonize: внешние артефакты потом отсеем. */
-      var cutPieces = [lineFeature];
-      ringLines.forEach(function (rl) {
-        var next = [];
-        cutPieces.forEach(function (piece) {
-          var s;
-          try { s = turf.lineSplit(piece, rl); } catch (_) { s = null; }
-          if (s && s.features && s.features.length) {
-            s.features.forEach(function (f) { next.push(f); });
-          } else {
-            next.push(piece);
-          }
-        });
-        cutPieces = next;
-      });
-      cutPieces.forEach(function (p) { noded.push(p); });
+      if (typeof turf.buffer !== 'function' || typeof turf.difference !== 'function') {
+        console.error('[gis-split] turf.buffer/difference недоступны', turf);
+        return [];
+      }
+      var bbox = turf.bbox(polygonFeature);
+      var diagKm = turf.distance(
+        turf.point([bbox[0], bbox[1]]),
+        turf.point([bbox[2], bbox[3]]),
+        { units: 'kilometers' }
+      );
+      /* Минимум 0.05 м, максимум 50 м, обычно ~diag/100000. */
+      var widthKm = Math.max(5e-8, Math.min(0.05, diagKm / 100000));
 
-      var fc = turf.featureCollection(noded);
-      var parts;
-      try { parts = turf.polygonize(fc); }
-      catch (e) { return []; }
-      if (!parts || !parts.features) return [];
+      var slit;
+      try { slit = turf.buffer(lineFeature, widthKm, { units: 'kilometers' }); }
+      catch (e) { console.error('[gis-split] buffer failed', e); return []; }
+      if (!slit || !slit.geometry) { console.error('[gis-split] empty buffer'); return []; }
 
-      /* Оставляем только полигоны, чей centroid лежит внутри исходного
-         (отсеивает «фантомные» внешние замыкания, образованные хвостами
-         режущей линии за пределами полигона). */
-      return parts.features.filter(function (poly) {
-        try {
-          var c = turf.centerOfMass(poly);
-          return turf.booleanPointInPolygon(c, polygonFeature);
-        } catch (_) { return false; }
+      /* turf v7 difference принимает FeatureCollection; v6 — два аргумента.
+         Поддерживаем оба варианта для совместимости с любым CDN. */
+      var diff = null;
+      try {
+        diff = turf.difference(turf.featureCollection([polygonFeature, slit]));
+      } catch (e1) {
+        try { diff = turf.difference(polygonFeature, slit); }
+        catch (e2) { console.error('[gis-split] difference failed', e1, e2); return []; }
+      }
+      if (!diff || !diff.geometry) { console.error('[gis-split] difference returned null'); return []; }
+
+      var flat;
+      try { flat = turf.flatten(diff); } catch (e) { console.error('[gis-split] flatten failed', e); return []; }
+      if (!flat || !flat.features) return [];
+
+      return flat.features.filter(function (f) {
+        return f && f.geometry &&
+               (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon');
       });
     }
 
