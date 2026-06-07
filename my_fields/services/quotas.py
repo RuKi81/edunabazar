@@ -32,7 +32,10 @@ class QuotaCheck:
 # её создать), но валиться в 500 из-за этого глупо.
 DEFAULT_FREE_LIMITS = {
     'max_fields': 5,
-    'max_total_area_ha': 100.0,
+    # Лимит площади убран: в MVP-1 он мешал даже бесплатным пользователям с
+    # большими хозяйствами. Регулирование объёма теперь только через
+    # ``max_fields`` (число записей). ``None`` ⇒ безлимит.
+    'max_total_area_ha': None,
     'ndvi_history_years': 1,
     'weather_forecast_enabled': False,
     'alerts_enabled': True,

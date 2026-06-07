@@ -153,6 +153,36 @@
       .gis-ui__right { display: none; }
       .gis-topbar { left: 232px; }
     }
+
+    /* Плавающая панель подложки — видна всегда, даже когда левый
+       сайдбар свёрнут. Радио в сайдбаре остаётся как «развёрнутая»
+       версия и синхронизируется с этим чипом. */
+    .gis-basemap-chip {
+      position: absolute; top: calc(var(--map-header-h) + 56px); left: 12px;
+      z-index: 1100; display: flex; gap: 2px;
+      background: rgba(255,255,255,.95); border-radius: 8px;
+      padding: 4px; box-shadow: 0 2px 10px rgba(0,0,0,.15);
+    }
+    .gis-basemap-chip button {
+      border: none; background: transparent; cursor: pointer;
+      padding: 6px 10px; border-radius: 5px; font-size: 11px; color: #444;
+    }
+    .gis-basemap-chip button:hover { background: #f0f0f0; }
+    .gis-basemap-chip button.active { background: #c8e6c9; color: #2e7d32; font-weight: 600; }
+
+    /* Info-card action row — Удалить / Узлы. */
+    .gis-info-card .actions {
+      display: flex; gap: 6px; margin-top: 12px; padding-top: 10px;
+      border-top: 1px dashed rgba(0,0,0,.08);
+    }
+    .gis-info-card .actions button {
+      flex: 1; padding: 6px 10px; border: 1px solid rgba(0,0,0,.14);
+      background: #fff; border-radius: 4px; font-size: 12px; cursor: pointer;
+      color: #333; font-weight: 500;
+    }
+    .gis-info-card .actions .btn-edit:hover { border-color: #2e7d32; color: #2e7d32; background: #f1f8e9; }
+    .gis-info-card .actions .btn-del { color: #c62828; }
+    .gis-info-card .actions .btn-del:hover { background: #ffebee; border-color: #c62828; }
   </style>
 {% endblock %}
 
@@ -166,6 +196,12 @@
       <strong>ГИС</strong>
       <span class="pill">admin</span>
       <span class="muted" id="gis-status">подложка: ЗСН (Росреестр-вектор)</span>
+    </div>
+
+    <div class="gis-basemap-chip" id="gis-basemap-chip" role="group" aria-label="Подложка">
+      <button data-basemap="osm"  class="active" type="button">OSM</button>
+      <button data-basemap="sat"  type="button">Спутник</button>
+      <button data-basemap="none" type="button">Без</button>
     </div>
 
     <aside class="gis-ui__left" id="gis-left">
@@ -219,6 +255,8 @@
       <button data-tool="draw_line_string" type="button" title="Линия"   disabled>╱</button>
       <button data-tool="draw_point"       type="button" title="Точка"   disabled>•</button>
       <span class="sep"></span>
+      <button data-tool="split" type="button" title="Разрезать полигон линией" disabled>✂</button>
+      <span class="sep"></span>
       <button data-tool="trash" type="button" title="Удалить выбранное" disabled>🗑</button>
       <span class="hint" id="gis-toolbar-hint">Включите редактирование «Мои поля» в левом меню.</span>
     </div>
@@ -237,10 +275,13 @@
     window.mapboxgl = window.maplibregl;
   </script>
   <script src="https://unpkg.com/@mapbox/mapbox-gl-draw@1.5.0/dist/mapbox-gl-draw.js"></script>
+  {# turf.js — нужен для splitPolygon (lineSplit + polygonize). ~500КБ. #}
+  <script src="https://unpkg.com/@turf/turf@7.1.0/turf.min.js"></script>
   <script>
   (function () {
     'use strict';
 
+    /* ──────────────────────────── Constants ──────────────────────────── */
     var BASEMAPS = {
       osm: {
         tiles: ['https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -254,8 +295,7 @@
       },
     };
 
-    /* Должно совпадать с UserField.CropType.choices — справочник
-       захардкожен здесь, т.к. отдельного API для choices пока нет. */
+    /* Должен совпадать с UserField.CropType.choices. */
     var CROP_TYPES = [
       ['arable',     'Пашня'],
       ['fallow',     'Залежь'],
@@ -272,6 +312,7 @@
     };
     var IS_USED_LABELS = { 1: 'Используется', 0: 'Не используется', '-1': 'Неизвестно' };
 
+    /* ──────────────────────────── Map style ──────────────────────────── */
     var style = {
       version: 8,
       glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
@@ -331,6 +372,7 @@
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), 'top-right');
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
 
+    /* ──────────────────────────── Helpers ──────────────────────────── */
     var toastEl = document.getElementById('gis-toast');
     var toastTimer = null;
     function toast(msg, isError) {
@@ -347,8 +389,35 @@
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
-    /* ── Userfields source (in-memory FC) ── */
+    /* Тонкая обёртка над fetch: одинаковые опции (cookie-auth, JSON) +
+       единая обработка ошибки с понятным сообщением. */
+    function apiFetch(url, opts) {
+      opts = opts || {};
+      opts.credentials = 'same-origin';
+      opts.headers = Object.assign(
+        { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        opts.headers || {}
+      );
+      return fetch(url, opts).then(function (r) {
+        if (r.status === 204) return { ok: r.ok, status: r.status, body: null };
+        return r.json().then(function (j) { return { ok: r.ok, status: r.status, body: j }; },
+          function () { return { ok: r.ok, status: r.status, body: null }; });
+      });
+    }
+    function detailFromError(res) {
+      return (res.body && (res.body.detail || res.body.hint || res.body.error)) || ('HTTP ' + res.status);
+    }
+
+    /* ──────────────── Userfields source (in-memory FC) ──────────────── */
     var userfieldsFC = { type: 'FeatureCollection', features: [] };
+
+    function fcIndexById(id) {
+      for (var i = 0; i < userfieldsFC.features.length; i++) {
+        if (userfieldsFC.features[i].id === id ||
+            String(userfieldsFC.features[i].id) === String(id)) return i;
+      }
+      return -1;
+    }
     function setUserfieldsData() {
       var src = map.getSource('userfields');
       if (src) src.setData(userfieldsFC);
@@ -367,28 +436,41 @@
     }
 
     function loadUserFields() {
-      fetch('/api/my/fields/', { credentials: 'same-origin' })
-        .then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (fc) {
-          if (fc && fc.features) { userfieldsFC = fc; setUserfieldsData(); }
-        })
-        .catch(function () { /* офлайн / 401 — молча */ });
+      apiFetch('/api/my/fields/').then(function (res) {
+        if (res.ok && res.body && res.body.features) {
+          userfieldsFC = res.body;
+          setUserfieldsData();
+        }
+      }).catch(function () { /* офлайн — молча */ });
     }
     map.on('load', loadUserFields);
 
-    /* ── Basemap radio ── */
-    document.querySelectorAll('input[name="basemap"]').forEach(function (r) {
-      r.addEventListener('change', function () {
-        if (map.getLayer('basemap')) { map.removeLayer('basemap'); map.removeSource('basemap'); }
-        var key = r.value;
-        if (key === 'none') return;
-        var bm = BASEMAPS[key];
-        map.addSource('basemap', { type: 'raster', tileSize: 256, tiles: bm.tiles, attribution: bm.attribution });
-        map.addLayer({ id: 'basemap', type: 'raster', source: 'basemap' }, 'farmlands-fill');
+    /* ──────────────────────── Basemap (radio + chip) ───────────────────── */
+    function applyBasemap(key) {
+      if (map.getLayer('basemap')) { map.removeLayer('basemap'); map.removeSource('basemap'); }
+      if (key === 'none') return;
+      var bm = BASEMAPS[key];
+      if (!bm) return;
+      map.addSource('basemap', { type: 'raster', tileSize: 256, tiles: bm.tiles, attribution: bm.attribution });
+      map.addLayer({ id: 'basemap', type: 'raster', source: 'basemap' }, 'farmlands-fill');
+    }
+    function selectBasemap(key) {
+      applyBasemap(key);
+      /* Sync с радио в сайдбаре. */
+      document.querySelectorAll('input[name="basemap"]').forEach(function (r) { r.checked = (r.value === key); });
+      /* Sync с чипом сверху. */
+      document.querySelectorAll('#gis-basemap-chip button').forEach(function (b) {
+        b.classList.toggle('active', b.getAttribute('data-basemap') === key);
       });
+    }
+    document.querySelectorAll('input[name="basemap"]').forEach(function (r) {
+      r.addEventListener('change', function () { selectBasemap(r.value); });
+    });
+    document.querySelectorAll('#gis-basemap-chip button').forEach(function (b) {
+      b.addEventListener('click', function () { selectBasemap(b.getAttribute('data-basemap')); });
     });
 
-    /* ── Layer state + toggles ── */
+    /* ──────────────────────── Layer state + toggles ───────────────────── */
     var layerState = {
       farmlands:  { visible: true, editable: false },
       userfields: { visible: true, editable: false },
@@ -422,7 +504,7 @@
       });
     });
 
-    /* ── Hover ── */
+    /* ──────────────────────────── Hover ──────────────────────────── */
     var hoveredId = null;
     map.on('mousemove', 'farmlands-fill', function (e) {
       if (!e.features.length) return;
@@ -443,7 +525,7 @@
       map.getCanvas().style.cursor = '';
     });
 
-    /* ── Renderers для правого сайдбара ── */
+    /* ──────────────────────── Right sidebar renderers ──────────────────── */
     var infoEl = document.getElementById('gis-info');
 
     function renderEmpty() {
@@ -478,16 +560,29 @@
         ['Район', p.district_name || '—'],
       ];
       if (p.notes) rows.push(['Заметки', p.notes]);
+      var fid = p.id;
       infoEl.innerHTML =
         '<div class="gis-info-card">' +
-          '<h4>🌾 ' + esc(p.name || ('Поле #' + p.id)) + '</h4>' +
+          '<h4>🌾 ' + esc(p.name || ('Поле #' + fid)) + '</h4>' +
           '<dl>' + rows.map(function (r) {
             return '<dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1]) + '</dd>';
           }).join('') + '</dl>' +
+          (fid != null
+            ? '<div class="actions">' +
+                '<button type="button" class="btn-edit" data-act="edit-vertex">✏ Узлы</button>' +
+                '<button type="button" class="btn-del"  data-act="delete">🗑 Удалить</button>' +
+              '</div>'
+            : '') +
         '</div>';
+      if (fid != null) {
+        var editBtn = infoEl.querySelector('[data-act="edit-vertex"]');
+        var delBtn  = infoEl.querySelector('[data-act="delete"]');
+        if (editBtn) editBtn.addEventListener('click', function () { enterVertexEdit(fid); });
+        if (delBtn)  delBtn.addEventListener('click',  function () { deletePersistedField(fid); });
+      }
     }
 
-    /* Форма для нового поля — открывается на draw.create. */
+    /* ──────────────────────── Create-field form ──────────────────────── */
     function renderNewFieldForm(drawFeatureId, geometry, areaHaHint) {
       var cropOpts = CROP_TYPES.map(function (c) {
         return '<option value="' + c[0] + '"' + (c[0] === 'arable' ? ' selected' : '') + '>' + esc(c[1]) + '</option>';
@@ -542,31 +637,24 @@
           },
         };
 
-        fetch('/api/my/fields/', {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-          body: JSON.stringify(payload),
-        })
-          .then(function (r) {
-            return r.json().then(function (j) { return { ok: r.ok, status: r.status, body: j }; });
-          })
+        apiFetch('/api/my/fields/', { method: 'POST', body: JSON.stringify(payload) })
           .then(function (res) {
             if (!res.ok) {
-              var detail = (res.body && (res.body.detail || res.body.hint || res.body.error)) || ('HTTP ' + res.status);
-              errEl.textContent = 'Не удалось сохранить: ' + detail;
+              errEl.textContent = 'Не удалось сохранить: ' + detailFromError(res);
               errEl.style.display = 'block';
               saveBtn.disabled = false;
               saveBtn.textContent = 'Сохранить';
               return;
             }
-            /* Успех: удалить временную draw-фичу, добавить вернувшуюся в
-               источник `userfields` — она тут же подхватит стиль слоя. */
             try { draw.delete(drawFeatureId); } catch (_) {}
-            userfieldsFC.features.push(res.body);
+            var newFeat = res.body;
+            userfieldsFC.features.push(newFeat);
             setUserfieldsData();
-            toast('Поле «' + (res.body.properties.name || '') + '» сохранено');
-            renderUserfieldCard(res.body.properties);
+            /* Если режим редактирования включён, чтобы свежее поле сразу
+               можно было редактировать по узлам — добавим его и в draw. */
+            if (drawAdded) addPersistedToDraw(newFeat);
+            toast('Поле «' + (newFeat.properties.name || '') + '» сохранено');
+            renderUserfieldCard(newFeat.properties);
           })
           .catch(function (e) {
             errEl.textContent = 'Сетевая ошибка: ' + (e && e.message || e);
@@ -584,7 +672,7 @@
       renderEmpty();
     }
 
-    /* ── Click on layers ── */
+    /* ──────────────────────── Click on layers ──────────────────────── */
     map.on('click', 'farmlands-fill', function (e) {
       if (layerState.userfields.editable) return;
       if (!e.features.length) return;
@@ -596,14 +684,43 @@
       renderUserfieldCard(e.features[0].properties || {});
     });
 
-    /* ── mapbox-gl-draw ── */
+    /* ──────────────────────── mapbox-gl-draw ──────────────────────── */
     var draw = new MapboxDraw({
       displayControlsDefault: false,
       controls: {},
       defaultMode: 'simple_select',
     });
     var drawAdded = false;
+    /* Трекаем какие feature.id внутри draw — это persisted поля (а какие
+       — драфты). Без этого не отличить «новое неотправленное» от «уже в БД». */
+    var persistedDrawIds = new Set();
 
+    /* Polygon → MultiPolygon-совместимый Feature для добавления в draw.
+       Mapbox-gl-draw умеет хранить как Polygon, так и MultiPolygon. На
+       сохранение бэкенд приведёт к MultiPolygon. */
+    function addPersistedToDraw(feature) {
+      if (!feature || !feature.id) return;
+      var sid = String(feature.id);
+      var copy = {
+        type: 'Feature',
+        id: sid,
+        geometry: feature.geometry,
+        properties: feature.properties || {},
+      };
+      try { draw.add(copy); } catch (_) { return; }
+      persistedDrawIds.add(sid);
+    }
+    function removePersistedFromDraw(fieldId) {
+      var sid = String(fieldId);
+      if (!persistedDrawIds.has(sid)) return;
+      try { draw.delete(sid); } catch (_) {}
+      persistedDrawIds.delete(sid);
+    }
+
+    /* Включить/выключить режим редактирования.
+       При включении — все persisted поля заливаем в draw, чтобы их
+       можно было выделять, двигать узлы, разрезать и т.д. При выключении
+       — выкидываем всё (любые драфты пропадают). */
     function setEditMode(on) {
       layerState.userfields.editable = on;
       var btn = document.querySelector('.gis-layer[data-layer="userfields"] .gis-layer__btn[data-action="edit"]');
@@ -615,29 +732,45 @@
         b.disabled = !on;
         if (!on) b.classList.remove('active');
       });
+
       if (on) {
         if (!drawAdded) { map.addControl(draw); drawAdded = true; }
-        if (hint) hint.textContent = 'Режим редактирования. Нарисуйте полигон → откроется карточка для сохранения.';
+        persistedDrawIds.clear();
+        try { draw.deleteAll(); } catch (_) {}
+        userfieldsFC.features.forEach(addPersistedToDraw);
+        if (hint) hint.textContent = 'Режим: ⬡ нарисовать новое · ☞ выбрать и двойным кликом править узлы · ✂ разрезать · 🗑 удалить.';
       } else {
-        if (drawAdded) { try { map.removeControl(draw); } catch (_) {} drawAdded = false; }
+        cancelSplit();
+        if (drawAdded) { try { draw.deleteAll(); } catch (_) {} try { map.removeControl(draw); } catch (_) {} drawAdded = false; }
+        persistedDrawIds.clear();
         if (hint) hint.textContent = 'Включите редактирование «Мои поля» в левом меню.';
         renderEmpty();
       }
+    }
+
+    /* ──────────────────────── Toolbar buttons ──────────────────────── */
+    function highlightTool(tool) {
+      document.querySelectorAll('.gis-toolbar button[data-tool]').forEach(function (b) {
+        var t = b.getAttribute('data-tool');
+        if (t === 'trash') return;
+        b.classList.toggle('active', t === tool);
+      });
     }
 
     document.querySelectorAll('.gis-toolbar button[data-tool]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         if (btn.disabled) return;
         var tool = btn.getAttribute('data-tool');
-        document.querySelectorAll('.gis-toolbar button[data-tool]').forEach(function (b) {
-          if (b.getAttribute('data-tool') !== 'trash') {
-            b.classList.toggle('active', b === btn);
-          }
-        });
-        if (!drawAdded) return;
+        if (tool !== 'trash') highlightTool(tool);
+        if (!drawAdded && tool !== 'select') return;
+
         if (tool === 'trash') {
-          draw.trash();
+          handleTrash();
           btn.classList.remove('active');
+          return;
+        }
+        if (tool === 'split') {
+          startSplitFlow();
           return;
         }
         var modeMap = {
@@ -647,12 +780,250 @@
           draw_point: 'draw_point',
         };
         var mode = modeMap[tool];
-        if (mode) draw.changeMode(mode);
+        if (mode) { cancelSplit(); try { draw.changeMode(mode); } catch (_) {} }
       });
     });
 
-    /* Приблизительная площадь полигона на сфере, в га. Финальное
-       значение пересчитает PostGIS на сервере. */
+    /* ──────────────────────── Trash / Delete ──────────────────────── */
+    /* Трэш в тулбаре: для драфтов — просто draw.delete; для persisted —
+       подтверждение и DELETE на сервер с фактическим удалением и из
+       draw, и из userfieldsFC. */
+    function handleTrash() {
+      var sel = draw.getSelectedIds();
+      if (!sel || !sel.length) {
+        toast('Сначала выделите объект (☞ + клик).', true);
+        return;
+      }
+      sel.forEach(function (sid) {
+        if (persistedDrawIds.has(String(sid))) {
+          deletePersistedField(sid);
+        } else {
+          try { draw.delete(sid); } catch (_) {}
+        }
+      });
+    }
+
+    function deletePersistedField(fieldId) {
+      var idx = fcIndexById(fieldId);
+      var feat = idx >= 0 ? userfieldsFC.features[idx] : null;
+      var name = (feat && feat.properties && feat.properties.name) || ('Поле #' + fieldId);
+      if (!window.confirm('Удалить «' + name + '»? Действие нельзя отменить.')) return;
+
+      apiFetch('/api/my/fields/' + encodeURIComponent(fieldId) + '/', { method: 'DELETE' })
+        .then(function (res) {
+          if (!res.ok && res.status !== 204) {
+            toast('Не удалось удалить: ' + detailFromError(res), true);
+            return;
+          }
+          if (idx >= 0) {
+            userfieldsFC.features.splice(idx, 1);
+            setUserfieldsData();
+          }
+          removePersistedFromDraw(fieldId);
+          toast('Поле «' + name + '» удалено');
+          renderEmpty();
+        })
+        .catch(function (e) { toast('Сетевая ошибка: ' + (e && e.message || e), true); });
+    }
+
+    /* ──────────────────────── Vertex editing ──────────────────────── */
+    function enterVertexEdit(fieldId) {
+      if (!layerState.userfields.editable) setEditMode(true);
+      var sid = String(fieldId);
+      if (!persistedDrawIds.has(sid)) {
+        var idx = fcIndexById(fieldId);
+        if (idx >= 0) addPersistedToDraw(userfieldsFC.features[idx]);
+      }
+      try {
+        draw.changeMode('direct_select', { featureId: sid });
+        toast('Тяните узлы для правки геометрии. Сохранение — автоматически.');
+      } catch (_) {}
+    }
+
+    /* PATCH-дебаунсер: draw.update летят пачками (на каждый сдвиг узла),
+       поэтому шлём один запрос через 800 мс простоя. Каждый id — со
+       своим таймером, чтобы параллельная правка двух полей не сбивала
+       друг друга. */
+    var patchTimers = {};
+    function schedulePatch(fieldId) {
+      var sid = String(fieldId);
+      clearTimeout(patchTimers[sid]);
+      patchTimers[sid] = setTimeout(function () { patchGeometry(fieldId); }, 800);
+    }
+    function patchGeometry(fieldId) {
+      var sid = String(fieldId);
+      var f;
+      try { f = draw.get(sid); } catch (_) { return; }
+      if (!f || !f.geometry) return;
+      apiFetch('/api/my/fields/' + encodeURIComponent(fieldId) + '/', {
+        method: 'PATCH',
+        body: JSON.stringify({ geometry: f.geometry }),
+      }).then(function (res) {
+        if (!res.ok) {
+          toast('Не удалось сохранить геометрию: ' + detailFromError(res), true);
+          return;
+        }
+        var idx = fcIndexById(fieldId);
+        if (idx >= 0 && res.body) {
+          userfieldsFC.features[idx] = res.body;
+          setUserfieldsData();
+        }
+        toast('Геометрия сохранена · ' +
+              (res.body && res.body.properties && res.body.properties.area_ha != null
+                ? Number(res.body.properties.area_ha).toFixed(2) + ' га'
+                : ''));
+      }).catch(function (e) { toast('Сетевая ошибка: ' + (e && e.message || e), true); });
+    }
+
+    /* ──────────────────────── Split tool (turf) ──────────────────────── */
+    /* splitState:
+         null            — режим выключен
+         'pick-target'   — ждём клика по полигону, который надо разрезать
+         'pick-line'     — цель выбрана, ждём draw.create линии
+    */
+    var splitState = null;
+    var splitTargetId = null;
+
+    function startSplitFlow() {
+      if (typeof turf === 'undefined') {
+        toast('Не загружен turf.js — обновите страницу.', true);
+        return;
+      }
+      var sel = draw.getSelectedIds();
+      if (sel && sel.length === 1 && persistedDrawIds.has(String(sel[0]))) {
+        beginSplitDrawing(sel[0]);
+      } else {
+        splitState = 'pick-target';
+        try { draw.changeMode('simple_select'); } catch (_) {}
+        var hint = document.getElementById('gis-toolbar-hint');
+        if (hint) hint.textContent = '✂ Кликните по полигону, который надо разрезать.';
+      }
+    }
+    function beginSplitDrawing(fieldId) {
+      splitState = 'pick-line';
+      splitTargetId = fieldId;
+      try { draw.changeMode('draw_line_string'); } catch (_) {}
+      var hint = document.getElementById('gis-toolbar-hint');
+      if (hint) hint.textContent = '✂ Нарисуйте линию через полигон. Двойной клик — закончить.';
+    }
+    function cancelSplit() {
+      splitState = null;
+      splitTargetId = null;
+      var hint = document.getElementById('gis-toolbar-hint');
+      if (hint && drawAdded) hint.textContent = 'Режим: ⬡ нарисовать · ☞ выбрать и править узлы · ✂ разрезать · 🗑 удалить.';
+    }
+
+    /* В режиме pick-target клик по persisted-полигону должен запустить
+       draw_line_string. Слушаем клик по userfields/draw слою. */
+    map.on('click', function (e) {
+      if (splitState !== 'pick-target') return;
+      /* Сначала пробуем через draw — у него собственные слои. */
+      var feats = draw.getFeatureIdsAt(e.point) || [];
+      var picked = null;
+      for (var i = 0; i < feats.length; i++) {
+        if (persistedDrawIds.has(String(feats[i]))) { picked = feats[i]; break; }
+      }
+      if (!picked) {
+        /* fallback — userfields-fill (если фича по какой-то причине не в draw). */
+        var qf = map.queryRenderedFeatures(e.point, { layers: ['userfields-fill'] });
+        if (qf && qf.length) picked = qf[0].id;
+      }
+      if (picked != null) beginSplitDrawing(picked);
+    });
+
+    /* Алгоритм: разбиваем границу полигона по точкам пересечения с
+       линией, плюс берём ту часть линии, которая попадает внутрь
+       полигона; затем turf.polygonize строит из набора отрезков
+       замкнутые контуры. Корректно для линии, пересекающей полигон
+       любое чётное число раз. */
+    function splitPolygonByLine(polygonFeature, lineFeature) {
+      var polyToLine = turf.polygonToLine(polygonFeature);
+      var polyLine = polyToLine.type === 'FeatureCollection' ? polyToLine.features[0] : polyToLine;
+      var splittedRing = turf.lineSplit(polyLine, lineFeature);
+      var lineInsideParts = turf.lineSplit(lineFeature, polyLine).features.filter(function (f) {
+        var coords = f.geometry.coordinates;
+        var a = turf.point(coords[0]);
+        var b = turf.point(coords[coords.length - 1]);
+        var mid = turf.midpoint(a, b);
+        try { return turf.booleanPointInPolygon(mid, polygonFeature); } catch (_) { return false; }
+      });
+      var all = turf.featureCollection(splittedRing.features.concat(lineInsideParts));
+      var parts = turf.polygonize(all);
+      return (parts && parts.features) ? parts.features : [];
+    }
+
+    function finishSplit(cutFeature) {
+      var fid = splitTargetId;
+      var draftLineId = cutFeature.id;
+      cancelSplit();
+      try { draw.delete(draftLineId); } catch (_) {}
+      if (fid == null) return;
+
+      var idx = fcIndexById(fid);
+      if (idx < 0) { toast('Полигон не найден.', true); return; }
+      var origFeat = userfieldsFC.features[idx];
+      var origProps = origFeat.properties || {};
+      /* Геометрия полигона из draw (актуальная, если её правили узлами). */
+      var drawnPoly;
+      try { drawnPoly = draw.get(String(fid)); } catch (_) { drawnPoly = null; }
+      var polyForSplit = drawnPoly || origFeat;
+
+      var parts;
+      try { parts = splitPolygonByLine(polyForSplit, cutFeature); }
+      catch (e) { toast('Не удалось разрезать: ' + (e.message || e), true); return; }
+
+      if (!parts.length || parts.length < 2) {
+        toast('Линия должна пересекать полигон минимум в двух точках.', true);
+        return;
+      }
+
+      /* Часть [0] остаётся на старом id (PATCH), остальные становятся
+         новыми полями (POST). Атрибуты копируем — пользователь потом
+         поправит названия. */
+      var first = parts[0];
+      var rest = parts.slice(1);
+      toast('Разрезано на ' + parts.length + ' части · сохраняем…');
+
+      /* PATCH первой. */
+      apiFetch('/api/my/fields/' + encodeURIComponent(fid) + '/', {
+        method: 'PATCH',
+        body: JSON.stringify({ geometry: first.geometry }),
+      }).then(function (res) {
+        if (!res.ok) { toast('Сохранить часть 1: ' + detailFromError(res), true); return null; }
+        if (res.body) userfieldsFC.features[idx] = res.body;
+        removePersistedFromDraw(fid);
+        if (drawAdded && res.body) addPersistedToDraw(res.body);
+        return Promise.all(rest.map(function (p, i) {
+          return apiFetch('/api/my/fields/', {
+            method: 'POST',
+            body: JSON.stringify({
+              geometry: p.geometry,
+              name: (origProps.name || ('Поле #' + fid)) + ' (часть ' + (i + 2) + ')',
+              properties: {
+                name: (origProps.name || ('Поле #' + fid)) + ' (часть ' + (i + 2) + ')',
+                crop_type: origProps.crop_type || 'arable',
+                cadastral_number: '',
+                notes: origProps.notes || '',
+              },
+            }),
+          });
+        }));
+      }).then(function (results) {
+        if (!results) return;
+        results.forEach(function (r) {
+          if (r && r.ok && r.body) {
+            userfieldsFC.features.push(r.body);
+            if (drawAdded) addPersistedToDraw(r.body);
+          } else if (r) {
+            toast('Часть не сохранена: ' + detailFromError(r), true);
+          }
+        });
+        setUserfieldsData();
+        toast('Разрезка завершена');
+      }).catch(function (e) { toast('Сетевая ошибка: ' + (e && e.message || e), true); });
+    }
+
+    /* ──────────────────────── Approx area for hint ──────────────────────── */
     function polygonAreaHa(coords) {
       if (!coords || !coords.length) return 0;
       var ring = coords[0];
@@ -666,10 +1037,17 @@
       return Math.abs(area * R * R / 2) / 10000;
     }
 
-    /* draw.create → форма. Только Polygon — UserField хранит MultiPolygon. */
+    /* ──────────────────────── Draw events ──────────────────────── */
     map.on('draw.create', function (ev) {
       var f = ev.features && ev.features[0];
       if (!f || !f.geometry) return;
+
+      /* Сценарий «разрезка» — поглощаем линию, нарисованную в режиме split. */
+      if (splitState === 'pick-line' && f.geometry.type === 'LineString') {
+        finishSplit(f);
+        return;
+      }
+
       if (f.geometry.type !== 'Polygon') {
         toast('В «Мои поля» можно сохранить только полигон.', true);
         try { draw.delete(f.id); } catch (_) {}
@@ -678,21 +1056,31 @@
       var areaHa = polygonAreaHa(f.geometry.coordinates);
       renderNewFieldForm(f.id, f.geometry, areaHa);
       try { draw.changeMode('simple_select'); } catch (_) {}
-      document.querySelectorAll('.gis-toolbar button[data-tool]').forEach(function (b) {
-        b.classList.toggle('active', b.getAttribute('data-tool') === 'select');
+      highlightTool('select');
+    });
+
+    /* Правка узлов / перемещение persisted-полигона → debounced PATCH. */
+    map.on('draw.update', function (ev) {
+      (ev.features || []).forEach(function (f) {
+        if (persistedDrawIds.has(String(f.id))) schedulePatch(f.id);
+      });
+    });
+
+    /* Если что-то ушло из draw мимо нашего trash-handler (например,
+       плагин сам всё удалил по Esc) — синхронизируем локальный set,
+       но не дёргаем API: персистентность гарантирует только handleTrash. */
+    map.on('draw.delete', function (ev) {
+      (ev.features || []).forEach(function (f) {
+        if (persistedDrawIds.has(String(f.id))) persistedDrawIds.delete(String(f.id));
       });
     });
 
     map.on('draw.modechange', function () {
-      var selectBtn = document.querySelector('.gis-toolbar button[data-tool="select"]');
-      if (selectBtn && drawAdded && draw.getMode() === 'simple_select') {
-        document.querySelectorAll('.gis-toolbar button[data-tool]').forEach(function (b) {
-          b.classList.toggle('active', b === selectBtn);
-        });
-      }
+      if (!drawAdded) return;
+      if (draw.getMode() === 'simple_select') highlightTool('select');
     });
 
-    /* ── Collapse toggles ── */
+    /* ──────────────────────── Sidebar collapse ──────────────────────── */
     var leftPane  = document.getElementById('gis-left');
     var rightPane = document.getElementById('gis-right');
     var leftBtn   = document.getElementById('gis-collapse-left');
@@ -708,7 +1096,7 @@
       rightBtn.textContent = rightPane.classList.contains('collapsed') ? '‹' : '›';
     });
 
-    /* ── Status / errors ── */
+    /* ──────────────────────── Status / errors ──────────────────────── */
     var statusEl = document.getElementById('gis-status');
     map.on('sourcedata', function (ev) {
       if (ev.sourceId === 'farmlands' && ev.isSourceLoaded) {

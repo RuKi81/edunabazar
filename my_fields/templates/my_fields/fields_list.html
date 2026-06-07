@@ -7,6 +7,7 @@
 {% block head %}
   <link rel="stylesheet" href="{% static 'legacy/css/leaflet.css' %}" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
+  <link rel="stylesheet" href="https://unpkg.com/@geoman-io/leaflet-geoman-free@2.16.0/dist/leaflet-geoman.css" />
   <style>
     :root { --map-header-h: 64px; }
     html, body { height: 100%; }
@@ -252,6 +253,38 @@
     }
     .myf-item__edit:hover { background: #e8f5e9; color: #2e7d32; }
     .myf-item__del:hover  { background: #fdecea; color: #c62828; }
+    /* ── Geometry tools (visible only in edit-mode) ── */
+    .myf-geom-tools { display: none; }
+    .myf-detail.editing .myf-geom-tools { display: block; }
+    .myf-geom-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+    .myf-geom-actions button {
+      flex: 1 1 auto; min-width: 0;
+      display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+      padding: 6px 8px; font-size: 11px; font-weight: 600;
+      border: 1.5px solid #a5d6a7; border-radius: 5px;
+      background: #fff; color: #2e7d32; cursor: pointer;
+      transition: background .12s, border-color .12s;
+    }
+    .myf-geom-actions button:hover { background: #e8f5e9; border-color: #66bb6a; }
+    .myf-geom-actions button.active { background: #2e7d32; color: #fff; border-color: #2e7d32; }
+    .myf-geom-hint {
+      margin-top: 6px; font-size: 11px; color: #666; line-height: 1.4;
+      min-height: 0;
+    }
+    .myf-geom-hint:not(:empty) {
+      padding: 6px 8px; background: #fff8e1; border-radius: 5px;
+      border-left: 3px solid #f9a825;
+    }
+    .myf-geom-confirm { display: flex; gap: 6px; margin-top: 8px; }
+    .myf-geom-confirm button {
+      flex: 1; padding: 7px 10px; font-size: 12px; font-weight: 600;
+      border-radius: 5px; cursor: pointer; border: 0;
+    }
+    .myf-geom-confirm .apply { background: #2e7d32; color: #fff; }
+    .myf-geom-confirm .apply:hover { background: #1B5E20; }
+    .myf-geom-confirm .cancel { background: #f0f0f0; color: #555; }
+    .myf-geom-confirm .cancel:hover { background: #e0e0e0; }
+
     .myf-event { border-left: 3px solid #2e7d32; padding-left: 10px; }
     .myf-event[data-type="sowing"]    { border-color: #4CAF50; }
     .myf-event[data-type="fertilize"] { border-color: #FFC107; }
@@ -676,6 +709,9 @@
 {% block scripts %}
   <script src="{% static 'legacy/js/leaflet.js' %}"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+  <script src="https://unpkg.com/@geoman-io/leaflet-geoman-free@2.16.0/dist/leaflet-geoman.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@7.1.0/turf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/polygon-splitter@0.0.11/dist/polygon-splitter.min.js"></script>
   <script>
   (function () {
     /* ── CSRF ── */
@@ -1052,6 +1088,7 @@
       }).catch(function (e) { toast('Ошибка загрузки: ' + e.message, true); });
     }
     function closeDetail() {
+      try { geomResetState(); } catch (e) {}
       rightPanel.classList.remove('detail-mode');
       rightPanel.querySelector('.myf-detail').classList.remove('editing');
       currentField = null; currentLayer = null;
@@ -1100,6 +1137,19 @@
           '<textarea data-field="notes" rows="2" maxlength="1000">' + escHTML(p.notes || '') + '</textarea>') +
         '</div>';
       document.getElementById('myf-detail-body').innerHTML = meta +
+        '<div class="myf-block myf-geom-tools">' +
+          '<div class="myf-block__head"><h5>Геометрия</h5></div>' +
+          '<div class="myf-geom-actions">' +
+            '<button type="button" data-geom-tool="vertices"><i class="material-icons" style="font-size:14px;">linear_scale</i> Узлы</button>' +
+            '<button type="button" data-geom-tool="cut"><i class="material-icons" style="font-size:14px;">content_cut</i> Вырезать часть</button>' +
+            '<button type="button" data-geom-tool="split"><i class="material-icons" style="font-size:14px;">call_split</i> Разрезать линией</button>' +
+          '</div>' +
+          '<div class="myf-geom-hint" id="myf-geom-hint"></div>' +
+          '<div class="myf-geom-confirm" id="myf-geom-confirm" style="display:none;">' +
+            '<button type="button" class="apply" id="myf-geom-apply">Применить</button>' +
+            '<button type="button" class="cancel" id="myf-geom-cancel">Отмена</button>' +
+          '</div>' +
+        '</div>' +
         '<div class="myf-block" id="myf-detail-seasons"></div>' +
         '<div class="myf-block" id="myf-detail-events"></div>';
     }
@@ -1368,10 +1418,13 @@
     }
     function handleCancelEdit() {
       if (!currentField) return;
+      try { geomResetState(); } catch (e) {}
       // Revert any unsaved input by re-rendering meta and resetting the name input.
       rightPanel.querySelector('.myf-detail').classList.remove('editing');
       document.getElementById('myf-detail-name-input').value = currentField.properties.name || '';
       renderDetailMeta(currentField);
+      // If geometry was edited but not applied, reload the field to restore original shape on the map.
+      openDetail(currentField);
     }
     function handleSaveEdit() {
       if (!currentField) return;
@@ -1401,6 +1454,213 @@
         } else { toast(res.data.detail || 'Ошибка', true); }
       });
     }
+    /* ─────────────────────────────────────────────────────────────
+       Geometry editing tools (vertices / cut / split).
+       Uses leaflet-geoman for vertex edit & cut, polygon-splitter for split.
+       After each successful operation we PATCH the field's geometry
+       (and POST extra polygons for split). UI lives inside the
+       inline edit-mode panel.
+       ───────────────────────────────────────────────────────────── */
+    var geomTool = null;          // 'vertices' | 'cut' | 'split' | null
+    var geomPendingGeoJSON = null; // GeoJSON Polygon/MultiPolygon to PATCH on Apply
+    var geomPendingExtras = [];    // extra polygons (split result) to POST
+    var geomTempLayers = [];       // temp layers added by tools (e.g. split line)
+
+    function geomHint(text) {
+      var el = document.getElementById('myf-geom-hint');
+      if (el) el.textContent = text || '';
+    }
+    function geomShowConfirm(show) {
+      var el = document.getElementById('myf-geom-confirm');
+      if (el) el.style.display = show ? 'flex' : 'none';
+    }
+    function geomMarkActive(tool) {
+      document.querySelectorAll('[data-geom-tool]').forEach(function (b) {
+        b.classList.toggle('active', b.getAttribute('data-geom-tool') === tool);
+      });
+    }
+    function geomCleanupTempLayers() {
+      geomTempLayers.forEach(function (l) { try { map.removeLayer(l); } catch (e) {} });
+      geomTempLayers = [];
+    }
+    function geomResetState() {
+      geomTool = null;
+      geomPendingGeoJSON = null;
+      geomPendingExtras = [];
+      geomCleanupTempLayers();
+      geomMarkActive(null);
+      geomHint('');
+      geomShowConfirm(false);
+      // Disable any geoman modes / drawing on map and current layer.
+      try { map.pm.disableDraw(); } catch (e) {}
+      try { map.pm.disableGlobalEditMode(); } catch (e) {}
+      if (currentLayer && currentLayer.pm) { try { currentLayer.pm.disable(); } catch (e) {} }
+    }
+
+    function startVerticesTool() {
+      if (!currentLayer || !currentLayer.pm) {
+        toast('Слой недоступен для редактирования', true); return;
+      }
+      geomTool = 'vertices';
+      geomMarkActive('vertices');
+      currentLayer.pm.enable({
+        allowSelfIntersection: false,
+        snappable: true, snapDistance: 12,
+      });
+      geomHint('Перетаскивайте узлы. Клик по середине ребра — добавить узел. ПКМ на узле — удалить. Затем «Применить».');
+      geomShowConfirm(true);
+      // Update the pending geometry on each vertex change.
+      currentLayer.on('pm:edit pm:vertexadded pm:vertexremoved pm:markerdragend', function () {
+        geomPendingGeoJSON = currentLayer.toGeoJSON().geometry;
+      });
+      // Seed with current geometry in case user presses Apply without moving.
+      geomPendingGeoJSON = currentLayer.toGeoJSON().geometry;
+    }
+
+    function startCutTool() {
+      if (!currentLayer) { toast('Сначала откройте поле', true); return; }
+      geomTool = 'cut';
+      geomMarkActive('cut');
+      geomHint('Нарисуйте полигон поверх поля — этот участок будет вырезан. После завершения нажмите «Применить».');
+      geomShowConfirm(true);
+      // Use Geoman draw mode "Cut" — automatically substracts drawn shape from layers below.
+      map.pm.enableDraw('Cut', { snappable: true, finishOn: 'dblclick' });
+      // After cut: Geoman fires pm:cut on the affected layer with the new shape.
+      currentLayer.once('pm:cut', function (ev) {
+        var newLayer = ev.layer; // resulting layer (might be MultiPolygon)
+        if (newLayer) {
+          geomPendingGeoJSON = newLayer.toGeoJSON().geometry;
+          // Remove the auto-added new layer so we don't double-render after PATCH+reload.
+          geomTempLayers.push(newLayer);
+        }
+        try { map.pm.disableDraw(); } catch (e) {}
+      });
+    }
+
+    function startSplitTool() {
+      if (!currentLayer) { toast('Сначала откройте поле', true); return; }
+      if (typeof polygonSplitter === 'undefined') {
+        toast('Библиотека разрезания не загружена', true); return;
+      }
+      geomTool = 'split';
+      geomMarkActive('split');
+      geomHint('Нарисуйте линию, пересекающую поле от края до края (двойной клик завершает). Затем «Применить».');
+      geomShowConfirm(true);
+      map.pm.enableDraw('Line', { snappable: true, finishOn: 'dblclick' });
+      map.once('pm:create', function (ev) {
+        try { map.pm.disableDraw(); } catch (e) {}
+        var line = ev.layer;
+        geomTempLayers.push(line);
+        var lineGeoJSON = line.toGeoJSON();
+        var polyGeoJSON = currentLayer.toGeoJSON();
+        try {
+          // polygon-splitter expects a Polygon Feature; collapse MultiPolygon to its first ring otherwise.
+          var inputPoly = polyGeoJSON;
+          if (polyGeoJSON.geometry.type === 'MultiPolygon') {
+            // Pick the polygon that the line actually intersects.
+            var coords = polyGeoJSON.geometry.coordinates;
+            for (var i = 0; i < coords.length; i++) {
+              var p = { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: coords[i] } };
+              if (turf.booleanIntersects(p, lineGeoJSON)) { inputPoly = p; break; }
+            }
+          }
+          var result = polygonSplitter(inputPoly, lineGeoJSON);
+          // result is a FeatureCollection of Polygons.
+          var parts = (result.features || []).filter(function (f) {
+            return f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon');
+          });
+          if (parts.length < 2) {
+            toast('Линия не пересекает поле полностью', true);
+            geomResetState();
+            return;
+          }
+          // First part replaces current field; rest become new fields.
+          geomPendingGeoJSON = parts[0].geometry;
+          geomPendingExtras = parts.slice(1).map(function (f) { return f.geometry; });
+          geomHint('Получено частей: ' + parts.length + '. «Применить» — текущее поле станет первой частью, остальные сохранятся как новые поля.');
+        } catch (e) {
+          toast('Ошибка разрезания: ' + e.message, true);
+          geomResetState();
+        }
+      });
+    }
+
+    function applyGeometryChange() {
+      if (!currentField || !geomPendingGeoJSON) {
+        toast('Нет изменений', true); return;
+      }
+      var fid = currentField.id;
+      var baseName = currentField.properties.name || 'Поле';
+      // PATCH current field with the (new) primary geometry.
+      fetch('/api/my/fields/' + fid + '/', {
+        method: 'PATCH', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+        body: JSON.stringify({ geometry: geomPendingGeoJSON }),
+      }).then(function (r) {
+        return r.json().then(function (data) { return { status: r.status, data: data }; });
+      }).then(function (res) {
+        if (res.status !== 200) {
+          toast(res.data.detail || res.data.error || 'Ошибка сохранения геометрии', true);
+          return;
+        }
+        // Then POST each extra polygon as a new field.
+        var extras = geomPendingExtras.slice();
+        function postNext(idx) {
+          if (idx >= extras.length) {
+            toast(extras.length ? 'Поле разрезано на ' + (extras.length + 1) + ' части' : 'Геометрия сохранена');
+            geomResetState();
+            // Reload to reflect updated/new fields; close current detail since ids may have changed.
+            closeDetail();
+            loadFields();
+            return;
+          }
+          var props = currentField.properties || {};
+          fetch('/api/my/fields/', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+            body: JSON.stringify({
+              name: baseName + ' — часть ' + (idx + 2),
+              geometry: extras[idx],
+              properties: {
+                crop_type: props.crop_type || 'arable',
+                cadastral_number: props.cadastral_number || '',
+                notes: props.notes || '',
+              },
+            }),
+          }).then(function (r) {
+            return r.json().then(function (data) { return { status: r.status, data: data }; });
+          }).then(function (r2) {
+            if (r2.status !== 201) {
+              toast('Часть ' + (idx + 2) + ': ' + (r2.data.detail || r2.data.error || 'не сохранена'), true);
+            }
+            postNext(idx + 1);
+          }).catch(function (e) { toast('Сеть: ' + e.message, true); postNext(idx + 1); });
+        }
+        postNext(0);
+      }).catch(function (e) { toast('Сеть: ' + e.message, true); });
+    }
+
+    /* Delegate clicks on geometry tool buttons + apply/cancel. */
+    document.addEventListener('click', function (ev) {
+      var tbtn = ev.target.closest('[data-geom-tool]');
+      if (tbtn) {
+        var tool = tbtn.getAttribute('data-geom-tool');
+        // If user clicks the same active tool — toggle off.
+        if (geomTool === tool) { geomResetState(); return; }
+        geomResetState();
+        if (tool === 'vertices') startVerticesTool();
+        else if (tool === 'cut') startCutTool();
+        else if (tool === 'split') startSplitTool();
+        return;
+      }
+      if (ev.target.closest('#myf-geom-apply')) { applyGeometryChange(); return; }
+      if (ev.target.closest('#myf-geom-cancel')) {
+        geomResetState();
+        if (currentField) openDetail(currentField); // reload original geometry on the map
+        return;
+      }
+    });
+
     function handleArchive() {
       if (!currentField) return;
       var archive = !currentField.properties.is_archived;
