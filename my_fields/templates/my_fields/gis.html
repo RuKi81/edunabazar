@@ -981,25 +981,77 @@
       }
     });
 
-    /* Алгоритм: разбиваем границу полигона по точкам пересечения с
-       линией, плюс берём ту часть линии, которая попадает внутрь
-       полигона; затем turf.polygonize строит из набора отрезков
-       замкнутые контуры. Корректно для линии, пересекающей полигон
-       любое чётное число раз. */
+    /* Все кольца полигона (внешнее + дырки) как отдельные LineString-ы.
+       turf.polygonToLine для MultiPolygon отдаёт MultiLineString,
+       а turf.lineSplit умеет работать ТОЛЬКО с LineString — поэтому
+       извлекаем кольца вручную из coordinates. */
+    function polygonRingLines(polyFeature) {
+      var g = polyFeature.geometry;
+      var rings = [];
+      if (g.type === 'Polygon') {
+        g.coordinates.forEach(function (r) { rings.push(r); });
+      } else if (g.type === 'MultiPolygon') {
+        g.coordinates.forEach(function (poly) {
+          poly.forEach(function (r) { rings.push(r); });
+        });
+      }
+      return rings
+        .filter(function (r) { return r && r.length >= 2; })
+        .map(function (r) { return turf.lineString(r); });
+    }
+
+    /* Алгоритм: ноделим границу полигона и саму режущую линию во всех
+       точках пересечения, скармливаем весь набор отрезков polygonize и
+       оставляем только те результирующие полигоны, центроид которых
+       лежит внутри исходного. Так корректно работает и для Polygon, и
+       для MultiPolygon, и для линии, выходящей за пределы. */
     function splitPolygonByLine(polygonFeature, lineFeature) {
-      var polyToLine = turf.polygonToLine(polygonFeature);
-      var polyLine = polyToLine.type === 'FeatureCollection' ? polyToLine.features[0] : polyToLine;
-      var splittedRing = turf.lineSplit(polyLine, lineFeature);
-      var lineInsideParts = turf.lineSplit(lineFeature, polyLine).features.filter(function (f) {
-        var coords = f.geometry.coordinates;
-        var a = turf.point(coords[0]);
-        var b = turf.point(coords[coords.length - 1]);
-        var mid = turf.midpoint(a, b);
-        try { return turf.booleanPointInPolygon(mid, polygonFeature); } catch (_) { return false; }
+      var ringLines = polygonRingLines(polygonFeature);
+      if (!ringLines.length) return [];
+      var noded = [];
+      ringLines.forEach(function (rl) {
+        var s;
+        try { s = turf.lineSplit(rl, lineFeature); } catch (_) { s = null; }
+        if (s && s.features && s.features.length) {
+          s.features.forEach(function (f) { noded.push(f); });
+        } else {
+          noded.push(rl);
+        }
       });
-      var all = turf.featureCollection(splittedRing.features.concat(lineInsideParts));
-      var parts = turf.polygonize(all);
-      return (parts && parts.features) ? parts.features : [];
+      /* Линию режем границей (для каждого кольца отдельно — иначе
+         lineSplit не увидит пересечения с дырками). Все части — внутри
+         и снаружи — отдаём polygonize: внешние артефакты потом отсеем. */
+      var cutPieces = [lineFeature];
+      ringLines.forEach(function (rl) {
+        var next = [];
+        cutPieces.forEach(function (piece) {
+          var s;
+          try { s = turf.lineSplit(piece, rl); } catch (_) { s = null; }
+          if (s && s.features && s.features.length) {
+            s.features.forEach(function (f) { next.push(f); });
+          } else {
+            next.push(piece);
+          }
+        });
+        cutPieces = next;
+      });
+      cutPieces.forEach(function (p) { noded.push(p); });
+
+      var fc = turf.featureCollection(noded);
+      var parts;
+      try { parts = turf.polygonize(fc); }
+      catch (e) { return []; }
+      if (!parts || !parts.features) return [];
+
+      /* Оставляем только полигоны, чей centroid лежит внутри исходного
+         (отсеивает «фантомные» внешние замыкания, образованные хвостами
+         режущей линии за пределами полигона). */
+      return parts.features.filter(function (poly) {
+        try {
+          var c = turf.centerOfMass(poly);
+          return turf.booleanPointInPolygon(c, polygonFeature);
+        } catch (_) { return false; }
+      });
     }
 
     function finishSplit(cutFeature) {
