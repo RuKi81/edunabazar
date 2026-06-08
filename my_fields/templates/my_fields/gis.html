@@ -171,6 +171,17 @@
     .gis-basemap-dock button:hover { background: #f5f5f5; }
     .gis-basemap-dock button.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
 
+    /* Drag&drop порядка слоёв. */
+    .gis-layer[data-layer] { cursor: grab; user-select: none; }
+    .gis-layer[data-layer]:active { cursor: grabbing; }
+    .gis-layer.dragging  { opacity: .45; }
+    .gis-layer.drag-over-top    { box-shadow: 0 -2px 0 0 #2e7d32 inset, 0 -2px 0 0 #2e7d32; }
+    .gis-layer.drag-over-bottom { box-shadow: 0 2px 0 0 #2e7d32; }
+    .gis-layer__grip {
+      width: 16px; color: #bbb; font-size: 14px; line-height: 1; text-align: center;
+      cursor: grab; margin-right: 2px;
+    }
+
     /* Info-card action row — Удалить / Узлы. */
     .gis-info-card .actions {
       display: flex; gap: 6px; margin-top: 12px; padding-top: 10px;
@@ -202,23 +213,27 @@
 
       <h2 class="gis-h2">🗺️ Слои</h2>
 
-      <div class="gis-layer" data-layer="farmlands">
-        <div class="gis-layer__head">
-          <button class="gis-layer__btn active" data-action="visibility" type="button" title="Видимость">👁</button>
-          <span class="name">ЗСН (Росреестр)</span>
-          <button class="gis-layer__btn disabled" data-action="edit" type="button"
-                  title="Источник — Росреестр, редактирование запрещено">🔒</button>
+      <div id="gis-layers">
+        <div class="gis-layer" data-layer="farmlands" draggable="true">
+          <div class="gis-layer__head">
+            <span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>
+            <button class="gis-layer__btn active" data-action="visibility" type="button" title="Видимость">👁</button>
+            <span class="name">ЗСН (Росреестр)</span>
+            <button class="gis-layer__btn disabled" data-action="edit" type="button"
+                    title="Источник — Росреестр, редактирование запрещено">🔒</button>
+          </div>
+          <div class="gis-layer__meta">Векторные тайлы · z 6–14 · кеш 10 мин</div>
         </div>
-        <div class="gis-layer__meta">Векторные тайлы · z 6–14 · кеш 10 мин</div>
-      </div>
 
-      <div class="gis-layer" data-layer="userfields">
-        <div class="gis-layer__head">
-          <button class="gis-layer__btn active" data-action="visibility" type="button" title="Видимость">👁</button>
-          <span class="name">Мои поля</span>
-          <button class="gis-layer__btn" data-action="edit" type="button" title="Включить редактирование">✏</button>
+        <div class="gis-layer" data-layer="userfields" draggable="true">
+          <div class="gis-layer__head">
+            <span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>
+            <button class="gis-layer__btn active" data-action="visibility" type="button" title="Видимость">👁</button>
+            <span class="name">Мои поля</span>
+            <button class="gis-layer__btn" data-action="edit" type="button" title="Включить редактирование">✏</button>
+          </div>
+          <div class="gis-layer__meta" id="gis-userfields-meta">загрузка…</div>
         </div>
-        <div class="gis-layer__meta" id="gis-userfields-meta">загрузка…</div>
       </div>
     </aside>
 
@@ -249,9 +264,10 @@
       <button data-tool="draw_line_string" type="button" title="Линия"   disabled>╱</button>
       <button data-tool="draw_point"       type="button" title="Точка"   disabled>•</button>
       <span class="sep"></span>
-      <button data-tool="split" type="button" title="Разрезать полигон линией" disabled>✂</button>
+      <button data-tool="split"      type="button" title="Разрезать полигон линией" disabled>✂</button>
+      <button data-tool="ring_cut"   type="button" title="Вырезать кольцо (hole) полигоном" disabled>◎</button>
       <span class="sep"></span>
-      <button data-tool="trash" type="button" title="Удалить выбранное" disabled>🗑</button>
+      <button data-tool="trash" type="button" title="Удалить выбранное (Del)" disabled>🗑</button>
       <span class="hint" id="gis-toolbar-hint">Включите редактирование «Мои поля» в левом меню.</span>
     </div>
 
@@ -322,6 +338,7 @@
           promoteId: { farmlands: 'id' },
         },
         userfields: { type: 'geojson', data: { type: 'FeatureCollection', features: [] }, promoteId: 'id' },
+        snap: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
       },
       layers: [
         { id: 'basemap', type: 'raster', source: 'basemap' },
@@ -355,6 +372,19 @@
           id: 'userfields-outline',
           type: 'line', source: 'userfields',
           paint: { 'line-color': '#1b5e20', 'line-width': 2 },
+        },
+        /* Индикатор snap: подсвечиваем точку, к которой притянется
+           следующая вершина при рисовании. */
+        {
+          id: 'snap-indicator',
+          type: 'circle', source: 'snap',
+          paint: {
+            'circle-radius': 8,
+            'circle-color': '#ff5722',
+            'circle-opacity': 0.25,
+            'circle-stroke-color': '#ff5722',
+            'circle-stroke-width': 2,
+          },
         },
       ],
     };
@@ -787,13 +817,22 @@
       });
 
       if (on) {
-        if (!drawAdded) { map.addControl(draw); drawAdded = true; }
+        if (!drawAdded) {
+          map.addControl(draw);
+          drawAdded = true;
+          /* draw добавил свои слои поверх — поднимаем snap-индикатор
+             ещё выше, чтобы он не прятался за draw-вершинами. */
+          if (map.getLayer('snap-indicator')) {
+            try { map.moveLayer('snap-indicator'); } catch (_) {}
+          }
+        }
         persistedDrawIds.clear();
         try { draw.deleteAll(); } catch (_) {}
         userfieldsFC.features.forEach(addPersistedToDraw);
         if (hint) hint.textContent = 'Режим: ⬡ нарисовать новое · ☞ выбрать и двойным кликом править узлы · ✂ разрезать · 🗑 удалить.';
       } else {
         cancelSplit();
+        cancelRingCut();
         if (drawAdded) { try { draw.deleteAll(); } catch (_) {} try { map.removeControl(draw); } catch (_) {} drawAdded = false; }
         persistedDrawIds.clear();
         if (hint) hint.textContent = 'Включите редактирование «Мои поля» в левом меню.';
@@ -823,7 +862,13 @@
           return;
         }
         if (tool === 'split') {
+          cancelRingCut();
           startSplitFlow();
+          return;
+        }
+        if (tool === 'ring_cut') {
+          cancelSplit();
+          startRingCutFlow();
           return;
         }
         var modeMap = {
@@ -833,7 +878,7 @@
           draw_point: 'draw_point',
         };
         var mode = modeMap[tool];
-        if (mode) { cancelSplit(); try { draw.changeMode(mode); } catch (_) {} }
+        if (mode) { cancelSplit(); cancelRingCut(); try { draw.changeMode(mode); } catch (_) {} }
       });
     });
 
@@ -1120,9 +1165,17 @@
       var f = ev.features && ev.features[0];
       if (!f || !f.geometry) return;
 
+      /* Snap всех вершин свежесозданного объекта к близким соседям. */
+      try { snapGeometryInPlace(f.geometry); } catch (_) {}
+
       /* Сценарий «разрезка» — поглощаем линию, нарисованную в режиме split. */
       if (splitState === 'pick-line' && f.geometry.type === 'LineString') {
         finishSplit(f);
+        return;
+      }
+      /* Сценарий «вырезать кольцо» — поглощаем нарисованный полигон. */
+      if (ringCutState === 'draw-hole' && f.geometry.type === 'Polygon') {
+        finishRingCut(f);
         return;
       }
 
@@ -1137,10 +1190,17 @@
       highlightTool('select');
     });
 
-    /* Правка узлов / перемещение persisted-полигона → debounced PATCH. */
+    /* Правка узлов / перемещение persisted-полигона → snap + debounced PATCH. */
     map.on('draw.update', function (ev) {
       (ev.features || []).forEach(function (f) {
-        if (persistedDrawIds.has(String(f.id))) schedulePatch(f.id);
+        if (!persistedDrawIds.has(String(f.id))) return;
+        try {
+          if (snapGeometryInPlace(f.geometry)) {
+            /* Перезаписываем фичу в draw уже со snap-нутыми координатами. */
+            draw.add(f);
+          }
+        } catch (_) {}
+        schedulePatch(f.id);
       });
     });
 
@@ -1155,8 +1215,8 @@
 
     map.on('draw.modechange', function () {
       if (!drawAdded) return;
-      /* Не сбрасываем подсветку split, пока флоу сплита активен. */
-      if (splitState) return;
+      /* Не сбрасываем подсветку, пока активен флоу split / ring-cut. */
+      if (splitState || ringCutState) return;
       if (draw.getMode() === 'simple_select') highlightTool('select');
     });
 
@@ -1174,6 +1234,326 @@
       rightPane.classList.toggle('collapsed');
       rightBtn.classList.toggle('shifted');
       rightBtn.textContent = rightPane.classList.contains('collapsed') ? '‹' : '›';
+    });
+
+    /* ════════════════════════════════════════════════════════════════
+       Snap к вершинам/рёбрам видимых слоёв.
+       ════════════════════════════════════════════════════════════════ */
+    var SNAP_PX = 14;            // радиус притягивания, экранных пикселей
+    var snapTarget = null;       // [lng, lat] | null
+    var snapSrc;                 // map.getSource('snap')
+
+    function snapSourceRefresh() {
+      if (!snapSrc) snapSrc = map.getSource('snap');
+      if (!snapSrc) return;
+      snapSrc.setData({
+        type: 'FeatureCollection',
+        features: snapTarget
+          ? [{ type: 'Feature', geometry: { type: 'Point', coordinates: snapTarget }, properties: {} }]
+          : [],
+      });
+    }
+
+    /* Слои-кандидаты для snap: только видимые векторные. */
+    function snapLayerIds() {
+      var ids = [];
+      if (layerState.farmlands.visible)  ids.push('farmlands-fill');
+      if (layerState.userfields.visible) ids.push('userfields-fill', 'userfields-outline');
+      return ids;
+    }
+
+    /* Сбор ближайшей вершины из coords-кольца (Polygon/MultiPolygon/Line). */
+    function nearestVertexInGeometry(geom, target, bestSoFar) {
+      var best = bestSoFar || { d2: Infinity, coord: null };
+      function walk(arr) {
+        if (!arr || !arr.length) return;
+        if (typeof arr[0] === 'number') {
+          var dx = arr[0] - target[0], dy = arr[1] - target[1];
+          var d2 = dx * dx + dy * dy;
+          if (d2 < best.d2) { best.d2 = d2; best.coord = [arr[0], arr[1]]; }
+          return;
+        }
+        arr.forEach(walk);
+      }
+      walk(geom.coordinates);
+      return best;
+    }
+
+    /* Найти snap-точку рядом с экранным курсором. */
+    function findSnapAt(point) {
+      var lyrs = snapLayerIds();
+      if (!lyrs.length) return null;
+
+      /* Берём фичи рядом с курсором в квадрате SNAP_PX. */
+      var bbox = [
+        [point.x - SNAP_PX, point.y - SNAP_PX],
+        [point.x + SNAP_PX, point.y + SNAP_PX],
+      ];
+      var feats;
+      try { feats = map.queryRenderedFeatures(bbox, { layers: lyrs }); } catch (_) { return null; }
+      if (!feats || !feats.length) return null;
+
+      var cursorLngLat = map.unproject(point);
+      var target = [cursorLngLat.lng, cursorLngLat.lat];
+      var best = { d2: Infinity, coord: null };
+      for (var i = 0; i < feats.length; i++) {
+        var g = feats[i].geometry;
+        if (!g) continue;
+        nearestVertexInGeometry(g, target, best);
+      }
+      if (!best.coord) return null;
+
+      /* Проверка дистанции в пикселях. */
+      var p = map.project(best.coord);
+      var dx = p.x - point.x, dy = p.y - point.y;
+      if (dx * dx + dy * dy > SNAP_PX * SNAP_PX) return null;
+      return best.coord;
+    }
+
+    /* Активные режимы draw, в которых snap должен показываться. */
+    function isDrawingMode() {
+      if (!drawAdded) return false;
+      var m;
+      try { m = draw.getMode(); } catch (_) { return false; }
+      return m === 'draw_polygon' || m === 'draw_line_string' || m === 'draw_point' || m === 'direct_select';
+    }
+
+    map.on('mousemove', function (e) {
+      if (!isDrawingMode()) {
+        if (snapTarget) { snapTarget = null; snapSourceRefresh(); }
+        return;
+      }
+      var hit = findSnapAt(e.point);
+      if (hit) {
+        if (!snapTarget || snapTarget[0] !== hit[0] || snapTarget[1] !== hit[1]) {
+          snapTarget = hit;
+          snapSourceRefresh();
+        }
+      } else if (snapTarget) {
+        snapTarget = null;
+        snapSourceRefresh();
+      }
+    });
+    map.on('mouseout', function () {
+      if (snapTarget) { snapTarget = null; snapSourceRefresh(); }
+    });
+
+    /* Применить snap к каждой вершине геометрии (post-create / post-update).
+       Работает «по факту»: проходим все координаты и для каждой ищем
+       ближайшую вершину рендера в пределах SNAP_PX. */
+    function snapGeometryInPlace(geom) {
+      if (!geom) return false;
+      var lyrs = snapLayerIds();
+      if (!lyrs.length) return false;
+      var changed = false;
+
+      function snapPoint(coord) {
+        var px = map.project(coord);
+        var hit = findSnapAt(px);
+        if (hit && (hit[0] !== coord[0] || hit[1] !== coord[1])) {
+          coord[0] = hit[0]; coord[1] = hit[1];
+          changed = true;
+        }
+      }
+      function walk(arr) {
+        if (!arr || !arr.length) return;
+        if (typeof arr[0] === 'number') { snapPoint(arr); return; }
+        arr.forEach(walk);
+      }
+      walk(geom.coordinates);
+      return changed;
+    }
+
+    /* ════════════════════════════════════════════════════════════════
+       Ring cut: вырезать «дырку» в существующем полигоне.
+       Поток:
+        1) клик ◎ — если уже выбран persisted-полигон, сразу draw_polygon.
+        2) иначе ждём выбора полигона (через selectionchange).
+        3) пользователь рисует полигон-вырез, на draw.create поглощаем его
+           и вычитаем из target → PATCH.
+       ════════════════════════════════════════════════════════════════ */
+    var ringCutState = null;   // null | 'pick-target' | 'draw-hole'
+    var ringCutTargetId = null;
+
+    function startRingCutFlow() {
+      if (typeof turf === 'undefined' || typeof turf.difference !== 'function') {
+        toast('Не загружен turf.js — обновите страницу.', true);
+        return;
+      }
+      var sel = draw.getSelectedIds();
+      if (sel && sel.length === 1 && persistedDrawIds.has(String(sel[0]))) {
+        beginRingCutDrawing(sel[0]);
+        return;
+      }
+      ringCutState = 'pick-target';
+      try { draw.changeMode('simple_select'); } catch (_) {}
+      highlightTool('ring_cut');
+      var hint = document.getElementById('gis-toolbar-hint');
+      if (hint) hint.textContent = '◎ Кликните по полигону, в котором надо вырезать кольцо.';
+    }
+    function beginRingCutDrawing(fieldId) {
+      ringCutState = 'draw-hole';
+      ringCutTargetId = fieldId;
+      try { draw.changeMode('draw_polygon'); } catch (_) {}
+      highlightTool('ring_cut');
+      var hint = document.getElementById('gis-toolbar-hint');
+      if (hint) hint.textContent = '◎ Нарисуйте замкнутый полигон внутри. Двойной клик — закончить.';
+    }
+    function cancelRingCut() {
+      ringCutState = null;
+      ringCutTargetId = null;
+    }
+
+    map.on('draw.selectionchange', function (e) {
+      if (ringCutState !== 'pick-target') return;
+      var feats = (e && e.features) || [];
+      for (var i = 0; i < feats.length; i++) {
+        var fid = feats[i].id;
+        if (persistedDrawIds.has(String(fid))) { beginRingCutDrawing(fid); return; }
+      }
+    });
+
+    function finishRingCut(holeFeature) {
+      var fid = ringCutTargetId;
+      var draftId = holeFeature.id;
+      cancelRingCut();
+      try { draw.delete(draftId); } catch (_) {}
+      if (fid == null) return;
+
+      var idx = fcIndexById(fid);
+      if (idx < 0) { toast('Полигон не найден.', true); return; }
+      var origFeat = userfieldsFC.features[idx];
+
+      var drawnPoly;
+      try { drawnPoly = draw.get(String(fid)); } catch (_) { drawnPoly = null; }
+      var target = drawnPoly || origFeat;
+
+      var diff = null;
+      try {
+        diff = turf.difference(turf.featureCollection([target, holeFeature]));
+      } catch (e1) {
+        try { diff = turf.difference(target, holeFeature); }
+        catch (e2) { console.error('[gis-ring-cut] difference failed', e1, e2); }
+      }
+      if (!diff || !diff.geometry) {
+        toast('Не удалось вырезать: полигон-нож должен быть полностью внутри.', true);
+        return;
+      }
+      /* Берём только тот кусок, центроид которого — в исходном target.
+         Этим отсекаем случаи, когда «нож» торчит наружу. */
+      var pieces = turf.flatten(diff).features.filter(function (f) {
+        try { return turf.booleanPointInPolygon(turf.centerOfMass(f), target); }
+        catch (_) { return true; }
+      });
+      if (!pieces.length) { toast('Кольцо вне полигона — нечего вырезать.', true); return; }
+      /* Объединяем обратно в один (Multi)Polygon с дыркой. */
+      var combined = pieces.length === 1
+        ? pieces[0]
+        : { type: 'Feature', properties: {}, geometry: { type: 'MultiPolygon',
+            coordinates: pieces.map(function (f) {
+              return f.geometry.type === 'Polygon' ? f.geometry.coordinates : f.geometry.coordinates[0];
+            }) } };
+
+      apiFetch('/api/my/fields/' + encodeURIComponent(fid) + '/', {
+        method: 'PATCH',
+        body: JSON.stringify({ geometry: combined.geometry }),
+      }).then(function (res) {
+        if (!res.ok) { toast('Сохранить не удалось: ' + detailFromError(res), true); return; }
+        if (res.body) userfieldsFC.features[idx] = res.body;
+        removePersistedFromDraw(fid);
+        if (drawAdded && res.body) addPersistedToDraw(res.body);
+        setUserfieldsData();
+        toast('Кольцо вырезано');
+      }).catch(function (e) { toast('Сетевая ошибка: ' + (e && e.message || e), true); });
+    }
+
+    /* ════════════════════════════════════════════════════════════════
+       Delete-хоткей: удаление выбранного.
+       ════════════════════════════════════════════════════════════════ */
+    window.addEventListener('keydown', function (e) {
+      if (e.key !== 'Delete') return;
+      /* Не перехватываем, если фокус во вводе. */
+      var t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      if (!drawAdded) return;
+      var sel;
+      try { sel = draw.getSelectedIds(); } catch (_) { sel = []; }
+      if (!sel || !sel.length) return;
+      e.preventDefault();
+      handleTrash();
+    });
+
+    /* ════════════════════════════════════════════════════════════════
+       Drag&drop порядка слоёв в левом сайдбаре.
+       ════════════════════════════════════════════════════════════════ */
+    var LAYER_RENDER_GROUPS = {
+      farmlands:  ['farmlands-fill', 'farmlands-outline'],
+      userfields: ['userfields-fill', 'userfields-outline'],
+    };
+    /* Применить порядок DOM к z-order карты.
+       Конвенция: первая строка в списке = верхний слой на карте.
+       maplibre укладывает layers снизу-вверх; чтобы сделать слой верхним,
+       вызываем map.moveLayer(id) без beforeId. */
+    function syncLayerOrderFromDOM() {
+      var rows = document.querySelectorAll('#gis-layers .gis-layer[data-layer]');
+      /* Идём с конца списка (нижний по UI = нижний на карте) к началу
+         (верхний по UI = верхний на карте), каждый поднимаем наверх. */
+      var arr = Array.prototype.slice.call(rows).reverse();
+      arr.forEach(function (row) {
+        var key = row.getAttribute('data-layer');
+        var ids = LAYER_RENDER_GROUPS[key] || [];
+        ids.forEach(function (lid) {
+          if (map.getLayer(lid)) {
+            try { map.moveLayer(lid); } catch (_) {}
+          }
+        });
+      });
+      /* Snap-indicator всегда наверху. */
+      if (map.getLayer('snap-indicator')) {
+        try { map.moveLayer('snap-indicator'); } catch (_) {}
+      }
+    }
+
+    var dragSrcRow = null;
+    document.querySelectorAll('#gis-layers .gis-layer[data-layer]').forEach(function (row) {
+      row.addEventListener('dragstart', function (e) {
+        dragSrcRow = row;
+        row.classList.add('dragging');
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = 'move';
+          try { e.dataTransfer.setData('text/plain', row.getAttribute('data-layer')); } catch (_) {}
+        }
+      });
+      row.addEventListener('dragend', function () {
+        row.classList.remove('dragging');
+        document.querySelectorAll('#gis-layers .gis-layer').forEach(function (r) {
+          r.classList.remove('drag-over-top', 'drag-over-bottom');
+        });
+        dragSrcRow = null;
+      });
+      row.addEventListener('dragover', function (e) {
+        if (!dragSrcRow || dragSrcRow === row) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        var rect = row.getBoundingClientRect();
+        var before = (e.clientY - rect.top) < rect.height / 2;
+        row.classList.toggle('drag-over-top', before);
+        row.classList.toggle('drag-over-bottom', !before);
+      });
+      row.addEventListener('dragleave', function () {
+        row.classList.remove('drag-over-top', 'drag-over-bottom');
+      });
+      row.addEventListener('drop', function (e) {
+        e.preventDefault();
+        if (!dragSrcRow || dragSrcRow === row) return;
+        var rect = row.getBoundingClientRect();
+        var before = (e.clientY - rect.top) < rect.height / 2;
+        row.classList.remove('drag-over-top', 'drag-over-bottom');
+        var parent = row.parentNode;
+        if (before) parent.insertBefore(dragSrcRow, row);
+        else        parent.insertBefore(dragSrcRow, row.nextSibling);
+        syncLayerOrderFromDOM();
+      });
     });
 
     /* ──────────────────────── Status / errors ──────────────────────── */
