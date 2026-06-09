@@ -809,6 +809,18 @@
        — драфты). Без этого не отличить «новое неотправленное» от «уже в БД». */
     var persistedDrawIds = new Set();
 
+    /* maplibre-gl-draw синхронно эмитит draw.create при любом draw.add(),
+       даже для уже существующего id. Это превращало бесшумные программные
+       апдейты (snap write-back, addPersistedToDraw, split/ring-cut) в
+       фантомные queueCreate. Счётчик-флаг подавляет обработку событий
+       только на время программных вставок. */
+    var _silentDraw = 0;
+    function drawAddSilent(feature) {
+      _silentDraw++;
+      try { return draw.add(feature); }
+      finally { _silentDraw--; }
+    }
+
     /* Polygon → MultiPolygon-совместимый Feature для добавления в draw.
        Mapbox-gl-draw умеет хранить как Polygon, так и MultiPolygon. На
        сохранение бэкенд приведёт к MultiPolygon. */
@@ -821,8 +833,10 @@
         geometry: feature.geometry,
         properties: feature.properties || {},
       };
-      try { draw.add(copy); } catch (_) { return; }
+      /* Кладём id в set ДО draw.add — даже если событие просочится мимо
+         _silentDraw, draw.create-хендлер увидит persisted-id и игнорит. */
       persistedDrawIds.add(sid);
+      try { drawAddSilent(copy); } catch (_) { persistedDrawIds.delete(sid); }
     }
     function removePersistedFromDraw(fieldId) {
       var sid = String(fieldId);
@@ -1153,17 +1167,17 @@
       var first = parts[0];
       var rest = parts.slice(1);
 
-      /* Обновляем геометрию оригинала в userfieldsFC + draw. */
+      /* Обновляем геометрию оригинала в userfieldsFC + draw (silent). */
       userfieldsFC.features[idx].geometry = first.geometry;
       queueUpdate(fid, first.geometry);
-      try { draw.add({ type: 'Feature', id: String(fid), properties: {}, geometry: first.geometry }); } catch (_) {}
+      try { drawAddSilent({ type: 'Feature', id: String(fid), properties: {}, geometry: first.geometry }); } catch (_) {}
 
       /* Каждая «остальная» часть — draft в draw + pending.creates. */
       rest.forEach(function (p, i) {
         var label = (origProps.name || ('Поле #' + fid)) + ' (часть ' + (i + 2) + ')';
         var draftFeat = { type: 'Feature', properties: {}, geometry: p.geometry };
         var added;
-        try { added = draw.add(draftFeat); } catch (_) { added = null; }
+        try { added = drawAddSilent(draftFeat); } catch (_) { added = null; }
         var draftId = (added && added[0]) || ('tmp_' + Date.now() + '_' + i);
         pending.creates.push({
           drawId: String(draftId),
@@ -1197,8 +1211,15 @@
 
     /* ──────────────────────── Draw events ──────────────────────── */
     map.on('draw.create', function (ev) {
+      /* Программные draw.add (snap write-back, addPersistedToDraw, split/
+         ring-cut) синхронно эмитят draw.create в maplibre-gl-draw —
+         подавляем, иначе каждый snap превращается в фантомный draft. */
+      if (_silentDraw > 0) return;
       var f = ev.features && ev.features[0];
       if (!f || !f.geometry) return;
+      /* Защита: дубль draw.add с уже известным id — игнор. */
+      if (f.id != null && persistedDrawIds.has(String(f.id))) return;
+      if (f.id != null && findPendingCreateIdx(f.id) >= 0) return;
 
       /* Snap всех вершин свежесозданного объекта к близким соседям. */
       try { snapGeometryInPlace(f.geometry); } catch (_) {}
@@ -1228,11 +1249,12 @@
 
     /* Правка узлов / перемещение → snap + queueUpdate (без авто-PATCH). */
     map.on('draw.update', function (ev) {
+      if (_silentDraw > 0) return;
       (ev.features || []).forEach(function (f) {
         var snapped = false;
         try { snapped = snapGeometryInPlace(f.geometry); } catch (_) {}
-        /* Перезаписываем в draw со snap-нутыми координатами. */
-        if (snapped) { try { draw.add(f); } catch (_) {} }
+        /* Перезаписываем в draw со snap-нутыми координатами (silent). */
+        if (snapped) { try { drawAddSilent(f); } catch (_) {} }
         var sid = String(f.id);
         /* Draft — обновляем geometry внутри pending.creates. */
         var draftIdx = findPendingCreateIdx(sid);
@@ -1684,10 +1706,10 @@
               return f.geometry.type === 'Polygon' ? f.geometry.coordinates : f.geometry.coordinates[0];
             }) } };
 
-      /* Batch: обновляем локально + кладём в очередь. */
+      /* Batch: обновляем локально + кладём в очередь (silent draw.add). */
       userfieldsFC.features[idx].geometry = combined.geometry;
       queueUpdate(fid, combined.geometry);
-      try { draw.add({ type: 'Feature', id: String(fid), properties: {}, geometry: combined.geometry }); } catch (_) {}
+      try { drawAddSilent({ type: 'Feature', id: String(fid), properties: {}, geometry: combined.geometry }); } catch (_) {}
       toast('Кольцо вырезано · нажмите 💾 для сохранения');
     }
 
