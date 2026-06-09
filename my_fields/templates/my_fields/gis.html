@@ -1161,9 +1161,20 @@
         return;
       }
 
-      /* Batch-режим. Часть[0] остаётся за старым id (queueUpdate),
-         остальные становятся draft-ами (queueCreate). До клика 💾
-         ничего на сервер не уходит — можно ↶ отменить. */
+      /* Batch-режим. Больший фрагмент остаётся за оригинальным id
+         (queueUpdate), остальные становятся draft-ами (queueCreate).
+         До клика 💾 ничего на сервер не уходит — можно ↶ отменить.
+         Сортировка по площади: пользователь обычно хочет «обрезать»
+         маленькие куски от большого — большой должен сохранить id и
+         остаться активной целью для следующих надрезов. */
+      try {
+        parts.sort(function (a, b) {
+          var aa = 0, bb = 0;
+          try { aa = turf.area(a); } catch (_) {}
+          try { bb = turf.area(b); } catch (_) {}
+          return bb - aa;
+        });
+      } catch (_) { /* turf может упасть на вырожденных частях — оставим исходный порядок */ }
       var first = parts[0];
       var rest = parts.slice(1);
 
@@ -1193,6 +1204,20 @@
       });
       updateSaveBadge();
       toast('Разрезано на ' + parts.length + ' части · нажмите 💾 для сохранения');
+
+      /* Аналог поведения draw_polygon: инструмент ✂ остаётся активным,
+         больший фрагмент — текущая цель. Можно сразу резать дальше,
+         не выбирая полигон заново. setTimeout(0) нужен, чтобы дать
+         mapbox-gl-draw завершить свой внутренний переход после
+         draw.create линии (он сам уходит в simple_select). */
+      setTimeout(function () {
+        splitState = 'pick-line';
+        splitTargetId = fid;
+        try { draw.changeMode('draw_line_string'); } catch (_) {}
+        highlightTool('split');
+        var h = document.getElementById('gis-toolbar-hint');
+        if (h) h.textContent = '✂ Полигон всё ещё выбран. Нарисуйте следующую линию (двойной клик — закончить) или ☞ для выхода.';
+      }, 0);
     }
 
     /* ──────────────────────── Approx area for hint ──────────────────────── */
