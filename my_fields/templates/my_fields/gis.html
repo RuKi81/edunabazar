@@ -1243,8 +1243,21 @@
       /* Batch-режим: вместо формы и POST-а сразу — кладём в очередь
          с авто-именем; пользователь правит атрибуты позже через сайдбар. */
       queueCreate(f.id, f.geometry);
-      try { draw.changeMode('simple_select'); } catch (_) {}
-      highlightTool('select');
+      /* Не выкидываем пользователя в simple_select — оставляем инструмент
+         оцифровки активным, чтобы можно было сразу рисовать следующий
+         полигон. Mapbox-gl-draw сам переходит в simple_select после
+         двойного клика, поэтому возвращаем режим явно. */
+      var nextMode = {
+        Polygon: 'draw_polygon',
+        LineString: 'draw_line_string',
+        Point: 'draw_point',
+      }[f.geometry.type];
+      if (nextMode) {
+        setTimeout(function () {
+          try { draw.changeMode(nextMode); } catch (_) {}
+          highlightTool(nextMode);
+        }, 0);
+      }
     });
 
     /* Правка узлов / перемещение → snap + queueUpdate (без авто-PATCH). */
