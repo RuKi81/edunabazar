@@ -124,6 +124,17 @@
     .gis-toolbar button:disabled { opacity: 0.35; cursor: not-allowed; }
     .gis-toolbar button:focus { outline: none; }
     .gis-toolbar .hint { font-size: 11px; color: #777; padding: 0 10px; max-width: 260px; line-height: 1.3; }
+    /* Бейдж счётчика pending-изменений на кнопке "сохранить". */
+    .gis-toolbar button[data-tool="save"] { position: relative; }
+    .gis-toolbar button[data-tool="save"]:not(:disabled) { color: #2e7d32; }
+    .gis-toolbar button[data-tool="save"][data-count]:not([data-count="0"])::after {
+      content: attr(data-count);
+      position: absolute; top: -4px; right: -4px;
+      background: #c62828; color: #fff; border-radius: 9px;
+      font-size: 10px; font-weight: 700; line-height: 1;
+      padding: 2px 5px; min-width: 14px; text-align: center;
+      box-shadow: 0 1px 3px rgba(0,0,0,.25);
+    }
 
     /* Хлебные крошки — наверху левого сайдбара, inline. */
     .gis-topbar {
@@ -268,6 +279,9 @@
       <button data-tool="ring_cut"   type="button" title="Вырезать кольцо (hole) полигоном" disabled>◎</button>
       <span class="sep"></span>
       <button data-tool="trash" type="button" title="Удалить выбранное (Del)" disabled>🗑</button>
+      <span class="sep"></span>
+      <button data-tool="save"    type="button" title="Сохранить все изменения" disabled>💾</button>
+      <button data-tool="discard" type="button" title="Отменить все несохранённые изменения" disabled>↶</button>
       <span class="hint" id="gis-toolbar-hint">Включите редактирование «Мои поля» в левом меню.</span>
     </div>
 
@@ -371,7 +385,19 @@
         {
           id: 'userfields-outline',
           type: 'line', source: 'userfields',
-          paint: { 'line-color': '#1b5e20', 'line-width': 2 },
+          paint: {
+            'line-color': [
+              'match', ['get', '_dirty'],
+              'update', '#fb8c00',
+              'create', '#1976d2',
+              '#1b5e20'
+            ],
+            'line-width': [
+              'match', ['get', '_dirty'],
+              'update', 3, 'create', 3,
+              2
+            ],
+          },
         },
         /* Индикатор snap: подсвечиваем точку, к которой притянется
            следующая вершина при рисовании. */
@@ -460,10 +486,15 @@
     }
 
     function loadUserFields() {
-      apiFetch('/api/my/fields/').then(function (res) {
+      return apiFetch('/api/my/fields/').then(function (res) {
         if (res.ok && res.body && res.body.features) {
           userfieldsFC = res.body;
+          /* Сбрасываем dirty-флаги (на случай рефреша после save). */
+          userfieldsFC.features.forEach(function (f) {
+            if (f.properties && f.properties._dirty) delete f.properties._dirty;
+          });
           setUserfieldsData();
+          snapshotBaseline();
         }
       }).catch(function () { /* офлайн — молча */ });
     }
@@ -596,7 +627,7 @@
         var editBtn = infoEl.querySelector('[data-act="edit-vertex"]');
         var delBtn  = infoEl.querySelector('[data-act="delete"]');
         if (editBtn) editBtn.addEventListener('click', function () { enterVertexEdit(fid); });
-        if (delBtn)  delBtn.addEventListener('click',  function () { deletePersistedField(fid); });
+        if (delBtn)  delBtn.addEventListener('click',  function () { queueDelete(fid); renderEmpty(); });
       }
     }
 
@@ -805,13 +836,31 @@
        можно было выделять, двигать узлы, разрезать и т.д. При выключении
        — выкидываем всё (любые драфты пропадают). */
     function setEditMode(on) {
+      /* Не даём выключить режим, пока висят несохранённые изменения —
+         иначе драфты бесследно пропадут. Срабатывает только при попытке выключить. */
+      if (!on && typeof pending !== 'undefined' && pendingCount() > 0) {
+        if (!window.confirm('Есть несохранённые изменения (' + pendingCount() +
+            '). Выключить редактирование и потерять их?')) {
+          return;
+        }
+        /* Откатываем userfieldsFC к baseline-снимку, чтобы карта
+           показывала актуальное серверное состояние, а не локальные drafts. */
+        try { userfieldsFC.features = JSON.parse(JSON.stringify(userfieldsBaseline)); }
+        catch (_) { /* baseline пустой — оставляем как есть */ }
+        setUserfieldsData();
+        pending = { creates: [], updates: new Map(), deletes: new Set() };
+        updateSaveBadge();
+      }
       layerState.userfields.editable = on;
       var btn = document.querySelector('.gis-layer[data-layer="userfields"] .gis-layer__btn[data-action="edit"]');
       if (btn) btn.classList.toggle('active', on);
 
       var hint = document.getElementById('gis-toolbar-hint');
       document.querySelectorAll('.gis-toolbar button[data-tool]').forEach(function (b) {
-        if (b.getAttribute('data-tool') === 'select') return;
+        var t = b.getAttribute('data-tool');
+        if (t === 'select') return;
+        /* save / discard — разрешаем только если есть pending; иначе disabled. */
+        if (t === 'save' || t === 'discard') return;
         b.disabled = !on;
         if (!on) b.classList.remove('active');
       });
@@ -844,7 +893,7 @@
     function highlightTool(tool) {
       document.querySelectorAll('.gis-toolbar button[data-tool]').forEach(function (b) {
         var t = b.getAttribute('data-tool');
-        if (t === 'trash') return;
+        if (t === 'trash' || t === 'save' || t === 'discard') return;
         b.classList.toggle('active', t === tool);
       });
     }
@@ -853,6 +902,9 @@
       btn.addEventListener('click', function () {
         if (btn.disabled) return;
         var tool = btn.getAttribute('data-tool');
+        /* save / discard — всегда работают вне modeMap. */
+        if (tool === 'save')    { commitPending();  return; }
+        if (tool === 'discard') { discardPending(); return; }
         if (tool !== 'trash') highlightTool(tool);
         if (!drawAdded && tool !== 'select') return;
 
@@ -883,22 +935,17 @@
     });
 
     /* ──────────────────────── Trash / Delete ──────────────────────── */
-    /* Трэш в тулбаре: для драфтов — просто draw.delete; для persisted —
-       подтверждение и DELETE на сервер с фактическим удалением и из
-       draw, и из userfieldsFC. */
+    /* Batch: ничего не уходит на сервер мгновенно. queueDelete сам
+       разруливает draft (удалить из очереди) vs persisted (отправить
+       в pending.deletes). Действие можно отменить кнопкой ↶. */
     function handleTrash() {
-      var sel = draw.getSelectedIds();
+      var sel;
+      try { sel = draw.getSelectedIds(); } catch (_) { sel = []; }
       if (!sel || !sel.length) {
         toast('Сначала выделите объект (☞ + клик).', true);
         return;
       }
-      sel.forEach(function (sid) {
-        if (persistedDrawIds.has(String(sid))) {
-          deletePersistedField(sid);
-        } else {
-          try { draw.delete(sid); } catch (_) {}
-        }
-      });
+      sel.forEach(function (sid) { queueDelete(sid); });
     }
 
     function deletePersistedField(fieldId) {
@@ -1100,50 +1147,38 @@
         return;
       }
 
-      /* Часть [0] остаётся на старом id (PATCH), остальные становятся
-         новыми полями (POST). Атрибуты копируем — пользователь потом
-         поправит названия. */
+      /* Batch-режим. Часть[0] остаётся за старым id (queueUpdate),
+         остальные становятся draft-ами (queueCreate). До клика 💾
+         ничего на сервер не уходит — можно ↶ отменить. */
       var first = parts[0];
       var rest = parts.slice(1);
-      toast('Разрезано на ' + parts.length + ' части · сохраняем…');
 
-      /* PATCH первой. */
-      apiFetch('/api/my/fields/' + encodeURIComponent(fid) + '/', {
-        method: 'PATCH',
-        body: JSON.stringify({ geometry: first.geometry }),
-      }).then(function (res) {
-        if (!res.ok) { toast('Сохранить часть 1: ' + detailFromError(res), true); return null; }
-        if (res.body) userfieldsFC.features[idx] = res.body;
-        removePersistedFromDraw(fid);
-        if (drawAdded && res.body) addPersistedToDraw(res.body);
-        return Promise.all(rest.map(function (p, i) {
-          return apiFetch('/api/my/fields/', {
-            method: 'POST',
-            body: JSON.stringify({
-              geometry: p.geometry,
-              name: (origProps.name || ('Поле #' + fid)) + ' (часть ' + (i + 2) + ')',
-              properties: {
-                name: (origProps.name || ('Поле #' + fid)) + ' (часть ' + (i + 2) + ')',
-                crop_type: origProps.crop_type || 'arable',
-                cadastral_number: '',
-                notes: origProps.notes || '',
-              },
-            }),
-          });
-        }));
-      }).then(function (results) {
-        if (!results) return;
-        results.forEach(function (r) {
-          if (r && r.ok && r.body) {
-            userfieldsFC.features.push(r.body);
-            if (drawAdded) addPersistedToDraw(r.body);
-          } else if (r) {
-            toast('Часть не сохранена: ' + detailFromError(r), true);
-          }
+      /* Обновляем геометрию оригинала в userfieldsFC + draw. */
+      userfieldsFC.features[idx].geometry = first.geometry;
+      queueUpdate(fid, first.geometry);
+      try { draw.add({ type: 'Feature', id: String(fid), properties: {}, geometry: first.geometry }); } catch (_) {}
+
+      /* Каждая «остальная» часть — draft в draw + pending.creates. */
+      rest.forEach(function (p, i) {
+        var label = (origProps.name || ('Поле #' + fid)) + ' (часть ' + (i + 2) + ')';
+        var draftFeat = { type: 'Feature', properties: {}, geometry: p.geometry };
+        var added;
+        try { added = draw.add(draftFeat); } catch (_) { added = null; }
+        var draftId = (added && added[0]) || ('tmp_' + Date.now() + '_' + i);
+        pending.creates.push({
+          drawId: String(draftId),
+          geometry: p.geometry,
+          label: label,
+          props: {
+            name: label,
+            crop_type: origProps.crop_type || 'arable',
+            cadastral_number: '',
+            notes: origProps.notes || '',
+          },
         });
-        setUserfieldsData();
-        toast('Разрезка завершена');
-      }).catch(function (e) { toast('Сетевая ошибка: ' + (e && e.message || e), true); });
+      });
+      updateSaveBadge();
+      toast('Разрезано на ' + parts.length + ' части · нажмите 💾 для сохранения');
     }
 
     /* ──────────────────────── Approx area for hint ──────────────────────── */
@@ -1184,23 +1219,29 @@
         try { draw.delete(f.id); } catch (_) {}
         return;
       }
-      var areaHa = polygonAreaHa(f.geometry.coordinates);
-      renderNewFieldForm(f.id, f.geometry, areaHa);
+      /* Batch-режим: вместо формы и POST-а сразу — кладём в очередь
+         с авто-именем; пользователь правит атрибуты позже через сайдбар. */
+      queueCreate(f.id, f.geometry);
       try { draw.changeMode('simple_select'); } catch (_) {}
       highlightTool('select');
     });
 
-    /* Правка узлов / перемещение persisted-полигона → snap + debounced PATCH. */
+    /* Правка узлов / перемещение → snap + queueUpdate (без авто-PATCH). */
     map.on('draw.update', function (ev) {
       (ev.features || []).forEach(function (f) {
-        if (!persistedDrawIds.has(String(f.id))) return;
-        try {
-          if (snapGeometryInPlace(f.geometry)) {
-            /* Перезаписываем фичу в draw уже со snap-нутыми координатами. */
-            draw.add(f);
-          }
-        } catch (_) {}
-        schedulePatch(f.id);
+        var snapped = false;
+        try { snapped = snapGeometryInPlace(f.geometry); } catch (_) {}
+        /* Перезаписываем в draw со snap-нутыми координатами. */
+        if (snapped) { try { draw.add(f); } catch (_) {} }
+        var sid = String(f.id);
+        /* Draft — обновляем geometry внутри pending.creates. */
+        var draftIdx = findPendingCreateIdx(sid);
+        if (draftIdx >= 0) {
+          pending.creates[draftIdx].geometry = f.geometry;
+          updateSaveBadge();
+          return;
+        }
+        if (persistedDrawIds.has(sid)) queueUpdate(f.id, f.geometry);
       });
     });
 
@@ -1235,6 +1276,195 @@
       rightBtn.classList.toggle('shifted');
       rightBtn.textContent = rightPane.classList.contains('collapsed') ? '‹' : '›';
     });
+
+    /* ════════════════════════════════════════════════════════════════
+       Batch-сохранение: pending-очередь изменений.
+       Изменения никуда не отправляются до клика 💾. ↶ откатывает их
+       локально через snapshot baseline (без сетевых запросов).
+       ════════════════════════════════════════════════════════════════ */
+    var pending = {
+      creates: [],            // [{ drawId, geometry, props, label }]
+      updates: new Map(),     // fid(string) -> geometry
+      deletes: new Set(),     // fid(string)
+    };
+    var userfieldsBaseline = [];   // deep-clone снимков userfieldsFC.features
+    var draftCounter = 0;
+
+    function snapshotBaseline() {
+      try { userfieldsBaseline = JSON.parse(JSON.stringify(userfieldsFC.features)); }
+      catch (_) { userfieldsBaseline = []; }
+    }
+
+    function pendingCount() {
+      return pending.creates.length + pending.updates.size + pending.deletes.size;
+    }
+    function updateSaveBadge() {
+      var n = pendingCount();
+      var save = document.querySelector('.gis-toolbar button[data-tool="save"]');
+      var disc = document.querySelector('.gis-toolbar button[data-tool="discard"]');
+      if (save) {
+        save.disabled = (n === 0);
+        save.setAttribute('data-count', String(n));
+        save.title = n ? ('Сохранить (' + n + ' изм.)') : 'Сохранить';
+      }
+      if (disc) disc.disabled = (n === 0);
+    }
+    /* beforeunload — предупреждаем, если есть несохранённое. */
+    window.addEventListener('beforeunload', function (e) {
+      if (pendingCount() === 0) return;
+      e.preventDefault();
+      e.returnValue = 'Есть несохранённые изменения. Покинуть страницу?';
+      return e.returnValue;
+    });
+
+    function findPendingCreateIdx(drawId) {
+      var sid = String(drawId);
+      for (var i = 0; i < pending.creates.length; i++) {
+        if (String(pending.creates[i].drawId) === sid) return i;
+      }
+      return -1;
+    }
+
+    /* Пометить feature в userfieldsFC dirty-флагом (для контурной подкраски). */
+    function markDirty(fid, kind) {
+      var idx = fcIndexById(fid);
+      if (idx < 0) return;
+      var f = userfieldsFC.features[idx];
+      f.properties = f.properties || {};
+      f.properties._dirty = kind;
+      setUserfieldsData();
+    }
+
+    function queueCreate(drawFeatureId, geometry) {
+      draftCounter++;
+      var label = 'Новое поле ' + draftCounter;
+      pending.creates.push({
+        drawId: String(drawFeatureId),
+        geometry: geometry,
+        label: label,
+        props: { name: label, crop_type: 'arable', cadastral_number: '', notes: '' },
+      });
+      updateSaveBadge();
+      toast('Добавлено в очередь: «' + label + '». Нажмите 💾 для сохранения.');
+    }
+
+    function queueUpdate(fieldId, geometry) {
+      var sid = String(fieldId);
+      pending.updates.set(sid, geometry);
+      /* Локально обновляем userfieldsFC, чтобы фон карты сразу совпадал. */
+      var idx = fcIndexById(fieldId);
+      if (idx >= 0) {
+        userfieldsFC.features[idx].geometry = geometry;
+      }
+      markDirty(fieldId, 'update');
+      updateSaveBadge();
+    }
+
+    function queueDelete(fieldId) {
+      var sid = String(fieldId);
+      /* Draft (ещё не сохранённый) — просто убираем из очереди и из draw. */
+      var dIdx = findPendingCreateIdx(sid);
+      if (dIdx >= 0) {
+        pending.creates.splice(dIdx, 1);
+        try { draw.delete(sid); } catch (_) {}
+        updateSaveBadge();
+        return;
+      }
+      /* Persisted: помечаем удаление, чистим update (если был), убираем
+         из draw и из userfieldsFC (визуально). На сервер уйдёт только
+         при commit. */
+      pending.deletes.add(sid);
+      pending.updates.delete(sid);
+      removePersistedFromDraw(fieldId);
+      var idx = fcIndexById(fieldId);
+      if (idx >= 0) {
+        userfieldsFC.features.splice(idx, 1);
+        setUserfieldsData();
+      }
+      updateSaveBadge();
+    }
+
+    /* Commit: deletes → updates → creates (последовательно, чтобы порядок
+       логически совпадал с пользовательским намерением). */
+    function commitPending() {
+      var n = pendingCount();
+      if (!n) return;
+      var save = document.querySelector('.gis-toolbar button[data-tool="save"]');
+      var disc = document.querySelector('.gis-toolbar button[data-tool="discard"]');
+      if (save) save.disabled = true;
+      if (disc) disc.disabled = true;
+      toast('Сохранение… (' + n + ' изм.)');
+
+      var ops = [];
+      pending.deletes.forEach(function (sid) {
+        ops.push(apiFetch('/api/my/fields/' + encodeURIComponent(sid) + '/', { method: 'DELETE' })
+          .then(function (res) { return { kind: 'delete', sid: sid, res: res }; })
+          .catch(function (e) { return { kind: 'delete', sid: sid, res: { ok: false, error: e } }; }));
+      });
+      pending.updates.forEach(function (geom, sid) {
+        ops.push(apiFetch('/api/my/fields/' + encodeURIComponent(sid) + '/', {
+          method: 'PATCH', body: JSON.stringify({ geometry: geom }),
+        }).then(function (res) { return { kind: 'update', sid: sid, res: res }; })
+          .catch(function (e) { return { kind: 'update', sid: sid, res: { ok: false, error: e } }; }));
+      });
+      pending.creates.forEach(function (c) {
+        ops.push(apiFetch('/api/my/fields/', {
+          method: 'POST',
+          body: JSON.stringify({
+            geometry: c.geometry,
+            name: c.props.name,
+            properties: c.props,
+          }),
+        }).then(function (res) { return { kind: 'create', draftId: c.drawId, res: res }; })
+          .catch(function (e) { return { kind: 'create', draftId: c.drawId, res: { ok: false, error: e } }; }));
+      });
+
+      Promise.all(ops).then(function (results) {
+        var ok = 0, fail = 0, failMsg = '';
+        results.forEach(function (r) {
+          if (r.res && r.res.ok) ok++;
+          else {
+            fail++;
+            console.error('[gis-save] op failed', r);
+            if (!failMsg && r.res) failMsg = detailFromError(r.res);
+          }
+        });
+        /* Сбрасываем pending независимо от частичных ошибок — данные
+           ниже всё равно перечитаем с сервера, и пользователь увидит
+           актуальную картину. */
+        pending = { creates: [], updates: new Map(), deletes: new Set() };
+        loadUserFields().then(function () {
+          if (drawAdded) {
+            try { draw.deleteAll(); } catch (_) {}
+            persistedDrawIds.clear();
+            userfieldsFC.features.forEach(addPersistedToDraw);
+          }
+          updateSaveBadge();
+          toast(fail
+            ? ('Сохранено: ' + ok + ' · ошибок: ' + fail + (failMsg ? (' · ' + failMsg) : ''))
+            : ('Сохранено: ' + ok + ' изм.'),
+            fail > 0);
+        });
+      });
+    }
+
+    function discardPending() {
+      var n = pendingCount();
+      if (!n) return;
+      if (!window.confirm('Отменить все несохранённые изменения (' + n + ')?')) return;
+      /* Возвращаем userfieldsFC к baseline-снимку. */
+      try { userfieldsFC.features = JSON.parse(JSON.stringify(userfieldsBaseline)); }
+      catch (_) { userfieldsFC.features = []; }
+      setUserfieldsData();
+      pending = { creates: [], updates: new Map(), deletes: new Set() };
+      if (drawAdded) {
+        try { draw.deleteAll(); } catch (_) {}
+        persistedDrawIds.clear();
+        userfieldsFC.features.forEach(addPersistedToDraw);
+      }
+      updateSaveBadge();
+      toast('Изменения отменены');
+    }
 
     /* ════════════════════════════════════════════════════════════════
        Snap к вершинам/рёбрам видимых слоёв.
@@ -1454,17 +1684,11 @@
               return f.geometry.type === 'Polygon' ? f.geometry.coordinates : f.geometry.coordinates[0];
             }) } };
 
-      apiFetch('/api/my/fields/' + encodeURIComponent(fid) + '/', {
-        method: 'PATCH',
-        body: JSON.stringify({ geometry: combined.geometry }),
-      }).then(function (res) {
-        if (!res.ok) { toast('Сохранить не удалось: ' + detailFromError(res), true); return; }
-        if (res.body) userfieldsFC.features[idx] = res.body;
-        removePersistedFromDraw(fid);
-        if (drawAdded && res.body) addPersistedToDraw(res.body);
-        setUserfieldsData();
-        toast('Кольцо вырезано');
-      }).catch(function (e) { toast('Сетевая ошибка: ' + (e && e.message || e), true); });
+      /* Batch: обновляем локально + кладём в очередь. */
+      userfieldsFC.features[idx].geometry = combined.geometry;
+      queueUpdate(fid, combined.geometry);
+      try { draw.add({ type: 'Feature', id: String(fid), properties: {}, geometry: combined.geometry }); } catch (_) {}
+      toast('Кольцо вырезано · нажмите 💾 для сохранения');
     }
 
     /* ════════════════════════════════════════════════════════════════
