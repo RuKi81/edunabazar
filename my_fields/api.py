@@ -190,23 +190,19 @@ def fields_collection(request: HttpRequest) -> JsonResponse:
             status=400,
         )
 
-    # Проверка квоты ПОСЛЕ парсинга геометрии (нужна площадь).
+    # Парсинг геометрии (валидация формата; площадь сохраним в модели позже).
     try:
         tmp = GEOSGeometry(json.dumps(geometry), srid=4326)
         tmp = ensure_multipolygon(tmp)
-        new_area = compute_area_ha(tmp)
+        compute_area_ha(tmp)  # ранний smoke-тест геометрии
     except Exception as exc:
         return JsonResponse(
             {'error': 'invalid_geometry', 'detail': str(exc)}, status=400,
         )
 
-    quota = can_create_field(request.user, new_area_ha=new_area)
-    if not quota.ok:
-        return JsonResponse(
-            {'error': 'quota_exceeded',
-             'detail': quota.reason, 'hint': quota.hint},
-            status=403,
-        )
+    # ГИС-модуль не лимитируется тарифами: пользователи свободно
+    # оцифровывают поля. Если в будущем понадобится квота — вернуть
+    # вызов can_create_field() здесь.
 
     props = payload.get('properties') or {}
     field = UserField(
