@@ -256,8 +256,8 @@
             <span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>
             <button class="gis-layer__btn active" data-action="visibility" type="button" title="Видимость">👁</button>
             <span class="name">ЗСН (Росреестр)</span>
-            <button class="gis-layer__btn disabled" data-action="edit" type="button"
-                    title="Источник — Росреестр, редактирование запрещено">🔒</button>
+            <button class="gis-layer__btn" data-action="edit" type="button"
+                    title="Включить редактирование Росреестр-слоя (изменения сохраняются сразу)">✏</button>
           </div>
           <div class="gis-layer__meta">Векторные тайлы · z 6–14 · кеш 10 мин</div>
         </div>
@@ -581,8 +581,9 @@
             btn.classList.toggle('active', layerState[key].visible);
             btn.textContent = layerState[key].visible ? '👁' : '🚫';
             applyLayerVisibility(key);
-          } else if (action === 'edit' && key === 'userfields') {
-            setEditMode(!layerState[key].editable);
+          } else if (action === 'edit') {
+            if (key === 'userfields') setEditMode(!layerState[key].editable);
+            else if (key === 'farmlands') setFarmlandEdit(!layerState[key].editable);
           }
         });
       });
@@ -758,9 +759,15 @@
 
     /* ──────────────────────── Click on layers ──────────────────────── */
     map.on('click', 'farmlands-fill', function (e) {
-      if (layerState.userfields.editable) return;
       if (!e.features.length) return;
-      renderFarmlandCard(e.features[0].properties || {});
+      var props = e.features[0].properties || {};
+      /* Режим редактирования ЗСН: клик загружает полную геометрию в draw. */
+      if (layerState.farmlands.editable) {
+        if (props.id != null) loadFarmlandForEdit(props.id);
+        return;
+      }
+      if (layerState.userfields.editable) return;
+      renderFarmlandCard(props);
     });
     map.on('click', 'userfields-fill', function (e) {
       if (layerState.userfields.editable) return;
@@ -880,6 +887,214 @@
       persistedDrawIds.delete(sid);
     }
 
+    /* Включить/выключить кнопки тулбара (кроме select / save / discard). */
+    function setToolbarEnabled(on) {
+      document.querySelectorAll('.gis-toolbar button[data-tool]').forEach(function (b) {
+        var t = b.getAttribute('data-tool');
+        if (t === 'select' || t === 'save' || t === 'discard') return;
+        b.disabled = !on;
+        if (!on) b.classList.remove('active');
+      });
+    }
+
+    /* ════════════════════════════════════════════════════════════════
+       Редактирование слоя ЗСН (Росреестр) — таблица agro_farmland.
+       В отличие от «Мои поля» (batch-очередь), правки угодий уходят на
+       сервер сразу (PATCH/POST/DELETE), после чего MVT-тайлы слоя
+       перезапрашиваются с новым ?v=, чтобы изменения стали видны.
+       Draw-feature угодья хранится с id вида "fl:<pk>".
+       ════════════════════════════════════════════════════════════════ */
+    var FL_PREFIX = 'fl:';
+    var flDrawIds = new Set();        // 'fl:<pk>' добавленные в draw
+    var flProps = {};                 // 'fl:<pk>' -> properties (для карточки)
+    var flPendingGeom = {};           // 'fl:<pk>' -> geometry (debounce PATCH)
+    var flPatchTimers = {};
+    var flTileVersion = 0;
+
+    function refreshFarmlandTiles() {
+      flTileVersion++;
+      var src = map.getSource('farmlands');
+      if (!src) return;
+      var url = location.origin + '/agrocosmos/api/tiles/{z}/{x}/{y}.pbf?v=' + flTileVersion;
+      try {
+        if (typeof src.setTiles === 'function') { src.setTiles([url]); return; }
+      } catch (_) {}
+      /* Fallback: дёргаем перерисовку через смену данных (если setTiles нет). */
+      try { map.style.sourceCaches['farmlands'].clearTiles(); map.triggerRepaint(); } catch (_) {}
+    }
+
+    function setFarmlandEdit(on) {
+      /* Взаимоисключение с режимом «Мои поля». */
+      if (on && layerState.userfields.editable) setEditMode(false);
+
+      /* При выключении — сбросить отложенные PATCH-и (применить немедленно). */
+      if (!on) {
+        Object.keys(flPatchTimers).forEach(function (sid) {
+          clearTimeout(flPatchTimers[sid]);
+          if (flPendingGeom[sid]) patchFarmland(sid);
+        });
+      }
+
+      layerState.farmlands.editable = on;
+      var btn = document.querySelector('.gis-layer[data-layer="farmlands"] .gis-layer__btn[data-action="edit"]');
+      if (btn) btn.classList.toggle('active', on);
+
+      var hint = document.getElementById('gis-toolbar-hint');
+      setToolbarEnabled(on);
+
+      if (on) {
+        if (!drawAdded) {
+          map.addControl(draw);
+          drawAdded = true;
+          if (map.getLayer('snap-indicator')) { try { map.moveLayer('snap-indicator'); } catch (_) {} }
+        }
+        flDrawIds.clear();
+        try { draw.deleteAll(); } catch (_) {}
+        if (hint) hint.textContent = 'ЗСН: ☞ клик по угодью → правка узлов · ⬡ новое · 🗑 удалить. Сохраняется сразу.';
+        try { draw.changeMode('simple_select'); } catch (_) {}
+        highlightTool('select');
+      } else {
+        cancelSplit();
+        cancelRingCut();
+        flDrawIds.clear();
+        flProps = {};
+        flPendingGeom = {};
+        if (drawAdded && !layerState.userfields.editable) {
+          try { draw.deleteAll(); } catch (_) {}
+          try { map.removeControl(draw); } catch (_) {}
+          drawAdded = false;
+        }
+        if (hint) hint.textContent = 'Включите редактирование «Мои поля» в левом меню.';
+        renderEmpty();
+      }
+    }
+
+    /* Загрузить полную геометрию угодья (не обрезанную тайлом) в draw
+       и войти в режим правки узлов. */
+    function loadFarmlandForEdit(pk) {
+      var sid = FL_PREFIX + pk;
+      if (flDrawIds.has(sid)) {
+        try { draw.changeMode('direct_select', { featureId: sid }); } catch (_) {}
+        renderFarmlandEditCard(pk);
+        return;
+      }
+      apiFetch('/agrocosmos/api/farmland/' + encodeURIComponent(pk) + '/')
+        .then(function (res) {
+          if (!res.ok || !res.body || !res.body.geometry) {
+            toast('Не удалось загрузить угодье: ' + detailFromError(res), true);
+            return;
+          }
+          flProps[sid] = res.body.properties || { id: pk };
+          flDrawIds.add(sid);
+          try {
+            drawAddSilent({ type: 'Feature', id: sid, properties: { _fl: true }, geometry: res.body.geometry });
+          } catch (_) { flDrawIds.delete(sid); return; }
+          try {
+            draw.changeMode('direct_select', { featureId: sid });
+            toast('Тяните узлы — изменения сохраняются автоматически.');
+          } catch (_) {}
+          renderFarmlandEditCard(pk);
+        })
+        .catch(function (e) { toast('Сетевая ошибка: ' + (e && e.message || e), true); });
+    }
+
+    /* Создать новое угодье из нарисованного полигона (немедленный POST). */
+    function createFarmland(f) {
+      var tmpId = f.id;
+      apiFetch('/agrocosmos/api/farmland/', {
+        method: 'POST',
+        body: JSON.stringify({ geometry: f.geometry, properties: { crop_type: 'arable' } }),
+      }).then(function (res) {
+        if (!res.ok || !res.body || res.body.id == null) {
+          toast('Не удалось создать угодье: ' + detailFromError(res), true);
+          try { draw.delete(tmpId); } catch (_) {}
+          return;
+        }
+        try { draw.delete(tmpId); } catch (_) {}
+        var pk = res.body.id;
+        var sid = FL_PREFIX + pk;
+        flDrawIds.add(sid);
+        flProps[sid] = res.body.properties || { id: pk };
+        try {
+          drawAddSilent({ type: 'Feature', id: sid, properties: { _fl: true }, geometry: res.body.geometry });
+        } catch (_) {}
+        toast('Угодье #' + pk + ' создано · ' +
+              (res.body.properties && res.body.properties.area_ha != null
+                ? Number(res.body.properties.area_ha).toFixed(2) + ' га' : ''));
+        refreshFarmlandTiles();
+      }).catch(function (e) {
+        toast('Сетевая ошибка: ' + (e && e.message || e), true);
+        try { draw.delete(tmpId); } catch (_) {}
+      });
+      /* Оставляем инструмент полигона активным для следующего объекта. */
+      setTimeout(function () {
+        try { draw.changeMode('draw_polygon'); } catch (_) {}
+        highlightTool('draw_polygon');
+      }, 0);
+    }
+
+    /* Debounced PATCH геометрии угодья. */
+    function scheduleFarmlandPatch(sid, geometry) {
+      flPendingGeom[sid] = geometry;
+      clearTimeout(flPatchTimers[sid]);
+      flPatchTimers[sid] = setTimeout(function () { patchFarmland(sid); }, 800);
+    }
+    function patchFarmland(sid) {
+      var geometry = flPendingGeom[sid];
+      if (!geometry) return;
+      delete flPendingGeom[sid];
+      var pk = sid.slice(FL_PREFIX.length);
+      apiFetch('/agrocosmos/api/farmland/' + encodeURIComponent(pk) + '/', {
+        method: 'PATCH',
+        body: JSON.stringify({ geometry: geometry }),
+      }).then(function (res) {
+        if (!res.ok) { toast('Не сохранилось угодье #' + pk + ': ' + detailFromError(res), true); return; }
+        if (res.body && res.body.properties) flProps[sid] = res.body.properties;
+        toast('Угодье #' + pk + ' сохранено');
+        refreshFarmlandTiles();
+      }).catch(function (e) { toast('Сетевая ошибка: ' + (e && e.message || e), true); });
+    }
+
+    /* Удалить угодье (немедленный DELETE). */
+    function deleteFarmland(sid) {
+      var pk = sid.slice(FL_PREFIX.length);
+      if (!window.confirm('Удалить угодье #' + pk + ' из слоя Росреестра? Действие необратимо.')) return;
+      apiFetch('/agrocosmos/api/farmland/' + encodeURIComponent(pk) + '/', { method: 'DELETE' })
+        .then(function (res) {
+          if (!res.ok && res.status !== 200 && res.status !== 204) {
+            toast('Не удалось удалить: ' + detailFromError(res), true);
+            return;
+          }
+          try { draw.delete(sid); } catch (_) {}
+          flDrawIds.delete(sid);
+          delete flProps[sid];
+          toast('Угодье #' + pk + ' удалено');
+          refreshFarmlandTiles();
+          renderEmpty();
+        })
+        .catch(function (e) { toast('Сетевая ошибка: ' + (e && e.message || e), true); });
+    }
+
+    function renderFarmlandEditCard(pk) {
+      var sid = FL_PREFIX + pk;
+      var p = flProps[sid] || { id: pk };
+      renderFarmlandCard(p);
+      var card = infoEl.querySelector('.gis-info-card');
+      if (!card) return;
+      var actions = document.createElement('div');
+      actions.className = 'actions';
+      actions.innerHTML =
+        '<button type="button" class="btn-edit" data-act="fl-vertex">✏ Узлы</button>' +
+        '<button type="button" class="btn-del"  data-act="fl-delete">🗑 Удалить</button>';
+      card.appendChild(actions);
+      var ev = actions.querySelector('[data-act="fl-vertex"]');
+      var dv = actions.querySelector('[data-act="fl-delete"]');
+      if (ev) ev.addEventListener('click', function () {
+        try { draw.changeMode('direct_select', { featureId: sid }); } catch (_) {}
+      });
+      if (dv) dv.addEventListener('click', function () { deleteFarmland(sid); });
+    }
+
     /* Включить/выключить режим редактирования.
        При включении — все persisted поля заливаем в draw, чтобы их
        можно было выделять, двигать узлы, разрезать и т.д. При выключении
@@ -900,19 +1115,15 @@
         pending = { creates: [], updates: new Map(), deletes: new Set() };
         updateSaveBadge();
       }
+      /* Режимы редактирования userfields и farmlands — взаимоисключающие. */
+      if (on && layerState.farmlands.editable) setFarmlandEdit(false);
+
       layerState.userfields.editable = on;
       var btn = document.querySelector('.gis-layer[data-layer="userfields"] .gis-layer__btn[data-action="edit"]');
       if (btn) btn.classList.toggle('active', on);
 
       var hint = document.getElementById('gis-toolbar-hint');
-      document.querySelectorAll('.gis-toolbar button[data-tool]').forEach(function (b) {
-        var t = b.getAttribute('data-tool');
-        if (t === 'select') return;
-        /* save / discard — разрешаем только если есть pending; иначе disabled. */
-        if (t === 'save' || t === 'discard') return;
-        b.disabled = !on;
-        if (!on) b.classList.remove('active');
-      });
+      setToolbarEnabled(on);
 
       if (on) {
         if (!drawAdded) {
@@ -997,7 +1208,11 @@
         toast('Сначала выделите объект (☞ + клик).', true);
         return;
       }
-      sel.forEach(function (sid) { queueDelete(sid); });
+      sel.forEach(function (sid) {
+        /* Угодье ЗСН — немедленный DELETE; остальное — batch-очередь. */
+        if (String(sid).indexOf(FL_PREFIX) === 0) deleteFarmland(String(sid));
+        else queueDelete(sid);
+      });
     }
 
     function deletePersistedField(fieldId) {
@@ -1547,8 +1762,14 @@
       }
 
       if (f.geometry.type !== 'Polygon') {
-        toast('В «Мои поля» можно сохранить только полигон.', true);
+        toast('Можно сохранить только полигон.', true);
         try { draw.delete(f.id); } catch (_) {}
+        return;
+      }
+      /* Режим редактирования ЗСН: новый полигон сразу создаётся в
+         agro_farmland (немедленный POST), минуя batch-очередь «Мои поля». */
+      if (layerState.farmlands.editable) {
+        createFarmland(f);
         return;
       }
       /* «Обрезать по границе»: если включено — вычитаем из нового полигона
@@ -1604,6 +1825,11 @@
         /* Перезаписываем в draw со snap-нутыми координатами (silent). */
         if (snapped) { try { drawAddSilent(f); } catch (_) {} }
         var sid = String(f.id);
+        /* Угодье ЗСН (id "fl:<pk>") — немедленный (debounced) PATCH в БД. */
+        if (sid.indexOf(FL_PREFIX) === 0) {
+          scheduleFarmlandPatch(sid, f.geometry);
+          return;
+        }
         /* Draft — обновляем geometry внутри pending.creates. */
         var draftIdx = findPendingCreateIdx(sid);
         if (draftIdx >= 0) {
@@ -1626,7 +1852,9 @@
        но не дёргаем API: персистентность гарантирует только handleTrash. */
     map.on('draw.delete', function (ev) {
       (ev.features || []).forEach(function (f) {
-        if (persistedDrawIds.has(String(f.id))) persistedDrawIds.delete(String(f.id));
+        var sid = String(f.id);
+        if (persistedDrawIds.has(sid)) persistedDrawIds.delete(sid);
+        if (flDrawIds.has(sid)) flDrawIds.delete(sid);
       });
     });
 
