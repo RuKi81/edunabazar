@@ -124,10 +124,11 @@
     .gis-toolbar button:disabled { opacity: 0.35; cursor: not-allowed; }
     .gis-toolbar button:focus { outline: none; }
     .gis-toolbar .hint { font-size: 11px; color: #777; padding: 0 10px; max-width: 260px; line-height: 1.3; }
-    .gis-toolbar__chk { display: inline-flex; align-items: center; gap: 4px;
-      font-size: 10px; color: #666; padding: 0 4px; cursor: pointer;
+    .gis-toolbar__chk { display: inline-flex; align-items: center; gap: 2px;
+      font-size: 9px; color: #666; padding: 0 3px; cursor: pointer;
       user-select: none; white-space: nowrap; line-height: 1; }
-    .gis-toolbar__chk input { margin: 0; width: 12px; height: 12px; cursor: pointer; }
+    .gis-toolbar__chk input { margin: 0; width: 12px; height: 12px;
+      transform: scale(0.55); transform-origin: center; cursor: pointer; }
     /* Бейдж счётчика pending-изменений на кнопке "сохранить". */
     .gis-toolbar button[data-tool="save"] { position: relative; }
     .gis-toolbar button[data-tool="save"]:not(:disabled) { color: #2e7d32; }
@@ -279,8 +280,7 @@
       <button data-tool="draw_line_string" type="button" title="Линия"   disabled>╱</button>
       <button data-tool="draw_point"       type="button" title="Точка"   disabled>•</button>
       <span class="sep"></span>
-      <button data-tool="split"      type="button" title="Разрезать полигон линией" disabled>✂</button>
-      <button data-tool="ring_cut"   type="button" title="Вырезать кольцо (hole) полигоном" disabled>◎</button>
+      <button data-tool="split"      type="button" title="Разрезать полигон линией (замкнутый контур — кольцо)" disabled>✂</button>
       <label class="gis-toolbar__chk" id="gis-keep-cutout-wrap"
              title="Если включено — внутренний кусок выреза становится новым полем. Если выключено — удаляется.">
         <input type="checkbox" id="gis-keep-cutout" checked>
