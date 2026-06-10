@@ -124,11 +124,10 @@
     .gis-toolbar button:disabled { opacity: 0.35; cursor: not-allowed; }
     .gis-toolbar button:focus { outline: none; }
     .gis-toolbar .hint { font-size: 11px; color: #777; padding: 0 10px; max-width: 260px; line-height: 1.3; }
-    .gis-toolbar__chk { display: flex; align-items: center; gap: 4px;
-      font-size: 11px; color: #555; padding: 0 6px; cursor: pointer;
-      user-select: none; line-height: 1.2; max-width: 80px; }
-    .gis-toolbar__chk input { margin: 0; cursor: pointer; }
-    .gis-toolbar__chk:hover { color: #2e7d32; }
+    .gis-toolbar__chk { display: inline-flex; align-items: center; gap: 4px;
+      font-size: 10px; color: #666; padding: 0 4px; cursor: pointer;
+      user-select: none; white-space: nowrap; line-height: 1; }
+    .gis-toolbar__chk input { margin: 0; width: 12px; height: 12px; cursor: pointer; }
     /* Бейдж счётчика pending-изменений на кнопке "сохранить". */
     .gis-toolbar button[data-tool="save"] { position: relative; }
     .gis-toolbar button[data-tool="save"]:not(:disabled) { color: #2e7d32; }
@@ -1180,18 +1179,12 @@
         var added;
         try { added = drawAddSilent(draftFeat); } catch (_) { added = null; }
         var draftId = (added && added[0]) || ('tmp_' + Date.now() + '_inner');
-        pending.creates.push({
-          drawId: String(draftId),
-          geometry: inner.geometry,
-          label: label,
-          props: {
-            name: label,
-            crop_type: origProps.crop_type || 'arable',
-            cadastral_number: '',
-            notes: origProps.notes || '',
-          },
+        pushDraft(draftId, inner.geometry, label, {
+          name: label,
+          crop_type: origProps.crop_type || 'arable',
+          cadastral_number: '',
+          notes: origProps.notes || '',
         });
-        updateSaveBadge();
       }
       return true;
     }
@@ -1363,26 +1356,20 @@
       queueUpdate(fid, first.geometry);
       try { drawAddSilent({ type: 'Feature', id: String(fid), properties: {}, geometry: first.geometry }); } catch (_) {}
 
-      /* Каждая «остальная» часть — draft в draw + pending.creates. */
+      /* Каждая «остальная» часть — draft в draw + pending.creates + userfieldsFC. */
       rest.forEach(function (p, i) {
         var label = (origProps.name || ('Поле #' + fid)) + ' (часть ' + (i + 2) + ')';
         var draftFeat = { type: 'Feature', properties: {}, geometry: p.geometry };
         var added;
         try { added = drawAddSilent(draftFeat); } catch (_) { added = null; }
         var draftId = (added && added[0]) || ('tmp_' + Date.now() + '_' + i);
-        pending.creates.push({
-          drawId: String(draftId),
-          geometry: p.geometry,
-          label: label,
-          props: {
-            name: label,
-            crop_type: origProps.crop_type || 'arable',
-            cadastral_number: '',
-            notes: origProps.notes || '',
-          },
+        pushDraft(draftId, p.geometry, label, {
+          name: label,
+          crop_type: origProps.crop_type || 'arable',
+          cadastral_number: '',
+          notes: origProps.notes || '',
         });
       });
-      updateSaveBadge();
       toast('Разрезано на ' + parts.length + ' части · нажмите 💾 для сохранения');
 
       /* Аналог поведения draw_polygon: инструмент ✂ остаётся активным,
@@ -1478,6 +1465,12 @@
         var draftIdx = findPendingCreateIdx(sid);
         if (draftIdx >= 0) {
           pending.creates[draftIdx].geometry = f.geometry;
+          /* Обновляем и userfieldsFC, чтобы фоновый fill draft-а сразу совпадал. */
+          var fcIdx2 = fcIndexById(sid);
+          if (fcIdx2 >= 0) {
+            userfieldsFC.features[fcIdx2].geometry = f.geometry;
+            setUserfieldsData();
+          }
           updateSaveBadge();
           return;
         }
@@ -1575,16 +1568,39 @@
       setUserfieldsData();
     }
 
+    /* Общий путь для draft-полей: кладём в pending.creates И добавляем
+       feature в userfieldsFC с _dirty='create', чтобы draft рисовался
+       тем же зелёным fill-ом, что и persisted-поля (с синей обводкой
+       по правилам слоя). Без этого вырезанный из дырки полигон был
+       невидим — draw-слой полигоны не заливает. */
+    function pushDraft(drawId, geometry, label, props) {
+      var sid = String(drawId);
+      pending.creates.push({
+        drawId: sid,
+        geometry: geometry,
+        label: label,
+        props: props,
+      });
+      var fcProps = {};
+      for (var k in (props || {})) fcProps[k] = props[k];
+      fcProps._dirty = 'create';
+      fcProps.name = fcProps.name || label;
+      userfieldsFC.features.push({
+        type: 'Feature',
+        id: sid,
+        geometry: geometry,
+        properties: fcProps,
+      });
+      setUserfieldsData();
+      updateSaveBadge();
+    }
+
     function queueCreate(drawFeatureId, geometry) {
       draftCounter++;
       var label = 'Новое поле ' + draftCounter;
-      pending.creates.push({
-        drawId: String(drawFeatureId),
-        geometry: geometry,
-        label: label,
-        props: { name: label, crop_type: 'arable', cadastral_number: '', notes: '' },
+      pushDraft(drawFeatureId, geometry, label, {
+        name: label, crop_type: 'arable', cadastral_number: '', notes: '',
       });
-      updateSaveBadge();
       toast('Добавлено в очередь: «' + label + '». Нажмите 💾 для сохранения.');
     }
 
@@ -1607,6 +1623,9 @@
       if (dIdx >= 0) {
         pending.creates.splice(dIdx, 1);
         try { draw.delete(sid); } catch (_) {}
+        /* Убираем и из userfieldsFC — draft был отрисован там через pushDraft. */
+        var fcIdx = fcIndexById(sid);
+        if (fcIdx >= 0) { userfieldsFC.features.splice(fcIdx, 1); setUserfieldsData(); }
         updateSaveBadge();
         return;
       }
