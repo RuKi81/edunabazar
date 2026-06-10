@@ -124,17 +124,24 @@
     .gis-toolbar button:disabled { opacity: 0.35; cursor: not-allowed; }
     .gis-toolbar button:focus { outline: none; }
     .gis-toolbar .hint { font-size: 11px; color: #777; padding: 0 10px; max-width: 260px; line-height: 1.3; }
+    /* Materialize прячет нативный чекбокс и рисует свой через span::before/::after.
+       Отключаем это для нашего чекбокса и возвращаем нативный контрол. */
     #gis-keep-cutout-wrap,
     #gis-keep-cutout-wrap *,
     #gis-keep-cutout { cursor: default !important; }
     .gis-toolbar label.gis-toolbar__chk { display: inline-flex; align-items: center; gap: 4px;
       font-size: 10px; color: #666; padding: 0 4px;
       user-select: none; line-height: 1.1; }
-    .gis-toolbar label.gis-toolbar__chk > span {
-      font-size: 10px; white-space: normal; max-width: 56px; }
-    .gis-toolbar label.gis-toolbar__chk input[type="checkbox"] {
-      margin: 0; width: 6px; height: 6px; min-width: 6px; min-height: 6px;
-      transform: none; appearance: auto; }
+    #gis-keep-cutout-wrap > span {
+      font-size: 10px; white-space: normal; max-width: 56px;
+      padding-left: 0 !important; }
+    #gis-keep-cutout-wrap > span::before,
+    #gis-keep-cutout-wrap > span::after { display: none !important; content: none !important; }
+    #gis-keep-cutout[type="checkbox"] {
+      position: static !important; opacity: 1 !important; pointer-events: auto !important;
+      -webkit-appearance: auto !important; appearance: auto !important;
+      margin: 0 !important; width: 12px !important; height: 12px !important;
+      min-width: 12px !important; min-height: 12px !important; transform: none !important; }
     /* Бейдж счётчика pending-изменений на кнопке "сохранить". */
     .gis-toolbar button[data-tool="save"] { position: relative; }
     .gis-toolbar button[data-tool="save"]:not(:disabled) { color: #2e7d32; }
