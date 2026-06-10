@@ -22,6 +22,14 @@
 
     .gis-ui { position: fixed; left: 0; right: 0; top: 0; bottom: 0; min-height: 600px; }
     #gis-map { position: absolute; left: 0; right: 0; top: 0; bottom: 0; }
+    /* Когда активен инструмент рисования/редактирования (на карте класс
+       gis-tool-active) — курсор всегда дефолтная стрелка Windows, а не
+       grab/crosshair от MapLibre / mapbox-gl-draw. */
+    #gis-map.gis-tool-active .maplibregl-canvas-container,
+    #gis-map.gis-tool-active .maplibregl-canvas-container.maplibregl-interactive,
+    #gis-map.gis-tool-active .maplibregl-canvas-container.maplibregl-interactive.maplibregl-track-pointer,
+    #gis-map.gis-tool-active .maplibregl-canvas,
+    #gis-map.gis-tool-active canvas { cursor: default !important; }
 
     .gis-ui__left, .gis-ui__right {
       position: fixed; top: 0; bottom: 0;
@@ -131,7 +139,7 @@
     #gis-keep-cutout { cursor: default !important; }
     .gis-toolbar label.gis-toolbar__chk { display: inline-flex; align-items: center; gap: 4px;
       font-size: 10px; color: #666; padding: 0 4px;
-      user-select: none; line-height: 1.1; }
+      user-select: none; line-height: 0.55; }
     #gis-keep-cutout-wrap > span {
       font-size: 10px; white-space: normal; max-width: 56px;
       padding-left: 0 !important; }
@@ -932,6 +940,9 @@
         if (t === 'trash' || t === 'save' || t === 'discard') return;
         b.classList.toggle('active', t === tool);
       });
+      /* Активен любой инструмент кроме «select» → курсор-стрелка на карте. */
+      var mapEl = document.getElementById('gis-map');
+      if (mapEl) mapEl.classList.toggle('gis-tool-active', !!tool && tool !== 'select');
     }
 
     document.querySelectorAll('.gis-toolbar button[data-tool]').forEach(function (btn) {
