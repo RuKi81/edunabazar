@@ -134,19 +134,18 @@
     .gis-toolbar .hint { font-size: 11px; color: #777; padding: 0 10px; max-width: 260px; line-height: 1.3; }
     /* Materialize прячет нативный чекбокс и рисует свой через span::before/::after.
        Отключаем это для нашего чекбокса и возвращаем нативный контрол. */
-    #gis-keep-cutout-wrap,
-    #gis-keep-cutout-wrap *,
-    #gis-keep-cutout { cursor: default !important; }
+    .gis-toolbar label.gis-toolbar__chk,
+    .gis-toolbar label.gis-toolbar__chk * { cursor: default !important; }
     .gis-toolbar label.gis-toolbar__chk { display: inline-flex; align-items: center; gap: 4px;
       font-size: 10px; color: #666; padding: 0 4px;
       user-select: none; line-height: 0.85; }
-    #gis-keep-cutout-wrap > span {
+    .gis-toolbar label.gis-toolbar__chk > span {
       font-size: 10px; white-space: normal; max-width: 56px;
       text-align: center; line-height: 0.85 !important;
       padding-left: 0 !important; }
-    #gis-keep-cutout-wrap > span::before,
-    #gis-keep-cutout-wrap > span::after { display: none !important; content: none !important; }
-    #gis-keep-cutout[type="checkbox"] {
+    .gis-toolbar label.gis-toolbar__chk > span::before,
+    .gis-toolbar label.gis-toolbar__chk > span::after { display: none !important; content: none !important; }
+    .gis-toolbar label.gis-toolbar__chk input[type="checkbox"] {
       position: static !important; opacity: 1 !important; pointer-events: auto !important;
       -webkit-appearance: auto !important; appearance: auto !important;
       margin: 0 !important; width: 12px !important; height: 12px !important;
@@ -301,6 +300,11 @@
       <button data-tool="draw_polygon"     type="button" title="Полигон" disabled>⬡</button>
       <button data-tool="draw_line_string" type="button" title="Линия"   disabled>╱</button>
       <button data-tool="draw_point"       type="button" title="Точка"   disabled>•</button>
+      <label class="gis-toolbar__chk" id="gis-clip-overlap-wrap"
+             title="Если включено — новый полигон обрезается по границе существующих полей, на которые он накладывается.">
+        <input type="checkbox" id="gis-clip-overlap">
+        <span>Обрезать по границе</span>
+      </label>
       <span class="sep"></span>
       <button data-tool="split"      type="button" title="Разрезать полигон линией (замкнутый контур — кольцо)" disabled>✂</button>
       <label class="gis-toolbar__chk" id="gis-keep-cutout-wrap"
@@ -1454,6 +1458,45 @@
       return false;
     }
 
+    /* Обрезка нового полигона по границам соседних полей (userfieldsFC).
+       Для каждого пересекаемого соседа вычитаем его из создаваемого
+       полигона (turf.difference). Возвращает { geometry, clipped }.
+       geometry === null означает, что новый полигон полностью накрыт
+       соседями и сохранять нечего. */
+    function clipPolygonByNeighbors(geometry, excludeId) {
+      if (!geometry || typeof turf.difference !== 'function') {
+        return { geometry: geometry, clipped: false };
+      }
+      var current = { type: 'Feature', properties: {}, geometry: geometry };
+      var clipped = false;
+      for (var i = 0; i < userfieldsFC.features.length; i++) {
+        var nb = userfieldsFC.features[i];
+        if (!nb || !nb.geometry) continue;
+        var t = nb.geometry.type;
+        if (t !== 'Polygon' && t !== 'MultiPolygon') continue;
+        if (excludeId != null && String(nb.id) === String(excludeId)) continue;
+
+        var overlaps = true;
+        try {
+          if (typeof turf.booleanIntersects === 'function') {
+            overlaps = !!turf.booleanIntersects(current, nb);
+          }
+        } catch (_) { overlaps = true; }
+        if (!overlaps) continue;
+
+        var diff = null, ok = false;
+        try { diff = turf.difference(turf.featureCollection([current, nb])); ok = true; }
+        catch (e1) {
+          try { diff = turf.difference(current, nb); ok = true; }
+          catch (e2) { ok = false; }
+        }
+        if (!ok) continue;
+        if (diff === null) { return { geometry: null, clipped: true }; }
+        if (diff && diff.geometry) { current = diff; clipped = true; }
+      }
+      return { geometry: current.geometry, clipped: clipped };
+    }
+
     function reenterSplitLineMode() {
       splitState = 'pick-line';
       splitTargetId = null;
@@ -1508,6 +1551,30 @@
         try { draw.delete(f.id); } catch (_) {}
         return;
       }
+      /* «Обрезать по границе»: если включено — вычитаем из нового полигона
+         все соседние поля, на которые он накладывается, чтобы он точно
+         прилёг к их границам без перекрытия. */
+      var clipEl = document.getElementById('gis-clip-overlap');
+      if (clipEl && clipEl.checked) {
+        var res = clipPolygonByNeighbors(f.geometry, f.id);
+        if (res.geometry === null) {
+          toast('Полигон полностью перекрыт соседними полями — нечего сохранять.', true);
+          try { draw.delete(f.id); } catch (_) {}
+          setTimeout(function () {
+            try { draw.changeMode('draw_polygon'); } catch (_) {}
+            highlightTool('draw_polygon');
+          }, 0);
+          return;
+        }
+        if (res.clipped) {
+          f.geometry = res.geometry;
+          try {
+            drawAddSilent({ type: 'Feature', id: String(f.id), properties: {}, geometry: f.geometry });
+          } catch (_) {}
+          toast('Полигон обрезан по границе соседних полей.');
+        }
+      }
+
       /* Batch-режим: вместо формы и POST-а сразу — кладём в очередь
          с авто-именем; пользователь правит атрибуты позже через сайдбар. */
       queueCreate(f.id, f.geometry);
