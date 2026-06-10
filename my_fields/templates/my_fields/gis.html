@@ -1034,6 +1034,111 @@
       }).catch(function (e) { toast('Сетевая ошибка: ' + (e && e.message || e), true); });
     }
 
+    /* ──────────────────── Lasso (полилиния-петля → дырка) ───────────────────
+       Если пользователь, не выпуская инструмент ✂, нарисовал линию,
+       которая замыкается (start ≈ end) или самопересекается,
+       трактуем замкнутую часть как контур кольца (hole) и применяем
+       difference. «Висячих» хвостов в результате не остаётся — мы
+       берём только петлю. */
+
+    /* Пересечение двух отрезков (lng/lat считаем как 2D — для линий
+       длиной до сотен метров искажения проекции пренебрежимы). */
+    function segmentIntersect(p, p2, q, q2) {
+      var rx = p2[0] - p[0], ry = p2[1] - p[1];
+      var sx = q2[0] - q[0], sy = q2[1] - q[1];
+      var rxs = rx * sy - ry * sx;
+      if (Math.abs(rxs) < 1e-14) return null;        // параллельны
+      var qpx = q[0] - p[0], qpy = q[1] - p[1];
+      var t = (qpx * sy - qpy * sx) / rxs;
+      var u = (qpx * ry - qpy * rx) / rxs;
+      if (t > 1e-9 && t < 1 - 1e-9 && u > 1e-9 && u < 1 - 1e-9) {
+        return [p[0] + t * rx, p[1] + t * ry];
+      }
+      return null;
+    }
+
+    /* Первая пара несоседних сегментов с пересечением. */
+    function findFirstSelfIntersect(coords) {
+      var n = coords.length;
+      for (var i = 0; i < n - 1; i++) {
+        for (var j = i + 2; j < n - 1; j++) {
+          var pt = segmentIntersect(coords[i], coords[i + 1], coords[j], coords[j + 1]);
+          if (pt) return { i: i, j: j, pt: pt };
+        }
+      }
+      return null;
+    }
+
+    /* Расстояние между двумя координатами в метрах (через turf). */
+    function distanceMeters(a, b) {
+      try { return turf.distance(turf.point(a), turf.point(b), { units: 'meters' }); }
+      catch (_) { return Infinity; }
+    }
+
+    /* Преобразовать полилинию в polygon Feature, если она образует петлю.
+       Возвращает null если петли нет. */
+    function lassoLineToHolePolygon(lineFeature) {
+      if (!lineFeature || !lineFeature.geometry ||
+          lineFeature.geometry.type !== 'LineString') return null;
+      var coords = lineFeature.geometry.coordinates;
+      if (!coords || coords.length < 3) return null;
+
+      /* Случай A: линия фактически замкнута (start ≈ end в пределах ~5 м). */
+      var start = coords[0], end = coords[coords.length - 1];
+      if (distanceMeters(start, end) < 5) {
+        var ring = coords.slice();
+        if (start[0] !== end[0] || start[1] !== end[1]) ring.push(start);
+        if (ring.length < 4) return null;
+        try { return turf.polygon([ring]); } catch (_) { return null; }
+      }
+
+      /* Случай B: самопересечение (лассо с висячими хвостами). Берём
+         только петлю — от точки пересечения, через промежуточные узлы,
+         обратно в ту же точку. Хвосты отбрасываем. */
+      var hit = findFirstSelfIntersect(coords);
+      if (!hit) return null;
+      var loop = [hit.pt];
+      for (var k = hit.i + 1; k <= hit.j; k++) loop.push(coords[k]);
+      loop.push(hit.pt);
+      if (loop.length < 4) return null;
+      try { return turf.polygon([loop]); } catch (_) { return null; }
+    }
+
+    /* Общее ядро для ring-cut: вычесть hole из target, оставить только
+       куски с центроидом внутри target, склеить в (Multi)Polygon с
+       дыркой и положить в очередь. Возвращает true при успехе. */
+    function applyHoleCut(fid, idx, target, holeFeature) {
+      var diff = null;
+      try {
+        diff = turf.difference(turf.featureCollection([target, holeFeature]));
+      } catch (e1) {
+        try { diff = turf.difference(target, holeFeature); }
+        catch (e2) { console.error('[gis-hole-cut] difference failed', e1, e2); }
+      }
+      if (!diff || !diff.geometry) {
+        toast('Не удалось вырезать: петля должна быть внутри полигона.', true);
+        return false;
+      }
+      var pieces = turf.flatten(diff).features.filter(function (f) {
+        try { return turf.booleanPointInPolygon(turf.centerOfMass(f), target); }
+        catch (_) { return true; }
+      });
+      if (!pieces.length) {
+        toast('Петля вне полигона — нечего вырезать.', true);
+        return false;
+      }
+      var combined = pieces.length === 1
+        ? pieces[0]
+        : { type: 'Feature', properties: {}, geometry: { type: 'MultiPolygon',
+            coordinates: pieces.map(function (f) {
+              return f.geometry.type === 'Polygon' ? f.geometry.coordinates : f.geometry.coordinates[0];
+            }) } };
+      userfieldsFC.features[idx].geometry = combined.geometry;
+      queueUpdate(fid, combined.geometry);
+      try { drawAddSilent({ type: 'Feature', id: String(fid), properties: {}, geometry: combined.geometry }); } catch (_) {}
+      return true;
+    }
+
     /* ──────────────────────── Split tool (turf) ──────────────────────── */
     /* splitState:
          null            — режим выключен
@@ -1152,12 +1257,30 @@
       try { drawnPoly = draw.get(String(fid)); } catch (_) { drawnPoly = null; }
       var polyForSplit = drawnPoly || origFeat;
 
+      /* Lasso: если линия замкнулась или самопересеклась — это hole.
+         Берём только петлю, висячие хвосты игнорируем. */
+      var holePoly = lassoLineToHolePolygon(cutFeature);
+      if (holePoly) {
+        var ok = applyHoleCut(fid, idx, polyForSplit, holePoly);
+        if (ok) toast('Петля вырезана как кольцо · нажмите 💾 для сохранения');
+        /* sticky split-mode: остаёмся в той же цели, инструмент активен. */
+        setTimeout(function () {
+          splitState = 'pick-line';
+          splitTargetId = fid;
+          try { draw.changeMode('draw_line_string'); } catch (_) {}
+          highlightTool('split');
+          var h = document.getElementById('gis-toolbar-hint');
+          if (h) h.textContent = '✂ Цель сохранена. Линия / лассо / двойной клик — закончить · ☞ для выхода.';
+        }, 0);
+        return;
+      }
+
       var parts;
       try { parts = splitPolygonByLine(polyForSplit, cutFeature); }
       catch (e) { toast('Не удалось разрезать: ' + (e.message || e), true); return; }
 
       if (!parts.length || parts.length < 2) {
-        toast('Линия должна пересекать полигон минимум в двух точках.', true);
+        toast('Линия должна пересекать полигон минимум в двух точках (или замкните петлю для кольца).', true);
         return;
       }
 
@@ -1713,42 +1836,13 @@
       var idx = fcIndexById(fid);
       if (idx < 0) { toast('Полигон не найден.', true); return; }
       var origFeat = userfieldsFC.features[idx];
-
       var drawnPoly;
       try { drawnPoly = draw.get(String(fid)); } catch (_) { drawnPoly = null; }
       var target = drawnPoly || origFeat;
 
-      var diff = null;
-      try {
-        diff = turf.difference(turf.featureCollection([target, holeFeature]));
-      } catch (e1) {
-        try { diff = turf.difference(target, holeFeature); }
-        catch (e2) { console.error('[gis-ring-cut] difference failed', e1, e2); }
+      if (applyHoleCut(fid, idx, target, holeFeature)) {
+        toast('Кольцо вырезано · нажмите 💾 для сохранения');
       }
-      if (!diff || !diff.geometry) {
-        toast('Не удалось вырезать: полигон-нож должен быть полностью внутри.', true);
-        return;
-      }
-      /* Берём только тот кусок, центроид которого — в исходном target.
-         Этим отсекаем случаи, когда «нож» торчит наружу. */
-      var pieces = turf.flatten(diff).features.filter(function (f) {
-        try { return turf.booleanPointInPolygon(turf.centerOfMass(f), target); }
-        catch (_) { return true; }
-      });
-      if (!pieces.length) { toast('Кольцо вне полигона — нечего вырезать.', true); return; }
-      /* Объединяем обратно в один (Multi)Polygon с дыркой. */
-      var combined = pieces.length === 1
-        ? pieces[0]
-        : { type: 'Feature', properties: {}, geometry: { type: 'MultiPolygon',
-            coordinates: pieces.map(function (f) {
-              return f.geometry.type === 'Polygon' ? f.geometry.coordinates : f.geometry.coordinates[0];
-            }) } };
-
-      /* Batch: обновляем локально + кладём в очередь (silent draw.add). */
-      userfieldsFC.features[idx].geometry = combined.geometry;
-      queueUpdate(fid, combined.geometry);
-      try { drawAddSilent({ type: 'Feature', id: String(fid), properties: {}, geometry: combined.geometry }); } catch (_) {}
-      toast('Кольцо вырезано · нажмите 💾 для сохранения');
     }
 
     /* ════════════════════════════════════════════════════════════════
