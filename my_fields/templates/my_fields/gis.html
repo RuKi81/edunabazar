@@ -1104,10 +1104,18 @@
       try { return turf.polygon([loop]); } catch (_) { return null; }
     }
 
-    /* Общее ядро для ring-cut: вычесть hole из target, оставить только
-       куски с центроидом внутри target, склеить в (Multi)Polygon с
-       дыркой и положить в очередь. Возвращает true при успехе. */
+    /* Общее ядро для ring-cut / lasso-hole. Логика:
+         1) target − hole          → донат (геометрия исходного поля).
+         2) target ∩ hole          → внутренний кусок: НЕ удаляем,
+                                     а сохраняем как отдельное draft-поле.
+       Так пользователь не теряет содержимое выреза — оно становится
+       новой частью с именем «<исходное> (вырез)».
+       Возвращает true при успехе вычитания. */
     function applyHoleCut(fid, idx, target, holeFeature) {
+      var origFeat = userfieldsFC.features[idx] || {};
+      var origProps = origFeat.properties || {};
+      var origName = origProps.name || ('Поле #' + fid);
+
       var diff = null;
       try {
         diff = turf.difference(turf.featureCollection([target, holeFeature]));
@@ -1133,9 +1141,44 @@
             coordinates: pieces.map(function (f) {
               return f.geometry.type === 'Polygon' ? f.geometry.coordinates : f.geometry.coordinates[0];
             }) } };
+
+      /* Внутренний кусок — пересечение target и hole. Если turf.intersect
+         не выдал результата (например, hole не пересекает target), просто
+         не создаём draft — это не ошибка для пути обновления донат-формы. */
+      var inner = null;
+      try {
+        inner = turf.intersect(turf.featureCollection([target, holeFeature]));
+      } catch (e3) {
+        try { inner = turf.intersect(target, holeFeature); }
+        catch (e4) { console.error('[gis-hole-cut] intersect failed', e3, e4); }
+      }
+
+      /* Обновляем оригинал — донат. */
       userfieldsFC.features[idx].geometry = combined.geometry;
       queueUpdate(fid, combined.geometry);
       try { drawAddSilent({ type: 'Feature', id: String(fid), properties: {}, geometry: combined.geometry }); } catch (_) {}
+
+      /* Сохраняем внутренний кусок как новое поле-draft. */
+      if (inner && inner.geometry &&
+          (inner.geometry.type === 'Polygon' || inner.geometry.type === 'MultiPolygon')) {
+        var label = origName + ' (вырез)';
+        var draftFeat = { type: 'Feature', properties: {}, geometry: inner.geometry };
+        var added;
+        try { added = drawAddSilent(draftFeat); } catch (_) { added = null; }
+        var draftId = (added && added[0]) || ('tmp_' + Date.now() + '_inner');
+        pending.creates.push({
+          drawId: String(draftId),
+          geometry: inner.geometry,
+          label: label,
+          props: {
+            name: label,
+            crop_type: origProps.crop_type || 'arable',
+            cadastral_number: '',
+            notes: origProps.notes || '',
+          },
+        });
+        updateSaveBadge();
+      }
       return true;
     }
 
