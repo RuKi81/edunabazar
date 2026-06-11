@@ -761,8 +761,15 @@
     map.on('click', 'farmlands-fill', function (e) {
       if (!e.features.length) return;
       var props = e.features[0].properties || {};
-      /* Режим редактирования ЗСН: клик загружает полную геометрию в draw. */
+      /* Режим редактирования ЗСН: клик загружает полную геометрию в draw.
+         НО только в пассивном select-режиме — иначе при рисовании линии
+         разреза / полигона клик по угодью переключал бы mode и обрывал
+         построение (нельзя было поставить больше пары точек). */
       if (layerState.farmlands.editable) {
+        if (splitState || ringCutState) return;
+        var dmode = '';
+        try { dmode = draw.getMode(); } catch (_) {}
+        if (dmode && dmode !== 'simple_select' && dmode !== 'direct_select') return;
         if (props.id != null) loadFarmlandForEdit(props.id);
         return;
       }
