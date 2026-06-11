@@ -913,17 +913,57 @@
 
     /* ════════════════════════════════════════════════════════════════
        Редактирование слоя ЗСН (Росреестр) — таблица agro_farmland.
-       В отличие от «Мои поля» (batch-очередь), правки угодий уходят на
-       сервер сразу (PATCH/POST/DELETE), после чего MVT-тайлы слоя
-       перезапрашиваются с новым ?v=, чтобы изменения стали видны.
-       Draw-feature угодья хранится с id вида "fl:<pk>".
+       Логика РОВНО как у «Мои поля»: правки копятся в очереди flPending и
+       уходят на сервер только по кнопке 💾 (commitPending), ↶ — отмена.
+       Превью до сохранения: отредактированные/удалённые угодья прячем из
+       MVT-тайлов фильтром, а их новую геометрию показываем как draw-оверлей
+       (id "fl:<pk>"); новые угодья — draw-оверлеи с временным id.
        ════════════════════════════════════════════════════════════════ */
     var FL_PREFIX = 'fl:';
-    var flDrawIds = new Set();        // 'fl:<pk>' добавленные в draw
+    var flDrawIds = new Set();        // 'fl:<pk>' загруженных существующих угодий в draw
     var flProps = {};                 // 'fl:<pk>' -> properties (для карточки)
-    var flPendingGeom = {};           // 'fl:<pk>' -> geometry (debounce PATCH)
-    var flPatchTimers = {};
     var flTileVersion = 0;
+    var flDraftCounter = 0;
+    /* Очередь изменений ЗСН (зеркало pending для userfields). */
+    var flPending = {
+      creates: [],            // [{ drawId, geometry, props }]
+      updates: new Map(),     // pk(string) -> geometry
+      deletes: new Set(),     // pk(string)
+    };
+
+    function flPendingCount() {
+      return flPending.creates.length + flPending.updates.size + flPending.deletes.size;
+    }
+    function flFindCreateIdx(drawId) {
+      var sid = String(drawId);
+      for (var i = 0; i < flPending.creates.length; i++) {
+        if (String(flPending.creates[i].drawId) === sid) return i;
+      }
+      return -1;
+    }
+    /* Список pk, которые надо спрятать из тайлов (есть оверлей в draw или
+       помечены на удаление) — чтобы не было двойной отрисовки/«призраков». */
+    function applyFarmlandFilter() {
+      var hide = [];
+      flDrawIds.forEach(function (sid) {
+        var n = Number(sid.slice(FL_PREFIX.length));
+        if (!isNaN(n)) hide.push(n);
+      });
+      flPending.deletes.forEach(function (pk) {
+        var n = Number(pk);
+        if (!isNaN(n)) hide.push(n);
+      });
+      var flt = hide.length ? ['!', ['in', ['get', 'id'], ['literal', hide]]] : null;
+      try { map.setFilter('farmlands-fill', flt); } catch (_) {}
+      try { map.setFilter('farmlands-outline', flt); } catch (_) {}
+    }
+
+    /* Полный сброс draw-оверлеев ЗСН (существующие + новые черновики). */
+    function clearFarmlandDrawAll() {
+      flDrawIds.forEach(function (sid) { try { draw.delete(sid); } catch (_) {} });
+      flDrawIds.clear();
+      flPending.creates.forEach(function (c) { try { draw.delete(c.drawId); } catch (_) {} });
+    }
 
     function refreshFarmlandTiles() {
       flTileVersion++;
@@ -938,16 +978,19 @@
     }
 
     function setFarmlandEdit(on) {
+      /* Не даём выключить режим с несохранёнными правками — иначе пропадут
+         (как в «Мои поля»). При подтверждении — откатываем очередь. */
+      if (!on && flPendingCount() > 0) {
+        if (!window.confirm('Есть несохранённые изменения ЗСН (' + flPendingCount() +
+            '). Выключить редактирование и потерять их?')) {
+          return;
+        }
+        flPending = { creates: [], updates: new Map(), deletes: new Set() };
+        updateSaveBadge();
+      }
+
       /* Взаимоисключение с режимом «Мои поля». */
       if (on && layerState.userfields.editable) setEditMode(false);
-
-      /* При выключении — сбросить отложенные PATCH-и (применить немедленно). */
-      if (!on) {
-        Object.keys(flPatchTimers).forEach(function (sid) {
-          clearTimeout(flPatchTimers[sid]);
-          if (flPendingGeom[sid]) patchFarmland(sid);
-        });
-      }
 
       layerState.farmlands.editable = on;
       var btn = document.querySelector('.gis-layer[data-layer="farmlands"] .gis-layer__btn[data-action="edit"]');
@@ -962,23 +1005,27 @@
           drawAdded = true;
           if (map.getLayer('snap-indicator')) { try { map.moveLayer('snap-indicator'); } catch (_) {} }
         }
-        flDrawIds.clear();
-        try { draw.deleteAll(); } catch (_) {}
-        if (hint) hint.textContent = 'ЗСН: клик по угодью → узлы · ⬡ новое · ✂ разрез · ◎ кольцо · 🗑 удалить. Сохраняется сразу.';
+        clearFarmlandDrawAll();
+        flPending = { creates: [], updates: new Map(), deletes: new Set() };
+        applyFarmlandFilter();
+        if (hint) hint.textContent = 'ЗСН: клик → узлы · ⬡ новое · ✂ разрез · ◎ кольцо · 🗑 удалить · 💾 сохранить.';
         try { draw.changeMode('simple_select'); } catch (_) {}
         highlightTool('select');
+        updateSaveBadge();
       } else {
         cancelSplit();
         cancelRingCut();
-        flDrawIds.clear();
+        clearFarmlandDrawAll();
         flProps = {};
-        flPendingGeom = {};
+        flPending = { creates: [], updates: new Map(), deletes: new Set() };
+        applyFarmlandFilter();
         if (drawAdded && !layerState.userfields.editable) {
           try { draw.deleteAll(); } catch (_) {}
           try { map.removeControl(draw); } catch (_) {}
           drawAdded = false;
         }
         if (hint) hint.textContent = 'Включите редактирование «Мои поля» в левом меню.';
+        updateSaveBadge();
         renderEmpty();
       }
     }
@@ -1003,9 +1050,10 @@
           try {
             drawAddSilent({ type: 'Feature', id: sid, properties: { _fl: true }, geometry: res.body.geometry });
           } catch (_) { flDrawIds.delete(sid); return; }
+          applyFarmlandFilter();
           try {
             draw.changeMode('direct_select', { featureId: sid });
-            toast('Тяните узлы — изменения сохраняются автоматически.');
+            toast('Тяните узлы. Изменения попадут в очередь — 💾 для сохранения.');
           } catch (_) {}
           renderFarmlandEditCard(pk);
         })
@@ -1021,38 +1069,39 @@
       });
     }
 
-    /* Добавить только что созданное угодье из ответа POST в draw как
-       fl:<pk>. Возвращает res при успехе, иначе undefined (+ toast). */
-    function addFlFromRes(res) {
-      if (!res || !res.ok || !res.body || res.body.id == null) {
-        if (res) toast('Не удалось создать угодье: ' + detailFromError(res), true);
-        return undefined;
-      }
-      var pk = res.body.id;
+    /* Поставить в очередь правку геометрии существующего угодья.
+       Показываем новую геометрию draw-оверлеем fl:<pk> и прячем тайл. */
+    function queueFarmlandUpdate(pk, geometry, props) {
+      pk = String(pk);
       var sid = FL_PREFIX + pk;
+      if (props) flProps[sid] = props;
+      /* Если это был помечен на удаление — отменяем удаление. */
+      flPending.deletes.delete(pk);
+      flPending.updates.set(pk, geometry);
       flDrawIds.add(sid);
-      flProps[sid] = res.body.properties || { id: pk };
-      try {
-        drawAddSilent({ type: 'Feature', id: sid, properties: { _fl: true }, geometry: res.body.geometry });
-      } catch (_) {}
-      return res;
+      try { drawAddSilent({ type: 'Feature', id: sid, properties: { _fl: true }, geometry: geometry }); } catch (_) {}
+      applyFarmlandFilter();
+      updateSaveBadge();
     }
 
-    /* Создать новое угодье из нарисованного полигона (немедленный POST). */
+    /* Поставить в очередь новое угодье. drawId — id уже существующего в
+       draw полигона (если есть) или генерируем новый оверлей. */
+    function queueFarmlandCreate(geometry, props, existingDrawId) {
+      flDraftCounter++;
+      var drawId = existingDrawId != null ? String(existingDrawId)
+                 : ('flnew_' + Date.now() + '_' + flDraftCounter);
+      if (existingDrawId == null) {
+        try { drawAddSilent({ type: 'Feature', id: drawId, properties: { _fl: true, _flnew: true }, geometry: geometry }); }
+        catch (_) {}
+      }
+      flPending.creates.push({ drawId: drawId, geometry: geometry, props: props || { crop_type: 'arable' } });
+      updateSaveBadge();
+    }
+
+    /* ⬡ Новый полигон — кладём в очередь (без немедленного POST). */
     function createFarmland(f) {
-      var tmpId = f.id;
-      postFarmland(f.geometry, { crop_type: 'arable' }).then(function (res) {
-        try { draw.delete(tmpId); } catch (_) {}
-        var added = addFlFromRes(res);
-        if (!added) return;
-        var p = added.body.properties || {};
-        toast('Угодье #' + added.body.id + ' создано · ' +
-              (p.area_ha != null ? Number(p.area_ha).toFixed(2) + ' га' : ''));
-        refreshFarmlandTiles();
-      }).catch(function (e) {
-        toast('Сетевая ошибка: ' + (e && e.message || e), true);
-        try { draw.delete(tmpId); } catch (_) {}
-      });
+      queueFarmlandCreate(f.geometry, { crop_type: 'arable' }, f.id);
+      toast('Новое угодье в очереди. Нажмите 💾 для сохранения.');
       /* Оставляем инструмент полигона активным для следующего объекта. */
       setTimeout(function () {
         try { draw.changeMode('draw_polygon'); } catch (_) {}
@@ -1107,19 +1156,6 @@
         .catch(function () { return null; });
     }
 
-    /* Server-only PATCH геометрии угодья (без мутации draw). */
-    function patchFarmlandGeom(pk, geometry) {
-      return apiFetch('/agrocosmos/api/farmland/' + encodeURIComponent(pk) + '/', {
-        method: 'PATCH',
-        body: JSON.stringify({ geometry: geometry }),
-      });
-    }
-
-    /* Убрать все fl:<pk> из draw (после реза показываем результат тайлами). */
-    function clearFarmlandDraw() {
-      flDrawIds.forEach(function (sid) { try { draw.delete(sid); } catch (_) {} });
-      flDrawIds.clear();
-    }
 
     /* Чистое вычисление hole-cut: возвращает { donut, inner } или null.
        Без побочных эффектов на userfieldsFC / очередь (в отличие от
@@ -1153,10 +1189,18 @@
        1) находим угодья под пробной геометрией (queryRenderedFeatures);
        2) подтягиваем их полную геометрию с сервера;
        3) фильтруем по реальному пересечению (turf) и режем;
-       4) PATCH бо́льшего фрагмента/доната + POST новых частей;
-       5) чистим draw-оверлеи и обновляем тайлы. */
+       4) бо́льший фрагмент/донат → очередь update, новые части → create;
+       5) сохранение на сервер — только по 💾 (commitPending). */
     function runFarmlandCut(probe, cutFeature, holePoly, reenter) {
-      var ids = farmlandIdsUnderProbe(probe);
+      /* Кандидаты: угодья из видимых тайлов под probe + уже загруженные в
+         draw (они спрятаны фильтром из тайлов, но могут попасть под рез). */
+      var seen = {};
+      farmlandIdsUnderProbe(probe).forEach(function (id) { seen[id] = true; });
+      flDrawIds.forEach(function (sid) {
+        var pk = sid.slice(FL_PREFIX.length);
+        if (pk) seen[pk] = true;
+      });
+      var ids = Object.keys(seen);
       if (!ids.length) {
         toast(holePoly ? 'Петля не попала ни в одно угодье.' : 'Линия не пересекла ни одно угодье.', true);
         if (reenter) setTimeout(reenterSplitLineMode, 0);
@@ -1181,7 +1225,6 @@
     function processFarmlandCuts(targets, cutFeature, holePoly, reenter) {
       var keepEl = document.getElementById('gis-keep-cutout');
       var keepCutout = keepEl ? !!keepEl.checked : true;
-      var ops = [];
       var splitCount = 0, holeCount = 0, partsTotal = 0;
 
       targets.forEach(function (t) {
@@ -1192,10 +1235,10 @@
           var r = computeHoleCut(target, holePoly);
           if (!r) return;
           holeCount++;
-          ops.push(patchFarmlandGeom(t.pk, r.donut.geometry));
+          queueFarmlandUpdate(t.pk, r.donut.geometry, t.props);
           if (keepCutout && r.inner && r.inner.geometry &&
               (r.inner.geometry.type === 'Polygon' || r.inner.geometry.type === 'MultiPolygon')) {
-            ops.push(postFarmland(r.inner.geometry, { crop_type: crop }));
+            queueFarmlandCreate(r.inner.geometry, { crop_type: crop });
           }
           return;
         }
@@ -1212,24 +1255,19 @@
             return bb - aa;
           });
         } catch (_) {}
-        ops.push(patchFarmlandGeom(t.pk, parts[0].geometry));
+        queueFarmlandUpdate(t.pk, parts[0].geometry, t.props);
         parts.slice(1).forEach(function (p) {
-          ops.push(postFarmland(p.geometry, { crop_type: crop }));
+          queueFarmlandCreate(p.geometry, { crop_type: crop });
         });
         splitCount++;
         partsTotal += parts.length;
       });
 
-      if (ops.length) {
-        Promise.all(ops).then(function () { clearFarmlandDraw(); refreshFarmlandTiles(); })
-          .catch(function () { clearFarmlandDraw(); refreshFarmlandTiles(); });
-      }
-
       if (holePoly) {
-        if (holeCount) toast('Вырезано колец: ' + holeCount + ' · сохранено в БД');
+        if (holeCount) toast('Вырезано колец: ' + holeCount + ' · в очереди, 💾 для сохранения');
         else toast('Петля не дала выреза.', true);
       } else if (splitCount) {
-        toast('Разрезано угодий: ' + splitCount + ' → ' + partsTotal + ' частей · сохранено в БД');
+        toast('Разрезано угодий: ' + splitCount + ' → ' + partsTotal + ' частей · в очереди, 💾 для сохранения');
       } else {
         toast('Линия не дала разреза (не пересекла насквозь).', true);
       }
@@ -1240,46 +1278,29 @@
       runFarmlandCut(holePoly || cutFeature, cutFeature, holePoly, true);
     }
 
-    /* Debounced PATCH геометрии угодья. */
-    function scheduleFarmlandPatch(sid, geometry) {
-      flPendingGeom[sid] = geometry;
-      clearTimeout(flPatchTimers[sid]);
-      flPatchTimers[sid] = setTimeout(function () { patchFarmland(sid); }, 800);
-    }
-    function patchFarmland(sid) {
-      var geometry = flPendingGeom[sid];
-      if (!geometry) return;
-      delete flPendingGeom[sid];
+    /* Удалить угодье / черновик — кладём в очередь (как queueDelete у «Мои
+       поля»). Принимает draw-id: либо черновик-создание, либо fl:<pk>. */
+    function deleteFarmlandDraw(sid) {
+      sid = String(sid);
+      /* Черновик-создание — просто убираем из очереди и из draw. */
+      var ci = flFindCreateIdx(sid);
+      if (ci >= 0) {
+        flPending.creates.splice(ci, 1);
+        try { draw.delete(sid); } catch (_) {}
+        updateSaveBadge();
+        renderEmpty();
+        return;
+      }
+      if (sid.indexOf(FL_PREFIX) !== 0) return;
       var pk = sid.slice(FL_PREFIX.length);
-      apiFetch('/agrocosmos/api/farmland/' + encodeURIComponent(pk) + '/', {
-        method: 'PATCH',
-        body: JSON.stringify({ geometry: geometry }),
-      }).then(function (res) {
-        if (!res.ok) { toast('Не сохранилось угодье #' + pk + ': ' + detailFromError(res), true); return; }
-        if (res.body && res.body.properties) flProps[sid] = res.body.properties;
-        toast('Угодье #' + pk + ' сохранено');
-        refreshFarmlandTiles();
-      }).catch(function (e) { toast('Сетевая ошибка: ' + (e && e.message || e), true); });
-    }
-
-    /* Удалить угодье (немедленный DELETE). */
-    function deleteFarmland(sid) {
-      var pk = sid.slice(FL_PREFIX.length);
-      if (!window.confirm('Удалить угодье #' + pk + ' из слоя Росреестра? Действие необратимо.')) return;
-      apiFetch('/agrocosmos/api/farmland/' + encodeURIComponent(pk) + '/', { method: 'DELETE' })
-        .then(function (res) {
-          if (!res.ok && res.status !== 200 && res.status !== 204) {
-            toast('Не удалось удалить: ' + detailFromError(res), true);
-            return;
-          }
-          try { draw.delete(sid); } catch (_) {}
-          flDrawIds.delete(sid);
-          delete flProps[sid];
-          toast('Угодье #' + pk + ' удалено');
-          refreshFarmlandTiles();
-          renderEmpty();
-        })
-        .catch(function (e) { toast('Сетевая ошибка: ' + (e && e.message || e), true); });
+      flPending.deletes.add(String(pk));
+      flPending.updates.delete(String(pk));
+      if (flDrawIds.has(sid)) { try { draw.delete(sid); } catch (_) {} flDrawIds.delete(sid); }
+      delete flProps[sid];
+      applyFarmlandFilter();
+      updateSaveBadge();
+      toast('Удаление угодья #' + pk + ' в очереди. 💾 для применения, ↶ — отмена.');
+      renderEmpty();
     }
 
     function renderFarmlandEditCard(pk) {
@@ -1299,7 +1320,7 @@
       if (ev) ev.addEventListener('click', function () {
         try { draw.changeMode('direct_select', { featureId: sid }); } catch (_) {}
       });
-      if (dv) dv.addEventListener('click', function () { deleteFarmland(sid); });
+      if (dv) dv.addEventListener('click', function () { deleteFarmlandDraw(sid); });
     }
 
     /* Включить/выключить режим редактирования.
@@ -1309,8 +1330,8 @@
     function setEditMode(on) {
       /* Не даём выключить режим, пока висят несохранённые изменения —
          иначе драфты бесследно пропадут. Срабатывает только при попытке выключить. */
-      if (!on && typeof pending !== 'undefined' && pendingCount() > 0) {
-        if (!window.confirm('Есть несохранённые изменения (' + pendingCount() +
+      if (!on && typeof pending !== 'undefined' && ufPendingCount() > 0) {
+        if (!window.confirm('Есть несохранённые изменения (' + ufPendingCount() +
             '). Выключить редактирование и потерять их?')) {
           return;
         }
@@ -1416,9 +1437,13 @@
         return;
       }
       sel.forEach(function (sid) {
-        /* Угодье ЗСН — немедленный DELETE; остальное — batch-очередь. */
-        if (String(sid).indexOf(FL_PREFIX) === 0) deleteFarmland(String(sid));
-        else queueDelete(sid);
+        /* В режиме ЗСН любое выделение (угодье fl:<pk> или черновик-создание)
+           идёт в farmland-очередь; иначе — batch-очередь «Мои поля». */
+        if (layerState.farmlands.editable || String(sid).indexOf(FL_PREFIX) === 0) {
+          deleteFarmlandDraw(String(sid));
+        } else {
+          queueDelete(sid);
+        }
       });
     }
 
@@ -1750,7 +1775,7 @@
          Иначе работаем как обычная разрезающая линия. */
       var holePoly = lassoLineToHolePolygon(cutFeature);
 
-      /* Режим ЗСН — режем угодья (немедленное сохранение в БД). */
+      /* Режим ЗСН — режем угодья (правки уходят в очередь flPending, 💾). */
       if (layerState.farmlands.editable) {
         finishSplitFarmland(cutFeature, holePoly);
         return;
@@ -2039,9 +2064,15 @@
         /* Перезаписываем в draw со snap-нутыми координатами (silent). */
         if (snapped) { try { drawAddSilent(f); } catch (_) {} }
         var sid = String(f.id);
-        /* Угодье ЗСН (id "fl:<pk>") — немедленный (debounced) PATCH в БД. */
-        if (sid.indexOf(FL_PREFIX) === 0) {
-          scheduleFarmlandPatch(sid, f.geometry);
+        /* Режим ЗСН: правка узлов → очередь flPending (без авто-PATCH). */
+        if (layerState.farmlands.editable) {
+          var flCi = flFindCreateIdx(sid);
+          if (flCi >= 0) { flPending.creates[flCi].geometry = f.geometry; updateSaveBadge(); return; }
+          if (sid.indexOf(FL_PREFIX) === 0) {
+            flPending.updates.set(sid.slice(FL_PREFIX.length), f.geometry);
+            updateSaveBadge();
+            return;
+          }
           return;
         }
         /* Draft — обновляем geometry внутри pending.creates. */
@@ -2113,8 +2144,13 @@
       catch (_) { userfieldsBaseline = []; }
     }
 
-    function pendingCount() {
+    function ufPendingCount() {
       return pending.creates.length + pending.updates.size + pending.deletes.size;
+    }
+    /* Общий счётчик для бейджа/сохранения — обе очереди (как просили:
+       единая логика для всех слоёв). */
+    function pendingCount() {
+      return ufPendingCount() + flPendingCount();
     }
     function updateSaveBadge() {
       var n = pendingCount();
@@ -2263,6 +2299,25 @@
           .catch(function (e) { return { kind: 'create', draftId: c.drawId, res: { ok: false, error: e } }; }));
       });
 
+      /* ── Очередь ЗСН (agro_farmland): те же deletes → updates → creates. ── */
+      flPending.deletes.forEach(function (pk) {
+        ops.push(apiFetch('/agrocosmos/api/farmland/' + encodeURIComponent(pk) + '/', { method: 'DELETE' })
+          .then(function (res) { return { kind: 'fl-delete', pk: pk, res: res }; })
+          .catch(function (e) { return { kind: 'fl-delete', pk: pk, res: { ok: false, error: e } }; }));
+      });
+      flPending.updates.forEach(function (geom, pk) {
+        ops.push(apiFetch('/agrocosmos/api/farmland/' + encodeURIComponent(pk) + '/', {
+          method: 'PATCH', body: JSON.stringify({ geometry: geom }),
+        }).then(function (res) { return { kind: 'fl-update', pk: pk, res: res }; })
+          .catch(function (e) { return { kind: 'fl-update', pk: pk, res: { ok: false, error: e } }; }));
+      });
+      flPending.creates.forEach(function (c) {
+        ops.push(postFarmland(c.geometry, c.props)
+          .then(function (res) { return { kind: 'fl-create', res: res }; })
+          .catch(function (e) { return { kind: 'fl-create', res: { ok: false, error: e } }; }));
+      });
+      var hadFarmland = flPendingCount() > 0;
+
       Promise.all(ops).then(function (results) {
         var ok = 0, fail = 0, failMsg = '';
         results.forEach(function (r) {
@@ -2273,16 +2328,21 @@
             if (!failMsg && r.res) failMsg = detailFromError(r.res);
           }
         });
-        /* Сбрасываем pending независимо от частичных ошибок — данные
-           ниже всё равно перечитаем с сервера, и пользователь увидит
-           актуальную картину. */
+        /* Сбрасываем обе очереди независимо от частичных ошибок — данные
+           ниже всё равно перечитаем с сервера/тайлов. */
         pending = { creates: [], updates: new Map(), deletes: new Set() };
+        flPending = { creates: [], updates: new Map(), deletes: new Set() };
         loadUserFields().then(function () {
           if (drawAdded) {
             try { draw.deleteAll(); } catch (_) {}
             persistedDrawIds.clear();
-            userfieldsFC.features.forEach(addPersistedToDraw);
+            flDrawIds.clear();
+            /* persisted-поля возвращаем в draw только в режиме «Мои поля». */
+            if (layerState.userfields.editable) userfieldsFC.features.forEach(addPersistedToDraw);
           }
+          /* ЗСН: снимаем фильтр-превью и перезапрашиваем тайлы. */
+          applyFarmlandFilter();
+          if (hadFarmland) refreshFarmlandTiles();
           updateSaveBadge();
           toast(fail
             ? ('Сохранено: ' + ok + ' · ошибок: ' + fail + (failMsg ? (' · ' + failMsg) : ''))
@@ -2301,11 +2361,16 @@
       catch (_) { userfieldsFC.features = []; }
       setUserfieldsData();
       pending = { creates: [], updates: new Map(), deletes: new Set() };
+      flPending = { creates: [], updates: new Map(), deletes: new Set() };
       if (drawAdded) {
         try { draw.deleteAll(); } catch (_) {}
         persistedDrawIds.clear();
-        userfieldsFC.features.forEach(addPersistedToDraw);
+        flDrawIds.clear();
+        /* persisted-поля возвращаем только в режиме «Мои поля». */
+        if (layerState.userfields.editable) userfieldsFC.features.forEach(addPersistedToDraw);
       }
+      /* ЗСН: снимаем фильтр-превью — тайлы снова показывают исходные данные. */
+      applyFarmlandFilter();
       updateSaveBadge();
       toast('Изменения отменены');
     }
