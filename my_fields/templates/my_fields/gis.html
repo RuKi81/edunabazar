@@ -887,6 +887,13 @@
       persistedDrawIds.delete(sid);
     }
 
+    /* True, если draw-feature можно редактировать (узлы / split / ring-cut):
+       persisted-поле «Мои поля» ИЛИ загруженное угодье ЗСН (fl:<pk>). */
+    function isEditableDrawId(sid) {
+      sid = String(sid);
+      return persistedDrawIds.has(sid) || flDrawIds.has(sid);
+    }
+
     /* Включить/выключить кнопки тулбара (кроме select / save / discard). */
     function setToolbarEnabled(on) {
       document.querySelectorAll('.gis-toolbar button[data-tool]').forEach(function (b) {
@@ -950,7 +957,7 @@
         }
         flDrawIds.clear();
         try { draw.deleteAll(); } catch (_) {}
-        if (hint) hint.textContent = 'ЗСН: ☞ клик по угодью → правка узлов · ⬡ новое · 🗑 удалить. Сохраняется сразу.';
+        if (hint) hint.textContent = 'ЗСН: клик по угодью → узлы · ⬡ новое · ✂ разрез · ◎ кольцо · 🗑 удалить. Сохраняется сразу.';
         try { draw.changeMode('simple_select'); } catch (_) {}
         highlightTool('select');
       } else {
@@ -998,29 +1005,58 @@
         .catch(function (e) { toast('Сетевая ошибка: ' + (e && e.message || e), true); });
     }
 
+    /* POST новой геометрии в agro_farmland. Возвращает promise-результат
+       apiFetch (с .ok / .body). */
+    function postFarmland(geometry, props) {
+      return apiFetch('/agrocosmos/api/farmland/', {
+        method: 'POST',
+        body: JSON.stringify({ geometry: geometry, properties: props || { crop_type: 'arable' } }),
+      });
+    }
+
+    /* Добавить только что созданное угодье из ответа POST в draw как
+       fl:<pk>. Возвращает res при успехе, иначе undefined (+ toast). */
+    function addFlFromRes(res) {
+      if (!res || !res.ok || !res.body || res.body.id == null) {
+        if (res) toast('Не удалось создать угодье: ' + detailFromError(res), true);
+        return undefined;
+      }
+      var pk = res.body.id;
+      var sid = FL_PREFIX + pk;
+      flDrawIds.add(sid);
+      flProps[sid] = res.body.properties || { id: pk };
+      try {
+        drawAddSilent({ type: 'Feature', id: sid, properties: { _fl: true }, geometry: res.body.geometry });
+      } catch (_) {}
+      return res;
+    }
+
+    /* Немедленный PATCH геометрии угодья (для split / ring-cut, без
+       debounce). Сразу переписывает draw-feature новой геометрией. */
+    function patchFarmlandGeometryNow(sid, geometry) {
+      var pk = sid.slice(FL_PREFIX.length);
+      try {
+        drawAddSilent({ type: 'Feature', id: sid, properties: { _fl: true }, geometry: geometry });
+      } catch (_) {}
+      return apiFetch('/agrocosmos/api/farmland/' + encodeURIComponent(pk) + '/', {
+        method: 'PATCH',
+        body: JSON.stringify({ geometry: geometry }),
+      }).then(function (res) {
+        if (res && res.ok && res.body && res.body.properties) flProps[sid] = res.body.properties;
+        return res;
+      });
+    }
+
     /* Создать новое угодье из нарисованного полигона (немедленный POST). */
     function createFarmland(f) {
       var tmpId = f.id;
-      apiFetch('/agrocosmos/api/farmland/', {
-        method: 'POST',
-        body: JSON.stringify({ geometry: f.geometry, properties: { crop_type: 'arable' } }),
-      }).then(function (res) {
-        if (!res.ok || !res.body || res.body.id == null) {
-          toast('Не удалось создать угодье: ' + detailFromError(res), true);
-          try { draw.delete(tmpId); } catch (_) {}
-          return;
-        }
+      postFarmland(f.geometry, { crop_type: 'arable' }).then(function (res) {
         try { draw.delete(tmpId); } catch (_) {}
-        var pk = res.body.id;
-        var sid = FL_PREFIX + pk;
-        flDrawIds.add(sid);
-        flProps[sid] = res.body.properties || { id: pk };
-        try {
-          drawAddSilent({ type: 'Feature', id: sid, properties: { _fl: true }, geometry: res.body.geometry });
-        } catch (_) {}
-        toast('Угодье #' + pk + ' создано · ' +
-              (res.body.properties && res.body.properties.area_ha != null
-                ? Number(res.body.properties.area_ha).toFixed(2) + ' га' : ''));
+        var added = addFlFromRes(res);
+        if (!added) return;
+        var p = added.body.properties || {};
+        toast('Угодье #' + added.body.id + ' создано · ' +
+              (p.area_ha != null ? Number(p.area_ha).toFixed(2) + ' га' : ''));
         refreshFarmlandTiles();
       }).catch(function (e) {
         toast('Сетевая ошибка: ' + (e && e.message || e), true);
@@ -1031,6 +1067,120 @@
         try { draw.changeMode('draw_polygon'); } catch (_) {}
         highlightTool('draw_polygon');
       }, 0);
+    }
+
+    /* Найти загруженные в draw угодья (fl:<pk>), которые пересекает probe
+       (линия-разрез или петля-полигон). Режем только то, что пользователь
+       уже подгрузил кликом — полную геометрию из тайла не достать. */
+    function findFarmlandsHitBy(probe) {
+      var hits = [];
+      flDrawIds.forEach(function (sid) {
+        var feat;
+        try { feat = draw.get(sid); } catch (_) { feat = null; }
+        if (!feat || !feat.geometry) return;
+        var t = feat.geometry.type;
+        if (t !== 'Polygon' && t !== 'MultiPolygon') return;
+        if (cutHitsTarget(probe, feat)) hits.push({ sid: sid, feat: feat });
+      });
+      return hits;
+    }
+
+    /* Чистое вычисление hole-cut: возвращает { donut, inner } или null.
+       Без побочных эффектов на userfieldsFC / очередь (в отличие от
+       applyHoleCut, который заточен под «Мои поля»). */
+    function computeHoleCut(target, holeFeature) {
+      var diff = null;
+      try { diff = turf.difference(turf.featureCollection([target, holeFeature])); }
+      catch (e1) { try { diff = turf.difference(target, holeFeature); } catch (e2) {} }
+      if (!diff || !diff.geometry) {
+        toast('Не удалось вырезать: петля должна быть внутри полигона.', true);
+        return null;
+      }
+      var pieces = turf.flatten(diff).features.filter(function (f) {
+        try { return turf.booleanPointInPolygon(turf.centerOfMass(f), target); }
+        catch (_) { return true; }
+      });
+      if (!pieces.length) { toast('Петля вне полигона — нечего вырезать.', true); return null; }
+      var donut = pieces.length === 1
+        ? pieces[0]
+        : { type: 'Feature', properties: {}, geometry: { type: 'MultiPolygon',
+            coordinates: pieces.map(function (f) {
+              return f.geometry.type === 'Polygon' ? f.geometry.coordinates : f.geometry.coordinates[0];
+            }) } };
+      var inner = null;
+      try { inner = turf.intersect(turf.featureCollection([target, holeFeature])); }
+      catch (e3) { try { inner = turf.intersect(target, holeFeature); } catch (e4) {} }
+      return { donut: donut, inner: inner };
+    }
+
+    /* Разрез / вырез кольца для слоя ЗСН. Работает по загруженным в draw
+       угодьям; правки уходят сразу (PATCH донат/больший фрагмент + POST
+       новых частей), тайлы обновляются по завершении всех операций. */
+    function finishSplitFarmland(cutFeature, holePoly) {
+      var probe = holePoly || cutFeature;
+      var targets = findFarmlandsHitBy(probe);
+      if (!targets.length) {
+        toast(holePoly
+          ? 'Петля не попала ни в одно загруженное угодье — сначала кликните по угодью.'
+          : 'Линия не пересекла ни одно загруженное угодье — сначала кликните по угодью.', true);
+        setTimeout(reenterSplitLineMode, 0);
+        return;
+      }
+      var keepEl = document.getElementById('gis-keep-cutout');
+      var keepCutout = keepEl ? !!keepEl.checked : true;
+      var ops = [];
+      var splitCount = 0, holeCount = 0, partsTotal = 0;
+
+      targets.forEach(function (t) {
+        var sid = t.sid;
+        var feat = t.feat;
+        var crop = (flProps[sid] && flProps[sid].crop_type) || 'arable';
+
+        if (holePoly) {
+          var r = computeHoleCut(feat, holePoly);
+          if (!r) return;
+          holeCount++;
+          ops.push(patchFarmlandGeometryNow(sid, r.donut.geometry));
+          if (keepCutout && r.inner && r.inner.geometry &&
+              (r.inner.geometry.type === 'Polygon' || r.inner.geometry.type === 'MultiPolygon')) {
+            ops.push(postFarmland(r.inner.geometry, { crop_type: crop }).then(addFlFromRes));
+          }
+          return;
+        }
+
+        var parts;
+        try { parts = splitPolygonByLine(feat, cutFeature); }
+        catch (e) { console.error('[gis-split-fl] failed for', sid, e); return; }
+        if (!parts.length || parts.length < 2) return;
+        try {
+          parts.sort(function (a, b) {
+            var aa = 0, bb = 0;
+            try { aa = turf.area(a); } catch (_) {}
+            try { bb = turf.area(b); } catch (_) {}
+            return bb - aa;
+          });
+        } catch (_) {}
+        ops.push(patchFarmlandGeometryNow(sid, parts[0].geometry));
+        parts.slice(1).forEach(function (p) {
+          ops.push(postFarmland(p.geometry, { crop_type: crop }).then(addFlFromRes));
+        });
+        splitCount++;
+        partsTotal += parts.length;
+      });
+
+      if (ops.length) {
+        Promise.all(ops).then(function () { refreshFarmlandTiles(); })
+          .catch(function () { refreshFarmlandTiles(); });
+      }
+
+      if (holePoly) {
+        if (holeCount) toast('Вырезано колец: ' + holeCount + ' · сохранено в БД');
+      } else if (splitCount) {
+        toast('Разрезано угодий: ' + splitCount + ' → ' + partsTotal + ' частей · сохранено в БД');
+      } else {
+        toast('Линия не дала разреза (не пересекла насквозь).', true);
+      }
+      setTimeout(reenterSplitLineMode, 0);
     }
 
     /* Debounced PATCH геометрии угодья. */
@@ -1481,7 +1631,7 @@
       if (!feats.length) return;
       for (var i = 0; i < feats.length; i++) {
         var fid = feats[i].id;
-        if (persistedDrawIds.has(String(fid))) { beginSplitDrawing(fid); return; }
+        if (isEditableDrawId(String(fid))) { beginSplitDrawing(fid); return; }
       }
     });
 
@@ -1542,6 +1692,13 @@
       /* Lasso: если линия замкнулась или самопересеклась — это hole.
          Иначе работаем как обычная разрезающая линия. */
       var holePoly = lassoLineToHolePolygon(cutFeature);
+
+      /* Режим ЗСН — режем угодья (немедленное сохранение в БД). */
+      if (layerState.farmlands.editable) {
+        finishSplitFarmland(cutFeature, holePoly);
+        return;
+      }
+
       var probe = holePoly || cutFeature;
 
       /* Сканируем все полигоны редактируемого слоя и собираем тех,
@@ -2241,7 +2398,7 @@
         return;
       }
       var sel = draw.getSelectedIds();
-      if (sel && sel.length === 1 && persistedDrawIds.has(String(sel[0]))) {
+      if (sel && sel.length === 1 && isEditableDrawId(String(sel[0]))) {
         beginRingCutDrawing(sel[0]);
         return;
       }
@@ -2269,7 +2426,7 @@
       var feats = (e && e.features) || [];
       for (var i = 0; i < feats.length; i++) {
         var fid = feats[i].id;
-        if (persistedDrawIds.has(String(fid))) { beginRingCutDrawing(fid); return; }
+        if (isEditableDrawId(String(fid))) { beginRingCutDrawing(fid); return; }
       }
     });
 
@@ -2279,6 +2436,28 @@
       cancelRingCut();
       try { draw.delete(draftId); } catch (_) {}
       if (fid == null) return;
+
+      /* Режим ЗСН — вырезаем кольцо в угодье (немедленный PATCH/POST). */
+      if (String(fid).indexOf(FL_PREFIX) === 0) {
+        var sid = String(fid);
+        var targetFeat;
+        try { targetFeat = draw.get(sid); } catch (_) { targetFeat = null; }
+        if (!targetFeat || !targetFeat.geometry) { toast('Угодье не найдено в draw.', true); return; }
+        var r = computeHoleCut(targetFeat, holeFeature);
+        if (!r) return;
+        var crop = (flProps[sid] && flProps[sid].crop_type) || 'arable';
+        var keepEl = document.getElementById('gis-keep-cutout');
+        var keepCutout = keepEl ? !!keepEl.checked : true;
+        var ops = [patchFarmlandGeometryNow(sid, r.donut.geometry)];
+        if (keepCutout && r.inner && r.inner.geometry &&
+            (r.inner.geometry.type === 'Polygon' || r.inner.geometry.type === 'MultiPolygon')) {
+          ops.push(postFarmland(r.inner.geometry, { crop_type: crop }).then(addFlFromRes));
+        }
+        Promise.all(ops).then(function () { refreshFarmlandTiles(); })
+          .catch(function () { refreshFarmlandTiles(); });
+        toast('Кольцо вырезано · сохранено в БД');
+        return;
+      }
 
       var idx = fcIndexById(fid);
       if (idx < 0) { toast('Полигон не найден.', true); return; }
