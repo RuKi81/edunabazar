@@ -457,6 +457,47 @@
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), 'top-right');
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
 
+    /* ───────────── Панорамирование средней кнопкой мыши ─────────────
+       Штатный dragPan реагирует только на ЛКМ, а её во время рисования
+       перехватывает mapbox-gl-draw. Поэтому вешаем собственный пан по
+       СКМ (button === 1): пока кнопка зажата — двигаем карту по дельте
+       курсора. Работает в любом режиме (рисование / разрез / select). */
+    (function () {
+      var canvas = map.getCanvas();
+      var panning = false;
+      var lastX = 0, lastY = 0;
+
+      canvas.addEventListener('mousedown', function (e) {
+        if (e.button !== 1) return;       // только средняя кнопка
+        e.preventDefault();               // глушим браузерный авто-скролл
+        panning = true;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        canvas.style.cursor = 'grabbing';
+      });
+
+      window.addEventListener('mousemove', function (e) {
+        if (!panning) return;
+        var dx = e.clientX - lastX;
+        var dy = e.clientY - lastY;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        map.panBy([-dx, -dy], { duration: 0 });
+      });
+
+      window.addEventListener('mouseup', function (e) {
+        if (e.button !== 1 || !panning) return;
+        panning = false;
+        canvas.style.cursor = '';
+      });
+
+      /* Браузер открывает авто-скролл по СКМ через событие auxclick —
+         блокируем его на карте. */
+      canvas.addEventListener('auxclick', function (e) {
+        if (e.button === 1) e.preventDefault();
+      });
+    })();
+
     /* ──────────────────────────── Helpers ──────────────────────────── */
     var toastEl = document.getElementById('gis-toast');
     var toastTimer = null;
