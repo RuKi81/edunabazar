@@ -1689,6 +1689,8 @@
          кусок просто исчезает (старое поведение ring-cut). */
       var keepCutoutEl = document.getElementById('gis-keep-cutout');
       var keepCutout = keepCutoutEl ? !!keepCutoutEl.checked : true;
+      console.log('[gis-hole-cut] keepCutout=', keepCutout, 'inner=', inner,
+                  'donut combined=', combined && combined.geometry && combined.geometry.type);
       if (keepCutout && inner && inner.geometry &&
           (inner.geometry.type === 'Polygon' || inner.geometry.type === 'MultiPolygon')) {
         var label = origName + ' (вырез)';
@@ -1976,15 +1978,18 @@
           if (typeof turf.booleanIntersects === 'function') {
             overlaps = !!turf.booleanIntersects(current, nb);
           }
-        } catch (_) { overlaps = true; }
+        } catch (eo) { console.warn('[gis-clip] booleanIntersects threw', eo); overlaps = true; }
+        console.log('[gis-clip] neighbor', nb.id, 'overlaps=', overlaps);
         if (!overlaps) continue;
 
-        var diff = null, ok = false;
+        var diff, ok = false;
         try { diff = turf.difference(turf.featureCollection([current, nb])); ok = true; }
         catch (e1) {
+          console.warn('[gis-clip] difference(FC) threw', e1);
           try { diff = turf.difference(current, nb); ok = true; }
-          catch (e2) { ok = false; }
+          catch (e2) { console.warn('[gis-clip] difference(2-arg) threw', e2); ok = false; }
         }
+        console.log('[gis-clip] diff result', diff, 'ok=', ok);
         if (!ok) continue;
         if (diff === null) { return { geometry: null, clipped: true }; }
         if (diff && diff.geometry) { current = diff; clipped = true; }
@@ -2056,8 +2061,11 @@
          все соседние поля, на которые он накладывается, чтобы он точно
          прилёг к их границам без перекрытия. */
       var clipEl = document.getElementById('gis-clip-overlap');
+      console.log('[gis-clip] draw.create create-branch; clip checkbox=', !!(clipEl && clipEl.checked),
+                  'neighbors=', userfieldsFC.features.length);
       if (clipEl && clipEl.checked) {
         var res = clipPolygonByNeighbors(f.geometry, f.id);
+        console.log('[gis-clip] result', res);
         if (res.geometry === null) {
           toast('Полигон полностью перекрыт соседними полями — нечего сохранять.', true);
           try { draw.delete(f.id); } catch (_) {}
