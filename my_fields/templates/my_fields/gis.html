@@ -382,7 +382,13 @@
         },
         farmlands: {
           type: 'vector',
-          tiles: [location.origin + '/agrocosmos/api/tiles/{z}/{x}/{y}.pbf'],
+          /* ?v=<load-token>: тайлы ЗСН кэшируются и на сервере (cache_page
+             10 мин), и в браузере (max-age=600). Без cache-buster после
+             перезагрузки страницы карта показывала бы устаревший тайл —
+             удалённые/изменённые угодья «возвращались». Уникальный токен на
+             каждую загрузку страницы гарантирует свежие данные после reload,
+             но в пределах сессии тайлы всё ещё кэшируются (токен один). */
+          tiles: [location.origin + '/agrocosmos/api/tiles/{z}/{x}/{y}.pbf?v=' + Date.now()],
           minzoom: 6, maxzoom: 14,
           promoteId: { farmlands: 'id' },
         },
