@@ -420,6 +420,12 @@
           tiles: BASEMAPS.osm.tiles, attribution: BASEMAPS.osm.attribution,
         },
         farmlands: farmlandSourceDef(Date.now()),
+        /* Превью несохранённых правок ЗСН (донаты/новые куски). tolerance:0
+           отключает упрощение геометрии — иначе MapLibre на части зумов
+           «заливает» отверстия в полигонах (mapbox/mapbox-gl-js#9981), и
+           вырез был не виден до сохранения. Рисуется поверх тайлов ЗСН,
+           тайл исходного угодья при этом скрыт (applyFarmlandFilter). */
+        fl_preview: { type: 'geojson', data: { type: 'FeatureCollection', features: [] }, tolerance: 0 },
         userfields: { type: 'geojson', data: { type: 'FeatureCollection', features: [] }, promoteId: 'id' },
         snap: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
       },
@@ -427,6 +433,24 @@
         { id: 'basemap', type: 'raster', source: 'basemap' },
         FARMLAND_FILL_LAYER,
         FARMLAND_OUTLINE_LAYER,
+        {
+          id: 'fl-preview-fill',
+          type: 'fill', source: 'fl_preview',
+          paint: {
+            'fill-color': [
+              'match', ['get', 'is_used'],
+              1, '#66bb6a',
+              0, '#ffa726',
+              '#90a4ae',
+            ],
+            'fill-opacity': 0.35,
+          },
+        },
+        {
+          id: 'fl-preview-outline',
+          type: 'line', source: 'fl_preview',
+          paint: { 'line-color': '#fb8c00', 'line-width': 1.5 },
+        },
         {
           id: 'userfields-fill',
           type: 'fill', source: 'userfields',
@@ -845,11 +869,15 @@
        dasharray обёрнута в ['literal', [...]]. Стили — ровно дефолтные из
        mapbox-gl-draw@1.5/src/lib/theme.js, только с этим патчем. */
     var DRAW_STYLES = [
+      /* user__fl != true: для ЗСН-оверлеев (донаты/новые угодья) заливку draw
+         НЕ рисуем — её показывает слой fl_preview (с честными отверстиями).
+         Иначе faint-заливка draw перекрывала бы вырез. Узлы/контур draw
+         остаются для редактирования. */
       { id: 'gl-draw-polygon-fill-inactive', type: 'fill',
-        filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']],
+        filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static'], ['!=', 'user__fl', true]],
         paint: { 'fill-color': '#3bb2d0', 'fill-outline-color': '#3bb2d0', 'fill-opacity': 0.1 } },
       { id: 'gl-draw-polygon-fill-active', type: 'fill',
-        filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']],
+        filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon'], ['!=', 'user__fl', true]],
         paint: { 'fill-color': '#fbb03b', 'fill-outline-color': '#fbb03b', 'fill-opacity': 0.1 } },
       { id: 'gl-draw-polygon-midpoint', type: 'circle',
         filter: ['all', ['==', '$type', 'Point'], ['==', 'meta', 'midpoint']],
@@ -1012,6 +1040,28 @@
       var flt = hide.length ? ['!', ['in', ['get', 'id'], ['literal', hide]]] : null;
       try { map.setFilter('farmlands-fill', flt); } catch (_) {}
       try { map.setFilter('farmlands-outline', flt); } catch (_) {}
+      refreshFarmlandPreview();
+    }
+
+    /* Перерисовать превью несохранённых правок ЗСН: донаты (updates) и новые
+       куски (creates) кладём в источник fl_preview, который рисует их с
+       цветной заливкой как настоящие угодья и БЕЗ упрощения геометрии — так
+       вырез/отверстие видно сразу, ещё до сохранения. Слои ЗСН-draw остаются
+       поверх для редактирования узлов, но их заливка прозрачнее и не мешает. */
+    function refreshFarmlandPreview() {
+      var feats = [];
+      flPending.updates.forEach(function (geom, pk) {
+        var props = flProps[FL_PREFIX + pk] || {};
+        var iu = (props.is_used != null) ? props.is_used : -1;
+        feats.push({ type: 'Feature', properties: { is_used: iu }, geometry: geom });
+      });
+      flPending.creates.forEach(function (c) {
+        var p = c.props || {};
+        var iu = (p.is_used != null) ? p.is_used : -1;
+        feats.push({ type: 'Feature', properties: { is_used: iu }, geometry: c.geometry });
+      });
+      var src = map.getSource('fl_preview');
+      if (src) src.setData({ type: 'FeatureCollection', features: feats });
     }
 
     /* Полный сброс draw-оверлеев ЗСН (существующие + новые черновики). */
@@ -1031,9 +1081,10 @@
       if (!map.getSource('farmlands')) return;
       flTileVersion = Date.now();
       /* Запоминаем слой, ПЕРЕД которым держим слои ЗСН, чтобы сохранить
-         порядок отрисовки (ЗСН под слоями «Мои поля» и snap). */
-      var beforeId = map.getLayer('userfields-fill') ? 'userfields-fill'
-                   : (map.getLayer('snap-indicator') ? 'snap-indicator' : undefined);
+         порядок отрисовки (тайлы ЗСН — под превью правок, «Мои поля» и snap). */
+      var beforeId = map.getLayer('fl-preview-fill') ? 'fl-preview-fill'
+                   : (map.getLayer('userfields-fill') ? 'userfields-fill'
+                   : (map.getLayer('snap-indicator') ? 'snap-indicator' : undefined));
       try { if (map.getLayer('farmlands-outline')) map.removeLayer('farmlands-outline'); } catch (_) {}
       try { if (map.getLayer('farmlands-fill')) map.removeLayer('farmlands-fill'); } catch (_) {}
       try { map.removeSource('farmlands'); } catch (_) {}
@@ -1164,6 +1215,7 @@
         catch (_) {}
       }
       flPending.creates.push({ drawId: drawId, geometry: geometry, props: props || { crop_type: 'arable' } });
+      refreshFarmlandPreview();
       updateSaveBadge();
     }
 
@@ -1356,6 +1408,7 @@
       if (ci >= 0) {
         flPending.creates.splice(ci, 1);
         try { draw.delete(sid); } catch (_) {}
+        refreshFarmlandPreview();
         updateSaveBadge();
         renderEmpty();
         return;
@@ -2144,9 +2197,10 @@
         /* Режим ЗСН: правка узлов → очередь flPending (без авто-PATCH). */
         if (layerState.farmlands.editable) {
           var flCi = flFindCreateIdx(sid);
-          if (flCi >= 0) { flPending.creates[flCi].geometry = f.geometry; updateSaveBadge(); return; }
+          if (flCi >= 0) { flPending.creates[flCi].geometry = f.geometry; refreshFarmlandPreview(); updateSaveBadge(); return; }
           if (sid.indexOf(FL_PREFIX) === 0) {
             flPending.updates.set(sid.slice(FL_PREFIX.length), f.geometry);
+            refreshFarmlandPreview();
             updateSaveBadge();
             return;
           }
