@@ -1064,6 +1064,14 @@
           feats.push({ type: 'Feature', properties: { is_used: iu }, geometry: c.geometry });
         });
         var src = map.getSource('fl_preview');
+        console.log('[gis-fl-preview] feats=', feats.length,
+          'srcExists=', !!src, 'layerExists=', !!map.getLayer('fl-preview-fill'),
+          'rings=', feats.map(function (f) {
+            var g = f.geometry || {};
+            if (g.type === 'Polygon') return (g.coordinates || []).length;
+            if (g.type === 'MultiPolygon') return (g.coordinates || []).map(function (p) { return p.length; });
+            return g.type;
+          }));
         if (src) src.setData({ type: 'FeatureCollection', features: feats });
       } catch (e) {
         console.error('[gis-fl-preview] refresh failed', e);
