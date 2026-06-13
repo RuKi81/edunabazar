@@ -1296,9 +1296,12 @@
        Без побочных эффектов на userfieldsFC / очередь (в отличие от
        applyHoleCut, который заточен под «Мои поля»). */
     function computeHoleCut(target, holeFeature) {
-      var diff = null;
+      var diff = null, e1 = null, e2 = null;
       try { diff = turf.difference(turf.featureCollection([target, holeFeature])); }
-      catch (e1) { try { diff = turf.difference(target, holeFeature); } catch (e2) {} }
+      catch (err1) { e1 = err1; try { diff = turf.difference(target, holeFeature); } catch (err2) { e2 = err2; } }
+      console.log('[gis-holecut] targetType=', target && target.geometry && target.geometry.type,
+        'holeType=', holeFeature && holeFeature.geometry && holeFeature.geometry.type,
+        'diff=', diff && diff.geometry && diff.geometry.type, 'e1=', e1 && (e1.message || e1), 'e2=', e2 && (e2.message || e2));
       if (!diff || !diff.geometry) {
         toast('Не удалось вырезать: петля должна быть внутри полигона.', true);
         return null;
@@ -1307,6 +1310,7 @@
         try { return turf.booleanPointInPolygon(turf.centerOfMass(f), target); }
         catch (_) { return true; }
       });
+      console.log('[gis-holecut] flattenCount=', turf.flatten(diff).features.length, 'piecesAfterFilter=', pieces.length);
       if (!pieces.length) { toast('Петля вне полигона — нечего вырезать.', true); return null; }
       var donut = pieces.length === 1
         ? pieces[0]
