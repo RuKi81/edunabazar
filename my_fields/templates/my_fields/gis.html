@@ -1306,10 +1306,16 @@
         toast('Не удалось вырезать: петля должна быть внутри полигона.', true);
         return null;
       }
+      /* diff = target − hole — это уже и есть искомый донат. Фильтр по
+         центру масс внутри target ОШИБОЧЕН для выреза: у MultiPolygon-угодий
+         (несколько раздельных контуров Росреестра) центр масс доната падает
+         в дырку/промежуток между частями и оказывается вне target — донат
+         терялся. Поэтому берём все части diff как есть, отбрасывая лишь
+         вырожденные (нулевой площади). */
       var pieces = turf.flatten(diff).features.filter(function (f) {
-        try { return turf.booleanPointInPolygon(turf.centerOfMass(f), target); }
-        catch (_) { return true; }
+        try { return turf.area(f) > 0.01; } catch (_) { return true; }
       });
+      if (!pieces.length) pieces = turf.flatten(diff).features;
       console.log('[gis-holecut] flattenCount=', turf.flatten(diff).features.length, 'piecesAfterFilter=', pieces.length);
       if (!pieces.length) { toast('Петля вне полигона — нечего вырезать.', true); return null; }
       var donut = pieces.length === 1
