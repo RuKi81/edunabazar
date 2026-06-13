@@ -372,6 +372,45 @@
     var IS_USED_LABELS = { 1: 'Используется', 0: 'Не используется', '-1': 'Неизвестно' };
 
     /* ──────────────────────────── Map style ──────────────────────────── */
+    /* Конфиги source/layers ЗСН вынесены в переменные, чтобы их можно было
+       1-в-1 переиспользовать при «жёстком» обновлении тайлов
+       (refreshFarmlandTiles удаляет и заново добавляет source + слои —
+       это надёжнее setTiles, который оставляет overzoom-тайлы (zoom >
+       maxzoom) устаревшими/пустыми → полигоны «пропадают» на части зумов). */
+    var FARMLAND_TILE_BASE = location.origin + '/agrocosmos/api/tiles/{z}/{x}/{y}.pbf';
+    function farmlandSourceDef(version) {
+      /* ?v=<token>: тайлы ЗСН кэшируются и на сервере (cache_page 10 мин), и
+         в браузере (max-age=600). Уникальный токен на загрузку/refresh даёт
+         свежие данные после reload и после правок, не ловя устаревший кэш. */
+      return {
+        type: 'vector',
+        tiles: [FARMLAND_TILE_BASE + '?v=' + version],
+        minzoom: 6, maxzoom: 14,
+        promoteId: { farmlands: 'id' },
+      };
+    }
+    var FARMLAND_FILL_LAYER = {
+      id: 'farmlands-fill',
+      type: 'fill', source: 'farmlands', 'source-layer': 'farmlands',
+      paint: {
+        'fill-color': [
+          'match', ['get', 'is_used'],
+          1, '#66bb6a',
+          0, '#ffa726',
+          '#90a4ae',
+        ],
+        'fill-opacity': [
+          'case', ['boolean', ['feature-state', 'hover'], false],
+          0.55, 0.30,
+        ],
+      },
+    };
+    var FARMLAND_OUTLINE_LAYER = {
+      id: 'farmlands-outline',
+      type: 'line', source: 'farmlands', 'source-layer': 'farmlands',
+      paint: { 'line-color': '#37474f', 'line-width': 0.6 },
+    };
+
     var style = {
       version: 8,
       glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
@@ -380,44 +419,14 @@
           type: 'raster', tileSize: 256,
           tiles: BASEMAPS.osm.tiles, attribution: BASEMAPS.osm.attribution,
         },
-        farmlands: {
-          type: 'vector',
-          /* ?v=<load-token>: тайлы ЗСН кэшируются и на сервере (cache_page
-             10 мин), и в браузере (max-age=600). Без cache-buster после
-             перезагрузки страницы карта показывала бы устаревший тайл —
-             удалённые/изменённые угодья «возвращались». Уникальный токен на
-             каждую загрузку страницы гарантирует свежие данные после reload,
-             но в пределах сессии тайлы всё ещё кэшируются (токен один). */
-          tiles: [location.origin + '/agrocosmos/api/tiles/{z}/{x}/{y}.pbf?v=' + Date.now()],
-          minzoom: 6, maxzoom: 14,
-          promoteId: { farmlands: 'id' },
-        },
+        farmlands: farmlandSourceDef(Date.now()),
         userfields: { type: 'geojson', data: { type: 'FeatureCollection', features: [] }, promoteId: 'id' },
         snap: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
       },
       layers: [
         { id: 'basemap', type: 'raster', source: 'basemap' },
-        {
-          id: 'farmlands-fill',
-          type: 'fill', source: 'farmlands', 'source-layer': 'farmlands',
-          paint: {
-            'fill-color': [
-              'match', ['get', 'is_used'],
-              1, '#66bb6a',
-              0, '#ffa726',
-              '#90a4ae',
-            ],
-            'fill-opacity': [
-              'case', ['boolean', ['feature-state', 'hover'], false],
-              0.55, 0.30,
-            ],
-          },
-        },
-        {
-          id: 'farmlands-outline',
-          type: 'line', source: 'farmlands', 'source-layer': 'farmlands',
-          paint: { 'line-color': '#37474f', 'line-width': 0.6 },
-        },
+        FARMLAND_FILL_LAYER,
+        FARMLAND_OUTLINE_LAYER,
         {
           id: 'userfields-fill',
           type: 'fill', source: 'userfields',
@@ -1013,15 +1022,28 @@
     }
 
     function refreshFarmlandTiles() {
-      flTileVersion++;
-      var src = map.getSource('farmlands');
-      if (!src) return;
-      var url = location.origin + '/agrocosmos/api/tiles/{z}/{x}/{y}.pbf?v=' + flTileVersion;
+      /* Жёсткое обновление: полностью удаляем source + его слои и создаём
+         заново с новым ?v. Это повторяет то, что делает перезагрузка
+         страницы, и в отличие от setTiles НЕ оставляет устаревшие/пустые
+         overzoom-тайлы (zoom > maxzoom 14) — из-за них полигоны пропадали
+         на части уровней зума после сохранения. Токен версии — уникальная
+         метка времени, чтобы не попасть в серверный/браузерный кэш. */
+      if (!map.getSource('farmlands')) return;
+      flTileVersion = Date.now();
+      /* Запоминаем слой, ПЕРЕД которым держим слои ЗСН, чтобы сохранить
+         порядок отрисовки (ЗСН под слоями «Мои поля» и snap). */
+      var beforeId = map.getLayer('userfields-fill') ? 'userfields-fill'
+                   : (map.getLayer('snap-indicator') ? 'snap-indicator' : undefined);
+      try { if (map.getLayer('farmlands-outline')) map.removeLayer('farmlands-outline'); } catch (_) {}
+      try { if (map.getLayer('farmlands-fill')) map.removeLayer('farmlands-fill'); } catch (_) {}
+      try { map.removeSource('farmlands'); } catch (_) {}
       try {
-        if (typeof src.setTiles === 'function') { src.setTiles([url]); return; }
+        map.addSource('farmlands', farmlandSourceDef(flTileVersion));
+        map.addLayer(FARMLAND_FILL_LAYER, beforeId);
+        map.addLayer(FARMLAND_OUTLINE_LAYER, beforeId);
       } catch (_) {}
-      /* Fallback: дёргаем перерисовку через смену данных (если setTiles нет). */
-      try { map.style.sourceCaches['farmlands'].clearTiles(); map.triggerRepaint(); } catch (_) {}
+      /* Восстанавливаем фильтр-превью (скрытые pk) после пересоздания слоёв. */
+      applyFarmlandFilter();
     }
 
     function setFarmlandEdit(on) {
