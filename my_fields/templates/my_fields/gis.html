@@ -1049,19 +1049,25 @@
        вырез/отверстие видно сразу, ещё до сохранения. Слои ЗСН-draw остаются
        поверх для редактирования узлов, но их заливка прозрачнее и не мешает. */
     function refreshFarmlandPreview() {
-      var feats = [];
-      flPending.updates.forEach(function (geom, pk) {
-        var props = flProps[FL_PREFIX + pk] || {};
-        var iu = (props.is_used != null) ? props.is_used : -1;
-        feats.push({ type: 'Feature', properties: { is_used: iu }, geometry: geom });
-      });
-      flPending.creates.forEach(function (c) {
-        var p = c.props || {};
-        var iu = (p.is_used != null) ? p.is_used : -1;
-        feats.push({ type: 'Feature', properties: { is_used: iu }, geometry: c.geometry });
-      });
-      var src = map.getSource('fl_preview');
-      if (src) src.setData({ type: 'FeatureCollection', features: feats });
+      try {
+        var feats = [];
+        flPending.updates.forEach(function (geom, pk) {
+          if (!geom) return;
+          var props = flProps[FL_PREFIX + pk] || {};
+          var iu = (props.is_used != null) ? props.is_used : -1;
+          feats.push({ type: 'Feature', properties: { is_used: iu }, geometry: geom });
+        });
+        flPending.creates.forEach(function (c) {
+          if (!c || !c.geometry) return;
+          var p = c.props || {};
+          var iu = (p.is_used != null) ? p.is_used : -1;
+          feats.push({ type: 'Feature', properties: { is_used: iu }, geometry: c.geometry });
+        });
+        var src = map.getSource('fl_preview');
+        if (src) src.setData({ type: 'FeatureCollection', features: feats });
+      } catch (e) {
+        console.error('[gis-fl-preview] refresh failed', e);
+      }
     }
 
     /* Полный сброс draw-оверлеев ЗСН (существующие + новые черновики). */
