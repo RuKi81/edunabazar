@@ -1336,6 +1336,7 @@
         if (pk) seen[pk] = true;
       });
       var ids = Object.keys(seen);
+      console.log('[gis-cut] holePoly=', !!holePoly, 'candidate ids=', ids);
       if (!ids.length) {
         toast(holePoly ? 'Петля не попала ни в одно угодье.' : 'Линия не пересекла ни одно угодье.', true);
         if (reenter) setTimeout(reenterSplitLineMode, 0);
@@ -1345,6 +1346,8 @@
         var targets = loaded.filter(function (t) {
           return t && t.feature && t.feature.geometry && cutHitsTarget(probe, t.feature);
         });
+        console.log('[gis-cut] loaded=', loaded.length, 'targets after cutHitsTarget=', targets.length,
+          'pks=', targets.map(function (t) { return t.pk; }));
         if (!targets.length) {
           toast(holePoly ? 'Петля не попала внутрь угодья.' : 'Линия не пересекла угодья насквозь.', true);
           if (reenter) setTimeout(reenterSplitLineMode, 0);
@@ -1368,6 +1371,8 @@
 
         if (holePoly) {
           var r = computeHoleCut(target, holePoly);
+          console.log('[gis-cut] computeHoleCut pk=', t.pk, 'result=', r,
+            'donutRings=', r && r.donut && r.donut.geometry && r.donut.geometry.coordinates && r.donut.geometry.coordinates.length);
           if (!r) return;
           holeCount++;
           queueFarmlandUpdate(t.pk, r.donut.geometry, t.props);
