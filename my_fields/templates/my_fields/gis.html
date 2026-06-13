@@ -1064,14 +1064,6 @@
           feats.push({ type: 'Feature', properties: { is_used: iu }, geometry: c.geometry });
         });
         var src = map.getSource('fl_preview');
-        console.log('[gis-fl-preview] feats=', feats.length,
-          'srcExists=', !!src, 'layerExists=', !!map.getLayer('fl-preview-fill'),
-          'rings=', feats.map(function (f) {
-            var g = f.geometry || {};
-            if (g.type === 'Polygon') return (g.coordinates || []).length;
-            if (g.type === 'MultiPolygon') return (g.coordinates || []).map(function (p) { return p.length; });
-            return g.type;
-          }));
         if (src) src.setData({ type: 'FeatureCollection', features: feats });
       } catch (e) {
         console.error('[gis-fl-preview] refresh failed', e);
@@ -1299,9 +1291,6 @@
       var diff = null, e1 = null, e2 = null;
       try { diff = turf.difference(turf.featureCollection([target, holeFeature])); }
       catch (err1) { e1 = err1; try { diff = turf.difference(target, holeFeature); } catch (err2) { e2 = err2; } }
-      console.log('[gis-holecut] targetType=', target && target.geometry && target.geometry.type,
-        'holeType=', holeFeature && holeFeature.geometry && holeFeature.geometry.type,
-        'diff=', diff && diff.geometry && diff.geometry.type, 'e1=', e1 && (e1.message || e1), 'e2=', e2 && (e2.message || e2));
       if (!diff || !diff.geometry) {
         toast('Не удалось вырезать: петля должна быть внутри полигона.', true);
         return null;
@@ -1316,7 +1305,6 @@
         try { return turf.area(f) > 0.01; } catch (_) { return true; }
       });
       if (!pieces.length) pieces = turf.flatten(diff).features;
-      console.log('[gis-holecut] flattenCount=', turf.flatten(diff).features.length, 'piecesAfterFilter=', pieces.length);
       if (!pieces.length) { toast('Петля вне полигона — нечего вырезать.', true); return null; }
       var donut = pieces.length === 1
         ? pieces[0]
@@ -1346,7 +1334,6 @@
         if (pk) seen[pk] = true;
       });
       var ids = Object.keys(seen);
-      console.log('[gis-cut] holePoly=', !!holePoly, 'candidate ids=', ids);
       if (!ids.length) {
         toast(holePoly ? 'Петля не попала ни в одно угодье.' : 'Линия не пересекла ни одно угодье.', true);
         if (reenter) setTimeout(reenterSplitLineMode, 0);
@@ -1356,8 +1343,6 @@
         var targets = loaded.filter(function (t) {
           return t && t.feature && t.feature.geometry && cutHitsTarget(probe, t.feature);
         });
-        console.log('[gis-cut] loaded=', loaded.length, 'targets after cutHitsTarget=', targets.length,
-          'pks=', targets.map(function (t) { return t.pk; }));
         if (!targets.length) {
           toast(holePoly ? 'Петля не попала внутрь угодья.' : 'Линия не пересекла угодья насквозь.', true);
           if (reenter) setTimeout(reenterSplitLineMode, 0);
@@ -1381,8 +1366,6 @@
 
         if (holePoly) {
           var r = computeHoleCut(target, holePoly);
-          console.log('[gis-cut] computeHoleCut pk=', t.pk, 'result=', r,
-            'donutRings=', r && r.donut && r.donut.geometry && r.donut.geometry.coordinates && r.donut.geometry.coordinates.length);
           if (!r) return;
           holeCount++;
           queueFarmlandUpdate(t.pk, r.donut.geometry, t.props);
@@ -2713,6 +2696,25 @@
       ringCutState = null;
       ringCutTargetId = null;
     }
+    /* Sticky-режим кольца: после выреза снова входим в рисование, чтобы
+       резать несколько отверстий подряд без повторного клика по ◎. */
+    function reenterRingCutMode() {
+      if (layerState.farmlands.editable) {
+        ringCutState = 'draw-hole';
+        ringCutTargetId = null;
+        try { draw.changeMode('draw_polygon'); } catch (_) {}
+        highlightTool('ring_cut');
+        var fh = document.getElementById('gis-toolbar-hint');
+        if (fh) fh.textContent = '◎ Рисуй ещё кольцо · двойной клик — закончить · ☞ для выхода.';
+        return;
+      }
+      ringCutState = 'pick-target';
+      ringCutTargetId = null;
+      try { draw.changeMode('simple_select'); } catch (_) {}
+      highlightTool('ring_cut');
+      var h = document.getElementById('gis-toolbar-hint');
+      if (h) h.textContent = '◎ Кликните по полигону для следующего выреза · ☞ для выхода.';
+    }
 
     map.on('draw.selectionchange', function (e) {
       if (ringCutState !== 'pick-target') return;
@@ -2732,13 +2734,14 @@
       /* Режим ЗСН — без выделения: угодье под кольцом находим по геометрии. */
       if (layerState.farmlands.editable) {
         runFarmlandCut(holeFeature, null, holeFeature, false);
+        setTimeout(reenterRingCutMode, 0);
         return;
       }
 
-      if (fid == null) return;
+      if (fid == null) { setTimeout(reenterRingCutMode, 0); return; }
 
       var idx = fcIndexById(fid);
-      if (idx < 0) { toast('Полигон не найден.', true); return; }
+      if (idx < 0) { toast('Полигон не найден.', true); setTimeout(reenterRingCutMode, 0); return; }
       var origFeat = userfieldsFC.features[idx];
       var drawnPoly;
       try { drawnPoly = draw.get(String(fid)); } catch (_) { drawnPoly = null; }
@@ -2747,6 +2750,7 @@
       if (applyHoleCut(fid, idx, target, holeFeature)) {
         toast('Кольцо вырезано · нажмите 💾 для сохранения');
       }
+      setTimeout(reenterRingCutMode, 0);
     }
 
     /* ════════════════════════════════════════════════════════════════
