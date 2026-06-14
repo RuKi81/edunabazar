@@ -179,6 +179,37 @@
     .gis-massbar button[data-mass="clear"] { background: transparent; opacity: .8; }
     .gis-massbar__hint { font-size: 11px; color: #bbb; padding-left: 4px; }
 
+    /* Модалка массовой правки атрибутов. */
+    .gis-modal { position: fixed; inset: 0; z-index: 1300; display: flex;
+      align-items: center; justify-content: center; }
+    .gis-modal[hidden] { display: none; }
+    .gis-modal__backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.4); }
+    .gis-modal__box { position: relative; background: #fff; border-radius: 10px;
+      width: 420px; max-width: calc(100vw - 32px); max-height: calc(100vh - 64px);
+      box-shadow: 0 8px 40px rgba(0,0,0,.3); display: flex; flex-direction: column; }
+    .gis-modal__head { display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 16px; border-bottom: 1px solid #eee; font-weight: 700; font-size: 15px; }
+    .gis-modal__x { border: none; background: transparent; cursor: pointer; font-size: 16px; color: #888; }
+    .gis-modal__x:hover { color: #333; }
+    .gis-modal__body { padding: 12px 16px; overflow-y: auto; }
+    .gis-modal__foot { display: flex; justify-content: flex-end; gap: 8px;
+      padding: 12px 16px; border-top: 1px solid #eee; }
+    .gis-attrrow { display: grid; grid-template-columns: 22px 130px 1fr;
+      align-items: center; gap: 8px; padding: 7px 0; }
+    .gis-attrrow + .gis-attrrow { border-top: 1px dashed #eee; }
+    .gis-attrrow__label { font-size: 13px; color: #444; }
+    .gis-attrrow input[type="text"], .gis-attrrow select, .gis-attrrow textarea {
+      width: 100%; padding: 6px 8px; border: 1px solid #ccc; border-radius: 5px; font-size: 13px; }
+    .gis-attrrow textarea { resize: vertical; min-height: 48px; }
+    .gis-attrrow input:disabled, .gis-attrrow select:disabled, .gis-attrrow textarea:disabled {
+      background: #f5f5f5; color: #aaa; }
+    .gis-modal .btn-primary { background: #2e7d32; color: #fff; border: none;
+      border-radius: 5px; padding: 8px 16px; cursor: pointer; font-size: 13px; }
+    .gis-modal .btn-primary:hover { background: #1b5e20; }
+    .gis-modal .btn-secondary { background: #eee; color: #333; border: none;
+      border-radius: 5px; padding: 8px 16px; cursor: pointer; font-size: 13px; }
+    .gis-modal__note { font-size: 12px; color: #777; margin: 0 0 10px; line-height: 1.4; }
+
     /* Хлебные крошки — наверху левого сайдбара, inline. */
     .gis-topbar {
       display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px;
@@ -345,6 +376,21 @@
       <button type="button" data-mass="attrs"  title="Изменить атрибуты у всех выделенных">✎ Атрибуты</button>
       <button type="button" data-mass="clear"  title="Снять выделение (Esc)">✕ Снять</button>
       <span class="gis-massbar__hint">Удаление — кнопкой 🗑 на панели.</span>
+    </div>
+
+    <div class="gis-modal" id="gis-attrmodal" hidden>
+      <div class="gis-modal__backdrop" data-attr-close></div>
+      <div class="gis-modal__box" role="dialog" aria-modal="true" aria-labelledby="gis-attrmodal-title">
+        <div class="gis-modal__head">
+          <span id="gis-attrmodal-title">Массовая правка атрибутов</span>
+          <button type="button" class="gis-modal__x" data-attr-close title="Закрыть">✕</button>
+        </div>
+        <div class="gis-modal__body" id="gis-attrmodal-body"></div>
+        <div class="gis-modal__foot">
+          <button type="button" class="btn-secondary" data-attr-close>Отмена</button>
+          <button type="button" class="btn-primary" id="gis-attrmodal-apply">Применить</button>
+        </div>
+      </div>
     </div>
 
     <div class="gis-toast" id="gis-toast" role="status" aria-live="polite"></div>
@@ -1061,11 +1107,13 @@
     var flPending = {
       creates: [],            // [{ drawId, geometry, props }]
       updates: new Map(),     // pk(string) -> geometry
+      attrUpdates: new Map(), // pk(string) -> { crop_type?, is_used?, cadastral_number? }
       deletes: new Set(),     // pk(string)
     };
 
     function flPendingCount() {
-      return flPending.creates.length + flPending.updates.size + flPending.deletes.size;
+      return flPending.creates.length + flPending.updates.size +
+             flPending.attrUpdates.size + flPending.deletes.size;
     }
     function flFindCreateIdx(drawId) {
       var sid = String(drawId);
@@ -1160,7 +1208,7 @@
             '). Выключить редактирование и потерять их?')) {
           return;
         }
-        flPending = { creates: [], updates: new Map(), deletes: new Set() };
+        flPending = { creates: [], updates: new Map(), attrUpdates: new Map(), deletes: new Set() };
         updateSaveBadge();
       }
 
@@ -1182,7 +1230,7 @@
           if (map.getLayer('snap-indicator')) { try { map.moveLayer('snap-indicator'); } catch (_) {} }
         }
         clearFarmlandDrawAll();
-        flPending = { creates: [], updates: new Map(), deletes: new Set() };
+        flPending = { creates: [], updates: new Map(), attrUpdates: new Map(), deletes: new Set() };
         applyFarmlandFilter();
         if (hint) hint.textContent = 'ЗСН: клик → узлы · ⬡ новое · ✂ разрез · ◎ кольцо · 🗑 удалить · 💾 сохранить.';
         try { draw.changeMode('simple_select'); } catch (_) {}
@@ -1193,7 +1241,7 @@
         cancelRingCut();
         clearFarmlandDrawAll();
         flProps = {};
-        flPending = { creates: [], updates: new Map(), deletes: new Set() };
+        flPending = { creates: [], updates: new Map(), attrUpdates: new Map(), deletes: new Set() };
         applyFarmlandFilter();
         if (drawAdded && !layerState.userfields.editable) {
           try { draw.deleteAll(); } catch (_) {}
@@ -1524,7 +1572,7 @@
         try { userfieldsFC.features = JSON.parse(JSON.stringify(userfieldsBaseline)); }
         catch (_) { /* baseline пустой — оставляем как есть */ }
         setUserfieldsData();
-        pending = { creates: [], updates: new Map(), deletes: new Set() };
+        pending = { creates: [], updates: new Map(), attrUpdates: new Map(), deletes: new Set() };
         updateSaveBadge();
       }
       /* Режимы редактирования userfields и farmlands — взаимоисключающие. */
@@ -2451,6 +2499,152 @@
       toast('В очередь на удаление: ' + n + ' · 💾 для применения, ↶ — отмена.');
     }
 
+    /* ── Массовая правка атрибутов (калькулятор полей) ───────────────────
+       Списки выбора атрибутов. Для каждого слоя — свой набор полей.
+       crop_type у userfields и farmlands различается (см. models.py). */
+    var CROP_CHOICES_UF = [
+      ['arable', 'Пашня'], ['fallow', 'Залежь'], ['hayfield', 'Сенокос'],
+      ['pasture', 'Пастбище'], ['perennial', 'Многолетние насаждения'],
+      ['garden', 'Сад / огород'], ['other', 'Прочее'],
+    ];
+    var CROP_CHOICES_FL = [
+      ['arable', 'Пашня'], ['fallow', 'Залежь'], ['hayfield', 'Сенокос'],
+      ['pasture', 'Пастбище'], ['perennial', 'Многолетние насаждения'],
+      ['other_agri', 'Иные с.-х. земли'], ['other', 'Прочее'],
+    ];
+    var IS_USED_CHOICES = [['1', 'Используется'], ['0', 'Не используется'], ['-1', 'Неизвестно']];
+
+    function optionsHtml(choices) {
+      return choices.map(function (c) {
+        return '<option value="' + c[0] + '">' + c[1] + '</option>';
+      }).join('');
+    }
+
+    /* Одна строка формы: чекбокс «менять это поле» + подпись + контрол.
+       data-field — имя свойства; data-kind — тип значения для сбора. */
+    function attrRow(field, label, kind, controlHtml) {
+      return '' +
+        '<div class="gis-attrrow">' +
+          '<input type="checkbox" class="gis-attr-on" data-field="' + field +
+            '" data-kind="' + kind + '" title="Изменить это поле">' +
+          '<span class="gis-attrrow__label">' + label + '</span>' +
+          controlHtml +
+        '</div>';
+    }
+
+    function buildAttrFormHtml(layer) {
+      if (layer === 'farmlands') {
+        return '' +
+          '<p class="gis-modal__note">Отметьте слева поля, которые нужно изменить. ' +
+          'Изменения попадут в очередь — примените 💾.</p>' +
+          attrRow('crop_type', 'Вид угодья', 'str',
+            '<select data-input disabled>' + optionsHtml(CROP_CHOICES_FL) + '</select>') +
+          attrRow('is_used', 'Использование', 'int',
+            '<select data-input disabled>' + optionsHtml(IS_USED_CHOICES) + '</select>') +
+          attrRow('cadastral_number', 'Кадастр. номер', 'str',
+            '<input type="text" data-input disabled placeholder="напр. 22:01:000000:123">');
+      }
+      return '' +
+        '<p class="gis-modal__note">Отметьте слева поля, которые нужно изменить. ' +
+        'Изменения попадут в очередь — примените 💾.</p>' +
+        attrRow('crop_type', 'Тип угодья', 'str',
+          '<select data-input disabled>' + optionsHtml(CROP_CHOICES_UF) + '</select>') +
+        attrRow('cadastral_number', 'Кадастр. номер', 'str',
+          '<input type="text" data-input disabled placeholder="напр. 22:01:000000:123">') +
+        attrRow('notes', 'Заметки', 'str',
+          '<textarea data-input disabled placeholder="Текст заметки для всех выбранных"></textarea>') +
+        attrRow('is_archived', 'В архив', 'bool',
+          '<select data-input disabled><option value="true">Да</option><option value="false">Нет</option></select>');
+    }
+
+    function openMassAttrModal() {
+      if (!massSel.ids.size) return;
+      var layer = massSel.layer;
+      var body = document.getElementById('gis-attrmodal-body');
+      var title = document.getElementById('gis-attrmodal-title');
+      var lbl = layer === 'farmlands' ? 'угодий' : 'полей';
+      if (title) title.textContent = 'Атрибуты: ' + massSel.ids.size + ' ' + lbl;
+      if (body) {
+        body.innerHTML = buildAttrFormHtml(layer);
+        /* Чекбокс включает/выключает свой контрол. */
+        body.querySelectorAll('.gis-attrrow').forEach(function (row) {
+          var chk = row.querySelector('.gis-attr-on');
+          var ctl = row.querySelector('[data-input]');
+          if (chk && ctl) {
+            chk.addEventListener('change', function () { ctl.disabled = !chk.checked; });
+          }
+        });
+      }
+      var modal = document.getElementById('gis-attrmodal');
+      if (modal) modal.hidden = false;
+    }
+
+    function closeMassAttrModal() {
+      var modal = document.getElementById('gis-attrmodal');
+      if (modal) modal.hidden = true;
+    }
+
+    /* Собрать patch только из отмеченных строк. */
+    function collectAttrPatch() {
+      var patch = {};
+      var body = document.getElementById('gis-attrmodal-body');
+      if (!body) return patch;
+      body.querySelectorAll('.gis-attrrow').forEach(function (row) {
+        var chk = row.querySelector('.gis-attr-on');
+        var ctl = row.querySelector('[data-input]');
+        if (!chk || !chk.checked || !ctl) return;
+        var field = chk.getAttribute('data-field');
+        var kind = chk.getAttribute('data-kind');
+        var raw = ctl.value;
+        if (kind === 'int') patch[field] = parseInt(raw, 10);
+        else if (kind === 'bool') patch[field] = (raw === 'true');
+        else patch[field] = raw;
+      });
+      return patch;
+    }
+
+    /* Применить patch ко всем выбранным — в очередь attrUpdates. */
+    function applyMassAttrs(patch) {
+      var layer = massSel.layer;
+      var ids = Array.from(massSel.ids);
+      var keys = Object.keys(patch);
+      if (!ids.length || !keys.length) return 0;
+
+      if (layer === 'userfields') {
+        ids.forEach(function (id) {
+          var sid = String(id);
+          var ci = findPendingCreateIdx(sid);
+          if (ci >= 0) {
+            var cp = pending.creates[ci].props || (pending.creates[ci].props = {});
+            keys.forEach(function (k) { cp[k] = patch[k]; });
+          } else {
+            var cur = pending.attrUpdates.get(sid) || {};
+            keys.forEach(function (k) { cur[k] = patch[k]; });
+            pending.attrUpdates.set(sid, cur);
+          }
+          var idx = fcIndexById(sid);
+          if (idx >= 0) {
+            var pr = userfieldsFC.features[idx].properties || {};
+            keys.forEach(function (k) { pr[k] = patch[k]; });
+            if (ci < 0 && !pr._dirty) pr._dirty = 'update';
+            userfieldsFC.features[idx].properties = pr;
+          }
+        });
+        setUserfieldsData();
+      } else if (layer === 'farmlands') {
+        ids.forEach(function (pk) {
+          pk = String(pk);
+          var cur = flPending.attrUpdates.get(pk) || {};
+          keys.forEach(function (k) { cur[k] = patch[k]; });
+          flPending.attrUpdates.set(pk, cur);
+          var sid = FL_PREFIX + pk;
+          if (flProps[sid]) keys.forEach(function (k) { flProps[sid][k] = patch[k]; });
+        });
+      }
+      updateSaveBadge();
+      return ids.length;
+    }
+
     /* Кнопки панели массовых операций. */
     (function () {
       var bar = document.getElementById('gis-massbar');
@@ -2460,9 +2654,31 @@
         if (!btn) return;
         var act = btn.getAttribute('data-mass');
         if (act === 'clear')  { clearMassSelection(); return; }
-        if (act === 'attrs')  { toast('Массовая правка атрибутов — в разработке.', true); return; }
+        if (act === 'attrs')  { openMassAttrModal(); return; }
         if (act === 'merge')  { toast('Массовое объединение — в разработке.', true); return; }
       });
+    })();
+
+    /* Обработчики модалки массовой правки атрибутов. */
+    (function () {
+      var modal = document.getElementById('gis-attrmodal');
+      if (!modal) return;
+      modal.addEventListener('click', function (e) {
+        if (e.target.closest('[data-attr-close]')) { closeMassAttrModal(); return; }
+      });
+      var applyBtn = document.getElementById('gis-attrmodal-apply');
+      if (applyBtn) {
+        applyBtn.addEventListener('click', function () {
+          var patch = collectAttrPatch();
+          if (!Object.keys(patch).length) {
+            toast('Отметьте хотя бы одно поле для изменения.', true);
+            return;
+          }
+          var n = applyMassAttrs(patch);
+          closeMassAttrModal();
+          toast('Атрибуты обновлены у ' + n + ' объектов · 💾 для применения, ↶ — отмена.');
+        });
+      }
     })();
 
     /* ──────────────────────── Draw events ──────────────────────── */
@@ -2658,6 +2874,7 @@
     var pending = {
       creates: [],            // [{ drawId, geometry, props, label }]
       updates: new Map(),     // fid(string) -> geometry
+      attrUpdates: new Map(), // fid(string) -> { name?, crop_type?, cadastral_number?, notes?, is_archived? }
       deletes: new Set(),     // fid(string)
     };
     var userfieldsBaseline = [];   // deep-clone снимков userfieldsFC.features
@@ -2669,7 +2886,8 @@
     }
 
     function ufPendingCount() {
-      return pending.creates.length + pending.updates.size + pending.deletes.size;
+      return pending.creates.length + pending.updates.size +
+             pending.attrUpdates.size + pending.deletes.size;
     }
     /* Общий счётчик для бейджа/сохранения — обе очереди (как просили:
        единая логика для всех слоёв). */
@@ -2805,9 +3023,17 @@
           .then(function (res) { return { kind: 'delete', sid: sid, res: res }; })
           .catch(function (e) { return { kind: 'delete', sid: sid, res: { ok: false, error: e } }; }));
       });
-      pending.updates.forEach(function (geom, sid) {
+      /* updates (геометрия) + attrUpdates (атрибуты) объединяем в один PATCH
+         на объект, чтобы не было двух гонок-запросов к одной строке. */
+      var ufUpdKeys = {};
+      pending.updates.forEach(function (_g, sid) { ufUpdKeys[sid] = 1; });
+      pending.attrUpdates.forEach(function (_p, sid) { ufUpdKeys[sid] = 1; });
+      Object.keys(ufUpdKeys).forEach(function (sid) {
+        var body = {};
+        if (pending.updates.has(sid)) body.geometry = pending.updates.get(sid);
+        if (pending.attrUpdates.has(sid)) body.properties = pending.attrUpdates.get(sid);
         ops.push(apiFetch('/api/my/fields/' + encodeURIComponent(sid) + '/', {
-          method: 'PATCH', body: JSON.stringify({ geometry: geom }),
+          method: 'PATCH', body: JSON.stringify(body),
         }).then(function (res) { return { kind: 'update', sid: sid, res: res }; })
           .catch(function (e) { return { kind: 'update', sid: sid, res: { ok: false, error: e } }; }));
       });
@@ -2829,9 +3055,15 @@
           .then(function (res) { return { kind: 'fl-delete', pk: pk, res: res }; })
           .catch(function (e) { return { kind: 'fl-delete', pk: pk, res: { ok: false, error: e } }; }));
       });
-      flPending.updates.forEach(function (geom, pk) {
+      var flUpdKeys = {};
+      flPending.updates.forEach(function (_g, pk) { flUpdKeys[pk] = 1; });
+      flPending.attrUpdates.forEach(function (_p, pk) { flUpdKeys[pk] = 1; });
+      Object.keys(flUpdKeys).forEach(function (pk) {
+        var body = {};
+        if (flPending.updates.has(pk)) body.geometry = flPending.updates.get(pk);
+        if (flPending.attrUpdates.has(pk)) body.properties = flPending.attrUpdates.get(pk);
         ops.push(apiFetch('/agrocosmos/api/farmland/' + encodeURIComponent(pk) + '/', {
-          method: 'PATCH', body: JSON.stringify({ geometry: geom }),
+          method: 'PATCH', body: JSON.stringify(body),
         }).then(function (res) { return { kind: 'fl-update', pk: pk, res: res }; })
           .catch(function (e) { return { kind: 'fl-update', pk: pk, res: { ok: false, error: e } }; }));
       });
@@ -2854,8 +3086,8 @@
         });
         /* Сбрасываем обе очереди независимо от частичных ошибок — данные
            ниже всё равно перечитаем с сервера/тайлов. */
-        pending = { creates: [], updates: new Map(), deletes: new Set() };
-        flPending = { creates: [], updates: new Map(), deletes: new Set() };
+        pending = { creates: [], updates: new Map(), attrUpdates: new Map(), deletes: new Set() };
+        flPending = { creates: [], updates: new Map(), attrUpdates: new Map(), deletes: new Set() };
         loadUserFields().then(function () {
           if (drawAdded) {
             try { draw.deleteAll(); } catch (_) {}
@@ -2885,8 +3117,8 @@
       try { userfieldsFC.features = JSON.parse(JSON.stringify(userfieldsBaseline)); }
       catch (_) { userfieldsFC.features = []; }
       setUserfieldsData();
-      pending = { creates: [], updates: new Map(), deletes: new Set() };
-      flPending = { creates: [], updates: new Map(), deletes: new Set() };
+      pending = { creates: [], updates: new Map(), attrUpdates: new Map(), deletes: new Set() };
+      flPending = { creates: [], updates: new Map(), attrUpdates: new Map(), deletes: new Set() };
       if (drawAdded) {
         try { draw.deleteAll(); } catch (_) {}
         persistedDrawIds.clear();
