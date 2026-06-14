@@ -2071,23 +2071,83 @@
           if (typeof turf.booleanIntersects === 'function') {
             overlaps = !!turf.booleanIntersects(current, nb);
           }
-        } catch (eo) { console.warn('[gis-clip] booleanIntersects threw', eo); overlaps = true; }
-        console.log('[gis-clip] neighbor', nb.id, 'overlaps=', overlaps);
+        } catch (eo) { overlaps = true; }
         if (!overlaps) continue;
 
         var diff, ok = false;
         try { diff = turf.difference(turf.featureCollection([current, nb])); ok = true; }
         catch (e1) {
-          console.warn('[gis-clip] difference(FC) threw', e1);
           try { diff = turf.difference(current, nb); ok = true; }
-          catch (e2) { console.warn('[gis-clip] difference(2-arg) threw', e2); ok = false; }
+          catch (e2) { ok = false; }
         }
-        console.log('[gis-clip] diff result', diff, 'ok=', ok);
         if (!ok) continue;
         if (diff === null) { return { geometry: null, clipped: true }; }
         if (diff && diff.geometry) { current = diff; clipped = true; }
       }
       return { geometry: current.geometry, clipped: clipped };
+    }
+
+    /* Обрезка нового полигона ЗСН по соседним угодьям. В отличие от «Мои
+       поля», соседи не лежат в памяти: их геометрия в MVT-тайлах обрезана
+       границей тайла, поэтому полную геометрию тянем по API (fetchFarmland
+       Feature). Учитываем также уже отредактированные (в draw) и новые
+       поставленные в очередь угодья. Возвращает Promise<{ geometry, clipped }>;
+       geometry === null означает полное перекрытие. */
+    function clipFarmlandByNeighbors(geometry, excludeDrawId) {
+      if (!geometry || typeof turf.difference !== 'function') {
+        return Promise.resolve({ geometry: geometry, clipped: false });
+      }
+      var probe = { type: 'Feature', properties: {}, geometry: geometry };
+      /* pk соседей: из видимых тайлов под новым полигоном + уже загруженные
+         в draw (они скрыты фильтром из тайлов). */
+      var seen = {};
+      try { farmlandIdsUnderProbe(probe).forEach(function (id) { seen[id] = true; }); } catch (_) {}
+      flDrawIds.forEach(function (sid) {
+        var pk = sid.slice(FL_PREFIX.length);
+        if (pk) seen[pk] = true;
+      });
+      var pks = Object.keys(seen);
+      /* Новые (ещё не сохранённые) угодья из очереди — у них нет pk. */
+      var createNbs = flPending.creates.filter(function (c) {
+        return c && c.geometry && String(c.drawId) !== String(excludeDrawId);
+      });
+
+      return Promise.all(pks.map(fetchFarmlandFeature)).then(function (loaded) {
+        var nbs = [];
+        loaded.forEach(function (t) {
+          if (t && t.feature && t.feature.geometry) nbs.push(t.feature);
+        });
+        createNbs.forEach(function (c) {
+          nbs.push({ type: 'Feature', properties: {}, geometry: c.geometry });
+        });
+
+        var current = { type: 'Feature', properties: {}, geometry: geometry };
+        var clipped = false;
+        for (var i = 0; i < nbs.length; i++) {
+          var nb = nbs[i];
+          var tp = nb.geometry.type;
+          if (tp !== 'Polygon' && tp !== 'MultiPolygon') continue;
+
+          var overlaps = true;
+          try {
+            if (typeof turf.booleanIntersects === 'function') {
+              overlaps = !!turf.booleanIntersects(current, nb);
+            }
+          } catch (_) { overlaps = true; }
+          if (!overlaps) continue;
+
+          var diff, ok = false;
+          try { diff = turf.difference(turf.featureCollection([current, nb])); ok = true; }
+          catch (e1) {
+            try { diff = turf.difference(current, nb); ok = true; }
+            catch (e2) { ok = false; }
+          }
+          if (!ok) continue;
+          if (diff === null) { return { geometry: null, clipped: true }; }
+          if (diff && diff.geometry) { current = diff; clipped = true; }
+        }
+        return { geometry: current.geometry, clipped: clipped };
+      });
     }
 
     function reenterSplitLineMode() {
@@ -2144,21 +2204,43 @@
         try { draw.delete(f.id); } catch (_) {}
         return;
       }
-      /* Режим редактирования ЗСН: новый полигон сразу создаётся в
-         agro_farmland (немедленный POST), минуя batch-очередь «Мои поля». */
+      var clipEl = document.getElementById('gis-clip-overlap');
+      var clipOn = !!(clipEl && clipEl.checked);
+
+      /* Режим редактирования ЗСН: новый полигон кладётся в очередь создания
+         (batch). Если включена обрезка — сначала асинхронно вычитаем соседние
+         угодья (их геометрию тянем по API, т.к. в тайлах она обрезана). */
       if (layerState.farmlands.editable) {
-        createFarmland(f);
+        if (!clipOn) { createFarmland(f); return; }
+        clipFarmlandByNeighbors(f.geometry, f.id).then(function (res) {
+          if (res.geometry === null) {
+            toast('Полигон полностью перекрыт соседними угодьями — нечего сохранять.', true);
+            try { draw.delete(f.id); } catch (_) {}
+            setTimeout(function () {
+              try { draw.changeMode('draw_polygon'); } catch (_) {}
+              highlightTool('draw_polygon');
+            }, 0);
+            return;
+          }
+          if (res.clipped) {
+            f.geometry = res.geometry;
+            try {
+              drawAddSilent({ type: 'Feature', id: String(f.id), properties: { _fl: true, _flnew: true }, geometry: f.geometry });
+            } catch (_) {}
+            toast('Полигон обрезан по границе соседних угодий.');
+          }
+          createFarmland(f);
+        }).catch(function (e) {
+          console.error('[gis-clip-fl] failed', e);
+          createFarmland(f);
+        });
         return;
       }
       /* «Обрезать по границе»: если включено — вычитаем из нового полигона
          все соседние поля, на которые он накладывается, чтобы он точно
          прилёг к их границам без перекрытия. */
-      var clipEl = document.getElementById('gis-clip-overlap');
-      console.log('[gis-clip] draw.create create-branch; clip checkbox=', !!(clipEl && clipEl.checked),
-                  'neighbors=', userfieldsFC.features.length);
-      if (clipEl && clipEl.checked) {
+      if (clipOn) {
         var res = clipPolygonByNeighbors(f.geometry, f.id);
-        console.log('[gis-clip] result', res);
         if (res.geometry === null) {
           toast('Полигон полностью перекрыт соседними полями — нечего сохранять.', true);
           try { draw.delete(f.id); } catch (_) {}
