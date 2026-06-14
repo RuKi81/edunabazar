@@ -2428,7 +2428,7 @@
       var lbl = layer === 'farmlands' ? 'угодий' : 'полей';
       if (!window.confirm('Удалить выбранные (' + n + ' ' + lbl +
           ')? Объекты попадут в очередь на удаление — примените 💾.')) return;
-      var ids = Array.prototype.slice.call(massSel.ids);
+      var ids = Array.from(massSel.ids);
       ids.forEach(function (id) { setSelState(layer, id, false); });
 
       if (layer === 'userfields') {
