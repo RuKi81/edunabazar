@@ -162,6 +162,23 @@
       box-shadow: 0 1px 3px rgba(0,0,0,.25);
     }
 
+    /* Панель массовых операций над выделением (лассо). */
+    .gis-massbar {
+      position: fixed; bottom: 64px; left: 50%; transform: translateX(-50%);
+      z-index: 1150; display: flex; gap: 6px; align-items: center;
+      background: rgba(40,40,40,.95); color: #fff; border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0,0,0,.3); padding: 6px 10px;
+    }
+    .gis-massbar[hidden] { display: none; }
+    .gis-massbar__count { font-size: 13px; font-weight: 700; padding-right: 4px; }
+    .gis-massbar button {
+      border: none; background: rgba(255,255,255,.12); color: #fff; cursor: pointer;
+      border-radius: 5px; padding: 6px 10px; font-size: 12px;
+    }
+    .gis-massbar button:hover { background: rgba(255,255,255,.25); }
+    .gis-massbar button[data-mass="delete"]:hover { background: #c62828; }
+    .gis-massbar button[data-mass="clear"] { background: transparent; opacity: .8; }
+
     /* Хлебные крошки — наверху левого сайдбара, inline. */
     .gis-topbar {
       display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px;
@@ -296,6 +313,7 @@
 
     <div class="gis-toolbar" role="toolbar" aria-label="Инструменты редактирования">
       <button data-tool="select" type="button" title="Выделение">☞</button>
+      <button data-tool="lasso_select" type="button" title="Множественный выбор: зажмите Shift и кликами обведите объекты (двойной клик — выбрать). Лассо можно повторять — выбор накапливается." disabled>▦</button>
       <span class="sep"></span>
       <button data-tool="draw_polygon"     type="button" title="Полигон" disabled>⬡</button>
       <button data-tool="draw_line_string" type="button" title="Линия"   disabled>╱</button>
@@ -318,6 +336,14 @@
       <button data-tool="save"    type="button" title="Сохранить все изменения" disabled>💾</button>
       <button data-tool="discard" type="button" title="Отменить все несохранённые изменения" disabled>↶</button>
       <span class="hint" id="gis-toolbar-hint">Включите редактирование «Мои поля» в левом меню.</span>
+    </div>
+
+    <div class="gis-massbar" id="gis-massbar" hidden>
+      <span class="gis-massbar__count" id="gis-mass-count">Выбрано: 0</span>
+      <button type="button" data-mass="merge"  title="Слить выделенные полигоны в один">⬓ Объединить</button>
+      <button type="button" data-mass="attrs"  title="Изменить атрибуты у всех выделенных">✎ Атрибуты</button>
+      <button type="button" data-mass="delete" title="Удалить все выделенные">🗑 Удалить</button>
+      <button type="button" data-mass="clear"  title="Снять выделение (Esc)">✕ Снять</button>
     </div>
 
     <div class="gis-toast" id="gis-toast" role="status" aria-live="polite"></div>
@@ -394,14 +420,19 @@
       type: 'fill', source: 'farmlands', 'source-layer': 'farmlands',
       paint: {
         'fill-color': [
-          'match', ['get', 'is_used'],
-          1, '#66bb6a',
-          0, '#ffa726',
-          '#90a4ae',
+          'case', ['boolean', ['feature-state', 'selected'], false], '#e91e63',
+          [
+            'match', ['get', 'is_used'],
+            1, '#66bb6a',
+            0, '#ffa726',
+            '#90a4ae',
+          ],
         ],
         'fill-opacity': [
-          'case', ['boolean', ['feature-state', 'hover'], false],
-          0.55, 0.30,
+          'case',
+          ['boolean', ['feature-state', 'selected'], false], 0.55,
+          ['boolean', ['feature-state', 'hover'], false], 0.55,
+          0.30,
         ],
       },
     };
@@ -454,7 +485,14 @@
         {
           id: 'userfields-fill',
           type: 'fill', source: 'userfields',
-          paint: { 'fill-color': '#2e7d32', 'fill-opacity': 0.30 },
+          paint: {
+            'fill-color': [
+              'case', ['boolean', ['feature-state', 'selected'], false], '#e91e63', '#2e7d32',
+            ],
+            'fill-opacity': [
+              'case', ['boolean', ['feature-state', 'selected'], false], 0.50, 0.30,
+            ],
+          },
         },
         {
           id: 'userfields-outline',
@@ -1118,6 +1156,7 @@
       /* Взаимоисключение с режимом «Мои поля». */
       if (on && layerState.userfields.editable) setEditMode(false);
 
+      try { cancelLassoSelect(); clearMassSelection(); } catch (_) {}
       layerState.farmlands.editable = on;
       var btn = document.querySelector('.gis-layer[data-layer="farmlands"] .gis-layer__btn[data-action="edit"]');
       if (btn) btn.classList.toggle('active', on);
@@ -1480,6 +1519,7 @@
       /* Режимы редактирования userfields и farmlands — взаимоисключающие. */
       if (on && layerState.farmlands.editable) setFarmlandEdit(false);
 
+      try { cancelLassoSelect(); clearMassSelection(); } catch (_) {}
       layerState.userfields.editable = on;
       var btn = document.querySelector('.gis-layer[data-layer="userfields"] .gis-layer__btn[data-action="edit"]');
       if (btn) btn.classList.toggle('active', on);
@@ -1532,10 +1572,16 @@
         if (tool === 'discard') { discardPending(); return; }
         if (tool !== 'trash') highlightTool(tool);
         if (!drawAdded && tool !== 'select') return;
+        /* Любой инструмент кроме лассо выходит из режима выделения. */
+        if (tool !== 'lasso_select') cancelLassoSelect();
 
         if (tool === 'trash') {
           handleTrash();
           btn.classList.remove('active');
+          return;
+        }
+        if (tool === 'lasso_select') {
+          startLassoSelect();
           return;
         }
         if (tool === 'split') {
@@ -2173,6 +2219,185 @@
       return Math.abs(area * R * R / 2) / 10000;
     }
 
+    /* ════════════════════════════════════════════════════════════════
+       Массовое выделение (лассо) для последующих массовых операций.
+       Активируется зажатым Shift или кнопкой ▦. Пользователь кликами
+       обводит объекты произвольным полигоном (двойной клик — завершить),
+       все объекты под лассо добавляются к выбору. Лассо можно повторять —
+       выбор накапливается. Подсветка — через feature-state 'selected'.
+       ════════════════════════════════════════════════════════════════ */
+    var lassoSelectState = false;
+    var massSel = { layer: null, ids: new Set(), feats: new Map() };
+
+    function currentEditableLayer() {
+      if (layerState.farmlands.editable) return 'farmlands';
+      if (layerState.userfields.editable) return 'userfields';
+      return null;
+    }
+
+    function setSelState(layer, id, on) {
+      try {
+        if (layer === 'farmlands') {
+          map.setFeatureState(
+            { source: 'farmlands', sourceLayer: 'farmlands', id: id },
+            { selected: on });
+        } else {
+          map.setFeatureState({ source: 'userfields', id: id }, { selected: on });
+        }
+      } catch (_) {}
+    }
+
+    function addToSelection(layer, id, geometry, props) {
+      var key = String(id);
+      if (massSel.layer && massSel.layer !== layer) clearMassSelection();
+      massSel.layer = layer;
+      if (!massSel.ids.has(key)) {
+        massSel.ids.add(key);
+        massSel.feats.set(key, { geometry: geometry || null, props: props || {} });
+        setSelState(layer, id, true);
+      }
+    }
+
+    function clearMassSelection() {
+      if (massSel.layer) {
+        massSel.ids.forEach(function (id) { setSelState(massSel.layer, id, false); });
+      }
+      massSel = { layer: null, ids: new Set(), feats: new Map() };
+      updateMassBar();
+    }
+
+    function updateMassBar() {
+      var bar = document.getElementById('gis-massbar');
+      var cnt = document.getElementById('gis-mass-count');
+      if (!bar) return;
+      var n = massSel.ids.size;
+      if (n > 0) {
+        bar.hidden = false;
+        var lbl = massSel.layer === 'farmlands' ? 'угодий' : 'полей';
+        if (cnt) cnt.textContent = 'Выбрано ' + lbl + ': ' + n;
+      } else {
+        bar.hidden = true;
+      }
+    }
+
+    function startLassoSelect() {
+      var layer = currentEditableLayer();
+      if (!layer) { toast('Включите редактирование слоя для выделения.', true); return; }
+      cancelSplit();
+      cancelRingCut();
+      lassoSelectState = true;
+      try { draw.changeMode('draw_polygon'); } catch (_) {}
+      highlightTool('lasso_select');
+      var h = document.getElementById('gis-toolbar-hint');
+      if (h) h.textContent = '▦ Кликами обведите объекты · двойной клик — выбрать · ☞ для выхода.';
+    }
+
+    function cancelLassoSelect() {
+      lassoSelectState = false;
+    }
+
+    /* Завершение рисования лассо: добавляем попавшие объекты к выбору. */
+    function finishLassoSelect(lassoFeat) {
+      var draftId = lassoFeat.id;
+      try { draw.delete(draftId); } catch (_) {}
+      var lasso = { type: 'Feature', properties: {}, geometry: lassoFeat.geometry };
+      var layer = massSel.layer || currentEditableLayer();
+      var added = 0;
+
+      if (layer === 'userfields') {
+        userfieldsFC.features.forEach(function (ft) {
+          if (!ft || !ft.geometry || ft.id == null) return;
+          var tp = ft.geometry.type;
+          if (tp !== 'Polygon' && tp !== 'MultiPolygon') return;
+          var hit = false;
+          try { hit = turf.booleanIntersects(lasso, ft); } catch (_) { hit = false; }
+          if (hit && !massSel.ids.has(String(ft.id))) {
+            addToSelection('userfields', ft.id, ft.geometry, ft.properties || {});
+            added++;
+          }
+        });
+      } else if (layer === 'farmlands') {
+        var bb;
+        try { bb = turf.bbox(lasso); } catch (_) { bb = null; }
+        if (bb) {
+          var p1 = map.project([bb[0], bb[1]]);
+          var p2 = map.project([bb[2], bb[3]]);
+          var box = [
+            [Math.min(p1.x, p2.x), Math.min(p1.y, p2.y)],
+            [Math.max(p1.x, p2.x), Math.max(p1.y, p2.y)],
+          ];
+          var rf = [];
+          try { rf = map.queryRenderedFeatures(box, { layers: ['farmlands-fill'] }); }
+          catch (_) { rf = []; }
+          rf.forEach(function (ft) {
+            var id = (ft.id != null) ? ft.id : (ft.properties && ft.properties.id);
+            if (id == null || massSel.ids.has(String(id))) return;
+            var hit = false;
+            try { hit = turf.booleanIntersects(lasso, ft); } catch (_) { hit = false; }
+            if (hit) {
+              addToSelection('farmlands', id, null, ft.properties || {});
+              added++;
+            }
+          });
+        }
+      }
+
+      updateMassBar();
+      if (added) toast('Добавлено к выбору: ' + added + ' · всего ' + massSel.ids.size + '.');
+      else toast('Под лассо ничего не найдено.', true);
+      /* Sticky: остаёмся в режиме лассо для добавления следующих объектов. */
+      setTimeout(function () {
+        if (lassoSelectState) { try { draw.changeMode('draw_polygon'); } catch (_) {} }
+      }, 0);
+    }
+
+    /* Массовое удаление выбранных — в очередь (как одиночное удаление),
+       применяется по 💾. Один refresh фильтра/бейджа в конце. */
+    function massDeleteSelected() {
+      var n = massSel.ids.size;
+      if (!n) return;
+      var layer = massSel.layer;
+      var lbl = layer === 'farmlands' ? 'угодий' : 'полей';
+      if (!window.confirm('Удалить выбранные (' + n + ' ' + lbl +
+          ')? Объекты попадут в очередь на удаление — примените 💾.')) return;
+      var ids = Array.prototype.slice.call(massSel.ids);
+      ids.forEach(function (id) { setSelState(layer, id, false); });
+
+      if (layer === 'userfields') {
+        ids.forEach(function (id) { try { queueDelete(id); } catch (_) {} });
+      } else if (layer === 'farmlands') {
+        ids.forEach(function (pk) {
+          var sid = FL_PREFIX + pk;
+          flPending.deletes.add(String(pk));
+          flPending.updates.delete(String(pk));
+          if (flDrawIds.has(sid)) { try { draw.delete(sid); } catch (_) {} flDrawIds.delete(sid); }
+          delete flProps[sid];
+        });
+        applyFarmlandFilter();
+        updateSaveBadge();
+      }
+
+      massSel = { layer: null, ids: new Set(), feats: new Map() };
+      updateMassBar();
+      renderEmpty();
+      toast('В очередь на удаление: ' + n + ' · 💾 для применения, ↶ — отмена.');
+    }
+
+    /* Кнопки панели массовых операций. */
+    (function () {
+      var bar = document.getElementById('gis-massbar');
+      if (!bar) return;
+      bar.addEventListener('click', function (e) {
+        var btn = e.target.closest('button[data-mass]');
+        if (!btn) return;
+        var act = btn.getAttribute('data-mass');
+        if (act === 'clear')  { clearMassSelection(); return; }
+        if (act === 'delete') { massDeleteSelected(); return; }
+        if (act === 'attrs')  { toast('Массовая правка атрибутов — в разработке.', true); return; }
+        if (act === 'merge')  { toast('Массовое объединение — в разработке.', true); return; }
+      });
+    })();
+
     /* ──────────────────────── Draw events ──────────────────────── */
     map.on('draw.create', function (ev) {
       /* Программные draw.add (snap write-back, addPersistedToDraw, split/
@@ -2184,6 +2409,13 @@
       /* Защита: дубль draw.add с уже известным id — игнор. */
       if (f.id != null && persistedDrawIds.has(String(f.id))) return;
       if (f.id != null && findPendingCreateIdx(f.id) >= 0) return;
+
+      /* Сценарий «массовое выделение лассо» — поглощаем нарисованный полигон
+         как область выбора (без snap и без постановки в очередь). */
+      if (lassoSelectState && f.geometry.type === 'Polygon') {
+        finishLassoSelect(f);
+        return;
+      }
 
       /* Snap всех вершин свежесозданного объекта к близким соседям. */
       try { snapGeometryInPlace(f.geometry); } catch (_) {}
@@ -2330,8 +2562,8 @@
 
     map.on('draw.modechange', function () {
       if (!drawAdded) return;
-      /* Не сбрасываем подсветку, пока активен флоу split / ring-cut. */
-      if (splitState || ringCutState) return;
+      /* Не сбрасываем подсветку, пока активен флоу split / ring-cut / лассо. */
+      if (splitState || ringCutState || lassoSelectState) return;
       if (draw.getMode() === 'simple_select') highlightTool('select');
     });
 
@@ -2568,6 +2800,7 @@
           /* ЗСН: снимаем фильтр-превью и перезапрашиваем тайлы. */
           applyFarmlandFilter();
           if (hadFarmland) refreshFarmlandTiles();
+          try { cancelLassoSelect(); clearMassSelection(); } catch (_) {}
           updateSaveBadge();
           toast(fail
             ? ('Сохранено: ' + ok + ' · ошибок: ' + fail + (failMsg ? (' · ' + failMsg) : ''))
@@ -2596,6 +2829,7 @@
       }
       /* ЗСН: снимаем фильтр-превью — тайлы снова показывают исходные данные. */
       applyFarmlandFilter();
+      try { cancelLassoSelect(); clearMassSelection(); } catch (_) {}
       updateSaveBadge();
       toast('Изменения отменены');
     }
@@ -2849,6 +3083,36 @@
       if (!sel || !sel.length) return;
       e.preventDefault();
       handleTrash();
+    });
+
+    /* ════════════════════════════════════════════════════════════════
+       Хоткеи массового выделения: Shift — войти в лассо, Esc — выйти/снять.
+       ════════════════════════════════════════════════════════════════ */
+    window.addEventListener('keydown', function (e) {
+      var t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+
+      if (e.key === 'Shift') {
+        if (e.repeat || lassoSelectState || !drawAdded) return;
+        if (splitState || ringCutState) return;
+        if (!currentEditableLayer()) return;
+        var dmode = '';
+        try { dmode = draw.getMode(); } catch (_) {}
+        /* Входим в лассо только из пассивных режимов, чтобы не прерывать
+           рисование/правку узлов. */
+        if (dmode && dmode !== 'simple_select' && dmode !== 'direct_select') return;
+        startLassoSelect();
+        return;
+      }
+
+      if (e.key === 'Escape') {
+        if (lassoSelectState) {
+          cancelLassoSelect();
+          try { draw.changeMode('simple_select'); } catch (_) {}
+          highlightTool('select');
+        }
+        if (massSel.ids.size) clearMassSelection();
+      }
     });
 
     /* ════════════════════════════════════════════════════════════════
