@@ -176,8 +176,8 @@
       border-radius: 5px; padding: 6px 10px; font-size: 12px;
     }
     .gis-massbar button:hover { background: rgba(255,255,255,.25); }
-    .gis-massbar button[data-mass="delete"]:hover { background: #c62828; }
     .gis-massbar button[data-mass="clear"] { background: transparent; opacity: .8; }
+    .gis-massbar__hint { font-size: 11px; color: #bbb; padding-left: 4px; }
 
     /* Хлебные крошки — наверху левого сайдбара, inline. */
     .gis-topbar {
@@ -313,7 +313,8 @@
 
     <div class="gis-toolbar" role="toolbar" aria-label="Инструменты редактирования">
       <button data-tool="select" type="button" title="Выделение">☞</button>
-      <button data-tool="lasso_select" type="button" title="Множественный выбор: зажмите Shift и кликами обведите объекты (двойной клик — выбрать). Лассо можно повторять — выбор накапливается." disabled>▦</button>
+      <button data-tool="pick_select" type="button" title="Множественный выбор кликами: кликайте по объектам, чтобы добавлять/убирать их из выбора." disabled>☑</button>
+      <button data-tool="lasso_select" type="button" title="Множественный выбор полигоном: кликами обведите объекты произвольным контуром (двойной клик — выбрать). Лассо можно повторять — выбор накапливается." disabled>▦</button>
       <span class="sep"></span>
       <button data-tool="draw_polygon"     type="button" title="Полигон" disabled>⬡</button>
       <button data-tool="draw_line_string" type="button" title="Линия"   disabled>╱</button>
@@ -342,8 +343,8 @@
       <span class="gis-massbar__count" id="gis-mass-count">Выбрано: 0</span>
       <button type="button" data-mass="merge"  title="Слить выделенные полигоны в один">⬓ Объединить</button>
       <button type="button" data-mass="attrs"  title="Изменить атрибуты у всех выделенных">✎ Атрибуты</button>
-      <button type="button" data-mass="delete" title="Удалить все выделенные">🗑 Удалить</button>
       <button type="button" data-mass="clear"  title="Снять выделение (Esc)">✕ Снять</button>
+      <span class="gis-massbar__hint">Удаление — кнопкой 🗑 на панели.</span>
     </div>
 
     <div class="gis-toast" id="gis-toast" role="status" aria-live="polite"></div>
@@ -876,7 +877,17 @@
     }
 
     /* ──────────────────────── Click on layers ──────────────────────── */
+    /* Общий клик: в режиме клик-выбора (☑) тоггл объекта под курсором.
+       Регистрируем ПЕРВЫМ, но слой-специфичные обработчики ниже сами
+       выходят при активном выделении, чтобы не открывать карточку/правку. */
+    map.on('click', function (e) {
+      if (typeof pickSelectState !== 'undefined' && pickSelectState) {
+        pickSelectAt(e.point);
+      }
+    });
     map.on('click', 'farmlands-fill', function (e) {
+      if ((typeof pickSelectState !== 'undefined' && pickSelectState) ||
+          (typeof lassoSelectState !== 'undefined' && lassoSelectState)) return;
       if (!e.features.length) return;
       var props = e.features[0].properties || {};
       /* Режим редактирования ЗСН: клик загружает полную геометрию в draw.
@@ -1572,12 +1583,16 @@
         if (tool === 'discard') { discardPending(); return; }
         if (tool !== 'trash') highlightTool(tool);
         if (!drawAdded && tool !== 'select') return;
-        /* Любой инструмент кроме лассо выходит из режима выделения. */
-        if (tool !== 'lasso_select') cancelLassoSelect();
+        /* Любой инструмент кроме выделения выходит из режимов выбора. */
+        if (tool !== 'lasso_select' && tool !== 'pick_select') cancelSelectModes();
 
         if (tool === 'trash') {
           handleTrash();
           btn.classList.remove('active');
+          return;
+        }
+        if (tool === 'pick_select') {
+          startPickSelect();
           return;
         }
         if (tool === 'lasso_select') {
@@ -1610,10 +1625,16 @@
        разруливает draft (удалить из очереди) vs persisted (отправить
        в pending.deletes). Действие можно отменить кнопкой ↶. */
     function handleTrash() {
+      /* Приоритет массовому выбору (клик-выбор/лассо): если он есть —
+         удаляем все выбранные объекты одной командой. */
+      if (typeof massSel !== 'undefined' && massSel.ids.size) {
+        massDeleteSelected();
+        return;
+      }
       var sel;
       try { sel = draw.getSelectedIds(); } catch (_) { sel = []; }
       if (!sel || !sel.length) {
-        toast('Сначала выделите объект (☞ + клик).', true);
+        toast('Сначала выделите объект (☞ + клик) или массово (☑ / ▦).', true);
         return;
       }
       sel.forEach(function (sid) {
@@ -2220,13 +2241,15 @@
     }
 
     /* ════════════════════════════════════════════════════════════════
-       Массовое выделение (лассо) для последующих массовых операций.
-       Активируется зажатым Shift или кнопкой ▦. Пользователь кликами
-       обводит объекты произвольным полигоном (двойной клик — завершить),
-       все объекты под лассо добавляются к выбору. Лассо можно повторять —
-       выбор накапливается. Подсветка — через feature-state 'selected'.
+       Массовое выделение для последующих массовых операций. Два режима:
+         • клик-выбор (☑): клик по объекту добавляет/убирает его из выбора;
+         • полигон-лассо (▦): кликами обводим объекты произвольным контуром
+           (двойной клик — завершить), всё под лассо добавляется к выбору.
+       Выбор накапливается, подсветка — через feature-state 'selected'.
+       Удаление выбранного — общей кнопкой 🗑 на панели (handleTrash).
        ════════════════════════════════════════════════════════════════ */
     var lassoSelectState = false;
+    var pickSelectState = false;
     var massSel = { layer: null, ids: new Set(), feats: new Map() };
 
     function currentEditableLayer() {
@@ -2258,6 +2281,15 @@
       }
     }
 
+    function removeFromSelection(layer, id) {
+      var key = String(id);
+      if (!massSel.ids.has(key)) return;
+      massSel.ids.delete(key);
+      massSel.feats.delete(key);
+      setSelState(layer, id, false);
+      if (massSel.ids.size === 0) massSel.layer = null;
+    }
+
     function clearMassSelection() {
       if (massSel.layer) {
         massSel.ids.forEach(function (id) { setSelState(massSel.layer, id, false); });
@@ -2280,20 +2312,56 @@
       }
     }
 
+    /* Выход из обоих режимов выделения (без снятия самого выбора). */
+    function cancelSelectModes() {
+      lassoSelectState = false;
+      pickSelectState = false;
+    }
+    /* Обратная совместимость со старыми вызовами. */
+    function cancelLassoSelect() { cancelSelectModes(); }
+
     function startLassoSelect() {
       var layer = currentEditableLayer();
       if (!layer) { toast('Включите редактирование слоя для выделения.', true); return; }
       cancelSplit();
       cancelRingCut();
+      pickSelectState = false;
       lassoSelectState = true;
       try { draw.changeMode('draw_polygon'); } catch (_) {}
       highlightTool('lasso_select');
       var h = document.getElementById('gis-toolbar-hint');
-      if (h) h.textContent = '▦ Кликами обведите объекты · двойной клик — выбрать · ☞ для выхода.';
+      if (h) h.textContent = '▦ Кликами обведите объекты · двойной клик — выбрать · 🗑 удалить · ☞ для выхода.';
     }
 
-    function cancelLassoSelect() {
+    /* Режим клик-выбора: каждый клик по объекту тогглит его в выборе. */
+    function startPickSelect() {
+      var layer = currentEditableLayer();
+      if (!layer) { toast('Включите редактирование слоя для выделения.', true); return; }
+      cancelSplit();
+      cancelRingCut();
       lassoSelectState = false;
+      pickSelectState = true;
+      try { draw.changeMode('simple_select'); } catch (_) {}
+      highlightTool('pick_select');
+      var h = document.getElementById('gis-toolbar-hint');
+      if (h) h.textContent = '☑ Кликайте по объектам, чтобы выбрать/снять · 🗑 удалить · ☞ для выхода.';
+    }
+
+    /* Тоггл одного объекта под точкой (для клик-выбора). */
+    function pickSelectAt(point) {
+      var layer = currentEditableLayer();
+      if (!layer) return;
+      var layerId = layer === 'farmlands' ? 'farmlands-fill' : 'userfields-fill';
+      var feats = [];
+      try { feats = map.queryRenderedFeatures(point, { layers: [layerId] }); }
+      catch (_) { feats = []; }
+      if (!feats.length) return;
+      var ft = feats[0];
+      var id = (ft.id != null) ? ft.id : (ft.properties && ft.properties.id);
+      if (id == null) return;
+      if (massSel.ids.has(String(id))) removeFromSelection(layer, id);
+      else addToSelection(layer, id, ft.geometry || null, ft.properties || {});
+      updateMassBar();
     }
 
     /* Завершение рисования лассо: добавляем попавшие объекты к выбору. */
@@ -2392,7 +2460,6 @@
         if (!btn) return;
         var act = btn.getAttribute('data-mass');
         if (act === 'clear')  { clearMassSelection(); return; }
-        if (act === 'delete') { massDeleteSelected(); return; }
         if (act === 'attrs')  { toast('Массовая правка атрибутов — в разработке.', true); return; }
         if (act === 'merge')  { toast('Массовое объединение — в разработке.', true); return; }
       });
@@ -3078,6 +3145,8 @@
       var t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       if (!drawAdded) return;
+      /* Массовый выбор — удаляем его. */
+      if (massSel.ids.size) { e.preventDefault(); handleTrash(); return; }
       var sel;
       try { sel = draw.getSelectedIds(); } catch (_) { sel = []; }
       if (!sel || !sel.length) return;
@@ -3086,33 +3155,18 @@
     });
 
     /* ════════════════════════════════════════════════════════════════
-       Хоткеи массового выделения: Shift — войти в лассо, Esc — выйти/снять.
+       Esc — выйти из режимов выделения и снять выбор.
        ════════════════════════════════════════════════════════════════ */
     window.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape') return;
       var t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-
-      if (e.key === 'Shift') {
-        if (e.repeat || lassoSelectState || !drawAdded) return;
-        if (splitState || ringCutState) return;
-        if (!currentEditableLayer()) return;
-        var dmode = '';
-        try { dmode = draw.getMode(); } catch (_) {}
-        /* Входим в лассо только из пассивных режимов, чтобы не прерывать
-           рисование/правку узлов. */
-        if (dmode && dmode !== 'simple_select' && dmode !== 'direct_select') return;
-        startLassoSelect();
-        return;
+      if (lassoSelectState || pickSelectState) {
+        cancelSelectModes();
+        try { draw.changeMode('simple_select'); } catch (_) {}
+        highlightTool('select');
       }
-
-      if (e.key === 'Escape') {
-        if (lassoSelectState) {
-          cancelLassoSelect();
-          try { draw.changeMode('simple_select'); } catch (_) {}
-          highlightTool('select');
-        }
-        if (massSel.ids.size) clearMassSelection();
-      }
+      if (massSel.ids.size) clearMassSelection();
     });
 
     /* ════════════════════════════════════════════════════════════════
