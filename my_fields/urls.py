@@ -26,4 +26,6 @@ urlpatterns = [
     path('me/fields/<int:pk>/', views.field_detail_page, name='ui_field_detail'),
     # Admin-only experimental MapLibre + MVT GIS page (см. views.gis_page).
     path('me/gis/', views.gis_page, name='ui_gis'),
+    # Admin-only тестовый геопортал-демо на Leaflet + OSM (см. views.geoportal_demo_page).
+    path('me/geoportal-demo/', views.geoportal_demo_page, name='ui_geoportal_demo'),
 ]
