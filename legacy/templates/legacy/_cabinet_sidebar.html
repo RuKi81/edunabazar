@@ -18,7 +18,7 @@ is set by ``legacy.context_processors.legacy_user``.
     </div>
 
     <div class="cab-nav">
-      {% if active_section == 'agrocosmos' or active_section == 'my_fields' or active_section == 'gis' or active_section == 'geoportal_demo' %}
+      {% if active_section == 'agrocosmos' or active_section == 'my_fields' or active_section == 'gis' %}
         <a href="{% url 'legacy_me' %}" class="cab-nav-item">
           <span class="cab-nav-icon">👤</span>
           <span>Мои учетные данные</span>
@@ -50,15 +50,9 @@ is set by ``legacy.context_processors.legacy_user``.
           <span>ГИС</span>
           <span class="cab-nav-badge">admin</span>
         </a>
-        <a href="{% url 'my_fields:ui_geoportal_demo' %}"
-           class="cab-nav-item {% if active_section == 'geoportal_demo' %}active{% endif %}">
-          <span class="cab-nav-icon">🌍</span>
-          <span>Геопортал (демо)</span>
-          <span class="cab-nav-badge">admin</span>
-        </a>
       {% endif %}
 
-      {% if active_section == 'agrocosmos' or active_section == 'my_fields' or active_section == 'gis' or active_section == 'geoportal_demo' %}
+      {% if active_section == 'agrocosmos' or active_section == 'my_fields' or active_section == 'gis' %}
         <a href="{% url 'legacy_me' %}#adverts" class="cab-nav-item">
           <span class="cab-nav-icon">📋</span>
           <span>Мои объявления</span>

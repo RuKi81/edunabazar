@@ -100,21 +100,3 @@ def gis_page(request: HttpRequest) -> HttpResponse:
     return render(request, 'my_fields/gis.html', {
         'active_section': 'gis',
     })
-
-
-@login_required(login_url='/login/')
-def geoportal_demo_page(request: HttpRequest) -> HttpResponse:
-    """Тестовая страница «Геопортал (демо)» — admin-only.
-
-    Минимальный пример геопортала: Leaflet поверх растровых тайлов
-    OpenStreetMap, переключатель подложек (OSM / OSM HOT), масштабная
-    линейка и индикатор координат. Нужна как песочница/демо стека
-    OSM-карты без зависимости от внутренних MVT-эндпоинтов.
-
-    Доступ ограничен админом по тем же правилам, что и страница «ГИС».
-    """
-    if not _is_admin_legacy(request):
-        raise Http404
-    return render(request, 'my_fields/geoportal_demo.html', {
-        'active_section': 'geoportal_demo',
-    })
