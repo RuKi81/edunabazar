@@ -266,7 +266,7 @@ def api_districts_status_timeline(request: HttpRequest) -> JsonResponse:
     return _conditional_json(
         request, payload,
         etag=etag,
-        cache_control='public, max-age=3600, stale-while-revalidate=86400',
+        cache_control='no-cache',
     )
 
 
@@ -311,7 +311,7 @@ def api_districts_status(request: HttpRequest) -> JsonResponse:
         else:
             resp = HttpResponse(body, content_type='application/json')
         resp['ETag'] = etag
-        resp['Cache-Control'] = 'public, max-age=3600, stale-while-revalidate=86400'
+        resp['Cache-Control'] = 'no-cache'
         logger.info(
             'api_districts_status: fast-blob region=- in %.3fs',
             time.time() - overall_t,
@@ -349,7 +349,7 @@ def api_districts_status(request: HttpRequest) -> JsonResponse:
     return _conditional_json(
         request, payload,
         etag=etag,
-        cache_control='public, max-age=3600, stale-while-revalidate=86400',
+        cache_control='no-cache',
     )
 
 
