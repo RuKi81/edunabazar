@@ -3714,6 +3714,12 @@
         var merged = {};
         for (var k in baseProps) if (Object.prototype.hasOwnProperty.call(baseProps, k)) merged[k] = baseProps[k];
         for (var j in ov) if (Object.prototype.hasOwnProperty.call(ov, j)) merged[j] = ov[j];
+        /* Тип «Моих полей» рисуется через серверное crop_type_display —
+           после правки crop_type пересчитываем его, иначе ячейка покажет
+           старый тип при ближайшем ре-рендере. */
+        if (layer === 'userfields' && Object.prototype.hasOwnProperty.call(ov, 'crop_type')) {
+          merged.crop_type_display = CROP_LABELS_UF[merged.crop_type] || merged.crop_type || '';
+        }
         return merged;
       }
 
