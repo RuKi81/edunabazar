@@ -3795,6 +3795,11 @@
       }
 
       function render() {
+        /* Никогда не перестраиваем таблицу, пока открыт инлайн-редактор —
+           иначе отложенный ре-рендер (поток тайлов ЗСН → sourcedata) затёр бы
+           поле прямо во время выбора/ввода. Перед сортировкой/сменой вкладки
+           blur редактора успевает сделать commit и обнулить editingCell. */
+        if (editingCell) return;
         var cols = COLUMNS[state.layer];
         state.rows = sortRows(collectRows());
 
