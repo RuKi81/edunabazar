@@ -3914,18 +3914,23 @@
               if (ctl.select) try { ctl.select(); } catch (_) {}
             }
             if (col.edit.type === 'select') {
-              /* Коммит — только по выбору значения. blur у select на Windows
-                 срабатывает при открытии нативного выпадающего окна (оно
-                 системное), поэтому НЕ закрываем редактор сразу: откладываем и
-                 отменяем, только если фокус действительно ушёл с этого select. */
+              /* Коммит — только по выбору значения (change). blur НЕ используем:
+                 нативный <select> на Windows при открытом выпадающем окне теряет
+                 фокус, и любой blur-обработчик закрыл бы редактор прямо во время
+                 выбора. Закрытие без выбора — по клику ВНЕ ячейки (нативный попап
+                 списка такого DOM-клика не порождает, поэтому выбор не рвётся). */
               ctl.addEventListener('change', function () { commitCellEdit(ctl.value); });
-              ctl.addEventListener('blur', function () {
-                setTimeout(function () {
-                  if (editingCell && editingCell.td === td && document.activeElement !== ctl) {
-                    cancelCellEdit();
-                  }
-                }, 200);
-              });
+              var onOutside = function (ev) {
+                if (!editingCell || editingCell.td !== td) {
+                  document.removeEventListener('mousedown', onOutside, true);
+                  return;
+                }
+                if (!td.contains(ev.target)) {
+                  document.removeEventListener('mousedown', onOutside, true);
+                  cancelCellEdit();
+                }
+              };
+              document.addEventListener('mousedown', onOutside, true);
             } else {
               ctl.addEventListener('blur', function () { commitCellEdit(ctl.value); });
             }
