@@ -80,10 +80,25 @@ jobs:
         # libaom-dev, libhdf5-doc, poppler-data, proj-data, python3-numpy…)
         # cutting install from ~475 MB / 9 min down to ~80 MB / <2 min.
         # DEBIAN_FRONTEND=noninteractive avoids interactive tzdata prompts.
+        # Step-level timeout + retries: hung apt mirrors used to wedge the
+        # whole job for the full 30-min cap; now a stuck update fails fast
+        # and transient mirror errors are retried.
+        timeout-minutes: 8
         run: |
-          sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            gdal-bin libgdal-dev libgeos-dev
+          for i in 1 2 3; do
+            sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && break
+            echo "apt-get update failed (attempt $i/3), retrying in 10s…"
+            sleep 10
+          done
+          for i in 1 2 3; do
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              gdal-bin libgdal-dev libgeos-dev && break
+            echo "apt-get install failed (attempt $i/3), retrying in 10s…"
+            sleep 10
+          done
+          # Fail the step explicitly if GDAL is still missing (the retry loop's
+          # `&& break` would otherwise let an all-attempts-failed run pass).
+          gdal-config --version
 
       - name: Set up Python
         uses: actions/setup-python@v5
