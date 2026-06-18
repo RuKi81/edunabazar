@@ -3913,27 +3913,15 @@
               try { ctl.focus(); } catch (_) {}
               if (ctl.select) try { ctl.select(); } catch (_) {}
             }
+            /* Селект коммитим и по change (выбор значения), и по blur (увод
+               фокуса) — как текстовое поле, которое работает стабильно. Любые
+               авто-закрытия по document-событиям убраны: на Windows клик по
+               опции нативного списка приходил как mousedown вне ячейки и рвал
+               выбор. Коммит идемпотентен (editingCell обнуляется первым). */
             if (col.edit.type === 'select') {
-              /* Коммит — только по выбору значения (change). blur НЕ используем:
-                 нативный <select> на Windows при открытом выпадающем окне теряет
-                 фокус, и любой blur-обработчик закрыл бы редактор прямо во время
-                 выбора. Закрытие без выбора — по клику ВНЕ ячейки (нативный попап
-                 списка такого DOM-клика не порождает, поэтому выбор не рвётся). */
               ctl.addEventListener('change', function () { commitCellEdit(ctl.value); });
-              var onOutside = function (ev) {
-                if (!editingCell || editingCell.td !== td) {
-                  document.removeEventListener('mousedown', onOutside, true);
-                  return;
-                }
-                if (!td.contains(ev.target)) {
-                  document.removeEventListener('mousedown', onOutside, true);
-                  cancelCellEdit();
-                }
-              };
-              document.addEventListener('mousedown', onOutside, true);
-            } else {
-              ctl.addEventListener('blur', function () { commitCellEdit(ctl.value); });
             }
+            ctl.addEventListener('blur', function () { commitCellEdit(ctl.value); });
           }, 0);
         }
       }
