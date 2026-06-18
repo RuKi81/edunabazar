@@ -3878,8 +3878,14 @@
         var cur = row.props[key];
         var ctlHtml;
         if (col.edit.type === 'select') {
-          ctlHtml = '<select>' + col.edit.choices.map(function (ch) {
-            var sel = String(ch[0]) === String(cur == null ? '' : cur) ? ' selected' : '';
+          var curStr = String(cur == null ? '' : cur);
+          var hasMatch = col.edit.choices.some(function (ch) { return String(ch[0]) === curStr; });
+          /* Если текущего значения нет среди вариантов (напр. тип не задан) —
+             добавляем выбранный плейсхолдер, иначе браузер выберет первый вариант
+             и выбор его же не вызовет change → правка не зафиксируется. */
+          var placeholder = hasMatch ? '' : '<option value="" selected disabled hidden>— выберите —</option>';
+          ctlHtml = '<select>' + placeholder + col.edit.choices.map(function (ch) {
+            var sel = (hasMatch && String(ch[0]) === curStr) ? ' selected' : '';
             return '<option value="' + esc(ch[0]) + '"' + sel + '>' + esc(ch[1]) + '</option>';
           }).join('') + '</select>';
         } else {
@@ -4014,6 +4020,7 @@
          переключаем вкладку. */
       function selectFromMap(layer, id) {
         if (!state.open || id == null) return;
+        if (editingCell) return;  // не рушим открытый редактор ячейки
         if (layer !== state.layer) {
           setLayer(layer);
         } else {
