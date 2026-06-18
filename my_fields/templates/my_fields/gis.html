@@ -3702,13 +3702,28 @@
         return !!(layerState[state.layer] && layerState[state.layer].editable);
       }
 
+      /* Наложить очередь несохранённых правок атрибутов на свойства строки.
+         Для ЗСН свойства приходят из MVT-тайла (без правок), поэтому без
+         наложения отредактированное значение откатывалось бы при каждом
+         ре-рендере (moveend/подгрузка тайлов). */
+      function overlayPending(layer, id, baseProps) {
+        var sid = String(id);
+        var ov = (layer === 'farmlands') ? flPending.attrUpdates.get(sid)
+                                          : pending.attrUpdates.get(sid);
+        if (!ov) return baseProps;
+        var merged = {};
+        for (var k in baseProps) if (Object.prototype.hasOwnProperty.call(baseProps, k)) merged[k] = baseProps[k];
+        for (var j in ov) if (Object.prototype.hasOwnProperty.call(ov, j)) merged[j] = ov[j];
+        return merged;
+      }
+
       /* Сбор строк активного слоя. */
       function collectRows() {
         var rows = [];
         if (state.layer === 'userfields') {
           (userfieldsFC.features || []).forEach(function (f) {
             var id = (f.id != null) ? f.id : (f.properties && f.properties.id);
-            rows.push({ id: id, props: f.properties || {}, geometry: f.geometry || null });
+            rows.push({ id: id, props: overlayPending('userfields', id, f.properties || {}), geometry: f.geometry || null });
           });
         } else {
           var feats = [];
@@ -3721,7 +3736,7 @@
             var key = String(id);
             if (id == null || seen[key]) continue;
             seen[key] = true;
-            rows.push({ id: id, props: ft.properties || {}, geometry: ft.geometry || null });
+            rows.push({ id: id, props: overlayPending('farmlands', id, ft.properties || {}), geometry: ft.geometry || null });
             if (rows.length >= ATTR_MAX_ROWS) break;
           }
         }
