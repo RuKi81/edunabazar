@@ -81,19 +81,25 @@ jobs:
         # cutting install from ~475 MB / 9 min down to ~80 MB / <2 min.
         # DEBIAN_FRONTEND=noninteractive avoids interactive tzdata prompts.
         # Step-level timeout + retries: hung apt mirrors used to wedge the
-        # whole job for the full 30-min cap; now a stuck update fails fast
-        # and transient mirror errors are retried.
-        timeout-minutes: 8
+        # whole job for the full 30-min cap. Each apt call is wrapped in
+        # `timeout` so a HUNG mirror (which never returns, defeating a plain
+        # retry loop) is killed and actually retried. Acquire::*::Timeout
+        # bounds the per-connection wait too.
+        timeout-minutes: 12
         run: |
+          APT="DEBIAN_FRONTEND=noninteractive apt-get \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30"
           for i in 1 2 3; do
-            sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && break
-            echo "apt-get update failed (attempt $i/3), retrying in 10s…"
+            sudo timeout 150 env $APT update -qq && break
+            echo "apt-get update failed/hung (attempt $i/3), retrying in 10s…"
             sleep 10
           done
           for i in 1 2 3; do
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            sudo timeout 300 env $APT install -y --no-install-recommends \
               gdal-bin libgdal-dev libgeos-dev && break
-            echo "apt-get install failed (attempt $i/3), retrying in 10s…"
+            echo "apt-get install failed/hung (attempt $i/3), retrying in 10s…"
             sleep 10
           done
           # Fail the step explicitly if GDAL is still missing (the retry loop's
