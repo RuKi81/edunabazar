@@ -280,6 +280,77 @@
     .gis-info-card .actions .btn-edit:hover { border-color: #2e7d32; color: #2e7d32; background: #f1f8e9; }
     .gis-info-card .actions .btn-del { color: #c62828; }
     .gis-info-card .actions .btn-del:hover { background: #ffebee; border-color: #c62828; }
+
+    /* ─────────────── Атрибутивная таблица слоёв (нижняя панель) ─────────────── */
+    /* Кнопка открытия/закрытия — фиксирована слева внизу, рядом с тулбаром. */
+    .gis-attrtable-toggle {
+      position: fixed; bottom: 16px; left: 16px; z-index: 1100;
+      display: inline-flex; align-items: center; gap: 6px;
+      background: rgba(255,255,255,.95); border: 1px solid rgba(0,0,0,.12);
+      border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,.18);
+      padding: 8px 12px; font-size: 13px; font-weight: 600; color: #555;
+      cursor: pointer; transition: bottom .25s ease, background .15s;
+    }
+    .gis-attrtable-toggle:hover { background: #e8f5e9; }
+    .gis-attrtable-toggle.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
+
+    .gis-attrtable {
+      position: fixed; left: 0; right: 0; bottom: 0; height: 40vh;
+      min-height: 180px; z-index: 1050;
+      background: #fff; border-top: 1px solid rgba(0,0,0,.14);
+      box-shadow: 0 -3px 16px rgba(0,0,0,.16);
+      display: flex; flex-direction: column;
+      transform: translateY(100%); transition: transform .25s ease;
+    }
+    .gis-attrtable.open { transform: translateY(0); }
+
+    /* Когда таблица открыта — поднимаем тулбар, массбар и кнопку-тоггл над ней. */
+    .gis-ui.attrtable-open .gis-toolbar { bottom: calc(40vh + 12px); }
+    .gis-ui.attrtable-open .gis-massbar { bottom: calc(40vh + 60px); }
+    .gis-ui.attrtable-open .gis-attrtable-toggle { bottom: calc(40vh + 12px); }
+
+    .gis-attrtable__head {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      padding: 8px 12px; border-bottom: 1px solid #eee; background: #fafafa;
+    }
+    .gis-attrtable__tabs { display: flex; gap: 4px; }
+    .gis-attrtable__tab {
+      border: 1px solid rgba(0,0,0,.12); background: #fff; cursor: pointer;
+      padding: 5px 12px; border-radius: 6px; font-size: 12px; color: #444; font-weight: 600;
+    }
+    .gis-attrtable__tab:hover { background: #f0f0f0; }
+    .gis-attrtable__tab.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
+    .gis-attrtable__count { font-size: 12px; color: #777; }
+    .gis-attrtable__spacer { flex: 1; }
+    .gis-attrtable__btn {
+      border: 1px solid rgba(0,0,0,.12); background: #fff; cursor: pointer;
+      padding: 5px 10px; border-radius: 6px; font-size: 12px; color: #555;
+    }
+    .gis-attrtable__btn:hover { background: #f0f0f0; }
+    .gis-attrtable__x {
+      border: none; background: transparent; cursor: pointer; font-size: 16px; color: #888;
+      width: 28px; height: 28px; border-radius: 6px;
+    }
+    .gis-attrtable__x:hover { background: #eee; color: #333; }
+
+    .gis-attrtable__body { flex: 1; overflow: auto; }
+    .gis-attrtable table { border-collapse: collapse; width: 100%; font-size: 12px; }
+    .gis-attrtable thead th {
+      position: sticky; top: 0; z-index: 2; background: #f1f8e9;
+      border-bottom: 2px solid #c8e6c9; padding: 7px 10px; text-align: left;
+      font-weight: 700; color: #33691e; white-space: nowrap; cursor: pointer; user-select: none;
+    }
+    .gis-attrtable thead th:hover { background: #e6f0d6; }
+    .gis-attrtable thead th .sort-ind { color: #2e7d32; margin-left: 4px; font-size: 10px; }
+    .gis-attrtable tbody td {
+      padding: 6px 10px; border-bottom: 1px solid #f0f0f0;
+      white-space: nowrap; max-width: 280px; overflow: hidden; text-overflow: ellipsis;
+    }
+    .gis-attrtable tbody tr { cursor: pointer; }
+    .gis-attrtable tbody tr:hover { background: #f5faf0; }
+    .gis-attrtable tbody tr.active { background: #ffe0ec; }
+    .gis-attrtable tbody tr.active:hover { background: #ffd2e2; }
+    .gis-attrtable__empty { padding: 24px; text-align: center; color: #999; font-size: 13px; line-height: 1.5; }
   </style>
 {% endblock %}
 
@@ -392,6 +463,24 @@
         </div>
       </div>
     </div>
+
+    <button class="gis-attrtable-toggle" id="gis-attrtable-toggle" type="button"
+            title="Атрибутивная таблица активного слоя">▤ Таблица</button>
+
+    <section class="gis-attrtable" id="gis-attrtable" aria-label="Атрибутивная таблица">
+      <div class="gis-attrtable__head">
+        <div class="gis-attrtable__tabs" id="gis-attrtable-tabs">
+          <button type="button" class="gis-attrtable__tab active" data-attr-layer="farmlands">ЗСН (Росреестр)</button>
+          <button type="button" class="gis-attrtable__tab" data-attr-layer="userfields">Мои поля</button>
+        </div>
+        <span class="gis-attrtable__count" id="gis-attrtable-count"></span>
+        <span class="gis-attrtable__spacer"></span>
+        <button type="button" class="gis-attrtable__btn" id="gis-attrtable-refresh"
+                title="Обновить объекты из видимой области">⟳ Обновить</button>
+        <button type="button" class="gis-attrtable__x" id="gis-attrtable-close" title="Закрыть таблицу">✕</button>
+      </div>
+      <div class="gis-attrtable__body" id="gis-attrtable-body"></div>
+    </section>
 
     <div class="gis-toast" id="gis-toast" role="status" aria-live="polite"></div>
   </div>
@@ -3486,6 +3575,263 @@
       statusEl.textContent = 'ошибка карты: ' + msg;
       statusEl.style.color = '#c62828';
     });
+
+    /* ════════════════════════════════════════════════════════════════
+       Атрибутивная таблица слоёв (нижняя панель, QGIS-style).
+       • ЗСН (farmlands): MVT-тайлы — целиком в память не грузятся, поэтому
+         таблица показывает объекты ВИДИМОЙ ОБЛАСТИ (querySourceFeatures),
+         с авто-обновлением по moveend и ручной кнопкой ⟳.
+       • Мои поля (userfields): полная коллекция уже в памяти (userfieldsFC).
+       Клик по строке → подсветка объекта на карте (feature-state selected),
+       перелёт к нему (turf.bbox + fitBounds) и карточка в правой панели.
+       ════════════════════════════════════════════════════════════════ */
+    (function attrTableModule() {
+      var ATTR_MAX_ROWS = 2000;  // защита от тысяч полигонов ЗСН в DOM
+
+      /* Описание столбцов на слой: key — ключ в properties, label — заголовок,
+         num — числовая сортировка, fmt — форматирование значения для ячейки. */
+      var COLUMNS = {
+        farmlands: [
+          { key: 'id',               label: 'ID',               num: true },
+          { key: 'crop_type',        label: 'Тип',
+            fmt: function (v) { return CROP_LABELS_FARMLAND[v] || v || '—'; } },
+          { key: 'area_ha',          label: 'Площадь, га',      num: true,
+            fmt: function (v) { return v != null && v !== '' ? Number(v).toFixed(2) : '—'; } },
+          { key: 'is_used',          label: 'Использование',
+            fmt: function (v) { return IS_USED_LABELS[String(v)] || '—'; } },
+          { key: 'cadastral_number', label: 'Кадастр. номер' },
+          { key: 'district',         label: 'Район' },
+        ],
+        userfields: [
+          { key: 'id',               label: 'ID',               num: true },
+          { key: 'name',             label: 'Название' },
+          { key: 'crop_type',        label: 'Тип',
+            fmt: function (v, p) { return p.crop_type_display || CROP_LABELS_FARMLAND[v] || v || '—'; } },
+          { key: 'area_ha',          label: 'Площадь, га',      num: true,
+            fmt: function (v) { return v != null && v !== '' ? Number(v).toFixed(2) : '—'; } },
+          { key: 'cadastral_number', label: 'Кадастр. номер' },
+          { key: 'region_name',      label: 'Регион' },
+          { key: 'district_name',    label: 'Район' },
+        ],
+      };
+
+      var panel    = document.getElementById('gis-attrtable');
+      var toggleBtn = document.getElementById('gis-attrtable-toggle');
+      var bodyEl   = document.getElementById('gis-attrtable-body');
+      var countEl  = document.getElementById('gis-attrtable-count');
+      var refreshBtn = document.getElementById('gis-attrtable-refresh');
+      var closeBtn = document.getElementById('gis-attrtable-close');
+      var tabs     = document.querySelectorAll('#gis-attrtable-tabs .gis-attrtable__tab');
+      var uiEl     = document.querySelector('.gis-ui');
+
+      var state = {
+        open: false,
+        layer: 'farmlands',
+        sortKey: 'id',
+        sortDir: 1,              // 1 = asc, -1 = desc
+        rows: [],
+        sel: { layer: null, id: null },  // подсвеченная строка (на карте)
+      };
+
+      function defaultSortKey(layer) {
+        return layer === 'userfields' ? 'name' : 'id';
+      }
+
+      /* Сбор строк активного слоя. */
+      function collectRows() {
+        var rows = [];
+        if (state.layer === 'userfields') {
+          (userfieldsFC.features || []).forEach(function (f) {
+            var id = (f.id != null) ? f.id : (f.properties && f.properties.id);
+            rows.push({ id: id, props: f.properties || {}, geometry: f.geometry || null });
+          });
+        } else {
+          var feats = [];
+          try { feats = map.querySourceFeatures('farmlands', { sourceLayer: 'farmlands' }) || []; }
+          catch (_) { feats = []; }
+          var seen = {};
+          for (var i = 0; i < feats.length; i++) {
+            var ft = feats[i];
+            var id = (ft.id != null) ? ft.id : (ft.properties && ft.properties.id);
+            var key = String(id);
+            if (id == null || seen[key]) continue;
+            seen[key] = true;
+            rows.push({ id: id, props: ft.properties || {}, geometry: ft.geometry || null });
+            if (rows.length >= ATTR_MAX_ROWS) break;
+          }
+        }
+        return rows;
+      }
+
+      function sortRows(rows) {
+        var col = null;
+        var cols = COLUMNS[state.layer];
+        for (var i = 0; i < cols.length; i++) if (cols[i].key === state.sortKey) { col = cols[i]; break; }
+        var key = state.sortKey, dir = state.sortDir, num = col && col.num;
+        rows.sort(function (a, b) {
+          var va = a.props[key], vb = b.props[key];
+          if (num) {
+            va = (va == null || va === '') ? -Infinity : Number(va);
+            vb = (vb == null || vb === '') ? -Infinity : Number(vb);
+            return (va - vb) * dir;
+          }
+          va = (va == null ? '' : String(va)).toLowerCase();
+          vb = (vb == null ? '' : String(vb)).toLowerCase();
+          if (va < vb) return -1 * dir;
+          if (va > vb) return 1 * dir;
+          return 0;
+        });
+        return rows;
+      }
+
+      function render() {
+        var cols = COLUMNS[state.layer];
+        state.rows = sortRows(collectRows());
+
+        if (countEl) {
+          var suffix = state.layer === 'farmlands' ? ' (видимая область)' : '';
+          var capped = state.rows.length >= ATTR_MAX_ROWS ? '+ (обрежено)' : '';
+          countEl.textContent = state.rows.length + capped + ' объект(ов)' + suffix;
+        }
+        if (refreshBtn) refreshBtn.style.display = state.layer === 'farmlands' ? '' : 'none';
+
+        if (!state.rows.length) {
+          bodyEl.innerHTML = '<div class="gis-attrtable__empty">' +
+            (state.layer === 'farmlands'
+              ? 'Нет угодий в видимой области.<br>Приблизьте карту (z ≥ 6) к участку с данными ЗСН.'
+              : 'Нет полей. Нарисуйте полигон в режиме «Мои поля».') +
+            '</div>';
+          return;
+        }
+
+        var thead = '<thead><tr>' + cols.map(function (c) {
+          var ind = '';
+          if (c.key === state.sortKey) ind = '<span class="sort-ind">' + (state.sortDir === 1 ? '▲' : '▼') + '</span>';
+          return '<th data-key="' + esc(c.key) + '">' + esc(c.label) + ind + '</th>';
+        }).join('') + '</tr></thead>';
+
+        var tbody = '<tbody>' + state.rows.map(function (r) {
+          var cls = (state.sel.layer === state.layer && String(state.sel.id) === String(r.id)) ? ' class="active"' : '';
+          var tds = cols.map(function (c) {
+            var raw = r.props[c.key];
+            var val = c.fmt ? c.fmt(raw, r.props) : (raw == null || raw === '' ? '—' : raw);
+            return '<td title="' + esc(val) + '">' + esc(val) + '</td>';
+          }).join('');
+          return '<tr data-id="' + esc(r.id) + '"' + cls + '>' + tds + '</tr>';
+        }).join('') + '</tbody>';
+
+        bodyEl.innerHTML = '<table>' + thead + tbody + '</table>';
+
+        bodyEl.querySelectorAll('thead th').forEach(function (th) {
+          th.addEventListener('click', function () {
+            var key = th.getAttribute('data-key');
+            if (state.sortKey === key) state.sortDir *= -1;
+            else { state.sortKey = key; state.sortDir = 1; }
+            render();
+          });
+        });
+        bodyEl.querySelectorAll('tbody tr').forEach(function (tr) {
+          tr.addEventListener('click', function () { onRowClick(tr.getAttribute('data-id')); });
+        });
+      }
+
+      function clearSelHighlight() {
+        if (state.sel.layer && state.sel.id != null) {
+          try { setSelState(state.sel.layer, state.sel.id, false); } catch (_) {}
+        }
+        state.sel = { layer: null, id: null };
+      }
+
+      function onRowClick(idStr) {
+        var row = null;
+        for (var i = 0; i < state.rows.length; i++) {
+          if (String(state.rows[i].id) === String(idStr)) { row = state.rows[i]; break; }
+        }
+        if (!row) return;
+
+        clearSelHighlight();
+        state.sel = { layer: state.layer, id: row.id };
+        try { setSelState(state.layer, row.id, true); } catch (_) {}
+
+        /* Карточка в правой панели + раскрыть её, если свёрнута. */
+        if (state.layer === 'farmlands') renderFarmlandCard(row.props);
+        else renderUserfieldCard(row.props);
+        var rightAside = document.getElementById('gis-right');
+        var rightBtn = document.getElementById('gis-collapse-right');
+        if (rightAside && rightAside.classList.contains('collapsed')) {
+          rightAside.classList.remove('collapsed');
+          if (rightBtn) rightBtn.classList.remove('shifted');
+        }
+
+        /* Перелёт к объекту. */
+        if (row.geometry && window.turf) {
+          try {
+            var bb = turf.bbox(row.geometry);
+            if (bb && isFinite(bb[0])) {
+              map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]],
+                { padding: 60, maxZoom: 15, duration: 600 });
+            }
+          } catch (_) {}
+        }
+
+        /* Подсветить активную строку без полного перерендера. */
+        bodyEl.querySelectorAll('tbody tr.active').forEach(function (t) { t.classList.remove('active'); });
+        var trEl = bodyEl.querySelector('tbody tr[data-id="' + (window.CSS && CSS.escape ? CSS.escape(idStr) : idStr) + '"]');
+        if (trEl) trEl.classList.add('active');
+      }
+
+      function setLayer(layer) {
+        if (layer === state.layer) return;
+        clearSelHighlight();
+        state.layer = layer;
+        state.sortKey = defaultSortKey(layer);
+        state.sortDir = 1;
+        tabs.forEach(function (t) { t.classList.toggle('active', t.getAttribute('data-attr-layer') === layer); });
+        render();
+      }
+
+      function openPanel() {
+        state.open = true;
+        panel.classList.add('open');
+        if (uiEl) uiEl.classList.add('attrtable-open');
+        if (toggleBtn) toggleBtn.classList.add('active');
+        render();
+      }
+      function closePanel() {
+        state.open = false;
+        panel.classList.remove('open');
+        if (uiEl) uiEl.classList.remove('attrtable-open');
+        if (toggleBtn) toggleBtn.classList.remove('active');
+      }
+
+      /* ─── Слушатели ─── */
+      if (toggleBtn) toggleBtn.addEventListener('click', function () {
+        if (state.open) closePanel(); else openPanel();
+      });
+      if (closeBtn) closeBtn.addEventListener('click', closePanel);
+      if (refreshBtn) refreshBtn.addEventListener('click', function () {
+        if (state.layer === 'farmlands') render();
+      });
+      tabs.forEach(function (t) {
+        t.addEventListener('click', function () { setLayer(t.getAttribute('data-attr-layer')); });
+      });
+
+      /* Авто-обновление ЗСН при перемещении карты (debounce). */
+      var moveTimer = null;
+      map.on('moveend', function () {
+        if (!state.open || state.layer !== 'farmlands') return;
+        clearTimeout(moveTimer);
+        moveTimer = setTimeout(render, 250);
+      });
+      /* Перерисовка «Моих полей» после правок/сохранения тайлов. */
+      map.on('sourcedata', function (ev) {
+        if (!state.open) return;
+        if (ev.sourceId === 'userfields' && state.layer === 'userfields') {
+          clearTimeout(moveTimer);
+          moveTimer = setTimeout(render, 200);
+        }
+      });
+    })();
   })();
   </script>
 {% endblock %}
