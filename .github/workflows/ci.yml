@@ -80,25 +80,38 @@ jobs:
         # libaom-dev, libhdf5-doc, poppler-data, proj-data, python3-numpy…)
         # cutting install from ~475 MB / 9 min down to ~80 MB / <2 min.
         # DEBIAN_FRONTEND=noninteractive avoids interactive tzdata prompts.
-        # Step-level timeout + retries: hung apt mirrors used to wedge the
-        # whole job for the full 30-min cap. Each apt call is wrapped in
-        # `timeout` so a HUNG mirror (which never returns, defeating a plain
-        # retry loop) is killed and actually retried. Acquire::*::Timeout
-        # bounds the per-connection wait too.
+        # The recurring CI failure was `apt-get update` HANGING on a mirror,
+        # which then wedged the whole job up to the timeout cap. Key insight:
+        # GitHub runner images ship with reasonably fresh apt lists, so we can
+        # usually install GDAL WITHOUT `update` at all — skipping the fragile
+        # step entirely. Only if that fails do we refresh the lists (wrapped in
+        # `timeout` + retries so a hung mirror is killed and retried, never
+        # blocking for the full cap). Acquire::*::Timeout bounds each download.
         timeout-minutes: 12
         run: |
+          set -x
           APT="DEBIAN_FRONTEND=noninteractive apt-get \
             -o Acquire::Retries=3 \
             -o Acquire::http::Timeout=30 \
             -o Acquire::https::Timeout=30"
+          PKGS="gdal-bin libgdal-dev libgeos-dev"
+
+          # 1) Fast path: install straight from the preloaded package lists.
+          if sudo timeout 300 env $APT install -y --no-install-recommends $PKGS; then
+            gdal-config --version
+            exit 0
+          fi
+
+          echo "Direct install failed — refreshing apt lists and retrying…"
+          # 2) Refresh lists (hung mirror → killed by timeout → retried).
           for i in 1 2 3; do
             sudo timeout 150 env $APT update -qq && break
             echo "apt-get update failed/hung (attempt $i/3), retrying in 10s…"
             sleep 10
           done
+          # 3) Install again after the refresh, with retries.
           for i in 1 2 3; do
-            sudo timeout 300 env $APT install -y --no-install-recommends \
-              gdal-bin libgdal-dev libgeos-dev && break
+            sudo timeout 300 env $APT install -y --no-install-recommends $PKGS && break
             echo "apt-get install failed/hung (attempt $i/3), retrying in 10s…"
             sleep 10
           done
