@@ -501,7 +501,7 @@
           <option value="-1">Неизвестно</option>
         </select>
         <span class="gis-attrtable__spacer"></span>
-        <span class="gis-attrtable__edithint" id="gis-attrtable-edithint" hidden>✎ режим правки — ячейки редактируются</span>
+        <span class="gis-attrtable__edithint" id="gis-attrtable-edithint">✎ кликните ячейку с подсветкой — правка идёт в очередь (💾 сохранить, ↶ отменить)</span>
         <button type="button" class="gis-attrtable__btn" id="gis-attrtable-refresh"
                 title="Обновить объекты из видимой области">⟳ Обновить</button>
         <button type="button" class="gis-attrtable__x" id="gis-attrtable-close" title="Закрыть таблицу">✕</button>
@@ -3775,7 +3775,6 @@
 
       function render() {
         var cols = COLUMNS[state.layer];
-        var editing = isEditing();
         state.rows = sortRows(collectRows());
 
         if (countEl) {
@@ -3786,7 +3785,6 @@
         }
         if (refreshBtn) refreshBtn.style.display = state.layer === 'farmlands' ? '' : 'none';
         if (filterEl) filterEl.style.display = state.layer === 'farmlands' ? '' : 'none';
-        if (editHint) editHint.hidden = !editing;
 
         if (!state.rows.length) {
           var base = state.layer === 'farmlands'
@@ -3808,7 +3806,7 @@
           var rowDirty = isRowDirty(r.id);
           var tds = cols.map(function (c) {
             var val = cellDisplay(c, r.props);
-            var canEdit = editing && c.edit;
+            var canEdit = !!c.edit;
             var tdCls = (canEdit ? 'editable' : '') + (rowDirty && canEdit ? ' dirty' : '');
             return '<td' + (tdCls ? ' class="' + tdCls + '"' : '') +
               ' data-key="' + esc(c.key) + '" title="' + esc(val) + '">' + esc(val) + '</td>';
