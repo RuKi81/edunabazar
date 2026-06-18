@@ -3884,16 +3884,23 @@
         var ctl = td.querySelector('select, input');
         editingCell = { td: td, tr: tr, col: col, row: row };
         if (ctl) {
-          ctl.focus();
-          if (ctl.select) try { ctl.select(); } catch (_) {}
           ctl.addEventListener('keydown', function (e) {
             if (e.key === 'Enter') { e.preventDefault(); commitCellEdit(ctl.value); }
             else if (e.key === 'Escape') { e.preventDefault(); cancelCellEdit(); }
           });
-          ctl.addEventListener('blur', function () { commitCellEdit(ctl.value); });
-          if (col.edit.type === 'select') {
-            ctl.addEventListener('change', function () { commitCellEdit(ctl.value); });
-          }
+          /* Фокус и blur/change навешиваем на следующий тик: иначе холостой
+             сброс фокуса (target клика был удалён при innerHTML=) тут же
+             вызвал бы blur → commit и редактор «мигнул» бы и закрылся. */
+          setTimeout(function () {
+            if (editingCell && editingCell.td === td) {
+              try { ctl.focus(); } catch (_) {}
+              if (ctl.select) try { ctl.select(); } catch (_) {}
+            }
+            ctl.addEventListener('blur', function () { commitCellEdit(ctl.value); });
+            if (col.edit.type === 'select') {
+              ctl.addEventListener('change', function () { commitCellEdit(ctl.value); });
+            }
+          }, 0);
         }
       }
 
