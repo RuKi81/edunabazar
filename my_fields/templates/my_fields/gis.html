@@ -320,8 +320,26 @@
     }
     .gis-attrtable__tab:hover { background: #f0f0f0; }
     .gis-attrtable__tab.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
-    .gis-attrtable__count { font-size: 12px; color: #777; }
+    .gis-attrtable__count { font-size: 12px; color: #777; white-space: nowrap; }
+    .gis-attrtable__search {
+      width: 180px; padding: 5px 8px; border: 1px solid rgba(0,0,0,.18);
+      border-radius: 6px; font-size: 12px; background: #fff;
+    }
+    .gis-attrtable__filter {
+      padding: 5px 6px; border: 1px solid rgba(0,0,0,.18);
+      border-radius: 6px; font-size: 12px; background: #fff; color: #444;
+    }
+    .gis-attrtable__edithint { font-size: 11px; color: #2e7d32; font-weight: 600; }
     .gis-attrtable__spacer { flex: 1; }
+    /* Редактируемые ячейки (режим правки слоя). */
+    .gis-attrtable td.editable { background: #fffef2; cursor: text; }
+    .gis-attrtable td.editable:hover { background: #fff9d6; }
+    .gis-attrtable td.editing { padding: 2px 4px; background: #fff; }
+    .gis-attrtable td.editing input, .gis-attrtable td.editing select {
+      width: 100%; box-sizing: border-box; padding: 4px 6px; font-size: 12px;
+      border: 1px solid #2e7d32; border-radius: 4px; background: #fff; font-family: inherit;
+    }
+    .gis-attrtable td.dirty { box-shadow: inset 3px 0 0 0 #fb8c00; }
     .gis-attrtable__btn {
       border: 1px solid rgba(0,0,0,.12); background: #fff; cursor: pointer;
       padding: 5px 10px; border-radius: 6px; font-size: 12px; color: #555;
@@ -474,7 +492,16 @@
           <button type="button" class="gis-attrtable__tab" data-attr-layer="userfields">Мои поля</button>
         </div>
         <span class="gis-attrtable__count" id="gis-attrtable-count"></span>
+        <input type="text" class="gis-attrtable__search" id="gis-attrtable-search"
+               placeholder="🔎 поиск по строкам…" autocomplete="off">
+        <select class="gis-attrtable__filter" id="gis-attrtable-filter" title="Фильтр по использованию">
+          <option value="">Использование: все</option>
+          <option value="1">Используется</option>
+          <option value="0">Не используется</option>
+          <option value="-1">Неизвестно</option>
+        </select>
         <span class="gis-attrtable__spacer"></span>
+        <span class="gis-attrtable__edithint" id="gis-attrtable-edithint" hidden>✎ режим правки — ячейки редактируются</span>
         <button type="button" class="gis-attrtable__btn" id="gis-attrtable-refresh"
                 title="Обновить объекты из видимой области">⟳ Обновить</button>
         <button type="button" class="gis-attrtable__x" id="gis-attrtable-close" title="Закрыть таблицу">✕</button>
@@ -2694,8 +2721,13 @@
 
     /* Применить patch ко всем выбранным — в очередь attrUpdates. */
     function applyMassAttrs(patch) {
-      var layer = massSel.layer;
-      var ids = Array.from(massSel.ids);
+      return applyAttrsToIds(massSel.layer, Array.from(massSel.ids), patch);
+    }
+
+    /* Базовый аппликатор атрибутов: кладёт patch в очередь attrUpdates
+       нужного слоя и обновляет in-memory props. Переиспользуется массовой
+       правкой (по массвыбору) и инлайн-правкой в атрибутивной таблице. */
+    function applyAttrsToIds(layer, ids, patch) {
       var keys = Object.keys(patch);
       if (!ids.length || !keys.length) return 0;
 
@@ -3588,28 +3620,43 @@
     (function attrTableModule() {
       var ATTR_MAX_ROWS = 2000;  // защита от тысяч полигонов ЗСН в DOM
 
+      function choicesToMap(choices) {
+        var m = {};
+        choices.forEach(function (c) { m[c[0]] = c[1]; });
+        return m;
+      }
+      var CROP_LABELS_UF = choicesToMap(CROP_CHOICES_UF);
+
       /* Описание столбцов на слой: key — ключ в properties, label — заголовок,
-         num — числовая сортировка, fmt — форматирование значения для ячейки. */
+         num — числовая сортировка, fmt — форматирование значения для ячейки,
+         edit — дескриптор инлайн-правки ({type:'text'} | {type:'select',
+         choices, kind}); редактирование доступно только в режиме правки слоя. */
       var COLUMNS = {
         farmlands: [
           { key: 'id',               label: 'ID',               num: true },
           { key: 'crop_type',        label: 'Тип',
-            fmt: function (v) { return CROP_LABELS_FARMLAND[v] || v || '—'; } },
+            fmt: function (v) { return CROP_LABELS_FARMLAND[v] || v || '—'; },
+            edit: { type: 'select', choices: CROP_CHOICES_FL, kind: 'str' } },
           { key: 'area_ha',          label: 'Площадь, га',      num: true,
             fmt: function (v) { return v != null && v !== '' ? Number(v).toFixed(2) : '—'; } },
           { key: 'is_used',          label: 'Использование',
-            fmt: function (v) { return IS_USED_LABELS[String(v)] || '—'; } },
-          { key: 'cadastral_number', label: 'Кадастр. номер' },
+            fmt: function (v) { return IS_USED_LABELS[String(v)] || '—'; },
+            edit: { type: 'select', choices: IS_USED_CHOICES, kind: 'int' } },
+          { key: 'cadastral_number', label: 'Кадастр. номер',
+            edit: { type: 'text', kind: 'str' } },
           { key: 'district',         label: 'Район' },
         ],
         userfields: [
           { key: 'id',               label: 'ID',               num: true },
-          { key: 'name',             label: 'Название' },
+          { key: 'name',             label: 'Название',
+            edit: { type: 'text', kind: 'str' } },
           { key: 'crop_type',        label: 'Тип',
-            fmt: function (v, p) { return p.crop_type_display || CROP_LABELS_FARMLAND[v] || v || '—'; } },
+            fmt: function (v, p) { return p.crop_type_display || CROP_LABELS_UF[v] || v || '—'; },
+            edit: { type: 'select', choices: CROP_CHOICES_UF, kind: 'str' } },
           { key: 'area_ha',          label: 'Площадь, га',      num: true,
             fmt: function (v) { return v != null && v !== '' ? Number(v).toFixed(2) : '—'; } },
-          { key: 'cadastral_number', label: 'Кадастр. номер' },
+          { key: 'cadastral_number', label: 'Кадастр. номер',
+            edit: { type: 'text', kind: 'str' } },
           { key: 'region_name',      label: 'Регион' },
           { key: 'district_name',    label: 'Район' },
         ],
@@ -3621,6 +3668,9 @@
       var countEl  = document.getElementById('gis-attrtable-count');
       var refreshBtn = document.getElementById('gis-attrtable-refresh');
       var closeBtn = document.getElementById('gis-attrtable-close');
+      var searchEl = document.getElementById('gis-attrtable-search');
+      var filterEl = document.getElementById('gis-attrtable-filter');
+      var editHint = document.getElementById('gis-attrtable-edithint');
       var tabs     = document.querySelectorAll('#gis-attrtable-tabs .gis-attrtable__tab');
       var uiEl     = document.querySelector('.gis-ui');
 
@@ -3629,12 +3679,27 @@
         layer: 'farmlands',
         sortKey: 'id',
         sortDir: 1,              // 1 = asc, -1 = desc
+        query: '',               // строка поиска
+        usedFilter: '',          // фильтр is_used: '' | '1' | '0' | '-1'
         rows: [],
         sel: { layer: null, id: null },  // подсвеченная строка (на карте)
       };
 
+      /* Строка «грязная», если её id есть в очереди attrUpdates слоя —
+         так метки авто-сбрасываются после сохранения (💾) или отмены (↶),
+         которые очищают эти очереди. */
+      function isRowDirty(id) {
+        var sid = String(id);
+        if (state.layer === 'farmlands') return flPending.attrUpdates.has(sid);
+        return pending.attrUpdates.has(sid);
+      }
+
       function defaultSortKey(layer) {
         return layer === 'userfields' ? 'name' : 'id';
+      }
+
+      function isEditing() {
+        return !!(layerState[state.layer] && layerState[state.layer].editable);
       }
 
       /* Сбор строк активного слоя. */
@@ -3660,7 +3725,26 @@
             if (rows.length >= ATTR_MAX_ROWS) break;
           }
         }
-        return rows;
+        return filterRows(rows);
+      }
+
+      /* Фильтрация: текстовый поиск по отображаемым значениям всех столбцов
+         + (для ЗСН) фильтр по использованию. */
+      function filterRows(rows) {
+        var cols = COLUMNS[state.layer];
+        var q = state.query.trim().toLowerCase();
+        var uf = (state.layer === 'farmlands') ? state.usedFilter : '';
+        if (!q && !uf) return rows;
+        return rows.filter(function (r) {
+          if (uf !== '' && String(r.props.is_used) !== uf) return false;
+          if (!q) return true;
+          for (var i = 0; i < cols.length; i++) {
+            var c = cols[i], raw = r.props[c.key];
+            var val = c.fmt ? c.fmt(raw, r.props) : (raw == null ? '' : raw);
+            if (String(val).toLowerCase().indexOf(q) !== -1) return true;
+          }
+          return false;
+        });
       }
 
       function sortRows(rows) {
@@ -3684,23 +3768,32 @@
         return rows;
       }
 
+      function cellDisplay(c, props) {
+        var raw = props[c.key];
+        return c.fmt ? c.fmt(raw, props) : (raw == null || raw === '' ? '—' : raw);
+      }
+
       function render() {
         var cols = COLUMNS[state.layer];
+        var editing = isEditing();
         state.rows = sortRows(collectRows());
 
         if (countEl) {
           var suffix = state.layer === 'farmlands' ? ' (видимая область)' : '';
-          var capped = state.rows.length >= ATTR_MAX_ROWS ? '+ (обрежено)' : '';
-          countEl.textContent = state.rows.length + capped + ' объект(ов)' + suffix;
+          var capped = state.rows.length >= ATTR_MAX_ROWS ? '+ (обрезано)' : '';
+          var filtered = (state.query || state.usedFilter) ? ', отфильтровано' : '';
+          countEl.textContent = state.rows.length + capped + ' объект(ов)' + suffix + filtered;
         }
         if (refreshBtn) refreshBtn.style.display = state.layer === 'farmlands' ? '' : 'none';
+        if (filterEl) filterEl.style.display = state.layer === 'farmlands' ? '' : 'none';
+        if (editHint) editHint.hidden = !editing;
 
         if (!state.rows.length) {
-          bodyEl.innerHTML = '<div class="gis-attrtable__empty">' +
-            (state.layer === 'farmlands'
-              ? 'Нет угодий в видимой области.<br>Приблизьте карту (z ≥ 6) к участку с данными ЗСН.'
-              : 'Нет полей. Нарисуйте полигон в режиме «Мои поля».') +
-            '</div>';
+          var base = state.layer === 'farmlands'
+            ? 'Нет угодий в видимой области.<br>Приблизьте карту (z ≥ 6) к участку с данными ЗСН.'
+            : 'Нет полей. Нарисуйте полигон в режиме «Мои поля».';
+          if (state.query || state.usedFilter) base = 'Ничего не найдено по текущему фильтру.';
+          bodyEl.innerHTML = '<div class="gis-attrtable__empty">' + base + '</div>';
           return;
         }
 
@@ -3712,10 +3805,13 @@
 
         var tbody = '<tbody>' + state.rows.map(function (r) {
           var cls = (state.sel.layer === state.layer && String(state.sel.id) === String(r.id)) ? ' class="active"' : '';
+          var rowDirty = isRowDirty(r.id);
           var tds = cols.map(function (c) {
-            var raw = r.props[c.key];
-            var val = c.fmt ? c.fmt(raw, r.props) : (raw == null || raw === '' ? '—' : raw);
-            return '<td title="' + esc(val) + '">' + esc(val) + '</td>';
+            var val = cellDisplay(c, r.props);
+            var canEdit = editing && c.edit;
+            var tdCls = (canEdit ? 'editable' : '') + (rowDirty && canEdit ? ' dirty' : '');
+            return '<td' + (tdCls ? ' class="' + tdCls + '"' : '') +
+              ' data-key="' + esc(c.key) + '" title="' + esc(val) + '">' + esc(val) + '</td>';
           }).join('');
           return '<tr data-id="' + esc(r.id) + '"' + cls + '>' + tds + '</tr>';
         }).join('') + '</tbody>';
@@ -3731,8 +3827,105 @@
           });
         });
         bodyEl.querySelectorAll('tbody tr').forEach(function (tr) {
-          tr.addEventListener('click', function () { onRowClick(tr.getAttribute('data-id')); });
+          tr.addEventListener('click', function (e) {
+            /* Клик по редактируемой ячейке открывает инлайн-редактор и не
+               должен запускать выбор+перелёт. */
+            var td = e.target.closest('td.editable');
+            if (td) { e.stopPropagation(); startCellEdit(tr, td); return; }
+            onRowClick(tr.getAttribute('data-id'));
+          });
         });
+      }
+
+      /* ─── Инлайн-редактирование ячейки ─── */
+      var editingCell = null;
+
+      function findRow(idStr) {
+        for (var i = 0; i < state.rows.length; i++) {
+          if (String(state.rows[i].id) === String(idStr)) return state.rows[i];
+        }
+        return null;
+      }
+
+      function startCellEdit(tr, td) {
+        if (editingCell) return;  // один редактор за раз
+        var idStr = tr.getAttribute('data-id');
+        var key = td.getAttribute('data-key');
+        var row = findRow(idStr);
+        var col = null, cols = COLUMNS[state.layer];
+        for (var i = 0; i < cols.length; i++) if (cols[i].key === key) { col = cols[i]; break; }
+        if (!row || !col || !col.edit) return;
+
+        var cur = row.props[key];
+        var ctlHtml;
+        if (col.edit.type === 'select') {
+          ctlHtml = '<select>' + col.edit.choices.map(function (ch) {
+            var sel = String(ch[0]) === String(cur == null ? '' : cur) ? ' selected' : '';
+            return '<option value="' + esc(ch[0]) + '"' + sel + '>' + esc(ch[1]) + '</option>';
+          }).join('') + '</select>';
+        } else {
+          ctlHtml = '<input type="text" value="' + esc(cur == null ? '' : cur) + '">';
+        }
+        td.classList.add('editing');
+        td.innerHTML = ctlHtml;
+        var ctl = td.querySelector('select, input');
+        editingCell = { td: td, tr: tr, col: col, row: row };
+        if (ctl) {
+          ctl.focus();
+          if (ctl.select) try { ctl.select(); } catch (_) {}
+          ctl.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); commitCellEdit(ctl.value); }
+            else if (e.key === 'Escape') { e.preventDefault(); cancelCellEdit(); }
+          });
+          ctl.addEventListener('blur', function () { commitCellEdit(ctl.value); });
+          if (col.edit.type === 'select') {
+            ctl.addEventListener('change', function () { commitCellEdit(ctl.value); });
+          }
+        }
+      }
+
+      function cancelCellEdit() {
+        if (!editingCell) return;
+        var ec = editingCell; editingCell = null;
+        ec.td.classList.remove('editing');
+        ec.td.innerHTML = esc(cellDisplay(ec.col, ec.row.props));
+        ec.td.title = cellDisplay(ec.col, ec.row.props);
+      }
+
+      function commitCellEdit(rawVal) {
+        if (!editingCell) return;
+        var ec = editingCell; editingCell = null;
+        var col = ec.col, row = ec.row, key = col.key;
+        var kind = col.edit.kind || 'str';
+        var prev = row.props[key];
+
+        var val = rawVal;
+        if (kind === 'int') val = parseInt(rawVal, 10);
+        else if (kind === 'bool') val = (rawVal === 'true');
+        else val = String(rawVal);
+
+        ec.td.classList.remove('editing');
+
+        var same = (kind === 'int') ? (Number(prev) === val)
+                                     : (String(prev == null ? '' : prev) === String(val));
+        if (same) {
+          ec.td.innerHTML = esc(cellDisplay(col, row.props));
+          ec.td.title = cellDisplay(col, row.props);
+          return;
+        }
+
+        var patch = {}; patch[key] = val;
+        try { applyAttrsToIds(state.layer, [row.id], patch); } catch (_) {}
+        row.props[key] = val;
+        /* crop_type у userfields влияет на отображение типа — обновим подпись. */
+        if (state.layer === 'userfields' && key === 'crop_type') {
+          row.props.crop_type_display = null;
+        }
+
+        ec.td.innerHTML = esc(cellDisplay(col, row.props));
+        ec.td.title = cellDisplay(col, row.props);
+        ec.td.classList.add('editable', 'dirty');
+        toast('Изменение в очереди · 💾 для сохранения, ↶ — отмена.');
       }
 
       function clearSelHighlight() {
@@ -3774,10 +3967,36 @@
           } catch (_) {}
         }
 
-        /* Подсветить активную строку без полного перерендера. */
+        highlightRow(idStr, false);
+      }
+
+      /* Подсветить строку в таблице (+ опц. прокрутить к ней). */
+      function highlightRow(idStr, scroll) {
         bodyEl.querySelectorAll('tbody tr.active').forEach(function (t) { t.classList.remove('active'); });
-        var trEl = bodyEl.querySelector('tbody tr[data-id="' + (window.CSS && CSS.escape ? CSS.escape(idStr) : idStr) + '"]');
-        if (trEl) trEl.classList.add('active');
+        var sel = (window.CSS && CSS.escape) ? CSS.escape(idStr) : idStr;
+        var trEl = bodyEl.querySelector('tbody tr[data-id="' + sel + '"]');
+        if (trEl) {
+          trEl.classList.add('active');
+          if (scroll && trEl.scrollIntoView) {
+            try { trEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) { trEl.scrollIntoView(); }
+          }
+        }
+      }
+
+      /* Двусторонняя синхронизация: клик по полигону на карте подсвечивает
+         и прокручивает к соответствующей строке. Если объект другого слоя —
+         переключаем вкладку. */
+      function selectFromMap(layer, id) {
+        if (!state.open || id == null) return;
+        if (layer !== state.layer) {
+          setLayer(layer);
+        } else {
+          render();  // ЗСН: объект мог появиться/исчезнуть из видимой области
+        }
+        clearSelHighlight();
+        state.sel = { layer: layer, id: id };
+        try { setSelState(layer, id, true); } catch (_) {}
+        highlightRow(String(id), true);
       }
 
       function setLayer(layer) {
@@ -3816,20 +4035,61 @@
         t.addEventListener('click', function () { setLayer(t.getAttribute('data-attr-layer')); });
       });
 
+      /* Поиск (debounce) и фильтр по использованию. */
+      var searchTimer = null;
+      if (searchEl) searchEl.addEventListener('input', function () {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(function () {
+          state.query = searchEl.value || '';
+          if (state.open) render();
+        }, 200);
+      });
+      if (filterEl) filterEl.addEventListener('change', function () {
+        state.usedFilter = filterEl.value || '';
+        if (state.open) render();
+      });
+
+      /* Переключение режима правки слоя (кнопка ✏) — перерисуем таблицу,
+         чтобы ячейки сразу стали (не)редактируемыми. Слушатель добавляется
+         поверх штатного обработчика, поэтому layerState уже обновлён. */
+      document.querySelectorAll('.gis-layer[data-layer] .gis-layer__btn[data-action="edit"]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          if (state.open) setTimeout(render, 0);
+        });
+      });
+
+      /* Двусторонняя синхронизация: клик по полигону на карте → строка.
+         Доп. слушатели (не мешают существующим обработчикам click). */
+      map.on('click', 'farmlands-fill', function (e) {
+        if (!state.open || !e.features.length) return;
+        var ft = e.features[0];
+        var id = (ft.id != null) ? ft.id : (ft.properties && ft.properties.id);
+        selectFromMap('farmlands', id);
+      });
+      map.on('click', 'userfields-fill', function (e) {
+        if (!state.open || !e.features.length) return;
+        var ft = e.features[0];
+        var id = (ft.id != null) ? ft.id : (ft.properties && ft.properties.id);
+        selectFromMap('userfields', id);
+      });
+
       /* Авто-обновление ЗСН при перемещении карты (debounce). */
       var moveTimer = null;
       map.on('moveend', function () {
         if (!state.open || state.layer !== 'farmlands') return;
+        if (editingCell) return;  // не сбрасываем открытый редактор ячейки
         clearTimeout(moveTimer);
         moveTimer = setTimeout(render, 250);
       });
-      /* Перерисовка «Моих полей» после правок/сохранения тайлов. */
+      /* Перерисовка после правок/сохранения данных слоя (сброс меток dirty,
+         подхват новой геометрии/тайлов). Debounce гасит частые события. */
       map.on('sourcedata', function (ev) {
-        if (!state.open) return;
-        if (ev.sourceId === 'userfields' && state.layer === 'userfields') {
-          clearTimeout(moveTimer);
-          moveTimer = setTimeout(render, 200);
-        }
+        if (!state.open || editingCell) return;
+        var match = (state.layer === 'userfields' && ev.sourceId === 'userfields') ||
+                    (state.layer === 'farmlands' && ev.sourceId === 'farmlands' && ev.isSourceLoaded);
+        if (!match) return;
+        clearTimeout(moveTimer);
+        moveTimer = setTimeout(render, 250);
       });
     })();
   })();
