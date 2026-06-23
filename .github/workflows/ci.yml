@@ -154,8 +154,12 @@ jobs:
       - name: Django system check
         run: python manage.py check --deploy --fail-level WARNING 2>&1 || true
 
+      # --parallel auto: split tests across all runner CPUs. Django clones the
+      # test DB per worker via `CREATE DATABASE ... TEMPLATE` (cheap — does NOT
+      # re-run migrations), so wall-clock test time drops roughly Nx. Needs
+      # tblib (in requirements.txt) to ship tracebacks back from workers.
       - name: Run tests
-        run: python manage.py test legacy agrocosmos --verbosity=2
+        run: python manage.py test legacy agrocosmos --parallel auto --verbosity=2
 
   docker-build:
     name: Docker build check
