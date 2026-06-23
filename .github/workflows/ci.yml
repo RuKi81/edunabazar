@@ -144,9 +144,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run migrations
-        run: python manage.py migrate --noinput
-
+      # NOTE: no standalone `migrate` step. It used to run a FULL ~47-migration
+      # replay against the service DB — redundant with the one `create_test_db`
+      # already performs when building the test DB in the "Run tests" step
+      # below (which fails loudly if any migration is broken). Dropping it cuts
+      # the slowest part of the job roughly in half for zero loss of safety.
+      # (A `makemigrations --check` drift gate was considered but the repo
+      # currently has unmade migrations, so it would just block CI.)
       - name: Django system check
         run: python manage.py check --deploy --fail-level WARNING 2>&1 || true
 
