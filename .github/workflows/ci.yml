@@ -83,49 +83,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies (GDAL/GEOS)
-        # --no-install-recommends drops ~100 optional packages (cfitsio-doc,
-        # libaom-dev, libhdf5-doc, poppler-data, proj-data, python3-numpy…)
-        # cutting install from ~475 MB / 9 min down to ~80 MB / <2 min.
-        # DEBIAN_FRONTEND=noninteractive avoids interactive tzdata prompts.
-        # The recurring CI failure was `apt-get update` HANGING on a mirror,
-        # which then wedged the whole job up to the timeout cap. Key insight:
-        # GitHub runner images ship with reasonably fresh apt lists, so we can
-        # usually install GDAL WITHOUT `update` at all — skipping the fragile
-        # step entirely. Only if that fails do we refresh the lists (wrapped in
-        # `timeout` + retries so a hung mirror is killed and retried, never
-        # blocking for the full cap). Acquire::*::Timeout bounds each download.
-        timeout-minutes: 12
-        run: |
-          set -x
-          APT="DEBIAN_FRONTEND=noninteractive apt-get \
-            -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 \
-            -o Acquire::https::Timeout=30"
-          PKGS="gdal-bin libgdal-dev libgeos-dev"
+      # GDAL/GEOS via cache-apt-pkgs-action. The recurring CI failure used to be
+      # `apt-get` HANGING on a Debian/Ubuntu mirror, which wedged the whole job
+      # up to the timeout cap. This action caches the installed .deb file trees:
+      #   - cache HIT  → restores files directly (no apt, no mirror network) in
+      #     a few seconds, so a flaky mirror can no longer block the job.
+      #   - cache MISS → installs once, then saves the cache for later runs.
+      # execute_install_scripts runs the dpkg post-install hooks (notably
+      # ldconfig) so the dynamic linker resolves libgdal/libgeos by soname at
+      # runtime. Bump `version` to force-invalidate the cache (e.g. GDAL ABI
+      # change). Pinned to @latest per the action's docs; can be tightened to a
+      # commit SHA if stricter supply-chain pinning is wanted.
+      - name: Install system dependencies (GDAL/GEOS, cached)
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: gdal-bin libgdal-dev libgeos-dev
+          version: gdal-1
+          execute_install_scripts: true
 
-          # 1) Fast path: install straight from the preloaded package lists.
-          if sudo timeout 300 env $APT install -y --no-install-recommends $PKGS; then
-            gdal-config --version
-            exit 0
-          fi
-
-          echo "Direct install failed — refreshing apt lists and retrying…"
-          # 2) Refresh lists (hung mirror → killed by timeout → retried).
-          for i in 1 2 3; do
-            sudo timeout 150 env $APT update -qq && break
-            echo "apt-get update failed/hung (attempt $i/3), retrying in 10s…"
-            sleep 10
-          done
-          # 3) Install again after the refresh, with retries.
-          for i in 1 2 3; do
-            sudo timeout 300 env $APT install -y --no-install-recommends $PKGS && break
-            echo "apt-get install failed/hung (attempt $i/3), retrying in 10s…"
-            sleep 10
-          done
-          # Fail the step explicitly if GDAL is still missing (the retry loop's
-          # `&& break` would otherwise let an all-attempts-failed run pass).
-          gdal-config --version
+      - name: Verify GDAL toolchain
+        run: gdal-config --version
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -149,8 +126,14 @@ jobs:
       # already performs when building the test DB in the "Run tests" step
       # below (which fails loudly if any migration is broken). Dropping it cuts
       # the slowest part of the job roughly in half for zero loss of safety.
-      # (A `makemigrations --check` drift gate was considered but the repo
-      # currently has unmade migrations, so it would just block CI.)
+
+      # Drift gate: fail the build if a model was changed without generating its
+      # migration. The repo's accumulated drift was cleaned up (agrocosmos
+      # 0033/0034, my_fields 0004), so this is now green and guards against
+      # re-accumulation. No DB access needed — just compares models vs files.
+      - name: Check for missing migrations
+        run: python manage.py makemigrations --check --dry-run
+
       - name: Django system check
         run: python manage.py check --deploy --fail-level WARNING 2>&1 || true
 
