@@ -336,9 +336,12 @@
     .gis-attrtable td.editable:hover { background: #fff9d6; }
     .gis-attrtable td.editing { padding: 2px 4px; background: #fff; }
     .gis-attrtable td.editing input, .gis-attrtable td.editing select {
-      width: 100%; box-sizing: border-box; padding: 4px 6px; font-size: 12px;
+      display: block; width: 100%; box-sizing: border-box; padding: 4px 6px; font-size: 12px;
       border: 1px solid #2e7d32; border-radius: 4px; background: #fff; font-family: inherit;
     }
+    /* Materialize прячет нативные select (display:none) и ломает height у тех,
+       что с .browser-default — принудительно возвращаем рабочий вид. */
+    .gis-attrtable select.browser-default { display: block; height: auto; }
     .gis-attrtable td.dirty { box-shadow: inset 3px 0 0 0 #fb8c00; }
     .gis-attrtable__btn {
       border: 1px solid rgba(0,0,0,.12); background: #fff; cursor: pointer;
@@ -494,7 +497,7 @@
         <span class="gis-attrtable__count" id="gis-attrtable-count"></span>
         <input type="text" class="gis-attrtable__search" id="gis-attrtable-search"
                placeholder="🔎 поиск по строкам…" autocomplete="off">
-        <select class="gis-attrtable__filter" id="gis-attrtable-filter" title="Фильтр по использованию">
+        <select class="gis-attrtable__filter browser-default" id="gis-attrtable-filter" title="Фильтр по использованию">
           <option value="">Использование: все</option>
           <option value="1">Используется</option>
           <option value="0">Не используется</option>
@@ -3889,7 +3892,11 @@
              добавляем выбранный плейсхолдер, иначе браузер выберет первый вариант
              и выбор его же не вызовет change → правка не зафиксируется. */
           var placeholder = hasMatch ? '' : '<option value="" selected disabled hidden>— выберите —</option>';
-          ctlHtml = '<select>' + placeholder + col.edit.choices.map(function (ch) {
+          /* class="browser-default": страница использует Materialize, который
+             глобально прячет нативные <select> (select { display:none }) и
+             подменяет их своими дропдаунами. browser-default отключает это —
+             иначе наш инлайн-селект становится 0×0 и некликабельным. */
+          ctlHtml = '<select class="browser-default">' + placeholder + col.edit.choices.map(function (ch) {
             var sel = (hasMatch && String(ch[0]) === curStr) ? ' selected' : '';
             return '<option value="' + esc(ch[0]) + '"' + sel + '>' + esc(ch[1]) + '</option>';
           }).join('') + '</select>';
