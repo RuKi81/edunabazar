@@ -40,4 +40,9 @@ desktop.ini
 # Farmland import artefacts (large, local)
 scripts/*.json
 import_data/
-_tmp_*.py
+_tmp_*
+_shp_preview.txt
+
+# Local-only data / one-off scripts (never commit personal data)
+*.xlsx
+seed_adverts.py
