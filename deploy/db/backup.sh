@@ -27,3 +27,12 @@ echo "[$(date)] Backup complete: ${BACKUP_FILE} (${SIZE})"
 # --- Cleanup old backups ---
 find "$BACKUP_DIR" -name "${DB_NAME}_*.sql.gz" -mtime +"$KEEP_DAYS" -delete
 echo "[$(date)] Old backups (>${KEEP_DAYS} days) cleaned up"
+
+# --- Optional dead-man-switch ping (e.g. https://hc-ping.com/<uuid>) ---
+# Unlike the local freshness check (check_backup_freshness.sh), an external
+# ping service also catches "the whole VM is down" — no ping, they alert.
+if [ -n "${BACKUP_PING_URL:-}" ]; then
+    curl -fsS -m 10 --retry 3 "$BACKUP_PING_URL" > /dev/null \
+        && echo "[$(date)] Ping sent to $BACKUP_PING_URL" \
+        || echo "[$(date)] WARNING: ping to $BACKUP_PING_URL failed"
+fi
