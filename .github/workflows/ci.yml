@@ -150,8 +150,13 @@ jobs:
       # test DB per worker via `CREATE DATABASE ... TEMPLATE` (cheap — does NOT
       # re-run migrations), so wall-clock test time drops roughly Nx. Needs
       # tblib (in requirements.txt) to ship tracebacks back from workers.
+      # `time` + `--durations 20` are diagnostics for the ~20-min job (see
+      # docs/TODO_infra.md): the gap between step start and the first test
+      # line is setup_databases (migrations), `--durations` prints the 20
+      # slowest tests (Python 3.12+ / Django 5.0+ feature, works with
+      # --parallel). Together they show where the minutes actually go.
       - name: Run tests
-        run: python manage.py test legacy agrocosmos --parallel auto --verbosity=2
+        run: time python manage.py test legacy agrocosmos --parallel auto --verbosity=2 --durations 20
 
   docker-build:
     name: Docker build check
