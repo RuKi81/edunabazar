@@ -47,6 +47,11 @@ class AdvertViewSet(viewsets.GenericViewSet,
                     mixins.ListModelMixin,
                     mixins.RetrieveModelMixin,
                     mixins.CreateModelMixin):
+    # Schema hint only (drf_spectacular.W001): lets spectacular derive the
+    # model (and the integer type of the `{id}` path param) without calling
+    # get_queryset(), which needs a real session-bearing request. At runtime
+    # this attribute is fully shadowed by get_queryset() below.
+    queryset = Advert.objects.all()
     permission_classes = [IsLegacyAuthenticatedOrReadOnly]
 
     def get_serializer_class(self):
