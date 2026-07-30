@@ -130,7 +130,6 @@ class Command(BaseCommand):
             )
 
         from agrocosmos.services.zonal_stats import compute_zonal_stats
-        from agrocosmos.services.satellite_gee import GEEError
 
         # Graceful Ctrl+C
         if threading.current_thread() is threading.main_thread():
@@ -377,7 +376,7 @@ class Command(BaseCommand):
                 continue
 
             if not results:
-                self.stdout.write(f'  → 0 farmlands')
+                self.stdout.write('  → 0 farmlands')
                 continue
 
             # Midpoint date for the composite record

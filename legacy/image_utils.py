@@ -3,7 +3,6 @@ Image processing utilities: compress originals, generate WebP thumbnails.
 """
 
 import io
-import os
 import uuid
 
 from django.core.files.base import ContentFile

@@ -17,11 +17,9 @@ from __future__ import annotations
 
 import collections
 import json
-import os
 import struct
 import sys
 import time
-from glob import glob
 from pathlib import Path
 
 BASE = Path(r'C:\Users\kiva_\Desktop\КАРТЫ_СХЕМЫ_ЗСН Вектор на РФ')
@@ -202,7 +200,7 @@ def main() -> int:
         for r in regs:
             print(f'      {r}')
 
-    print(f'\n=== Global usage-value distribution (top 60) ===')
+    print('\n=== Global usage-value distribution (top 60) ===')
     grand_total = sum(global_usage.values())
     for v, c in global_usage.most_common(60):
         pct = 100.0 * c / grand_total if grand_total else 0

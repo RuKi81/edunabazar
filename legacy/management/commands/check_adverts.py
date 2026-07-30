@@ -111,6 +111,6 @@ class Command(BaseCommand):
                 """, [user_id])
                 rows = cur.fetchall()
                 if rows:
-                    self.stdout.write(f'  Latest adverts:')
+                    self.stdout.write('  Latest adverts:')
                     for r in rows:
                         self.stdout.write(f'    id={r[0]}, title={r[1]!r}, status={r[2]}, created={r[3]}')

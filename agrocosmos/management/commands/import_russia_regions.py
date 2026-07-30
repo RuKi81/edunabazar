@@ -119,7 +119,7 @@ class Command(BaseCommand):
             self.stdout.write(f'[{i}/{total}] {name} ({code}) …')
             raw = fetch_polygon_geojson(rel['osm_id'])
             if not raw:
-                self.stderr.write(f'  ! polygons.osm.fr returned no geometry')
+                self.stderr.write('  ! polygons.osm.fr returned no geometry')
                 failed += 1
                 time.sleep(opts['sleep'])
                 continue

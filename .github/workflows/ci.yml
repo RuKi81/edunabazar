@@ -45,13 +45,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install flake8
 
-      - name: Flake8 (syntax & import errors)
+      # Blocking gate: every F* (unused imports/vars, f-strings, undefined
+      # names), E4 (import hygiene), E7 (statement smells), E9 (syntax),
+      # W391/W6. Codebase was brought to zero on this set in 2026-07 —
+      # regressions fail the build. Only pure formatting (E1/E2/E3/E501)
+      # and complexity (C901) remain advisory below.
+      - name: Flake8 (blocking)
         run: |
-          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 . --count --show-source --statistics --extend-ignore=E1,E2,E3,E501,C901
 
-      - name: Flake8 (warnings)
+      - name: Flake8 (advisory formatting report)
         run: |
-          flake8 . --count --max-complexity=15 --max-line-length=120 --statistics --exit-zero
+          flake8 . --count --statistics --exit-zero
 
   test:
     name: Test

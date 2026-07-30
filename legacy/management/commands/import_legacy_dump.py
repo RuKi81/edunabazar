@@ -516,7 +516,6 @@ class Command(BaseCommand):
                 address = row[5] or ''
                 created_at = parse_dt(row[6])
                 updated_at = parse_dt(row[7])
-                published_at = parse_dt(row[8])
                 desc_text = row[11] or ''
                 capacity_min = row[12] or 0
                 capacity_max = row[13] or 0

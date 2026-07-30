@@ -29,12 +29,11 @@ Usage:
 from __future__ import annotations
 
 import time
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
-from django.db.models import Q
 from django.utils import timezone
 
 from agrocosmos.models import PipelineRun, Region

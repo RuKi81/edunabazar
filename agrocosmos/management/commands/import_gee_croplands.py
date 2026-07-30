@@ -28,16 +28,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import shutil
 import subprocess
-import tempfile
 import time
 from pathlib import Path
 
 import ee
-from django.contrib.gis.geos import GEOSGeometry
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
 

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Advert, AdvertPhoto, Categories, Catalog, Seller, Review, Message, LegacyUser
+from .models import Advert, AdvertPhoto, Categories, Catalog, Seller, Review, Message
 
 
 class CatalogSerializer(serializers.ModelSerializer):

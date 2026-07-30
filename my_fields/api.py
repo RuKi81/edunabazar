@@ -34,7 +34,6 @@ from .permissions import can_edit_field, can_view_field
 from .services.geometry import (
     compute_area_ha, ensure_multipolygon, resolve_region_district,
 )
-from .services.quotas import can_create_field
 
 
 # ─────────────────────────────────────────────────────────────────────

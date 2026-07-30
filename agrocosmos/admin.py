@@ -204,7 +204,6 @@ class AgroSubscriptionAdmin(admin.ModelAdmin):
         return qs
 
     def _user_field(self, obj, key):
-        cache = getattr(self, '_user_map_fallback', None)
         # In contexts where ``get_queryset`` wasn't invoked first (e.g.
         # change-form rendering of a single row), fall back to a direct
         # one-off SELECT — still cheap.
@@ -440,7 +439,7 @@ admin.AdminSite.get_urls = _patched_get_urls
 def agro_panel_view(request):
     """Main Agrocosmos control panel."""
     from datetime import timedelta
-    from django.db.models import Count, Sum
+    from django.db.models import Count
     from .models import GeeApiMetric
 
     # Farmland counts per region are cached in Redis for 5 minutes.
@@ -916,7 +915,7 @@ def run_raster_view(request):
     )
 
     try:
-        log_path = _enqueue_ndvi_pipeline(
+        _enqueue_ndvi_pipeline(
             run_id=run.pk, region_id=int(region_id), district_id=did,
             year=year, min_valid=min_valid,
             overwrite=overwrite, rebuild_fusion=rebuild_fusion,

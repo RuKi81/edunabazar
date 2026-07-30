@@ -27,6 +27,7 @@ Performance (Crimea, 133K farmlands, 1 year):
     Total:    ~35 min (vs ~12 hours via GEE reduceRegions)
 """
 import json
+import os
 import signal
 import time
 from datetime import date
@@ -80,7 +81,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         from agrocosmos.services.satellite_modis_raster import (
-            compute_zonal_stats, download_year, _biweekly_chunks, _raster_path,
+            compute_zonal_stats, _biweekly_chunks, _raster_path,
         )
         from agrocosmos.services.satellite_gee import GEEError
 
@@ -165,7 +166,6 @@ class Command(BaseCommand):
                         overwrite=overwrite,
                     )
                     if path:
-                        import os
                         size_mb = os.path.getsize(path) / 1e6
                         self.stdout.write(f'  → {size_mb:.1f} MB')
                         downloaded += 1
@@ -252,7 +252,6 @@ class Command(BaseCommand):
 
         created_total = 0
         stats_errors = 0
-        t_stats = time.time()
 
         recompute_stats = options.get('recompute_stats', False)
 
@@ -261,7 +260,6 @@ class Command(BaseCommand):
                 break
 
             tif_path = _raster_path(region_id, cf, ct)
-            import os
             if not os.path.exists(tif_path):
                 self.stdout.write(f'  [{i+1}/{len(chunks)}] {cf}..{ct} — no raster, skip')
                 continue
@@ -316,7 +314,7 @@ class Command(BaseCommand):
                 continue
 
             if not results:
-                self.stdout.write(f'  → 0 farmlands')
+                self.stdout.write('  → 0 farmlands')
                 continue
 
             # Group farmlands by district for scene_id

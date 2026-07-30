@@ -15,7 +15,7 @@ importer logs and skips rows that cannot be classified).
 from __future__ import annotations
 
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 

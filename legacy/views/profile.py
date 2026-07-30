@@ -6,16 +6,6 @@ from django.shortcuts import redirect, render
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 
-ADVERTS_PER_PAGE = 100
-
-
-def _safe_page_num(raw) -> int:
-    try:
-        n = int(str(raw or '1').strip())
-        return max(1, n)
-    except (TypeError, ValueError):
-        return 1
-
 from ..models import Advert, LegacyUser, Message
 from ..constants import (
     ADVERT_STATUS_DELETED, ADVERT_STATUS_HIDDEN, ADVERT_STATUS_MODERATION,
@@ -25,6 +15,16 @@ from .helpers import (
     _get_current_legacy_user, _is_admin_user,
     _annotate_adverts, _update_advert_status,
 )
+
+ADVERTS_PER_PAGE = 100
+
+
+def _safe_page_num(raw) -> int:
+    try:
+        n = int(str(raw or '1').strip())
+        return max(1, n)
+    except (TypeError, ValueError):
+        return 1
 
 
 def legacy_me(request: HttpRequest) -> HttpResponse:

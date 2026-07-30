@@ -48,7 +48,7 @@ from agrocosmos.services.farmland_importer import (
     build_insert_sql,
     run_ogr2ogr,
 )
-from agrocosmos.services.farmland_schemas import FarmlandSchema, detect_schema
+from agrocosmos.services.farmland_schemas import detect_schema
 
 
 logger = logging.getLogger(__name__)
@@ -235,7 +235,7 @@ class Command(BaseCommand):
 
                 if staged_rows == 0:
                     self.stdout.write(self.style.WARNING(
-                        f'    staging is empty (no agricultural rows matched)'
+                        '    staging is empty (no agricultural rows matched)'
                     ))
                     cur.execute(build_drop_staging_sql(staging))
                     continue

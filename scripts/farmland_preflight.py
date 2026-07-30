@@ -82,7 +82,7 @@ def main() -> int:
           f'(of {len(regions)})')
     print(f'    missing Fact_isp: {missing_fact}  |  '
           f'missing Cad_num: {missing_cad}')
-    print(f'\n=== Schema frequency (top 15)')
+    print('\n=== Schema frequency (top 15)')
     for schema_id, cnt in sorted(schemas.items(), key=lambda kv: -kv[1])[:15]:
         print(f'  {cnt:>3}  {schema_id}')
     return 0

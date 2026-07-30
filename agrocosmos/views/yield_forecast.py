@@ -23,7 +23,7 @@ from __future__ import annotations
 import datetime as _dt
 from typing import Any
 
-from django.http import HttpRequest, HttpResponseNotModified, JsonResponse
+from django.http import HttpRequest, JsonResponse
 
 from ..models import (
     CropYieldStat, Region, YieldCrop, YieldForecast, YieldForecastModel,

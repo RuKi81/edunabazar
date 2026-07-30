@@ -13,7 +13,6 @@ import json
 
 from django.core.management.base import BaseCommand
 from django.contrib.gis.geos import GEOSGeometry, MultiPolygon
-from django.db import transaction
 
 from agrocosmos.models import Region, District, Farmland
 

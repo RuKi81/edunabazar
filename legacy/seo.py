@@ -2,7 +2,6 @@
 SEO helpers: robots.txt, sitemap.xml, healthcheck, and context processors for meta tags.
 """
 
-import json
 
 from django.core.cache import cache
 from django.db import connection
@@ -52,7 +51,7 @@ def robots_txt(request: HttpRequest) -> HttpResponse:
         'Disallow: /me/',
         'Disallow: /messages/',
         '',
-        f'Host: edunabazar.ru',
+        'Host: edunabazar.ru',
         f'Sitemap: {SITE_URL}/sitemap.xml',
         f'Sitemap: {SITE_URL}/turbo-rss.xml',
     ]

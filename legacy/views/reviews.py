@@ -11,7 +11,7 @@ from ..constants import (
     REVIEW_STATUS_PUBLISHED,
 )
 from .helpers import (
-    _get_current_legacy_user, _is_admin_user, _require_admin, logger,
+    _get_current_legacy_user, _is_admin_user, _require_admin,
 )
 
 _REVIEW_STATUS_PUBLISHED = REVIEW_STATUS_PUBLISHED

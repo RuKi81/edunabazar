@@ -61,6 +61,8 @@ __all__ = [
     'api_districts_status_timeline', 'api_farmlands',
     # tiles
     'api_tile', 'api_raster_tile',
+    # farmland editor (my_fields)
+    'api_farmland_collection', 'api_farmland_detail',
     # NDVI data APIs
     'api_farmland_ndvi', 'api_ndvi_stats', 'api_phenology',
     'api_raster_composites',

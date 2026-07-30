@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-from django.contrib.gis.db.models.functions import Area, Transform
 from django.contrib.gis.geos import GEOSGeometry, MultiPolygon, Polygon
 
 # Россия — мета-параметры для авто-резолва географии. Equal-area

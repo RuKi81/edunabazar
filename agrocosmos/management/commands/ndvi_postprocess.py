@@ -22,7 +22,6 @@ import numpy as np
 from django.core.management.base import BaseCommand
 from django.db import connection
 
-from agrocosmos.models import Farmland, VegetationIndex
 
 # Spike detection: if |value - rolling_median| > threshold, mark as anomaly
 SPIKE_THRESHOLD = 0.15  # NDVI units
@@ -131,7 +130,7 @@ class Command(BaseCommand):
             ORDER BY vi.farmland_id, vi.acquired_date
         """
 
-        self.stdout.write(f'Loading records from DB...')
+        self.stdout.write('Loading records from DB...')
         t0 = time.time()
 
         with connection.cursor() as cur:

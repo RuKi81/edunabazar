@@ -8,7 +8,7 @@ Usage:
 import json
 
 from django.core.management.base import BaseCommand
-from django.contrib.gis.geos import GEOSGeometry, MultiPolygon, Polygon
+from django.contrib.gis.geos import GEOSGeometry, MultiPolygon
 
 from agrocosmos.models import Region
 

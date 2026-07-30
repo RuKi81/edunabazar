@@ -1,6 +1,5 @@
 import urllib.parse
 
-from django.contrib.postgres.search import SearchQuery, SearchRank
 from django.core.paginator import Paginator
 from django.db.models import Prefetch
 from django.http import Http404, HttpRequest, HttpResponse
@@ -101,9 +100,7 @@ def advert_list(request: HttpRequest, catalog_slug: str = '', category_slug: str
         qs = qs.exclude(status=ADVERT_STATUS_DELETED)
     else:
         qs = qs.filter(status=ADVERT_STATUS_PUBLISHED)
-    search_query = None
     if q:
-        search_query = SearchQuery(q, config='russian')
         qs = qs.extra(where=["search_vector @@ plainto_tsquery('russian', %s)"], params=[q])
         qs = qs.extra(select={'_rank': "ts_rank(search_vector, plainto_tsquery('russian', %s))"}, select_params=[q])
 

@@ -25,10 +25,10 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 from legacy.models import News, NewsFeedSource, NewsKeyword
 from legacy.cache_utils import invalidate_home_cache
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger('legacy.fetch_news')
 
@@ -275,7 +275,7 @@ def _rewrite_with_gigachat(title: str, summary: str) -> dict | None:
 
         # Fallback: use full response as text
         logger.warning('Could not parse GigaChat response, using raw content')
-        lines = [l.strip() for l in content.split('\n') if l.strip()]
+        lines = [ln.strip() for ln in content.split('\n') if ln.strip()]
         if len(lines) >= 2:
             return {'title': lines[0][:500], 'text': ' '.join(lines[1:])[:1000]}
 
@@ -424,7 +424,7 @@ class Command(BaseCommand):
 
         if saved > 0:
             invalidate_home_cache()
-            self.stdout.write(self.style.SUCCESS(f'[fetch_news] Home cache invalidated'))
+            self.stdout.write(self.style.SUCCESS('[fetch_news] Home cache invalidated'))
         self.stdout.write(self.style.SUCCESS(f'\n[fetch_news] Done. Saved {saved} article(s).'))
 
     def _save_entry(self, entry, dry, today):

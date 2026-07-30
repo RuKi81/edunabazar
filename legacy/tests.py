@@ -1,9 +1,9 @@
 import io
 import time
 
-from django.test import SimpleTestCase, TestCase, Client, RequestFactory, override_settings
+from django.test import SimpleTestCase, TestCase, Client, override_settings
 from django.core.files.uploadedfile import SimpleUploadedFile
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from PIL import Image as PILImage
 
 from .templatetags.legacy_extras import format_price, truncate_ellipsis, pick_thumb_url
@@ -600,7 +600,6 @@ class AdvertStatusTests(TestCase):
         self.client.cookies[_s.SESSION_COOKIE_NAME] = session.session_key
 
     def test_hide_advert(self):
-        from .models import Advert
         resp = self.client.post(f'/adverts/{self.advert.pk}/hide/')
         self.assertEqual(resp.status_code, 302)
         self.advert.refresh_from_db()
@@ -615,7 +614,6 @@ class AdvertStatusTests(TestCase):
         self.assertEqual(self.advert.status, ADVERT_STATUS_PUBLISHED)
 
     def test_delete_advert(self):
-        from .models import Advert
         resp = self.client.post(f'/adverts/{self.advert.pk}/delete/')
         self.assertEqual(resp.status_code, 302)
         self.advert.refresh_from_db()

@@ -208,6 +208,6 @@ class Command(BaseCommand):
         ))
         if not opts['activate']:
             self.stdout.write(
-                f'  Чтобы активировать: --activate при следующем запуске, '
-                f'либо вручную через admin.'
+                '  Чтобы активировать: --activate при следующем запуске, '
+                'либо вручную через admin.'
             )

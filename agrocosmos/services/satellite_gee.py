@@ -31,7 +31,6 @@ _initialized = False
 
 class GEEError(Exception):
     """Raised when GEE API returns an error."""
-    pass
 
 
 def initialize():

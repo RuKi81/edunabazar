@@ -292,5 +292,3 @@ def report_region(request: HttpRequest) -> HttpResponse:
         'years': years,
         'active_page': 'report_region',
     })
-
-

@@ -1,0 +1,20 @@
+# Shared flake8 defaults for local runs and CI (.github/workflows/ci.yml).
+# The BLOCKING CI step additionally passes
+#   --extend-ignore=E1,E2,E3,E501,C901
+# i.e. pure-formatting codes and complexity stay advisory, while everything
+# else (all F* bug-level checks, E4 imports, E7 statement smells, E9 syntax,
+# W6 deprecations, W391) fails the build. Keep new code clean against the
+# full set anyway.
+[flake8]
+max-line-length = 120
+max-complexity = 15
+exclude =
+    .git,
+    __pycache__,
+    .venv,
+    .venv313,
+    venv,
+    migrations,
+    node_modules,
+    staticfiles,
+    media

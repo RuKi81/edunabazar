@@ -77,12 +77,12 @@ class FuseOneTests(SimpleTestCase):
         self.assertEqual(result, obs)
 
     def test_landsat_only_all_are_orphans(self):
-        l = [
+        obs = [
             (date(2025, 6, 8), 0.55, 50),
             (date(2025, 6, 24), 0.60, 55),
         ]
-        result = self.fuse(s2_obs=[], l_obs=l)
-        self.assertEqual(result, l)
+        result = self.fuse(s2_obs=[], l_obs=obs)
+        self.assertEqual(result, obs)
 
     def test_empty_inputs_return_empty(self):
         self.assertEqual(self.fuse([], []), [])

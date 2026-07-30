@@ -307,8 +307,10 @@ class Command(BaseCommand):
         self._log(f'  Region: {reg.name} (id={reg.pk})')
         self._log(f'  Window: {year_from}..{year_to}   Min valid: {min_valid:.0%}')
         flags = []
-        if overwrite: flags.append('overwrite')
-        if skip_baseline: flags.append('skip-baseline')
+        if overwrite:
+            flags.append('overwrite')
+        if skip_baseline:
+            flags.append('skip-baseline')
         self._log(f'  Flags: [{", ".join(flags) or "none"}]')
         self._log('═══════════════════════════════════════════════')
 

@@ -356,10 +356,14 @@ class Command(BaseCommand):
         self._log(f'  Pipeline run_id={self._run_id}  pid={os.getpid()}')
         self._log(f'  Scope: {scope_desc}   Year: {year}')
         flags = []
-        if overwrite: flags.append('overwrite')
-        if do_fusion: flags.append('+fusion')
-        if skip_s2:   flags.append('skip-s2')
-        if skip_l8:   flags.append('skip-l8')
+        if overwrite:
+            flags.append('overwrite')
+        if do_fusion:
+            flags.append('+fusion')
+        if skip_s2:
+            flags.append('skip-s2')
+        if skip_l8:
+            flags.append('skip-l8')
         if date_from or date_to:
             flags.append(f'window={date_from or "…"}..{date_to or "…"}')
         self._log(f'  Flags: [{", ".join(flags) or "none"}]   Min valid: {min_valid:.0%}')

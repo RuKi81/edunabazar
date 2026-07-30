@@ -13,7 +13,6 @@ import math
 import os
 from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 
-import ee
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +164,6 @@ def download_tiled_composite(composite, extent, scale_m, out_path,
     Returns:
         str: out_path on success
     """
-    from .satellite_gee import GEEError
 
     xmin, ymin, xmax, ymax = extent
     scale_deg = scale_m / 111320

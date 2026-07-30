@@ -18,7 +18,6 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import ee
-import rasterio
 from django.conf import settings
 
 from .satellite_gee import GEEError, initialize

@@ -37,7 +37,6 @@ from calendar import monthrange
 from datetime import date, timedelta
 
 from django.core.management.base import BaseCommand
-from django.db.models import Min, Max
 
 from agrocosmos.models import Farmland, SatelliteScene, VegetationIndex
 

@@ -11,9 +11,8 @@ Required env vars:
 Docs:
     https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Statistical.html
 """
-import json
 import logging
-from datetime import date, timedelta
+from datetime import date
 
 import requests
 from django.conf import settings
@@ -64,7 +63,6 @@ function evaluatePixel(samples) {
 
 class CDSEError(Exception):
     """Raised when CDSE API returns an error."""
-    pass
 
 
 def _get_credentials():

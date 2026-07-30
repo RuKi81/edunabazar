@@ -27,9 +27,8 @@ from __future__ import annotations
 from typing import Iterable, Optional
 
 import numpy as np
-from django.db.models import Q
 
-from agrocosmos.models import CropYieldStat, Region, YieldFeatures
+from agrocosmos.models import CropYieldStat, YieldFeatures
 
 
 # Порядок фичей — фиксированный, должен совпадать в train и predict.

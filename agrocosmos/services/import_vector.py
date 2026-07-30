@@ -72,8 +72,6 @@ def import_region_vector(uploaded_file, name_field='NAME', code_field='CODE',
     Returns: (created, updated, errors_list)
     """
     fname = uploaded_file.name.lower()
-    created = updated = 0
-    errors = []
 
     if fname.endswith('.zip'):
         shp_path, tmp_dir = _extract_shp_from_zip(uploaded_file)

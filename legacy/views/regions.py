@@ -10,7 +10,7 @@ from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import render
 
 from ..constants import ADVERT_STATUS_PUBLISHED
-from ..models import Advert, AdvertPhoto, Catalog, Categories
+from ..models import Advert, AdvertPhoto
 from ..regions import REGIONS, REGIONS_LIST
 from .helpers import _get_current_legacy_user, _is_admin_user
 
