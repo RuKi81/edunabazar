@@ -134,8 +134,17 @@ jobs:
       - name: Check for missing migrations
         run: python manage.py makemigrations --check --dry-run
 
-      - name: Django system check
-        run: python manage.py check --deploy --fail-level WARNING 2>&1 || true
+      # Deploy check is a real gate (no `|| true`): any security.W* warning
+      # fails the build. Runs with a prod-like env (DEBUG=0, SSL, HSTS, long
+      # SECRET_KEY) — the workflow-level env is dev-like, which would disable
+      # half of the --deploy checks and trigger the rest spuriously.
+      - name: Django deploy check
+        env:
+          DJANGO_DEBUG: "0"
+          DJANGO_SECRET_KEY: ci-deploy-check-secret-key-0123456789abcdefghijklmnopqrstuvwxyz
+          SECURE_SSL_REDIRECT: "1"
+          SECURE_HSTS_SECONDS: "31536000"
+        run: python manage.py check --deploy --fail-level WARNING
 
       # --parallel auto: split tests across all runner CPUs. Django clones the
       # test DB per worker via `CREATE DATABASE ... TEMPLATE` (cheap — does NOT

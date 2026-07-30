@@ -34,7 +34,10 @@ _secret_key_default = 'django-insecure-fy2vz=_$&4)r(oxg6-x+p5%ep)=u^=fs*yo1jl)n2
 SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', _secret_key_default)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv('DJANGO_DEBUG', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
+# Fail-safe default: production (DEBUG=0). Dev environments must opt in
+# explicitly via DJANGO_DEBUG=1 in .env — a lost/missing env var can then
+# never silently expose stack traces and settings on a public host.
+DEBUG = os.getenv('DJANGO_DEBUG', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
 
 _allowed_raw = os.getenv('DJANGO_ALLOWED_HOSTS', '127.0.0.1 localhost')
 ALLOWED_HOSTS = [h.strip() for h in _allowed_raw.replace(',', ' ').split() if h.strip()]
@@ -44,12 +47,15 @@ if 'localhost' not in ALLOWED_HOSTS:
 _admins_raw = os.getenv('DJANGO_ADMIN_USERS', 'admin')
 ADMIN_USERNAMES = {u.strip() for u in _admins_raw.replace(',', ' ').split() if u.strip()}
 
-# Django default is 1000, which is exceeded by Django admin bulk actions on
-# large changelists (e.g. selecting all rows on the VegetationAlert page,
-# which can have 5–10k rows -> the POST contains that many `_selected_action`
-# fields and Django raises TooManyFieldsSent -> HTTP 400). Lift the cap so
-# admin housekeeping on large tables works.
-DATA_UPLOAD_MAX_NUMBER_FIELDS = 50000
+# Django default is 1000, which was exceeded by admin bulk actions on large
+# changelists (many `_selected_action` fields -> TooManyFieldsSent -> 400).
+# Was temporarily lifted to 50000 — an unnecessarily large DoS surface on
+# every public POST (form parsing is O(fields)). With default admin paging
+# (100/page, show-all cap 200) a changelist POST carries <=200 ids, and
+# "select all N matching" uses `select_across` (a single flag), so 3000
+# leaves ample headroom for admin forms with inlines while cutting the
+# parser work cap ~17x. If a legit form ever hits this, raise consciously.
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 3000
 
 
 # Application definition
@@ -283,6 +289,10 @@ if _is_production:
     SECURE_SSL_REDIRECT = _use_ssl
     SECURE_HSTS_SECONDS = int(os.getenv('SECURE_HSTS_SECONDS', '0'))
     SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
+    # `preload` directive in the HSTS header (satisfies security.W021).
+    # Harmless unless the domain is actually submitted to hstspreload.org;
+    # the site is HTTPS-only so preload is safe to advertise.
+    SECURE_HSTS_PRELOAD = SECURE_HSTS_SECONDS > 0
 
 AUTHENTICATION_BACKENDS = [
     'legacy.auth_backend.LegacyUserBackend',
