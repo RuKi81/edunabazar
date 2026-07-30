@@ -300,7 +300,14 @@ query=SELECT DISTINCT EXTRACT(YEAR FROM "agro_vegetation_index"."acquired_date")
 
 ---
 
-## [ ] FIX: resumable zonal stats в `modis_ndvi`
+## [x] DONE: resumable zonal stats в `modis_ndvi`
+
+**Реализовано (июль 2026):** перед `compute_zonal_stats` композит
+проверяется на покрытие в `VegetationIndex` (>=99% подготовленных угодий
+по ключу `(index_type='ndvi', acquired_date=mid_date)` в разрезе
+региона/района) — покрытые пропускаются. Обход: `--recompute-stats`
+(например, после смены `--min-valid-ratio`). Тесты:
+`agrocosmos/tests/test_modis_resume.py`.
 **Файл:** `agrocosmos/management/commands/modis_ndvi.py` (Step 2, цикл по `chunks`)
 
 **Симптом:** при падении пайплайна (OOM, краш БД, рестарт worker'а) регион

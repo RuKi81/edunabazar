@@ -59,6 +59,15 @@ class Command(BaseCommand):
                             help='Min valid pixel ratio (default: 0.5)')
         parser.add_argument('--overwrite', action='store_true',
                             help='Re-download existing rasters')
+        # Zonal stats are resumable: composites already covered in
+        # VegetationIndex are skipped, so a crashed/re-queued region
+        # finishes the tail instead of redoing days of CPU work (Altai:
+        # ~137 composites x 500K farmlands). Pass this flag to force a
+        # full recompute, e.g. after changing --min-valid-ratio or the
+        # simplification tolerance.
+        parser.add_argument('--recompute-stats', action='store_true',
+                            help='Recompute zonal stats even for composites '
+                                 'already fully present in VegetationIndex')
         # Batch callers (check_monitoring) should pass this flag so the
         # 10-minute global ``recompute_district_ndvi_status`` runs ONCE
         # at the end of the batch instead of after every region. With 85
@@ -245,6 +254,8 @@ class Command(BaseCommand):
         stats_errors = 0
         t_stats = time.time()
 
+        recompute_stats = options.get('recompute_stats', False)
+
         for i, (cf, ct) in enumerate(chunks):
             if self._stop_requested:
                 break
@@ -254,6 +265,34 @@ class Command(BaseCommand):
             if not os.path.exists(tif_path):
                 self.stdout.write(f'  [{i+1}/{len(chunks)}] {cf}..{ct} — no raster, skip')
                 continue
+
+            # Midpoint date identifies the composite record (see the write
+            # phase below — acquired_date is derived the same way, so the
+            # pair (index_type, acquired_date) is a stable composite key).
+            mid_date = (cf + (ct - cf) / 2)
+
+            # Resume support: skip composites already covered in the DB.
+            # "Covered" = rows for >=99% of the prepared farmlands — the
+            # missing <=1% are polygons that produced no valid pixels
+            # (clouds/nodata) and legitimately have no row. Without this a
+            # re-queued region redoes 60-70% of its pipeline time on zonal
+            # stats whose results are already stored (writes are UPSERTs,
+            # so only CPU was wasted — days of it for large regions).
+            if not recompute_stats:
+                cov_qs = VegetationIndex.objects.filter(
+                    index_type='ndvi', acquired_date=mid_date,
+                )
+                if district:
+                    cov_qs = cov_qs.filter(farmland__district=district)
+                else:
+                    cov_qs = cov_qs.filter(farmland__district__region=region)
+                have = cov_qs.count()
+                if have >= len(fl_geoms) * 0.99:
+                    self.stdout.write(
+                        f'  [{i+1}/{len(chunks)}] {cf}..{ct} — already in DB '
+                        f'({have}/{len(fl_geoms)}), skip'
+                    )
+                    continue
 
             self.stdout.write(
                 f'  [{i+1}/{len(chunks)}] {cf}..{ct}',
@@ -279,9 +318,6 @@ class Command(BaseCommand):
             if not results:
                 self.stdout.write(f'  → 0 farmlands')
                 continue
-
-            # Midpoint date for the composite record
-            mid_date = (cf + (ct - cf) / 2)
 
             # Group farmlands by district for scene_id
             district_scenes = {}  # district_id → scene
