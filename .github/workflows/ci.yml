@@ -191,15 +191,39 @@ jobs:
           port: ${{ secrets.SERVER_PORT }}
           command_timeout: 20m
           script: |
+            set -e
             cd /opt/edunabazar
             git fetch origin
             git reset --hard origin/main
             # Build both web and worker — they share the Dockerfile but
             # docker compose maintains them as separate image tags.
             docker compose -f docker-compose.prod.yml build web worker
+            # Migrate/collectstatic run in a ONE-OFF container from the NEW
+            # image BEFORE the running containers are swapped. The old order
+            # (up -d, then migrate) had a window where new code served
+            # requests against the old schema; now a failed migration aborts
+            # the deploy while the old containers keep serving untouched.
+            # --no-deps: don't touch the already-running redis.
+            docker compose -f docker-compose.prod.yml run --rm --no-deps web python manage.py migrate --noinput
+            docker compose -f docker-compose.prod.yml run --rm --no-deps web python manage.py collectstatic --noinput
             docker compose -f docker-compose.prod.yml up -d
-            docker compose -f docker-compose.prod.yml exec -T web python manage.py migrate --noinput
-            docker compose -f docker-compose.prod.yml exec -T web python manage.py collectstatic --noinput
+            # Post-deploy smoke gate: wait until the new web container's own
+            # healthcheck (GET /healthz inside the container) reports healthy.
+            # Without this a deploy that starts a crash-looping web would end
+            # "green" and the outage would be discovered by users. ~150 s cap
+            # covers the 15 s start_period + several 30 s check intervals.
+            web_cid=$(docker compose -f docker-compose.prod.yml ps -q web)
+            status=unknown
+            for i in $(seq 1 30); do
+              status=$(docker inspect -f '{{.State.Health.Status}}' "$web_cid" || echo unknown)
+              [ "$status" = "healthy" ] && break
+              sleep 5
+            done
+            if [ "$status" != "healthy" ]; then
+              echo "::error::web container is '$status' after deploy — aborting"
+              docker compose -f docker-compose.prod.yml logs --tail 100 web
+              exit 1
+            fi
             # Mark stale running PipelineRuns as failed (e.g. killed by prior worker timeout)
             docker compose -f docker-compose.prod.yml exec -T web python manage.py cleanup_stale_runs --timeout-min 10 || true
             # Make sure every Region has an active MODIS monitoring task for
