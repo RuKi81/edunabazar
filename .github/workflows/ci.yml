@@ -60,10 +60,11 @@ jobs:
     concurrency:
       group: ci-test-${{ github.ref }}
       cancel-in-progress: true
-    # 30 min — accumulated migration weight (47+ migrations, several with
-    # heavy PostGIS DDL) regularly puts us over the previous 20-min cap.
-    # Track-down work is in docs/TODO_infra.md.
-    timeout-minutes: 30
+    # The job runs in ~2 min after the 2026-07 CI cleanup (apt/pip caches,
+    # --parallel auto, dropped duplicate migrate step). 10 min is a real
+    # watchdog again — a regression back to the old 20-min behaviour should
+    # fail loudly, not silently burn runner minutes.
+    timeout-minutes: 10
 
     services:
       postgres:
