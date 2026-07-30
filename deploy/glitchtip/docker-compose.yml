@@ -1,0 +1,93 @@
+# GlitchTip — self-hosted Sentry-совместимый трекер ошибок.
+# Живёт на VM1 отдельным compose-проектом: /opt/edunabazar/deploy/glitchtip/
+#
+#   docker compose up -d
+#
+# Компоненты:
+#   glitchtip-web    — UI + приём событий (порт 8000 внутри сети)
+#   glitchtip-worker — celery-воркер + beat (почта, чистка, агрегация)
+#   glitchtip-migrate— одноразовые миграции при старте
+#   glitchtip-redis  — свой Redis (не делим с приложением: изоляция и
+#                      разные политики вытеснения)
+#
+# БД — PostgreSQL на VM2 (10.0.0.11), отдельная база `glitchtip`
+# (см. README.md рядом). Конфиг — через .env в этой папке (.env.example).
+#
+# Все сервисы имеют префикс glitchtip-: glitchtip-web дополнительно
+# подключён к сети приложения (edunabazar_default), чтобы основной nginx
+# мог проксировать errors.edunabazar.ru -> glitchtip-web:8000. Без
+# префиксов имена web/redis конфликтовали бы с DNS-алиасами контейнеров
+# приложения в общей сети.
+
+x-environment: &glitchtip-env
+  DATABASE_URL: ${DATABASE_URL}
+  SECRET_KEY: ${SECRET_KEY}
+  REDIS_URL: redis://glitchtip-redis:6379/0
+  EMAIL_URL: ${EMAIL_URL}
+  GLITCHTIP_DOMAIN: ${GLITCHTIP_DOMAIN:-https://errors.edunabazar.ru}
+  DEFAULT_FROM_EMAIL: ${DEFAULT_FROM_EMAIL}
+  # Закрытая инсталляция: аккаунты создаёт только суперюзер.
+  ENABLE_USER_REGISTRATION: "False"
+  ENABLE_ORGANIZATION_CREATION: "False"
+  CELERY_WORKER_AUTOSCALE: "1,3"
+
+services:
+  glitchtip-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - glitchtip-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  glitchtip-migrate:
+    image: glitchtip/glitchtip:v4.2
+    command: ./manage.py migrate
+    environment: *glitchtip-env
+    depends_on:
+      glitchtip-redis:
+        condition: service_healthy
+
+  glitchtip-web:
+    image: glitchtip/glitchtip:v4.2
+    restart: unless-stopped
+    environment: *glitchtip-env
+    depends_on:
+      glitchtip-migrate:
+        condition: service_completed_successfully
+    volumes:
+      - glitchtip-uploads:/code/uploads
+    networks:
+      - default
+      - appnet
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/_health/')\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  glitchtip-worker:
+    image: glitchtip/glitchtip:v4.2
+    command: ./bin/run-celery-with-beat.sh
+    restart: unless-stopped
+    environment: *glitchtip-env
+    depends_on:
+      glitchtip-migrate:
+        condition: service_completed_successfully
+    volumes:
+      - glitchtip-uploads:/code/uploads
+
+volumes:
+  glitchtip-redis-data:
+  glitchtip-uploads:
+
+networks:
+  # Сеть основного приложения (compose-проект /opt/edunabazar).
+  # Через неё nginx приложения видит glitchtip-web по имени.
+  appnet:
+    name: edunabazar_default
+    external: true

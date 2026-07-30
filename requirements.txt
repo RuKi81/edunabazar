@@ -19,6 +19,9 @@ rasterio>=1.3
 # Required by `manage.py test --parallel`: serialises exception tracebacks
 # across worker processes (without it, failures raise "can't pickle traceback").
 tblib>=3.0
+# Error tracking -> self-hosted GlitchTip (Sentry-compatible). No-op unless
+# SENTRY_DSN is set in the environment (see enb_django/settings.py).
+sentry-sdk[django]>=2.0
 
 # GDAL / GEOS are installed at OS level.
 # On Ubuntu: apt-get install -y gdal-bin libgdal-dev libgeos-dev

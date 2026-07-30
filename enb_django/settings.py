@@ -322,6 +322,24 @@ GEE_BACKOFF_BASE_SEC = float(os.getenv('GEE_BACKOFF_BASE_SEC', '2.0'))
 GEE_RATE_WAIT_SEC = float(os.getenv('GEE_RATE_WAIT_SEC', '1.0'))
 GEE_RATE_MAX_WAIT_SEC = float(os.getenv('GEE_RATE_MAX_WAIT_SEC', '30.0'))
 
+# ── Error tracking: GlitchTip (self-hosted, Sentry-compatible) ────────────
+# Enabled only when SENTRY_DSN is set (prod .env). Dev/CI without the var
+# run with the SDK fully inert. Covers web, worker and management commands —
+# every unhandled exception lands in https://errors.edunabazar.ru.
+SENTRY_DSN = os.getenv('SENTRY_DSN', '')
+if SENTRY_DSN:
+    import sentry_sdk
+
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        environment=os.getenv('SENTRY_ENVIRONMENT', 'production'),
+        # Errors only — no performance tracing (keeps event volume and
+        # GlitchTip DB size negligible).
+        traces_sample_rate=0.0,
+        # Never ship user PII (cookies, auth headers, request bodies).
+        send_default_pii=False,
+    )
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
