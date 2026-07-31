@@ -1,6 +1,6 @@
 """Report API endpoints: region-level and district-level MODIS NDVI reports."""
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date
 
 from django.db.models import Avg, Count, Sum
 from django.db.models.functions import Extract
@@ -11,29 +11,14 @@ from ..models import (
     Region, District, DistrictNdviSeries, Farmland, FarmlandPhenology,
     NdviBaseline,
 )
+# ``ndvi_assessment`` реэкспортируется под историческим именем: хелпер
+# вынесен в сервис-слой, но импортируется извне через agrocosmos.views
+# (см. views/__init__.py и tests/test_ndvi_assessment.py).
+from ..services.ndvi_stats import (
+    compute_z_score, doy_to_date, modis_last_period_end,
+    ndvi_assessment as _ndvi_assessment, weighted_mean,
+)
 from ._helpers import _safe_round, rate_limit
-
-
-def _ndvi_assessment(mean_ndvi, z_score=None):
-    """Return a short textual assessment of vegetation state."""
-    if mean_ndvi is None:
-        return 'Нет данных'
-    if z_score is not None:
-        if z_score < -2:
-            return 'Критическое снижение вегетации'
-        if z_score < -1:
-            return 'Вегетация ниже нормы'
-        if z_score > 2:
-            return 'Вегетация значительно выше нормы'
-        if z_score > 1:
-            return 'Вегетация выше нормы'
-    if mean_ndvi >= 0.6:
-        return 'Активная вегетация'
-    if mean_ndvi >= 0.4:
-        return 'Умеренная вегетация'
-    if mean_ndvi >= 0.2:
-        return 'Слабая вегетация'
-    return 'Вегетация практически отсутствует'
 
 
 @rate_limit('30/m')
@@ -111,14 +96,11 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
     # Build per-district data, sorted chronologically
     district_data = {}
     for (did, d), acc in sorted(per_district_date.items(), key=lambda kv: (kv[0][0], kv[0][1])):
-        s_area = acc['sum_area']
-        weighted = (acc['sum_ndvi_area'] / s_area) if s_area else None
+        weighted = weighted_mean(acc['sum_ndvi_area'], acc['sum_area'])
         doy = d.timetuple().tm_yday
 
         bl_mean, bl_std = bl_lookup.get(did, {}).get(doy, (None, None))
-        z_score = None
-        if bl_mean is not None and bl_std and bl_std > 0.01 and weighted is not None:
-            z_score = round((weighted - bl_mean) / bl_std, 2)
+        z_score = compute_z_score(weighted, bl_mean, bl_std)
 
         if did not in district_data:
             district_data[did] = {
@@ -145,7 +127,7 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
         bl_list = []
         for doy in sorted(doy_map.keys()):
             m, s = doy_map[doy]
-            d_date = date(year, 1, 1) + timedelta(days=doy - 1)
+            d_date = doy_to_date(doy, year)
             bl_list.append({
                 'date': str(d_date),
                 'mean_ndvi': _safe_round(m),
@@ -172,8 +154,7 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
     region_overall = []
     for acq_date in sorted(per_region_date.keys()):
         acc = per_region_date[acq_date]
-        s_area = acc['sum_area']
-        weighted = (acc['sum_ndvi_area'] / s_area) if s_area else None
+        weighted = weighted_mean(acc['sum_ndvi_area'], acc['sum_area'])
         region_overall.append({
             'date': str(acq_date),
             'mean_ndvi': _safe_round(weighted),
@@ -191,7 +172,7 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
     )
     region_baseline = []
     for b in region_bl_qs:
-        d_date = date(year, 1, 1) + timedelta(days=b['day_of_year'] - 1)
+        d_date = doy_to_date(b['day_of_year'], year)
         region_baseline.append({
             'date': str(d_date),
             'mean_ndvi': _safe_round(b['avg_mean']),
@@ -199,13 +180,7 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
         })
 
     # last_period_end for dashed extension line (MODIS 16-day: mid + 8 days)
-    last_period_end = None
-    if region_overall:
-        try:
-            last_mid = date.fromisoformat(region_overall[-1]['date'])
-            last_period_end = str(last_mid + timedelta(days=8))
-        except Exception:
-            pass
+    last_period_end = modis_last_period_end(region_overall)
 
     return JsonResponse({
         'ok': True,
@@ -304,14 +279,11 @@ def api_report_country(request: HttpRequest) -> JsonResponse:
     # Build per-region data, sorted chronologically
     region_data = {}
     for (rid, d), acc in sorted(per_region_date.items(), key=lambda kv: (kv[0][0], kv[0][1])):
-        s_area = acc['sum_area']
-        weighted = (acc['sum_ndvi_area'] / s_area) if s_area else None
+        weighted = weighted_mean(acc['sum_ndvi_area'], acc['sum_area'])
         doy = d.timetuple().tm_yday
 
         bl_mean, bl_std = bl_lookup.get(rid, {}).get(doy, (None, None))
-        z_score = None
-        if bl_mean is not None and bl_std and bl_std > 0.01 and weighted is not None:
-            z_score = round((weighted - bl_mean) / bl_std, 2)
+        z_score = compute_z_score(weighted, bl_mean, bl_std)
 
         if rid not in region_data:
             region_data[rid] = {
@@ -345,8 +317,7 @@ def api_report_country(request: HttpRequest) -> JsonResponse:
     country_overall = []
     for acq_date in sorted(per_country_date.keys()):
         acc = per_country_date[acq_date]
-        s_area = acc['sum_area']
-        weighted = (acc['sum_ndvi_area'] / s_area) if s_area else None
+        weighted = weighted_mean(acc['sum_ndvi_area'], acc['sum_area'])
         country_overall.append({
             'date': str(acq_date),
             'mean_ndvi': _safe_round(weighted),
@@ -358,7 +329,7 @@ def api_report_country(request: HttpRequest) -> JsonResponse:
         cb = country_bl[doy]
         if not cb['n']:
             continue
-        d_date = date(year, 1, 1) + timedelta(days=doy - 1)
+        d_date = doy_to_date(doy, year)
         country_baseline.append({
             'date': str(d_date),
             'mean_ndvi': _safe_round(cb['sum_mean'] / cb['n']),
@@ -366,13 +337,7 @@ def api_report_country(request: HttpRequest) -> JsonResponse:
         })
 
     # last_period_end for dashed extension line (MODIS 16-day: mid + 8 days)
-    last_period_end = None
-    if country_overall:
-        try:
-            last_mid = date.fromisoformat(country_overall[-1]['date'])
-            last_period_end = str(last_mid + timedelta(days=8))
-        except Exception:
-            pass
+    last_period_end = modis_last_period_end(country_overall)
 
     return JsonResponse({
         'ok': True,
@@ -382,6 +347,166 @@ def api_report_country(request: HttpRequest) -> JsonResponse:
         'country_baseline': country_baseline,
         'last_period_end': last_period_end,
     })
+
+
+# --- api_report_district helpers --------------------------------------------
+
+def _bl_to_series(doy_map, year):
+    """doy → (mean, std) → хронологический список точек baseline-линии."""
+    bl_list = []
+    for doy in sorted(doy_map.keys()):
+        m, s = doy_map[doy]
+        d_date = doy_to_date(doy, year)
+        bl_list.append({
+            'date': str(d_date),
+            'mean_ndvi': _safe_round(m),
+            'std_ndvi': _safe_round(s),
+        })
+    return bl_list
+
+
+def _district_baselines(district):
+    """Baseline района: общий (crop_type='') и по-культурный словари doy-профилей."""
+    all_bl_qs = NdviBaseline.objects.filter(
+        district=district,
+    ).values('day_of_year', 'mean_ndvi', 'std_ndvi', 'crop_type').order_by('crop_type', 'day_of_year')
+    bl_lookup = {}        # overall: doy → (mean, std)
+    bl_by_crop = {}       # crop_type → {doy: (mean, std)}
+    for b in all_bl_qs:
+        ct = b['crop_type']
+        if ct == '':
+            bl_lookup[b['day_of_year']] = (b['mean_ndvi'], b['std_ndvi'])
+        else:
+            bl_by_crop.setdefault(ct, {})[b['day_of_year']] = (b['mean_ndvi'], b['std_ndvi'])
+    return bl_lookup, bl_by_crop
+
+
+def _district_crop_rows(per_crop_date, fl_info, crop_labels, bl_lookup):
+    """Строки по культурам: серия, latest-значения, z-score и оценка.
+
+    В ответ попадают все культуры с угодьями в районе (count > 0),
+    даже без NDVI-данных — тогда с пустой серией и «Нет данных».
+    """
+    crop_data = {}
+    for (ct, d), acc in sorted(per_crop_date.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+        weighted = weighted_mean(acc['sum_ndvi_area'], acc['sum_area'])
+
+        if ct not in crop_data:
+            crop_data[ct] = {
+                'crop_type': ct,
+                'label': crop_labels.get(ct, ct),
+                'count': fl_info.get(ct, {}).get('count', 0),
+                'area_ha': fl_info.get(ct, {}).get('area_ha', 0),
+                'series': [],
+                'latest_ndvi': None,
+                'latest_date': None,
+            }
+        crop_data[ct]['series'].append({
+            'date': str(d),
+            'mean_ndvi': _safe_round(weighted),
+        })
+        # Track latest
+        if crop_data[ct]['latest_date'] is None or d > date.fromisoformat(crop_data[ct]['latest_date']):
+            crop_data[ct]['latest_ndvi'] = _safe_round(weighted)
+            crop_data[ct]['latest_date'] = str(d)
+
+    result = []
+    for ct_code, ct_label in Farmland.CropType.choices:
+        if ct_code in crop_data:
+            cd = crop_data[ct_code]
+        else:
+            cd = {
+                'crop_type': ct_code,
+                'label': ct_label,
+                'count': fl_info.get(ct_code, {}).get('count', 0),
+                'area_ha': fl_info.get(ct_code, {}).get('area_ha', 0),
+                'series': [],
+                'latest_ndvi': None,
+                'latest_date': None,
+            }
+        # z-score for latest observation
+        z = None
+        if cd['latest_date'] and cd['latest_ndvi']:
+            doy = date.fromisoformat(cd['latest_date']).timetuple().tm_yday
+            bl_mean, bl_std = bl_lookup.get(doy, (None, None))
+            z = compute_z_score(cd['latest_ndvi'], bl_mean, bl_std)
+        cd['assessment'] = _ndvi_assessment(cd.get('latest_ndvi'), z)
+        cd['latest_z_score'] = z
+        if cd['count'] > 0:
+            result.append(cd)
+    return result
+
+
+def _district_phenology_map(district, year):
+    """Средние фенометрики района по культурам (SOS/EOS/POS/LOS и пр.)."""
+    pheno_qs = (
+        FarmlandPhenology.objects.filter(
+            farmland__district=district,
+            year=year,
+            source='modis',
+        )
+        .values('farmland__crop_type')
+        .annotate(
+            count=Count('id'),
+            avg_max_ndvi=Avg('max_ndvi'),
+            avg_mean_ndvi=Avg('mean_ndvi'),
+            avg_los=Avg('los_days'),
+            avg_sos=Avg(Extract('sos_date', 'doy')),
+            avg_eos=Avg(Extract('eos_date', 'doy')),
+            avg_pos=Avg(Extract('pos_date', 'doy')),
+        )
+        .order_by('farmland__crop_type')
+    )
+
+    def _doy_to_str(doy_val):
+        if doy_val is None:
+            return None
+        try:
+            return doy_to_date(int(round(doy_val)), year).strftime('%d.%m')
+        except Exception:
+            return None
+
+    pheno_map = {}
+    for p in pheno_qs:
+        ct = p['farmland__crop_type']
+        pheno_map[ct] = {
+            'count': p['count'],
+            'avg_max_ndvi': _safe_round(p['avg_max_ndvi']),
+            'avg_mean_ndvi': _safe_round(p['avg_mean_ndvi']),
+            'avg_los': round(p['avg_los']) if p['avg_los'] else None,
+            'avg_sos': _doy_to_str(p['avg_sos']),
+            'avg_eos': _doy_to_str(p['avg_eos']),
+            'avg_pos': _doy_to_str(p['avg_pos']),
+        }
+    return pheno_map
+
+
+def _region_overall_series(region, year):
+    """Area-weighted NDVI-ряд всего региона из предагрегата (для сравнения с районом)."""
+    region_rows = DistrictNdviSeries.objects.filter(
+        district__region=region,
+        source=DistrictNdviSeries.Source.MODIS,
+        acquired_date__year=year,
+        sum_area__gt=0,
+    ).values_list('acquired_date', 'sum_ndvi_area', 'sum_area')
+
+    region_by_date = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0})
+    for acq_date, sum_ndvi_area, sum_area in region_rows.iterator(chunk_size=5000):
+        if not sum_area:
+            continue
+        acc = region_by_date[acq_date]
+        acc['sum_ndvi_area'] += float(sum_ndvi_area)
+        acc['sum_area'] += float(sum_area)
+
+    region_overall = []
+    for acq_date in sorted(region_by_date.keys()):
+        acc = region_by_date[acq_date]
+        weighted = weighted_mean(acc['sum_ndvi_area'], acc['sum_area'])
+        region_overall.append({
+            'date': str(acq_date),
+            'mean_ndvi': _safe_round(weighted),
+        })
+    return region_overall
 
 
 @rate_limit('30/m')
@@ -452,176 +577,33 @@ def api_report_district(request: HttpRequest) -> JsonResponse:
     overall_series = []
     for acq_date in sorted(per_overall_date.keys()):
         acc = per_overall_date[acq_date]
-        s_area = acc['sum_area']
-        weighted = (acc['sum_ndvi_area'] / s_area) if s_area else None
+        weighted = weighted_mean(acc['sum_ndvi_area'], acc['sum_area'])
         overall_series.append({
             'date': str(acq_date),
             'mean_ndvi': _safe_round(weighted),
         })
 
     # Baseline for the district (all crop types + per crop type)
-    all_bl_qs = NdviBaseline.objects.filter(
-        district=district,
-    ).values('day_of_year', 'mean_ndvi', 'std_ndvi', 'crop_type').order_by('crop_type', 'day_of_year')
-    bl_lookup = {}        # overall: doy → (mean, std)
-    bl_by_crop = {}       # crop_type → {doy: (mean, std)}
-    for b in all_bl_qs:
-        ct = b['crop_type']
-        if ct == '':
-            bl_lookup[b['day_of_year']] = (b['mean_ndvi'], b['std_ndvi'])
-        else:
-            bl_by_crop.setdefault(ct, {})[b['day_of_year']] = (b['mean_ndvi'], b['std_ndvi'])
+    bl_lookup, bl_by_crop = _district_baselines(district)
 
-    # Build per-crop data (iterate in (crop_type, date) order)
-    crop_data = {}
-    for (ct, d), acc in sorted(per_crop_date.items(), key=lambda kv: (kv[0][0], kv[0][1])):
-        s_area = acc['sum_area']
-        weighted = (acc['sum_ndvi_area'] / s_area) if s_area else None
+    # Per-crop rows: series, latest, z-score, assessment
+    result = _district_crop_rows(per_crop_date, fl_info, crop_labels, bl_lookup)
 
-        if ct not in crop_data:
-            crop_data[ct] = {
-                'crop_type': ct,
-                'label': crop_labels.get(ct, ct),
-                'count': fl_info.get(ct, {}).get('count', 0),
-                'area_ha': fl_info.get(ct, {}).get('area_ha', 0),
-                'series': [],
-                'latest_ndvi': None,
-                'latest_date': None,
-            }
-        crop_data[ct]['series'].append({
-            'date': str(d),
-            'mean_ndvi': _safe_round(weighted),
-        })
-        # Track latest
-        if crop_data[ct]['latest_date'] is None or d > date.fromisoformat(crop_data[ct]['latest_date']):
-            crop_data[ct]['latest_ndvi'] = _safe_round(weighted)
-            crop_data[ct]['latest_date'] = str(d)
-
-    # Add assessment + ensure all crop types present
-    result = []
-    for ct_code, ct_label in Farmland.CropType.choices:
-        if ct_code in crop_data:
-            cd = crop_data[ct_code]
-        else:
-            cd = {
-                'crop_type': ct_code,
-                'label': ct_label,
-                'count': fl_info.get(ct_code, {}).get('count', 0),
-                'area_ha': fl_info.get(ct_code, {}).get('area_ha', 0),
-                'series': [],
-                'latest_ndvi': None,
-                'latest_date': None,
-            }
-        # z-score for latest observation
-        z = None
-        if cd['latest_date'] and cd['latest_ndvi']:
-            doy = date.fromisoformat(cd['latest_date']).timetuple().tm_yday
-            bl_mean, bl_std = bl_lookup.get(doy, (None, None))
-            if bl_mean is not None and bl_std and bl_std > 0.01:
-                z = round((cd['latest_ndvi'] - bl_mean) / bl_std, 2)
-        cd['assessment'] = _ndvi_assessment(cd.get('latest_ndvi'), z)
-        cd['latest_z_score'] = z
-        if cd['count'] > 0:
-            result.append(cd)
-
-    # Phenology per crop type
-    pheno_qs = (
-        FarmlandPhenology.objects.filter(
-            farmland__district=district,
-            year=year,
-            source='modis',
-        )
-        .values('farmland__crop_type')
-        .annotate(
-            count=Count('id'),
-            avg_max_ndvi=Avg('max_ndvi'),
-            avg_mean_ndvi=Avg('mean_ndvi'),
-            avg_los=Avg('los_days'),
-            avg_sos=Avg(Extract('sos_date', 'doy')),
-            avg_eos=Avg(Extract('eos_date', 'doy')),
-            avg_pos=Avg(Extract('pos_date', 'doy')),
-        )
-        .order_by('farmland__crop_type')
-    )
-
-    def _doy_to_str(doy_val):
-        if doy_val is None:
-            return None
-        try:
-            d = date(year, 1, 1) + timedelta(days=int(round(doy_val)) - 1)
-            return d.strftime('%d.%m')
-        except Exception:
-            return None
-
-    pheno_map = {}
-    for p in pheno_qs:
-        ct = p['farmland__crop_type']
-        pheno_map[ct] = {
-            'count': p['count'],
-            'avg_max_ndvi': _safe_round(p['avg_max_ndvi']),
-            'avg_mean_ndvi': _safe_round(p['avg_mean_ndvi']),
-            'avg_los': round(p['avg_los']) if p['avg_los'] else None,
-            'avg_sos': _doy_to_str(p['avg_sos']),
-            'avg_eos': _doy_to_str(p['avg_eos']),
-            'avg_pos': _doy_to_str(p['avg_pos']),
-        }
-
-    # Build baseline series helper
-    def _bl_to_series(doy_map):
-        bl_list = []
-        for doy in sorted(doy_map.keys()):
-            m, s = doy_map[doy]
-            d_date = date(year, 1, 1) + timedelta(days=doy - 1)
-            bl_list.append({
-                'date': str(d_date),
-                'mean_ndvi': _safe_round(m),
-                'std_ndvi': _safe_round(s),
-            })
-        return bl_list
-
-    overall_baseline = _bl_to_series(bl_lookup)
-
+    # Phenology + baselines per crop type
+    pheno_map = _district_phenology_map(district, year)
+    overall_baseline = _bl_to_series(bl_lookup, year)
     for cd in result:
         cd['phenology'] = pheno_map.get(cd['crop_type'])
         # Per-crop baseline; fallback to overall
         crop_bl = bl_by_crop.get(cd['crop_type'], bl_lookup)
-        cd['baseline'] = _bl_to_series(crop_bl) if isinstance(crop_bl, dict) else []
+        cd['baseline'] = _bl_to_series(crop_bl, year) if isinstance(crop_bl, dict) else []
 
     # Region-level overall NDVI series (area-weighted across ALL
     # districts in the same region) — read from the pre-aggregate.
-    region_rows = DistrictNdviSeries.objects.filter(
-        district__region=district.region,
-        source=DistrictNdviSeries.Source.MODIS,
-        acquired_date__year=year,
-        sum_area__gt=0,
-    ).values_list('acquired_date', 'sum_ndvi_area', 'sum_area')
-
-    region_by_date = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0})
-    for acq_date, sum_ndvi_area, sum_area in region_rows.iterator(chunk_size=5000):
-        if not sum_area:
-            continue
-        acc = region_by_date[acq_date]
-        acc['sum_ndvi_area'] += float(sum_ndvi_area)
-        acc['sum_area'] += float(sum_area)
-
-    region_overall = []
-    for acq_date in sorted(region_by_date.keys()):
-        acc = region_by_date[acq_date]
-        s_area = acc['sum_area']
-        weighted = (acc['sum_ndvi_area'] / s_area) if s_area else None
-        region_overall.append({
-            'date': str(acq_date),
-            'mean_ndvi': _safe_round(weighted),
-        })
+    region_overall = _region_overall_series(district.region, year)
 
     # last_period_end for dashed extension line (MODIS 16-day: mid + 8 days)
-    last_period_end = None
-    if overall_series:
-        try:
-            last_mid = date.fromisoformat(overall_series[-1]['date'])
-            last_period_end = str(last_mid + timedelta(days=8))
-        except Exception:
-            pass
+    last_period_end = modis_last_period_end(overall_series)
 
     return JsonResponse({
         'ok': True,
