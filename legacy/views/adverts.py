@@ -259,15 +259,104 @@ def advert_detail(request: HttpRequest, advert_id: int) -> HttpResponse:
     return _no_store(resp)
 
 
-def _parse_advert_form(post, files):
-    """Parse and validate advert form fields. Returns (cleaned, errors, form_data)."""
+# Допустимые типы «доп. контактов» формы объявления
+_CONTACT_TYPES = {'email', 'telegram', 'max', 'social', 'website'}
+# Валидация фото
+_ALLOWED_IMAGE_TYPES = {'image/jpeg', 'image/png', 'image/gif', 'image/webp'}
+_MAX_PHOTO_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+def _parse_advert_type(post):
+    """'0'/'1' → int; любой мусор → 0 (предложение)."""
     type_raw = (post.get('type') or '0').strip()
     try:
         advert_type = int(type_raw)
-        if advert_type not in {0, 1}:
-            advert_type = 0
+        return advert_type if advert_type in {0, 1} else 0
     except Exception:
-        advert_type = 0
+        return 0
+
+
+def _nonneg_float(raw):
+    """Строка → неотрицательный float; мусор → 0.0."""
+    try:
+        return max(0.0, float(raw))
+    except Exception:
+        return 0.0
+
+
+def _parse_category(category_raw, errors):
+    """category_id активной категории либо None (+ запись в ``errors``)."""
+    if not category_raw:
+        errors['category'] = 'Выберите категорию'
+        return None
+    try:
+        category_id = int(category_raw)
+    except Exception:
+        errors['category'] = 'Неверная категория'
+        return None
+    if not Categories.objects.filter(pk=category_id, active=1).exists():
+        errors['category'] = 'Неверная категория'
+        return None
+    return category_id
+
+
+def _parse_coords(lat_raw, lon_raw):
+    """(lat, lon) в допустимых диапазонах либо (None, None)."""
+    try:
+        if lat_raw and lon_raw:
+            lat = float(lat_raw)
+            lon = float(lon_raw)
+            if (-90 <= lat <= 90) and (-180 <= lon <= 180):
+                return lat, lon
+    except Exception:
+        pass
+    return None, None
+
+
+def _parse_extra_contacts(post):
+    """Пары ec_type/ec_value → [{'type': ..., 'value': ...}], мусор отбрасывается."""
+    extra_contacts = []
+    ec_types = post.getlist('ec_type') if hasattr(post, 'getlist') else []
+    ec_values = post.getlist('ec_value') if hasattr(post, 'getlist') else []
+    for ct, cv in zip(ec_types, ec_values):
+        ct = (ct or '').strip()
+        cv = (cv or '').strip()
+        if ct in _CONTACT_TYPES and cv:
+            extra_contacts.append({'type': ct, 'value': cv})
+    return extra_contacts
+
+
+def _validate_photos(photos, errors):
+    """Количество, content-type, размер и целостность (PIL verify) фото.
+
+    Ошибка первого невалидного файла перекрывает «Максимум 10 фотографий» —
+    поведение сохранено как в исходной версии.
+    """
+    if len(photos) > 10:
+        errors['photos'] = 'Максимум 10 фотографий'
+
+    for photo in photos:
+        ct = getattr(photo, 'content_type', '') or ''
+        size = getattr(photo, 'size', 0) or 0
+        if ct not in _ALLOWED_IMAGE_TYPES:
+            errors['photos'] = f'Файл «{photo.name}» — недопустимый формат. Разрешены: JPEG, PNG, GIF, WebP'
+            break
+        if size > _MAX_PHOTO_SIZE:
+            errors['photos'] = f'Файл «{photo.name}» слишком большой (макс. 10 МБ)'
+            break
+        try:
+            photo.seek(0)
+            img = PILImage.open(photo)
+            img.verify()
+            photo.seek(0)
+        except Exception:
+            errors['photos'] = f'Файл «{photo.name}» повреждён или не является изображением'
+            break
+
+
+def _parse_advert_form(post, files):
+    """Parse and validate advert form fields. Returns (cleaned, errors, form_data)."""
+    advert_type = _parse_advert_type(post)
 
     category_raw = (post.get('category') or '').strip()
     title = (post.get('title') or '').strip()
@@ -295,91 +384,25 @@ def _parse_advert_form(post, files):
     if not address:
         errors['address'] = 'Введите адрес'
 
-    category_id = None
-    if not category_raw:
-        errors['category'] = 'Выберите категорию'
-    else:
-        try:
-            category_id = int(category_raw)
-            if not Categories.objects.filter(pk=category_id, active=1).exists():
-                errors['category'] = 'Неверная категория'
-                category_id = None
-        except Exception:
-            errors['category'] = 'Неверная категория'
+    category_id = _parse_category(category_raw, errors)
 
-    try:
-        price = max(0.0, float(price_raw))
-    except Exception:
-        price = 0.0
-
-    try:
-        volume = max(0.0, float(volume_raw))
-    except Exception:
-        volume = 0.0
-
-    try:
-        min_volume = max(0.0, float(min_volume_raw))
-    except Exception:
-        min_volume = 0.0
-
-    try:
-        wholesale_volume = max(0.0, float(wholesale_volume_raw))
-    except Exception:
-        wholesale_volume = 0.0
+    price = _nonneg_float(price_raw)
+    volume = _nonneg_float(volume_raw)
+    min_volume = _nonneg_float(min_volume_raw)
+    wholesale_volume = _nonneg_float(wholesale_volume_raw)
 
     is_opt = opt_raw in {'1', 'true', 'on', 'yes'}
     wholesale_price = price if is_opt else 0.0
     delivery = delivery_raw in {'1', 'true', 'on', 'yes'}
 
-    lat = None
-    lon = None
-    try:
-        if lat_raw and lon_raw:
-            lat = float(lat_raw)
-            lon = float(lon_raw)
-            if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
-                lat = None
-                lon = None
-    except Exception:
-        lat = None
-        lon = None
-
+    lat, lon = _parse_coords(lat_raw, lon_raw)
     if lat is None or lon is None:
         errors['lat'] = 'Укажите адрес на карте'
 
-    _CONTACT_TYPES = {'email', 'telegram', 'max', 'social', 'website'}
-    extra_contacts = []
-    ec_types = post.getlist('ec_type') if hasattr(post, 'getlist') else []
-    ec_values = post.getlist('ec_value') if hasattr(post, 'getlist') else []
-    for ct, cv in zip(ec_types, ec_values):
-        ct = (ct or '').strip()
-        cv = (cv or '').strip()
-        if ct in _CONTACT_TYPES and cv:
-            extra_contacts.append({'type': ct, 'value': cv})
+    extra_contacts = _parse_extra_contacts(post)
 
     photos = files.getlist('photos') if files else []
-    if len(photos) > 10:
-        errors['photos'] = 'Максимум 10 фотографий'
-
-    _ALLOWED_IMAGE_TYPES = {'image/jpeg', 'image/png', 'image/gif', 'image/webp'}
-    _MAX_PHOTO_SIZE = 10 * 1024 * 1024  # 10 MB
-    for i, photo in enumerate(photos):
-        ct = getattr(photo, 'content_type', '') or ''
-        size = getattr(photo, 'size', 0) or 0
-        if ct not in _ALLOWED_IMAGE_TYPES:
-            errors['photos'] = f'Файл «{photo.name}» — недопустимый формат. Разрешены: JPEG, PNG, GIF, WebP'
-            break
-        if size > _MAX_PHOTO_SIZE:
-            errors['photos'] = f'Файл «{photo.name}» слишком большой (макс. 10 МБ)'
-            break
-        try:
-            photo.seek(0)
-            img = PILImage.open(photo)
-            img.verify()
-            photo.seek(0)
-        except Exception:
-            errors['photos'] = f'Файл «{photo.name}» повреждён или не является изображением'
-            break
+    _validate_photos(photos, errors)
 
     cleaned = {
         'type': advert_type,
