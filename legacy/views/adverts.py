@@ -188,7 +188,10 @@ def advert_detail(request: HttpRequest, advert_id: int) -> HttpResponse:
 
     # Track view (once per IP per day)
     ip = request.META.get('HTTP_X_REAL_IP') or request.META.get('REMOTE_ADDR') or ''
-    today = timezone.now().date()
+    # localdate(), а не now().date(): lookup created_at__date сравнивает
+    # в TIME_ZONE (Europe/Moscow), и UTC-дата с 00:00 до 03:00 МСК на день
+    # отстаёт — дедуп не срабатывал и просмотр считался дважды.
+    today = timezone.localdate()
     already_viewed = AdvertView.objects.filter(
         advert_id=advert_id, ip_address=ip, created_at__date=today,
     ).exists()
