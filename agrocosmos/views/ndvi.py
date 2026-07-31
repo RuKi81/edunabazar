@@ -13,6 +13,9 @@ from ..models import (
     DistrictNdviSeries, Farmland, FarmlandPhenology, NdviBaseline,
     VegetationIndex,
 )
+from ..services.ndvi_stats import (
+    compute_z_score, doy_to_mmdd, modis_last_period_end, weighted_mean,
+)
 from ._helpers import _satellite_filter, _safe_round, rate_limit
 
 
@@ -68,6 +71,332 @@ def api_farmland_ndvi(request: HttpRequest) -> JsonResponse:
     return JsonResponse({'ok': True, 'data': data, 'last_period_end': last_period_end})
 
 
+# --- api_ndvi_stats helpers -------------------------------------------------
+# Декомпозиция эндпоинта: парсинг → выбор источника (предагрегат/сырые VI)
+# → накопление сумм → сборка ответа. Поведение зафиксировано страховочными
+# тестами tests/test_ndvi_stats.py.
+
+# Fixed UI ordering requested by the product side: пашня → сенокос →
+# пастбище → многолетние насаждения → залежь, then any remaining crop
+# types in NDVI-desc order (same ranking as ``by_crop_list``).
+_CROP_ORDER_HEAD = ('arable', 'hayfield', 'pasture', 'perennial', 'fallow')
+
+
+def _int_or_none(value):
+    """int(value) либо None — для необязательных числовых GET-параметров."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+class _WeightedAccs:
+    """Аккумуляторы одного прохода агрегации (суммы area-weighted среднего).
+
+    Три разреза: дата, культура, культура×дата (последний — только при
+    ``breakdown=crop``, чтобы общий путь оставался без лишних аллокаций)
+    плюс глобальные суммы для сводки.
+    """
+
+    def __init__(self, want_crop_breakdown: bool):
+        self.want_crop_breakdown = want_crop_breakdown
+        self.by_period = defaultdict(
+            lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0, 'count': 0})
+        self.by_crop = defaultdict(
+            lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0})
+        self.by_crop_period = defaultdict(
+            lambda: defaultdict(
+                lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0, 'count': 0}))
+        self.global_ndvi_area = 0.0
+        self.global_area = 0.0
+
+    def add(self, crop_type, acq_date, sum_w, sum_area, count):
+        if not sum_area:
+            return
+        p = self.by_period[acq_date]
+        p['sum_ndvi_area'] += sum_w
+        p['sum_area'] += sum_area
+        p['count'] += count
+        c = self.by_crop[crop_type]
+        c['sum_ndvi_area'] += sum_w
+        c['sum_area'] += sum_area
+        if self.want_crop_breakdown:
+            cp = self.by_crop_period[crop_type][acq_date]
+            cp['sum_ndvi_area'] += sum_w
+            cp['sum_area'] += sum_area
+            cp['count'] += count
+        self.global_ndvi_area += sum_w
+        self.global_area += sum_area
+
+
+def _filter_date_range(qs, year, date_from, date_to):
+    """Фильтры по acquired_date: год (некорректный игнорируется) и диапазон."""
+    if year:
+        y = _int_or_none(year)
+        if y is not None:
+            qs = qs.filter(acquired_date__year=y)
+    if date_from:
+        qs = qs.filter(acquired_date__gte=date_from)
+    if date_to:
+        qs = qs.filter(acquired_date__lte=date_to)
+    return qs
+
+
+def _filter_district(qs, district_id, field='district_id'):
+    """Фильтр по району: некорректный ID молча игнорируется (как раньше)."""
+    if district_id:
+        did = _int_or_none(district_id)
+        if did is not None:
+            qs = qs.filter(**{field: did})
+    return qs
+
+
+def _farmland_scope(region_id, district_id, crop_types, fact_isp_filter):
+    """Queryset угодий + сводки для блока «Сводка».
+
+    ``fl_summary``/``usage_summary`` считаются ДО фильтров crop_types и
+    fact_isp — сводка в сайдбаре всегда показывает полный состав
+    угодий региона/района.
+    """
+    fl_qs = Farmland.objects.filter(district__region_id=region_id)
+    fl_qs = _filter_district(fl_qs, district_id)
+
+    fl_summary = (
+        fl_qs
+        .values('crop_type')
+        .annotate(count=Count('id'), total_area=Sum('area_ha'))
+        .order_by('crop_type')
+    )
+
+    usage_summary_qs = (
+        fl_qs
+        .annotate(fi=Coalesce(KeyTextTransform('Fact_isp', 'properties'), Value(''), output_field=CharField()))
+        .values('fi')
+        .annotate(count=Count('id'), total_area=Sum('area_ha'))
+        .order_by('fi')
+    )
+    usage_summary = [
+        {
+            'fact_isp': row['fi'],
+            'count': row['count'],
+            'area_ha': round(row['total_area'] or 0, 1),
+        }
+        for row in usage_summary_qs
+    ]
+
+    ct_list: list[str] = []
+    if crop_types:
+        ct_list = [ct.strip() for ct in crop_types.split(',') if ct.strip()]
+        if ct_list:
+            fl_qs = fl_qs.filter(crop_type__in=ct_list)
+
+    if fact_isp_filter == 'used':
+        fl_qs = fl_qs.filter(properties__Fact_isp='Используется')
+    elif fact_isp_filter == 'unused':
+        fl_qs = fl_qs.filter(properties__Fact_isp='Не используется')
+
+    return fl_qs, fl_summary, usage_summary, ct_list
+
+
+def _series_has_data(region_id, source, year):
+    """Быстрая проверка предагрегата (индекс dns_district_src_date_idx).
+
+    Если предагрегат для региона/источника ещё не наполнен (свежий
+    деплой, новый регион), эндпоинт откатывается на сырые VI —
+    медленно, но корректно.
+    """
+    probe = DistrictNdviSeries.objects.filter(
+        district__region_id=region_id, source=source,
+    )
+    if year:
+        y = _int_or_none(year)
+        if y is not None:
+            probe = probe.filter(acquired_date__year=y)
+    return probe.exists()
+
+
+def _aggregate_series(accs, region_id, district_id, source, year,
+                      date_from, date_to, ct_list):
+    """Быстрый путь: суммирование предагрегата DistrictNdviSeries.
+
+    Максимум ``districts × composites × crop_types`` строк на источник —
+    даже для Московской области ~7 k строк вместо ~14 M сырых VI.
+    """
+    series_qs = DistrictNdviSeries.objects.filter(
+        district__region_id=region_id,
+        source=source,
+    )
+    series_qs = _filter_district(series_qs, district_id)
+    series_qs = _filter_date_range(series_qs, year, date_from, date_to)
+    if ct_list:
+        series_qs = series_qs.filter(crop_type__in=ct_list)
+
+    agg = (
+        series_qs
+        .values('acquired_date', 'crop_type')
+        .annotate(
+            sum_w=Sum('sum_ndvi_area'),
+            sum_a=Sum('sum_area'),
+            cnt=Sum('obs_count'),
+        )
+    )
+    for r in agg.iterator(chunk_size=2000):
+        accs.add(
+            r['crop_type'], r['acquired_date'],
+            float(r['sum_w'] or 0), float(r['sum_a'] or 0),
+            int(r['cnt'] or 0),
+        )
+
+
+def _aggregate_raw_vi(accs, fl_qs, source, year, date_from, date_to):
+    """Медленный путь: сырые VegetationIndex (единственный путь для fact_isp)."""
+    vi_qs = VegetationIndex.objects.filter(
+        farmland__in=fl_qs, index_type='ndvi',
+        mean__gte=-0.2, mean__lte=1,         # physical NDVI range
+        is_outlier=False,                     # detected spikes (snow/cloud)
+        **_satellite_filter(source),
+    )
+    vi_qs = _filter_date_range(vi_qs, year, date_from, date_to)
+
+    weighted_ndvi = Sum(
+        F('mean') * F('farmland__area_ha'),
+        output_field=FloatField(),
+    )
+    agg = (
+        vi_qs
+        .values('acquired_date', 'farmland__crop_type')
+        .annotate(
+            sum_w_ndvi=weighted_ndvi,
+            sum_area=Sum('farmland__area_ha'),
+            count=Count('id'),
+        )
+    )
+    for r in agg.iterator(chunk_size=2000):
+        accs.add(
+            r['farmland__crop_type'], r['acquired_date'],
+            float(r['sum_w_ndvi'] or 0), float(r['sum_area'] or 0),
+            r['count'],
+        )
+
+
+def _build_baseline(region_id, district_id):
+    """(baseline_list, doy → (mean, std)) — исторический профиль NDVI."""
+    baseline_qs = NdviBaseline.objects.filter(
+        district__region_id=region_id,
+        crop_type='',  # aggregated across all crop types
+    )
+    baseline_qs = _filter_district(baseline_qs, district_id)
+
+    baseline_agg = (
+        baseline_qs
+        .values('day_of_year')
+        .annotate(mean_ndvi=Avg('mean_ndvi'), std_ndvi=Avg('std_ndvi'))
+        .order_by('day_of_year')
+    )
+    baseline_list = []
+    baseline_lookup = {}  # doy → (mean, std) for z-score
+    for row in baseline_agg:
+        doy = row['day_of_year']
+        bl_mean = row['mean_ndvi'] or 0
+        bl_std = row['std_ndvi'] or 0
+        baseline_list.append({
+            'date': doy_to_mmdd(doy),
+            'mean_ndvi': _safe_round(bl_mean),
+            'std_ndvi': _safe_round(bl_std),
+        })
+        baseline_lookup[doy] = (bl_mean, bl_std)
+    return baseline_list, baseline_lookup
+
+
+def _attach_z_scores(by_period_list, baseline_lookup):
+    """z-score каждой точки ряда против baseline её дня года."""
+    for item in by_period_list:
+        try:
+            doy = date.fromisoformat(item['date']).timetuple().tm_yday
+            bl_mean, bl_std = baseline_lookup.get(doy, (None, None))
+            item['z_score'] = compute_z_score(
+                item['mean_ndvi'], bl_mean, bl_std, precision=4,
+            )
+        except Exception:
+            item['z_score'] = None
+
+
+def _build_crop_breakdown(accs, region_id, district_id, crop_labels,
+                          by_crop_list, fl_summary_list, baseline_list):
+    """Per-crop серии для сайдбара (``breakdown=crop``).
+
+    Baseline берётся per-crop из NdviBaseline; при отсутствии строк для
+    культуры — fallback на общий ``baseline_list`` (осмысленная линия
+    «архив» ещё до пересчёта per-crop baselines).
+    """
+    per_crop_bl_qs = NdviBaseline.objects.filter(
+        district__region_id=region_id,
+        crop_type__in=list(accs.by_crop_period.keys()),
+    )
+    per_crop_bl_qs = _filter_district(per_crop_bl_qs, district_id)
+    per_crop_bl = defaultdict(dict)  # crop_type -> {doy: (mean, std)}
+    for row in (
+        per_crop_bl_qs
+        .values('crop_type', 'day_of_year')
+        .annotate(mean_ndvi=Avg('mean_ndvi'), std_ndvi=Avg('std_ndvi'))
+    ):
+        per_crop_bl[row['crop_type']][row['day_of_year']] = (
+            row['mean_ndvi'] or 0,
+            row['std_ndvi'] or 0,
+        )
+
+    present = set(accs.by_crop_period.keys())
+    ordered_crops = [ct for ct in _CROP_ORDER_HEAD if ct in present]
+    for c in by_crop_list:
+        ct = c['crop_type']
+        if ct in present and ct not in _CROP_ORDER_HEAD:
+            ordered_crops.append(ct)
+
+    breakdown_list = []
+    for ct in ordered_crops:
+        dates_acc = accs.by_crop_period[ct]
+        period = []
+        for acq_date in sorted(dates_acc.keys()):
+            acc = dates_acc[acq_date]
+            period.append({
+                'date': str(acq_date),
+                'mean_ndvi': _safe_round(weighted_mean(acc['sum_ndvi_area'], acc['sum_area'])),
+                'count': acc['count'],
+            })
+
+        crop_bl_map = per_crop_bl.get(ct) or {}
+        if crop_bl_map:
+            crop_bl = [
+                {
+                    'date': doy_to_mmdd(doy),
+                    'mean_ndvi': _safe_round(crop_bl_map[doy][0]),
+                    'std_ndvi': _safe_round(crop_bl_map[doy][1]),
+                }
+                for doy in sorted(crop_bl_map.keys())
+            ]
+        else:
+            crop_bl = baseline_list
+
+        # Area/count from ``fl_summary`` (consistent with ``by_crop_list``).
+        fl_row = next(
+            (r for r in fl_summary_list if r['crop_type'] == ct),
+            {'count': 0, 'area_ha': 0},
+        )
+        breakdown_list.append({
+            'crop_type': ct,
+            'label': crop_labels.get(ct, ct),
+            'count': fl_row['count'],
+            'area_ha': fl_row['area_ha'],
+            'mean_ndvi': next(
+                (c['mean_ndvi'] for c in by_crop_list if c['crop_type'] == ct),
+                None,
+            ),
+            'by_period': period,
+            'baseline': crop_bl,
+        })
+    return breakdown_list
+
+
 @rate_limit('30/m')
 @cache_page(60 * 5)  # 5 min Redis cache; varies on full URL (incl. query string)
 def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
@@ -87,13 +416,11 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
             summary: {total_farmlands, with_ndvi, mean_ndvi}
         }}
     """
-    region_id = request.GET.get('region')
-    if not region_id:
+    region_raw = request.GET.get('region')
+    if not region_raw:
         return JsonResponse({'ok': False, 'error': 'region required'}, status=400)
-
-    try:
-        region_id = int(region_id)
-    except (TypeError, ValueError):
+    region_id = _int_or_none(region_raw)
+    if region_id is None:
         return JsonResponse({'ok': False, 'error': 'invalid region'}, status=400)
 
     district_id = request.GET.get('district')
@@ -107,205 +434,30 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
     # right-sidebar can render one small chart per crop type when a
     # district is clicked. The series is built from the same accumulators
     # we already maintain for ``by_crop_type``; no extra SQL.
-    breakdown = request.GET.get('breakdown', '')
-    sat_kw = _satellite_filter(source)
+    want_crop_breakdown = request.GET.get('breakdown', '') == 'crop'
 
-    # Base queryset
-    fl_qs = Farmland.objects.filter(district__region_id=region_id)
-    if district_id:
-        try:
-            fl_qs = fl_qs.filter(district_id=int(district_id))
-        except (TypeError, ValueError):
-            pass
-
-    # Farmland summary (before crop_types filter, for Сводка)
-    fl_summary = (
-        fl_qs
-        .values('crop_type')
-        .annotate(
-            count=Count('id'),
-            total_area=Sum('area_ha'),
-        )
-        .order_by('crop_type')
+    fl_qs, fl_summary, usage_summary, ct_list = _farmland_scope(
+        region_id, district_id, crop_types, fact_isp_filter,
     )
-
-    # Usage (Fact_isp) summary
-    usage_summary_qs = (
-        fl_qs
-        .annotate(fi=Coalesce(KeyTextTransform('Fact_isp', 'properties'), Value(''), output_field=CharField()))
-        .values('fi')
-        .annotate(count=Count('id'), total_area=Sum('area_ha'))
-        .order_by('fi')
-    )
-    usage_summary = []
-    for row in usage_summary_qs:
-        usage_summary.append({
-            'fact_isp': row['fi'],
-            'count': row['count'],
-            'area_ha': round(row['total_area'] or 0, 1),
-        })
-
-    # Apply crop_types filter
-    ct_list: list[str] = []
-    if crop_types:
-        ct_list = [ct.strip() for ct in crop_types.split(',') if ct.strip()]
-        if ct_list:
-            fl_qs = fl_qs.filter(crop_type__in=ct_list)
-
-    # Apply fact_isp filter
-    if fact_isp_filter == 'used':
-        fl_qs = fl_qs.filter(properties__Fact_isp='Используется')
-    elif fact_isp_filter == 'unused':
-        fl_qs = fl_qs.filter(properties__Fact_isp='Не используется')
-
     crop_labels = dict(Farmland.CropType.choices)
 
-    # --- Aggregation source selection ---
-    # Prefer the pre-aggregated ``agro_district_ndvi_series`` table
-    # (populated daily by ``recompute_district_ndvi_series``): it has
-    # at most ``districts × composites × crop_types`` rows per source,
-    # so even for Moscow Oblast a region query scans ~7 k rows instead
-    # of ~14 M raw VI rows.
-    #
-    # Fall back to raw VI aggregation when the pre-aggregate cannot
-    # answer the request — currently only when ``fact_isp`` is set
-    # (that dimension is intentionally not materialised).
+    # Предпочитаем предагрегат; fallback на сырые VI, когда он не может
+    # ответить: задан fact_isp (это измерение намеренно не
+    # материализовано) либо предагрегат пуст для региона/источника.
     use_series = (
         source in ('modis', 'raster', 'fused')
         and not fact_isp_filter
+        and _series_has_data(region_id, source, year)
     )
+
+    accs = _WeightedAccs(want_crop_breakdown)
     if use_series:
-        # Quick existence check (uses dns_district_src_date_idx). When the
-        # pre-aggregate has not been populated for this region/source yet
-        # (fresh deploy, new region, etc.) fall back to raw VI so the
-        # endpoint still returns correct data — at the cost of speed.
-        _probe = DistrictNdviSeries.objects.filter(
-            district__region_id=region_id, source=source,
+        _aggregate_series(
+            accs, region_id, district_id, source, year,
+            date_from, date_to, ct_list,
         )
-        if year:
-            try:
-                _probe = _probe.filter(acquired_date__year=int(year))
-            except (TypeError, ValueError):
-                pass
-        if not _probe.exists():
-            use_series = False
-
-    by_period_acc = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0, 'count': 0})
-    by_crop_acc = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0})
-    # crop_type -> { acquired_date -> {sum_w, sum_a, count} }. Only populated
-    # when ``breakdown=crop``; otherwise the inner allocation is skipped to
-    # keep the common path allocation-free.
-    by_crop_period_acc: dict = defaultdict(
-        lambda: defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0, 'count': 0})
-    )
-    want_crop_breakdown = breakdown == 'crop'
-    global_ndvi_area = 0.0
-    global_area = 0.0
-
-    if use_series:
-        series_qs = DistrictNdviSeries.objects.filter(
-            district__region_id=region_id,
-            source=source,
-        )
-        if district_id:
-            try:
-                series_qs = series_qs.filter(district_id=int(district_id))
-            except (TypeError, ValueError):
-                pass
-        if year:
-            try:
-                series_qs = series_qs.filter(acquired_date__year=int(year))
-            except (TypeError, ValueError):
-                pass
-        if date_from:
-            series_qs = series_qs.filter(acquired_date__gte=date_from)
-        if date_to:
-            series_qs = series_qs.filter(acquired_date__lte=date_to)
-        if ct_list:
-            series_qs = series_qs.filter(crop_type__in=ct_list)
-
-        agg = (
-            series_qs
-            .values('acquired_date', 'crop_type')
-            .annotate(
-                sum_w=Sum('sum_ndvi_area'),
-                sum_a=Sum('sum_area'),
-                cnt=Sum('obs_count'),
-            )
-        )
-        for r in agg.iterator(chunk_size=2000):
-            s_area = float(r['sum_a'] or 0)
-            s_w = float(r['sum_w'] or 0)
-            if not s_area:
-                continue
-            ct = r['crop_type']
-            d = r['acquired_date']
-            p = by_period_acc[d]
-            p['sum_ndvi_area'] += s_w
-            p['sum_area'] += s_area
-            p['count'] += int(r['cnt'] or 0)
-            c = by_crop_acc[ct]
-            c['sum_ndvi_area'] += s_w
-            c['sum_area'] += s_area
-            if want_crop_breakdown:
-                cp = by_crop_period_acc[ct][d]
-                cp['sum_ndvi_area'] += s_w
-                cp['sum_area'] += s_area
-                cp['count'] += int(r['cnt'] or 0)
-            global_ndvi_area += s_w
-            global_area += s_area
     else:
-        # Raw VI path — slow for big regions, but handles ``fact_isp``.
-        vi_qs = VegetationIndex.objects.filter(
-            farmland__in=fl_qs, index_type='ndvi',
-            mean__gte=-0.2, mean__lte=1,         # physical NDVI range
-            is_outlier=False,                     # detected spikes (snow/cloud)
-            **sat_kw,
-        )
-        if year:
-            try:
-                vi_qs = vi_qs.filter(acquired_date__year=int(year))
-            except (TypeError, ValueError):
-                pass
-        if date_from:
-            vi_qs = vi_qs.filter(acquired_date__gte=date_from)
-        if date_to:
-            vi_qs = vi_qs.filter(acquired_date__lte=date_to)
-
-        weighted_ndvi = Sum(
-            F('mean') * F('farmland__area_ha'),
-            output_field=FloatField(),
-        )
-        agg = (
-            vi_qs
-            .values('acquired_date', 'farmland__crop_type')
-            .annotate(
-                sum_w_ndvi=weighted_ndvi,
-                sum_area=Sum('farmland__area_ha'),
-                count=Count('id'),
-            )
-        )
-        for r in agg.iterator(chunk_size=2000):
-            s_area = float(r['sum_area'] or 0)
-            s_w = float(r['sum_w_ndvi'] or 0)
-            if not s_area:
-                continue
-            ct = r['farmland__crop_type']
-            d = r['acquired_date']
-            p = by_period_acc[d]
-            p['sum_ndvi_area'] += s_w
-            p['sum_area'] += s_area
-            p['count'] += r['count']
-            c = by_crop_acc[ct]
-            c['sum_ndvi_area'] += s_w
-            c['sum_area'] += s_area
-            if want_crop_breakdown:
-                cp = by_crop_period_acc[ct][d]
-                cp['sum_ndvi_area'] += s_w
-                cp['sum_area'] += s_area
-                cp['count'] += r['count']
-            global_ndvi_area += s_w
-            global_area += s_area
+        _aggregate_raw_vi(accs, fl_qs, source, year, date_from, date_to)
 
     # Per-crop farmland counts: reuse the cheap ``fl_summary`` (queried over
     # the small ``agro_farmland`` table). It counts *all* farmlands of that
@@ -315,26 +467,22 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
     fl_summary_counts = {row['crop_type']: row['count'] for row in fl_summary}
 
     by_crop_list = []
-    for ct in sorted(by_crop_acc.keys()):
-        acc = by_crop_acc[ct]
-        s_area = acc['sum_area']
-        weighted = (acc['sum_ndvi_area'] / s_area) if s_area else None
+    for ct in sorted(accs.by_crop.keys()):
+        acc = accs.by_crop[ct]
         by_crop_list.append({
             'crop_type': ct,
             'label': crop_labels.get(ct, ct),
             'count': fl_summary_counts.get(ct, 0),
-            'mean_ndvi': _safe_round(weighted),
+            'mean_ndvi': _safe_round(weighted_mean(acc['sum_ndvi_area'], acc['sum_area'])),
         })
     by_crop_list.sort(key=lambda r: r['mean_ndvi'] or 0, reverse=True)
 
     by_period_list = []
-    for acq_date in sorted(by_period_acc.keys()):
-        acc = by_period_acc[acq_date]
-        s_area = acc['sum_area']
-        weighted = (acc['sum_ndvi_area'] / s_area) if s_area else None
+    for acq_date in sorted(accs.by_period.keys()):
+        acc = accs.by_period[acq_date]
         by_period_list.append({
             'date': str(acq_date),
-            'mean_ndvi': _safe_round(weighted),
+            'mean_ndvi': _safe_round(weighted_mean(acc['sum_ndvi_area'], acc['sum_area'])),
             'count': acc['count'],
         })
 
@@ -345,8 +493,8 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
     # over millions of VI rows (the previous implementation timed out for
     # large regions like Moscow Oblast).
     total_fl = fl_qs.count()
-    with_ndvi = total_fl if global_area > 0 else 0
-    avg = (global_ndvi_area / global_area) if global_area else None
+    with_ndvi = total_fl if accs.global_area > 0 else 0
+    avg = weighted_mean(accs.global_ndvi_area, accs.global_area)
 
     # Farmland summary by crop type
     fl_summary_list = []
@@ -359,158 +507,22 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
             'area_ha': round(row['total_area'] or 0, 1),
         })
 
-    # Baseline (historical average across all prior years)
-    baseline_qs = NdviBaseline.objects.filter(
-        district__region_id=region_id,
-        crop_type='',  # aggregated across all crop types
+    # Baseline (historical average across all prior years) + z-scores
+    baseline_list, baseline_lookup = _build_baseline(region_id, district_id)
+    _attach_z_scores(by_period_list, baseline_lookup)
+
+    # Конец последнего 16-дневного композита — для пунктирного «хвоста»
+    # покрытия на графике.
+    last_period_end = (
+        modis_last_period_end(by_period_list) if source == 'modis' else None
     )
-    if district_id:
-        try:
-            baseline_qs = baseline_qs.filter(district_id=int(district_id))
-        except (TypeError, ValueError):
-            pass
 
-    baseline_agg = (
-        baseline_qs
-        .values('day_of_year')
-        .annotate(mean_ndvi=Avg('mean_ndvi'), std_ndvi=Avg('std_ndvi'))
-        .order_by('day_of_year')
-    )
-    baseline_list = []
-    baseline_lookup = {}  # doy → (mean, std) for z-score
-    for row in baseline_agg:
-        doy = row['day_of_year']
-        # Convert day-of-year to MM-DD
-        try:
-            d = date(2024, 1, 1) + timedelta(days=doy - 1)
-            mm_dd = d.strftime('%m-%d')
-        except Exception:
-            mm_dd = f'{doy:03d}'
-        bl_mean = row['mean_ndvi'] or 0
-        bl_std = row['std_ndvi'] or 0
-        baseline_list.append({
-            'date': mm_dd,
-            'mean_ndvi': _safe_round(bl_mean),
-            'std_ndvi': _safe_round(bl_std),
-        })
-        baseline_lookup[doy] = (bl_mean, bl_std)
-
-    # Enrich by_period with z-score relative to baseline
-    for item in by_period_list:
-        try:
-            d = date.fromisoformat(item['date'])
-            doy = d.timetuple().tm_yday
-            bl_mean, bl_std = baseline_lookup.get(doy, (None, None))
-            if bl_mean is not None and bl_std and bl_std > 0.01 and item['mean_ndvi'] is not None:
-                item['z_score'] = _safe_round((item['mean_ndvi'] - bl_mean) / bl_std)
-            else:
-                item['z_score'] = None
-        except Exception:
-            item['z_score'] = None
-
-    # For MODIS 16-day composites: expose the end date of the last chunk
-    # so the frontend can draw a dashed "coverage" extension line.
-    # mid_date = chunk_start + 7 days, chunk_end = chunk_start + 15 = mid + 8
-    last_period_end = None
-    if source == 'modis' and by_period_list:
-        try:
-            last_mid = date.fromisoformat(by_period_list[-1]['date'])
-            last_period_end = str(last_mid + timedelta(days=8))
-        except Exception:
-            pass
-
-    # --- Per-crop breakdown (``breakdown=crop``) ---
-    # Emitted only when requested. Each entry contains its own time series
-    # plus a per-crop baseline pulled from ``NdviBaseline`` (falling back
-    # to the global baseline when the per-crop row is missing — i.e. the
-    # baseline command has not yet been re-run for crop-specific DOYs).
     crop_breakdown_list = []
-    if want_crop_breakdown and by_crop_period_acc:
-        # Per-crop baselines for the same region/district scope, in one
-        # query — keyed (crop_type, day_of_year). Empty crop_type rows
-        # serve as fallback below.
-        per_crop_bl_qs = NdviBaseline.objects.filter(
-            district__region_id=region_id,
-            crop_type__in=list(by_crop_period_acc.keys()),
+    if want_crop_breakdown and accs.by_crop_period:
+        crop_breakdown_list = _build_crop_breakdown(
+            accs, region_id, district_id, crop_labels,
+            by_crop_list, fl_summary_list, baseline_list,
         )
-        if district_id:
-            try:
-                per_crop_bl_qs = per_crop_bl_qs.filter(district_id=int(district_id))
-            except (TypeError, ValueError):
-                pass
-        per_crop_bl = defaultdict(dict)  # crop_type -> {doy: (mean, std)}
-        for row in (
-            per_crop_bl_qs
-            .values('crop_type', 'day_of_year')
-            .annotate(mean_ndvi=Avg('mean_ndvi'), std_ndvi=Avg('std_ndvi'))
-        ):
-            per_crop_bl[row['crop_type']][row['day_of_year']] = (
-                row['mean_ndvi'] or 0,
-                row['std_ndvi'] or 0,
-            )
-
-        # Fixed UI ordering requested by the product side: пашня →
-        # сенокос → пастбище → многолетние насаждения → залежь, then
-        # any remaining crop types in NDVI-desc order (same ranking as
-        # ``by_crop_list``).
-        _CROP_ORDER_HEAD = ('arable', 'hayfield', 'pasture', 'perennial', 'fallow')
-        _present = set(by_crop_period_acc.keys())
-        ordered_crops = [ct for ct in _CROP_ORDER_HEAD if ct in _present]
-        for c in by_crop_list:
-            ct = c['crop_type']
-            if ct in _present and ct not in _CROP_ORDER_HEAD:
-                ordered_crops.append(ct)
-        for ct in ordered_crops:
-            dates_acc = by_crop_period_acc[ct]
-            period = []
-            for acq_date in sorted(dates_acc.keys()):
-                acc = dates_acc[acq_date]
-                s_area = acc['sum_area']
-                weighted = (acc['sum_ndvi_area'] / s_area) if s_area else None
-                period.append({
-                    'date': str(acq_date),
-                    'mean_ndvi': _safe_round(weighted),
-                    'count': acc['count'],
-                })
-
-            # Pick the per-crop baseline if any rows exist for this crop,
-            # otherwise reuse the global ``baseline_list`` — gives a
-            # meaningful "архив" line even before per-crop baselines
-            # are computed.
-            crop_bl_map = per_crop_bl.get(ct) or {}
-            if crop_bl_map:
-                crop_bl = []
-                for doy in sorted(crop_bl_map.keys()):
-                    bl_mean, bl_std = crop_bl_map[doy]
-                    try:
-                        mm_dd = (date(2024, 1, 1) + timedelta(days=doy - 1)).strftime('%m-%d')
-                    except Exception:
-                        mm_dd = f'{doy:03d}'
-                    crop_bl.append({
-                        'date': mm_dd,
-                        'mean_ndvi': _safe_round(bl_mean),
-                        'std_ndvi': _safe_round(bl_std),
-                    })
-            else:
-                crop_bl = baseline_list
-
-            # Area/count from ``fl_summary`` (consistent with ``by_crop_list``).
-            fl_row = next(
-                (r for r in fl_summary_list if r['crop_type'] == ct),
-                {'count': 0, 'area_ha': 0},
-            )
-            crop_breakdown_list.append({
-                'crop_type': ct,
-                'label': crop_labels.get(ct, ct),
-                'count': fl_row['count'],
-                'area_ha': fl_row['area_ha'],
-                'mean_ndvi': next(
-                    (c['mean_ndvi'] for c in by_crop_list if c['crop_type'] == ct),
-                    None,
-                ),
-                'by_period': period,
-                'baseline': crop_bl,
-            })
 
     response = {
         'ok': True,
