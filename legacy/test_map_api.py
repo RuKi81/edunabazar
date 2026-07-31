@@ -170,9 +170,13 @@ class MapAdvertsApiTests(TestCase):
 @override_settings(CACHES=_DUMMY_CACHE)
 class MapCategoriesApiTests(TestCase):
     def test_returns_active_categories(self):
+        # В тестовой БД уже есть категории из data-миграций, поэтому
+        # проверяем включение/исключение, а не точное количество.
         catalog = Catalog.objects.create(title='Зерно', sort=0, active=1)
         active = Categories.objects.create(catalog=catalog, title='Пшеница', active=1)
-        Categories.objects.create(catalog=catalog, title='Неактивная', active=0)
+        inactive = Categories.objects.create(
+            catalog=catalog, title='Неактивная', active=0,
+        )
 
         resp = Client().get('/api/map/categories/')
         self.assertEqual(resp.status_code, 200)
@@ -180,4 +184,4 @@ class MapCategoriesApiTests(TestCase):
         self.assertTrue(data['ok'])
         ids = [c['id'] for c in data['items']]
         self.assertIn(active.pk, ids)
-        self.assertEqual(len(ids), 1)
+        self.assertNotIn(inactive.pk, ids)
