@@ -34,36 +34,79 @@ def map_view(request: HttpRequest) -> HttpResponse:
     return _no_store(resp)
 
 
-def map_adverts_api(request: HttpRequest) -> JsonResponse:
+def _parse_map_filters(request):
+    """GET-параметры карты: limit зажат в [1, 10000], мусор игнорируется."""
     limit_raw = (request.GET.get('limit') or '5000').strip()
     try:
         limit = int(limit_raw)
     except Exception:
         limit = 5000
-    limit = max(1, min(limit, 10000))
+    return {
+        'limit': max(1, min(limit, 10000)),
+        'q': (request.GET.get('q') or '').strip(),
+        'type': (request.GET.get('type') or '').strip().lower(),
+        'opt': (request.GET.get('opt') or '').strip(),
+        'delivery': (request.GET.get('delivery') or '').strip(),
+        'catalog': (request.GET.get('catalog') or '').strip(),
+        'category': (request.GET.get('category') or '').strip(),
+        'sort': (request.GET.get('sort') or '').strip().lower(),
+        'bbox': (request.GET.get('bbox') or '').strip(),
+    }
 
-    q = (request.GET.get('q') or '').strip()
-    type_raw = (request.GET.get('type') or '').strip().lower()
-    opt_raw = (request.GET.get('opt') or '').strip()
-    delivery_raw = (request.GET.get('delivery') or '').strip()
-    catalog_raw = (request.GET.get('catalog') or '').strip()
-    category_raw = (request.GET.get('category') or '').strip()
-    sort_raw = (request.GET.get('sort') or '').strip().lower()
-    bbox_raw = (request.GET.get('bbox') or '').strip()
 
-    user = _get_current_legacy_user(request)
-    is_admin = _is_admin_user(user)
+def _map_adverts_cache_key(f):
+    """Ключ кэша: generation-префикс + md5 от всех фильтров запроса."""
+    gen = get_generation('adverts')
+    raw = (
+        f"{gen}:{f['limit']}:{f['type']}:{f['opt']}:{f['delivery']}:"
+        f"{f['catalog']}:{f['category']}:{f['sort']}:{f['bbox']}"
+    )
+    return MAP_ADVERTS_PREFIX + hashlib.md5(raw.encode()).hexdigest()
 
-    # Cache for non-admin, non-search requests
-    _use_cache = not is_admin and not q
-    if _use_cache:
-        gen = get_generation('adverts')
-        raw = f'{gen}:{limit}:{type_raw}:{opt_raw}:{delivery_raw}:{catalog_raw}:{category_raw}:{sort_raw}:{bbox_raw}'
-        ck = MAP_ADVERTS_PREFIX + hashlib.md5(raw.encode()).hexdigest()
-        cached = cache.get(ck)
-        if cached is not None:
-            return JsonResponse(cached, safe=False)
 
+def _is_truthy(raw):
+    """'1'/'true'/'yes'/'on' (без учёта регистра) → True."""
+    return bool(raw) and raw.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _apply_category_filters(qs, f):
+    """Фильтры category/catalog; нечисловые значения молча игнорируются."""
+    try:
+        if f['category']:
+            qs = qs.filter(category_id=int(f['category']))
+    except Exception:
+        pass
+
+    try:
+        if f['catalog']:
+            qs = qs.filter(category__catalog_id=int(f['catalog']))
+    except Exception:
+        pass
+    return qs
+
+
+def _apply_bbox_filter(qs, bbox_raw):
+    """Фильтр по 'sw_lat,sw_lon,ne_lat,ne_lon'; мусор молча игнорируется."""
+    if not bbox_raw:
+        return qs
+    try:
+        parts = bbox_raw.split(',')
+        if len(parts) == 4:
+            sw_lat, sw_lon, ne_lat, ne_lon = (float(p) for p in parts)
+            bbox_poly = Polygon.from_bbox((sw_lon, sw_lat, ne_lon, ne_lat))
+            bbox_poly.srid = 4326
+            qs = qs.filter(location__within=bbox_poly)
+    except (ValueError, TypeError):
+        pass
+    return qs
+
+
+def _map_adverts_queryset(f, is_admin):
+    """Queryset объявлений для карты по словарю фильтров ``f``.
+
+    Невалидные значения category/catalog/bbox молча игнорируются —
+    карта должна отвечать 200 на любой мусор в параметрах.
+    """
     _photos_prefetch = Prefetch(
         'photos',
         queryset=AdvertPhoto.objects.order_by('sort', 'id'),
@@ -73,99 +116,97 @@ def map_adverts_api(request: HttpRequest) -> JsonResponse:
     if not is_admin:
         qs = qs.filter(status=ADVERT_STATUS_PUBLISHED)
 
-    if q:
-        qs = qs.extra(where=["search_vector @@ plainto_tsquery('russian', %s)"], params=[q])
+    if f['q']:
+        qs = qs.extra(where=["search_vector @@ plainto_tsquery('russian', %s)"], params=[f['q']])
 
-    if type_raw in {'offer', 'demand'}:
-        qs = qs.filter(type=0 if type_raw == 'offer' else 1)
+    if f['type'] in {'offer', 'demand'}:
+        qs = qs.filter(type=0 if f['type'] == 'offer' else 1)
 
-    if opt_raw and opt_raw.strip().lower() in {'1', 'true', 'yes', 'on'}:
+    if _is_truthy(f['opt']):
         qs = qs.filter(wholesale_price__gt=0)
 
-    if delivery_raw and delivery_raw.strip().lower() in {'1', 'true', 'yes', 'on'}:
+    if _is_truthy(f['delivery']):
         qs = qs.filter(delivery=True)
 
-    try:
-        if category_raw:
-            qs = qs.filter(category_id=int(category_raw))
-    except Exception:
-        pass
+    qs = _apply_category_filters(qs, f)
+    qs = _apply_bbox_filter(qs, f['bbox'])
 
-    try:
-        if catalog_raw:
-            qs = qs.filter(category__catalog_id=int(catalog_raw))
-    except Exception:
-        pass
-
-    if bbox_raw:
-        try:
-            parts = bbox_raw.split(',')
-            if len(parts) == 4:
-                sw_lat, sw_lon, ne_lat, ne_lon = (float(p) for p in parts)
-                bbox_poly = Polygon.from_bbox((sw_lon, sw_lat, ne_lon, ne_lat))
-                bbox_poly.srid = 4326
-                qs = qs.filter(location__within=bbox_poly)
-        except (ValueError, TypeError):
-            pass
-
-    if sort_raw == 'price':
+    if f['sort'] == 'price':
         qs = qs.order_by('price', '-updated_at', '-id')
     else:
         qs = qs.order_by('-updated_at', '-id')
 
-    qs = qs[:limit]
+    return qs[:f['limit']]
 
-    adverts = []
-    for a in qs:
-        try:
-            loc = getattr(a, 'location', None)
-            lat = float(loc.y) if loc else None
-            lon = float(loc.x) if loc else None
-        except Exception:
-            lat = None
-            lon = None
 
-        text = (getattr(a, 'text', '') or '').strip()
-        text_short = text
-        if len(text_short) > 160:
-            text_short = text_short[:160].rstrip() + '…'
+def _advert_thumb_url(a):
+    """URL миниатюры первого фото (thumbnail, иначе оригинал) либо ''."""
+    try:
+        prefetched = getattr(a, 'prefetched_photos', None)
+        photo = prefetched[0] if prefetched else None
+        if photo:
+            if getattr(photo, 'thumbnail', None) and photo.thumbnail:
+                return getattr(photo.thumbnail, 'url', '') or ''
+            if getattr(photo, 'image', None):
+                return getattr(photo.image, 'url', '') or ''
+    except Exception:
+        pass
+    return ''
 
+
+def _serialize_map_advert(a):
+    """Объявление → компактный dict для пина/попапа карты."""
+    try:
+        loc = getattr(a, 'location', None)
+        lat = float(loc.y) if loc else None
+        lon = float(loc.x) if loc else None
+    except Exception:
+        lat = None
+        lon = None
+
+    text = (getattr(a, 'text', '') or '').strip()
+    text_short = text
+    if len(text_short) > 160:
+        text_short = text_short[:160].rstrip() + '…'
+
+    category_title = ''
+    try:
+        cat = getattr(a, 'category', None)
+        category_title = (getattr(cat, 'title', '') or '').strip()
+    except Exception:
         category_title = ''
-        try:
-            cat = getattr(a, 'category', None)
-            category_title = (getattr(cat, 'title', '') or '').strip()
-        except Exception:
-            category_title = ''
 
-        thumb_url = ''
-        try:
-            prefetched = getattr(a, 'prefetched_photos', None)
-            photo = prefetched[0] if prefetched else None
-            if photo:
-                if getattr(photo, 'thumbnail', None) and photo.thumbnail:
-                    thumb_url = getattr(photo.thumbnail, 'url', '') or ''
-                elif getattr(photo, 'image', None):
-                    thumb_url = getattr(photo.image, 'url', '') or ''
-        except Exception:
-            thumb_url = ''
+    return {
+        'id': int(a.id),
+        'title': getattr(a, 'title', '') or '',
+        'lat': lat,
+        'lon': lon,
+        'category_id': int(a.category_id) if a.category_id is not None else None,
+        'category_title': category_title,
+        'price': getattr(a, 'price', None),
+        'text_short': text_short,
+        'url': f"/adverts/{int(a.id)}/",
+        'thumb_url': _advert_thumb_url(a),
+        'created_date': _safe_localtime(getattr(a, 'created_at', None)).strftime('%d.%m.%Y'),
+        'is_opt': bool((getattr(a, 'wholesale_price', 0) or 0) > 0),
+        'is_delivery': bool(getattr(a, 'delivery', False)),
+    }
 
-        adverts.append(
-            {
-                'id': int(a.id),
-                'title': getattr(a, 'title', '') or '',
-                'lat': lat,
-                'lon': lon,
-                'category_id': int(a.category_id) if a.category_id is not None else None,
-                'category_title': category_title,
-                'price': getattr(a, 'price', None),
-                'text_short': text_short,
-                'url': f"/adverts/{int(a.id)}/",
-                'thumb_url': thumb_url,
-                'created_date': _safe_localtime(getattr(a, 'created_at', None)).strftime('%d.%m.%Y'),
-                'is_opt': bool((getattr(a, 'wholesale_price', 0) or 0) > 0),
-                'is_delivery': bool(getattr(a, 'delivery', False)),
-            }
-        )
+
+def map_adverts_api(request: HttpRequest) -> JsonResponse:
+    f = _parse_map_filters(request)
+    user = _get_current_legacy_user(request)
+    is_admin = _is_admin_user(user)
+
+    # Cache for non-admin, non-search requests
+    _use_cache = not is_admin and not f['q']
+    ck = _map_adverts_cache_key(f) if _use_cache else None
+    if _use_cache:
+        cached = cache.get(ck)
+        if cached is not None:
+            return JsonResponse(cached, safe=False)
+
+    adverts = [_serialize_map_advert(a) for a in _map_adverts_queryset(f, is_admin)]
 
     result = {'ok': True, 'adverts': adverts}
     if _use_cache:
