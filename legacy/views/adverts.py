@@ -285,16 +285,21 @@ def _nonneg_float(raw):
 
 
 def _parse_category(category_raw, errors):
-    """category_id активной категории либо None (+ запись в ``errors``)."""
+    """category_id активной категории либо None (+ запись в ``errors``).
+
+    Запрос ``exists()`` намеренно внутри try/except — как в исходной
+    версии: любая ошибка (включая недоступность БД) даёт «Неверная
+    категория», а не 500 (на это опирается PhotoValidationTests).
+    """
     if not category_raw:
         errors['category'] = 'Выберите категорию'
         return None
     try:
         category_id = int(category_raw)
+        if not Categories.objects.filter(pk=category_id, active=1).exists():
+            errors['category'] = 'Неверная категория'
+            return None
     except Exception:
-        errors['category'] = 'Неверная категория'
-        return None
-    if not Categories.objects.filter(pk=category_id, active=1).exists():
         errors['category'] = 'Неверная категория'
         return None
     return category_id
