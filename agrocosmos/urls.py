@@ -22,6 +22,7 @@ urlpatterns = [
     path('api/phenology/', views.api_phenology, name='api_phenology'),
     path('api/report/region/', views.api_report_region, name='api_report_region'),
     path('api/report/district/', views.api_report_district, name='api_report_district'),
+    path('api/report/country/', views.api_report_country, name='api_report_country'),
     path('api/yield/forecast/', views.api_yield_forecast, name='api_yield_forecast'),
     path(
         'api/yield/forecast/region/<int:region_id>/',

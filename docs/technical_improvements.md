@@ -253,4 +253,7 @@ sparklines, не Chart.js.
 HTML/CSS + 30 мин QA). Сложность: средняя. Влияние: высокое (даёт
 управленцу одностраничный «пульс страны»).
 
-**Статус**: [ ] не начато.
+**Статус**: [x] сделано — `api_report_country` (`/agrocosmos/api/report/country/`),
+опция «— По Российской Федерации —» в селекте на `/agrocosmos/report/region/`,
+SVG-sparkline карточки регионов в трёх z-score секциях,
+тесты `agrocosmos/tests/test_report_country.py`.

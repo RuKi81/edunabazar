@@ -42,6 +42,7 @@ from .ndvi import (
 from .reports import (
     api_report_region,
     api_report_district,
+    api_report_country,
     _ndvi_assessment,
 )
 from .yield_forecast import (
@@ -67,7 +68,7 @@ __all__ = [
     'api_farmland_ndvi', 'api_ndvi_stats', 'api_phenology',
     'api_raster_composites',
     # reports
-    'api_report_region', 'api_report_district',
+    'api_report_region', 'api_report_district', 'api_report_country',
     # yield forecast
     'api_yield_forecast', 'api_yield_forecast_region', 'api_yield_models',
     # cabinet

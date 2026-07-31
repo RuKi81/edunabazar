@@ -218,6 +218,172 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
     })
 
 
+def _country_category(z_score):
+    """Bucket a region by its latest z-score vs its OWN baseline.
+
+    Categorisation is always relative to the region's own multi-year
+    norm (Kuban != Yakutia), never to the country-wide average.
+    """
+    if z_score is None:
+        return 'nodata'
+    if z_score <= -1.5:
+        return 'anomaly'
+    if z_score < -0.5:
+        return 'below'
+    return 'normal'
+
+
+@rate_limit('30/m')
+@cache_page(60 * 15)
+def api_report_country(request: HttpRequest) -> JsonResponse:
+    """Data for country-level MODIS report: NDVI time series per region.
+
+    Reads the DistrictNdviSeries pre-aggregate summed up to
+    (region, date) level — ≈2 000 points/year for the whole country —
+    plus per-region baselines (district baselines averaged per DOY).
+
+    Query params:
+        year (required): year
+    """
+    year = request.GET.get('year')
+    if not year:
+        return JsonResponse({'ok': False, 'error': 'year required'}, status=400)
+    try:
+        year = int(year)
+    except (TypeError, ValueError):
+        return JsonResponse({'ok': False, 'error': 'invalid params'}, status=400)
+
+    regions = Region.objects.only('id', 'name').order_by('name')
+    region_names = {r.pk: r.name for r in regions}
+
+    # (region, date) aggregation done DB-side: ~73 regions × ~25 dates.
+    series_rows = (
+        DistrictNdviSeries.objects.filter(
+            source=DistrictNdviSeries.Source.MODIS,
+            acquired_date__year=year,
+            sum_area__gt=0,
+        )
+        .values('district__region_id', 'acquired_date')
+        .annotate(s_ndvi_area=Sum('sum_ndvi_area'), s_area=Sum('sum_area'))
+    )
+
+    per_region_date = {}
+    per_country_date = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0})
+    for row in series_rows.iterator(chunk_size=5000):
+        s_area = float(row['s_area'] or 0)
+        if not s_area:
+            continue
+        rid = row['district__region_id']
+        d = row['acquired_date']
+        per_region_date[(rid, d)] = {
+            'sum_ndvi_area': float(row['s_ndvi_area']),
+            'sum_area': s_area,
+        }
+        cd = per_country_date[d]
+        cd['sum_ndvi_area'] += float(row['s_ndvi_area'])
+        cd['sum_area'] += s_area
+
+    # Region baseline lookup: region_id → {doy: (avg_mean, avg_std)}
+    # (district baselines averaged per DOY, same trick as api_report_region).
+    region_bl_qs = (
+        NdviBaseline.objects.filter(crop_type='')
+        .values('district__region_id', 'day_of_year')
+        .annotate(avg_mean=Avg('mean_ndvi'), avg_std=Avg('std_ndvi'))
+    )
+    bl_lookup = {}
+    country_bl = defaultdict(lambda: {'sum_mean': 0.0, 'sum_std': 0.0, 'n': 0})
+    for b in region_bl_qs.iterator(chunk_size=5000):
+        rid = b['district__region_id']
+        doy = b['day_of_year']
+        bl_lookup.setdefault(rid, {})[doy] = (b['avg_mean'], b['avg_std'])
+        cb = country_bl[doy]
+        cb['sum_mean'] += float(b['avg_mean'] or 0)
+        cb['sum_std'] += float(b['avg_std'] or 0)
+        cb['n'] += 1
+
+    # Build per-region data, sorted chronologically
+    region_data = {}
+    for (rid, d), acc in sorted(per_region_date.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+        s_area = acc['sum_area']
+        weighted = (acc['sum_ndvi_area'] / s_area) if s_area else None
+        doy = d.timetuple().tm_yday
+
+        bl_mean, bl_std = bl_lookup.get(rid, {}).get(doy, (None, None))
+        z_score = None
+        if bl_mean is not None and bl_std and bl_std > 0.01 and weighted is not None:
+            z_score = round((weighted - bl_mean) / bl_std, 2)
+
+        if rid not in region_data:
+            region_data[rid] = {
+                'region_id': rid,
+                'region_name': region_names.get(rid, ''),
+                'series': [],
+                'latest_ndvi': None,
+                'latest_date': None,
+                'latest_z_score': None,
+            }
+        region_data[rid]['series'].append({
+            'date': str(d),
+            'mean_ndvi': _safe_round(weighted),
+            'z_score': z_score,
+        })
+        rd = region_data[rid]
+        if rd['latest_date'] is None or d > date.fromisoformat(rd['latest_date']):
+            rd['latest_ndvi'] = _safe_round(weighted)
+            rd['latest_date'] = str(d)
+            rd['latest_z_score'] = z_score
+
+    # Only regions with data — categorised by their OWN baseline z-score.
+    result = []
+    for rid in sorted(region_data.keys(), key=lambda r: region_names.get(r, '')):
+        rd = region_data[rid]
+        rd['category'] = _country_category(rd['latest_z_score'])
+        rd['assessment'] = _ndvi_assessment(rd['latest_ndvi'], rd['latest_z_score'])
+        result.append(rd)
+
+    # Country-level overall NDVI series (area-weighted across all regions)
+    country_overall = []
+    for acq_date in sorted(per_country_date.keys()):
+        acc = per_country_date[acq_date]
+        s_area = acc['sum_area']
+        weighted = (acc['sum_ndvi_area'] / s_area) if s_area else None
+        country_overall.append({
+            'date': str(acq_date),
+            'mean_ndvi': _safe_round(weighted),
+        })
+
+    # Country baseline — VISUAL REFERENCE ONLY (see _country_category note).
+    country_baseline = []
+    for doy in sorted(country_bl.keys()):
+        cb = country_bl[doy]
+        if not cb['n']:
+            continue
+        d_date = date(year, 1, 1) + timedelta(days=doy - 1)
+        country_baseline.append({
+            'date': str(d_date),
+            'mean_ndvi': _safe_round(cb['sum_mean'] / cb['n']),
+            'std_ndvi': _safe_round(cb['sum_std'] / cb['n']),
+        })
+
+    # last_period_end for dashed extension line (MODIS 16-day: mid + 8 days)
+    last_period_end = None
+    if country_overall:
+        try:
+            last_mid = date.fromisoformat(country_overall[-1]['date'])
+            last_period_end = str(last_mid + timedelta(days=8))
+        except Exception:
+            pass
+
+    return JsonResponse({
+        'ok': True,
+        'year': year,
+        'regions': result,
+        'country_overall_series': country_overall,
+        'country_baseline': country_baseline,
+        'last_period_end': last_period_end,
+    })
+
+
 @rate_limit('30/m')
 @cache_page(60 * 5)
 def api_report_district(request: HttpRequest) -> JsonResponse:

@@ -151,6 +151,38 @@
       font-size: 11px; background: #e8f5e9; padding: 3px 8px; border-radius: 4px; color: #2e7d32;
     }
 
+    /* ── Country-mode (per-region sparkline cards) ── */
+    .country-cat-header {
+      display: flex; align-items: center; gap: 10px;
+      margin: 22px 0 12px 0; padding: 10px 14px; border-radius: 8px;
+      font-size: 15px; font-weight: 700; color: #fff;
+    }
+    .country-cat-header .cat-count {
+      margin-left: auto; font-size: 13px; font-weight: 600; opacity: .9;
+    }
+    .cat-anomaly { background: #D32F2F; }
+    .cat-below { background: #F9A825; }
+    .cat-normal { background: #2e7d32; }
+    .cat-nodata { background: #9E9E9E; }
+    .country-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+      gap: 12px;
+    }
+    .country-card {
+      display: block; background: #fff; border: 1px solid #e0e0e0;
+      border-radius: 8px; padding: 10px 12px; text-decoration: none;
+      color: inherit; transition: box-shadow .15s, border-color .15s;
+      page-break-inside: avoid;
+    }
+    .country-card:hover { border-color: #2e7d32; box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+    .country-card .cc-name {
+      font-size: 13px; font-weight: 700; color: #1b5e20; margin-bottom: 4px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .country-card .cc-meta { font-size: 11px; color: #666; margin-bottom: 6px; }
+    .country-card .cc-meta b { color: #333; }
+    .country-card svg { display: block; width: 100%; height: 48px; }
+
     .report-loader {
       text-align: center; padding: 40px; font-size: 15px; color: #777;
     }
@@ -200,6 +232,7 @@
     <label>Регион:</label>
     <select id="rpt-region" class="browser-default">
       <option value="">— Выберите регион —</option>
+      <option value="country" {% if region_id == 'country' %}selected{% endif %}>— По Российской Федерации —</option>
       {% for r in regions %}
         <option value="{{ r.id }}" {% if region_id|stringformat:'s' == r.id|stringformat:'s' %}selected{% endif %}>{{ r.name }}</option>
       {% endfor %}
@@ -302,6 +335,9 @@
   updateUrl();
   function getShareUrl() { return location.href; }
   function getShareText() {
+    if (regionSel.value === 'country') {
+      return 'Отчёт NDVI: Российская Федерация, ' + yearSel.value + ' г.';
+    }
     var rOpt = regionSel.options[regionSel.selectedIndex];
     var dOpt = districtSel.options[districtSel.selectedIndex];
     var label = dOpt && districtSel.value
@@ -349,7 +385,7 @@
   regionSel.addEventListener('change', function () {
     var rid = this.value;
     districtSel.innerHTML = '<option value="">— Все районы (свод по региону) —</option>';
-    if (!rid) return;
+    if (!rid || rid === 'country') return;
     fetch('/agrocosmos/api/districts/?region=' + rid)
       .then(function (r) { return r.json(); })
       .then(function (geojson) {
@@ -397,9 +433,14 @@
     cropsEl.innerHTML = '';
     document.getElementById('overall-section').style.display = 'none';
 
-    var url = districtId
-      ? '/agrocosmos/api/report/district/?district=' + districtId + '&year=' + year
-      : '/agrocosmos/api/report/region/?region=' + regionId + '&year=' + year;
+    var url;
+    if (regionId === 'country') {
+      url = '/agrocosmos/api/report/country/?year=' + year;
+    } else if (districtId) {
+      url = '/agrocosmos/api/report/district/?district=' + districtId + '&year=' + year;
+    } else {
+      url = '/agrocosmos/api/report/region/?region=' + regionId + '&year=' + year;
+    }
 
     fetch(url)
       .then(function (r) { return r.json(); })
@@ -410,7 +451,9 @@
           return;
         }
         content.classList.remove('hidden');
-        if (districtId) {
+        if (regionId === 'country') {
+          renderCountryReport(resp);
+        } else if (districtId) {
           renderDistrictReport(resp);
         } else {
           renderRegionReport(resp);
@@ -421,6 +464,137 @@
         console.error(err);
         alert('Ошибка загрузки данных');
       });
+  }
+
+  /* ── Country-mode renderer ──
+     Top chart: area-weighted NDVI of the whole country vs the averaged
+     baseline band (VISUAL REFERENCE only — Kuban != Yakutia). Below:
+     per-region sparkline cards grouped into three z-score sections.
+     Each region is ALWAYS categorised against its OWN baseline.
+     Sparklines are inline SVG, not Chart.js — 80 canvases would choke
+     the browser, 80 polylines cost nothing. */
+  var countryCategories = [
+    { key: 'anomaly', cls: 'cat-anomaly', title: '🔴 Аномалии', desc: 'z ≤ −1.5', color: '#D32F2F' },
+    { key: 'below', cls: 'cat-below', title: '🟡 Ниже нормы', desc: '−1.5 < z < −0.5', color: '#F9A825' },
+    { key: 'normal', cls: 'cat-normal', title: '🟢 В норме', desc: 'z ≥ −0.5', color: '#2e7d32' },
+    { key: 'nodata', cls: 'cat-nodata', title: '⚪ Нет свежей оценки', desc: 'нет baseline или данных', color: '#9E9E9E' }
+  ];
+
+  function sparklineSvg(series, color) {
+    var pts = series.filter(function (s) { return s.mean_ndvi !== null && s.mean_ndvi !== undefined; });
+    if (!pts.length) return '';
+    var w = 220, h = 48, n = pts.length;
+    var coords = pts.map(function (s, i) {
+      var x = n > 1 ? 2 + (i / (n - 1)) * (w - 4) : w / 2;
+      var v = Math.max(0, Math.min(1, s.mean_ndvi));
+      var y = h - 2 - v * (h - 4);
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    });
+    return '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" aria-hidden="true">'
+      + '<polyline fill="none" stroke="' + color + '" stroke-width="1.5" points="' + coords.join(' ') + '"/>'
+      + '</svg>';
+  }
+
+  function renderCountryReport(resp) {
+    var year = resp.year;
+    var regions = resp.regions || [];
+    var countryOverall = resp.country_overall_series || [];
+    var countryBaseline = resp.country_baseline || [];
+    var lastPeriodEnd = resp.last_period_end;
+
+    var byCat = {};
+    countryCategories.forEach(function (c) { byCat[c.key] = []; });
+    regions.forEach(function (r) { (byCat[r.category] || byCat.nodata).push(r); });
+
+    // Summary cards
+    summaryEl.innerHTML =
+      '<div class="summary-card"><div class="val">Российская Федерация</div><div class="lbl">Свод по субъектам</div></div>' +
+      '<div class="summary-card"><div class="val">' + year + '</div><div class="lbl">Год</div></div>' +
+      '<div class="summary-card"><div class="val">' + regions.length + '</div><div class="lbl">Субъектов с данными</div></div>' +
+      '<div class="summary-card"><div class="val" style="color:#D32F2F;">' + byCat.anomaly.length + '</div><div class="lbl">Аномалии</div></div>' +
+      '<div class="summary-card"><div class="val" style="color:#F9A825;">' + byCat.below.length + '</div><div class="lbl">Ниже нормы</div></div>' +
+      '<div class="summary-card"><div class="val" style="color:#2e7d32;">' + byCat.normal.length + '</div><div class="lbl">В норме</div></div>';
+
+    // Country-level chart with the averaged baseline band
+    var regionSection = document.getElementById('region-overall-section');
+    if (countryOverall.length) {
+      regionSection.style.display = 'block';
+      document.getElementById('region-chart-title').textContent = 'Среднее многолетнее и текущее значение NDVI: Российская Федерация';
+      var cDatesSet = new Set();
+      countryOverall.forEach(function (s) { cDatesSet.add(s.date.substring(5)); });
+      countryBaseline.forEach(function (b) { cDatesSet.add(b.date.substring(5)); });
+      var cLabels = Array.from(cDatesSet).sort();
+
+      var datasets = buildBaselineDatasets(countryBaseline, cLabels);
+      var cLookup = {};
+      countryOverall.forEach(function (s) { cLookup[s.date.substring(5)] = s.mean_ndvi; });
+      datasets.push({
+        label: 'Российская Федерация (' + year + ')',
+        data: cLabels.map(function (d) { return cLookup[d] !== undefined ? cLookup[d] : null; }),
+        borderColor: '#6A1B9A', backgroundColor: 'transparent',
+        borderWidth: 2.5, fill: false, pointRadius: 3, tension: 0.3, spanGaps: true
+      });
+      NdviChart.pushExtensionLine({
+        datasets: datasets, labels: cLabels,
+        series: countryOverall, lastPeriodEnd: lastPeriodEnd,
+        color: '#6A1B9A',
+      });
+      var cChart = new Chart(document.getElementById('chart-region-overall'), {
+        type: 'line',
+        data: { labels: cLabels, datasets: datasets },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: {
+            legend: { display: true, labels: { usePointStyle: true, pointStyle: 'line', boxWidth: 30, font: { size: 11 }, filter: NdviChart.legendFilter } }
+          },
+          scales: {
+            x: { ticks: { font: { size: 9 }, maxRotation: 45 } },
+            y: { min: 0, max: 1, ticks: { font: { size: 10 } } }
+          }
+        }
+      });
+      districtCharts.push(cChart);
+    } else {
+      regionSection.style.display = 'none';
+    }
+
+    // Per-category sections with sparkline cards (worst z-score first)
+    var html = '';
+    countryCategories.forEach(function (cat) {
+      var items = byCat[cat.key];
+      if (!items.length) return;
+      items.sort(function (a, b) {
+        var za = a.latest_z_score, zb = b.latest_z_score;
+        if (za === null || za === undefined) return 1;
+        if (zb === null || zb === undefined) return -1;
+        return za - zb;
+      });
+      html += '<div class="country-cat-header ' + cat.cls + '">'
+        + '<span>' + cat.title + '</span>'
+        + '<span style="font-weight:400; font-size:12px;">' + cat.desc + '</span>'
+        + '<span class="cat-count">' + items.length + ' субъект.</span>'
+        + '</div>';
+      html += '<div class="country-grid">';
+      items.forEach(function (r) {
+        var ndviStr = (r.latest_ndvi !== null && r.latest_ndvi !== undefined) ? r.latest_ndvi.toFixed(3) : '—';
+        var zStr = '—';
+        if (r.latest_z_score !== null && r.latest_z_score !== undefined) {
+          zStr = (r.latest_z_score >= 0 ? '+' : '') + r.latest_z_score.toFixed(2);
+        }
+        var href = location.pathname + '?region=' + r.region_id + '&year=' + year;
+        html += '<a class="country-card" href="' + href + '" title="Открыть отчёт по региону">'
+          + '<div class="cc-name">' + esc(r.region_name) + '</div>'
+          + '<div class="cc-meta">NDVI <b>' + ndviStr + '</b> · z <b>' + zStr + '</b>'
+          + (r.latest_date ? ' · ' + esc(r.latest_date) : '') + '</div>'
+          + sparklineSvg(r.series || [], cat.color)
+          + '</a>';
+      });
+      html += '</div>';
+    });
+    if (!regions.length) {
+      html = '<div style="color:#999; font-size:14px; padding:24px; text-align:center;">Нет данных NDVI за выбранный год</div>';
+    }
+    districtsEl.innerHTML = html;
   }
 
   function renderRegionReport(resp) {
