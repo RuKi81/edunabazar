@@ -279,8 +279,12 @@ def _aggregate_raw_vi(accs, fl_qs, source, year, date_from, date_to):
         )
 
 
-def _build_baseline(region_id, district_id):
-    """(baseline_list, doy → (mean, std)) — исторический профиль NDVI."""
+def _build_baseline(region_id, district_id, year=None):
+    """(baseline_list, doy → (mean, std)) — исторический профиль NDVI.
+
+    ``year`` — год запроса: метки 'MM-DD' считаются в его календаре,
+    чтобы на графике совпадать с реальными датами ряда (см. doy_to_mmdd).
+    """
     baseline_qs = NdviBaseline.objects.filter(
         district__region_id=region_id,
         crop_type='',  # aggregated across all crop types
@@ -300,7 +304,7 @@ def _build_baseline(region_id, district_id):
         bl_mean = row['mean_ndvi'] or 0
         bl_std = row['std_ndvi'] or 0
         baseline_list.append({
-            'date': doy_to_mmdd(doy),
+            'date': doy_to_mmdd(doy, year),
             'mean_ndvi': _safe_round(bl_mean),
             'std_ndvi': _safe_round(bl_std),
         })
@@ -322,7 +326,8 @@ def _attach_z_scores(by_period_list, baseline_lookup):
 
 
 def _build_crop_breakdown(accs, region_id, district_id, crop_labels,
-                          by_crop_list, fl_summary_list, baseline_list):
+                          by_crop_list, fl_summary_list, baseline_list,
+                          year=None):
     """Per-crop серии для сайдбара (``breakdown=crop``).
 
     Baseline берётся per-crop из NdviBaseline; при отсутствии строк для
@@ -368,7 +373,7 @@ def _build_crop_breakdown(accs, region_id, district_id, crop_labels,
         if crop_bl_map:
             crop_bl = [
                 {
-                    'date': doy_to_mmdd(doy),
+                    'date': doy_to_mmdd(doy, year),
                     'mean_ndvi': _safe_round(crop_bl_map[doy][0]),
                     'std_ndvi': _safe_round(crop_bl_map[doy][1]),
                 }
@@ -508,7 +513,8 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
         })
 
     # Baseline (historical average across all prior years) + z-scores
-    baseline_list, baseline_lookup = _build_baseline(region_id, district_id)
+    year_int = _int_or_none(year)
+    baseline_list, baseline_lookup = _build_baseline(region_id, district_id, year_int)
     _attach_z_scores(by_period_list, baseline_lookup)
 
     # Конец последнего 16-дневного композита — для пунктирного «хвоста»
@@ -521,7 +527,7 @@ def api_ndvi_stats(request: HttpRequest) -> JsonResponse:
     if want_crop_breakdown and accs.by_crop_period:
         crop_breakdown_list = _build_crop_breakdown(
             accs, region_id, district_id, crop_labels,
-            by_crop_list, fl_summary_list, baseline_list,
+            by_crop_list, fl_summary_list, baseline_list, year_int,
         )
 
     response = {

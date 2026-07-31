@@ -6,15 +6,16 @@
 fallback при fact_isp или пустом предагрегате), а также baseline/z-score,
 сводку и per-crop breakdown.
 """
-from datetime import date, timedelta
+from datetime import date
 
 from django.contrib.gis.geos import MultiPolygon, Polygon
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from agrocosmos.models import (
     District, DistrictNdviSeries, Farmland, NdviBaseline, Region,
     SatelliteScene, VegetationIndex,
 )
+from agrocosmos.services.ndvi_stats import doy_to_mmdd
 
 YEAR = 2025
 D1 = date(YEAR, 6, 10)
@@ -129,13 +130,9 @@ class NdviStatsApiTests(TestCase):
         resp = self._get(source='modis', year=YEAR).json()
         bl = resp['stats']['baseline']
         self.assertEqual(len(bl), 1)
-        # Вьюха конвертирует doy -> MM-DD через фиксированный високосный
-        # 2024 год, поэтому для дат после февраля невисокосного года метка
-        # съезжает на день назад (doy 177: 2025-06-26 -> «06-25»).
-        expected = (date(2024, 1, 1) + timedelta(
-            days=D2.timetuple().tm_yday - 1,
-        )).strftime('%m-%d')
-        self.assertEqual(bl[0]['date'], expected)
+        # Метка baseline считается в календаре года запроса и совпадает
+        # с реальной датой ряда (doy 177 в 2025 → «06-26»).
+        self.assertEqual(bl[0]['date'], D2.strftime('%m-%d'))
         self.assertAlmostEqual(bl[0]['mean_ndvi'], 0.6, places=3)
 
         by_period = {p['date']: p for p in resp['stats']['by_period']}
@@ -211,3 +208,26 @@ class NdviStatsApiTests(TestCase):
         by_period = {p['date']: p for p in resp['stats']['by_period']}
         # Без чужого района: (0.6*100 + 0.8*50) / 150, а не с 0.2*300
         self.assertAlmostEqual(by_period[str(D2)]['mean_ndvi'], 0.6667, places=3)
+
+
+class DoyToMmddTests(SimpleTestCase):
+    """Календарь конвертации doy → 'MM-DD' (фикс leap-year off-by-one)."""
+
+    def test_non_leap_year_after_february(self):
+        # doy 177 в 2025 — 26 июня (раньше через 2024 выходило «06-25»)
+        self.assertEqual(doy_to_mmdd(177, 2025), '06-26')
+
+    def test_leap_year(self):
+        self.assertEqual(doy_to_mmdd(177, 2024), '06-25')
+        self.assertEqual(doy_to_mmdd(60, 2024), '02-29')
+
+    def test_before_march_same_in_both(self):
+        self.assertEqual(doy_to_mmdd(59, 2024), '02-28')
+        self.assertEqual(doy_to_mmdd(59, 2025), '02-28')
+
+    def test_doy_366_clamped_in_non_leap(self):
+        self.assertEqual(doy_to_mmdd(366, 2025), '12-31')
+        self.assertEqual(doy_to_mmdd(366, 2024), '12-31')
+
+    def test_default_year_is_non_leap(self):
+        self.assertEqual(doy_to_mmdd(177), '06-26')
