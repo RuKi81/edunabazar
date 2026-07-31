@@ -6,7 +6,7 @@
 fallback при fact_isp или пустом предагрегате), а также baseline/z-score,
 сводку и per-crop breakdown.
 """
-from datetime import date
+from datetime import date, timedelta
 
 from django.contrib.gis.geos import MultiPolygon, Polygon
 from django.test import TestCase, override_settings
@@ -129,7 +129,13 @@ class NdviStatsApiTests(TestCase):
         resp = self._get(source='modis', year=YEAR).json()
         bl = resp['stats']['baseline']
         self.assertEqual(len(bl), 1)
-        self.assertEqual(bl[0]['date'], D2.strftime('%m-%d'))
+        # Вьюха конвертирует doy -> MM-DD через фиксированный високосный
+        # 2024 год, поэтому для дат после февраля невисокосного года метка
+        # съезжает на день назад (doy 177: 2025-06-26 -> «06-25»).
+        expected = (date(2024, 1, 1) + timedelta(
+            days=D2.timetuple().tm_yday - 1,
+        )).strftime('%m-%d')
+        self.assertEqual(bl[0]['date'], expected)
         self.assertAlmostEqual(bl[0]['mean_ndvi'], 0.6, places=3)
 
         by_period = {p['date']: p for p in resp['stats']['by_period']}
