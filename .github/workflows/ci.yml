@@ -162,7 +162,7 @@ jobs:
       # slowest tests (Python 3.12+ / Django 5.0+ feature, works with
       # --parallel). Together they show where the minutes actually go.
       - name: Run tests
-        run: time python manage.py test legacy agrocosmos --parallel auto --verbosity=2 --durations 20
+        run: time python manage.py test legacy agrocosmos my_fields --parallel auto --verbosity=2 --durations 20
 
   docker-build:
     name: Docker build check
