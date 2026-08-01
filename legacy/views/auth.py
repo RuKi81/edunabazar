@@ -155,17 +155,8 @@ def legacy_register_sms(request: HttpRequest) -> HttpResponse:
     return _no_store(resp)
 
 
-def legacy_register_sms_confirm(request: HttpRequest) -> HttpResponse:
-    state = request.session.get('sms_register') or {}
-    phone = (state.get('phone') or '').strip()
-    otp_code = (state.get('code') or '').strip()
-    created_at_raw = (state.get('created_at') or '').strip()
-    verify_attempts = int(state.get('verify_attempts') or 0)
-
-    errors: dict[str, str] = {}
-    errors_all: str = ''
-    now = timezone.now()
-
+def _sms_state_error(phone, otp_code, created_at_raw):
+    """Ошибка состояния SMS-регистрации (нет кода / код устарел) либо ''."""
     created_at = None
     if created_at_raw:
         try:
@@ -176,11 +167,126 @@ def legacy_register_sms_confirm(request: HttpRequest) -> HttpResponse:
             created_at = None
 
     if not phone or not otp_code or not created_at:
-        errors_all = 'Сначала запросите SMS-код'
-    else:
-        ttl_seconds = 5 * 60
-        if (now - created_at).total_seconds() > ttl_seconds:
-            errors_all = 'Код устарел. Запросите новый'
+        return 'Сначала запросите SMS-код'
+    ttl_seconds = 5 * 60
+    if (timezone.now() - created_at).total_seconds() > ttl_seconds:
+        return 'Код устарел. Запросите новый'
+    return ''
+
+
+def _parse_reg_extra_contacts(post):
+    """Пары ec_type/ec_value → [{'type': ..., 'value': ...}], мусор отбрасывается."""
+    _REG_CONTACT_TYPES = {'email', 'telegram', 'max', 'social', 'website'}
+    reg_extra_contacts = []
+    for ect, ecv in zip(post.getlist('ec_type'), post.getlist('ec_value')):
+        ect = (ect or '').strip()
+        ecv = (ecv or '').strip()
+        if ect in _REG_CONTACT_TYPES and ecv:
+            reg_extra_contacts.append({'type': ect, 'value': ecv})
+    return reg_extra_contacts
+
+
+def _parse_reg_coords(post):
+    """(lat, lon) в допустимых диапазонах либо (None, None)."""
+    lat_raw = (post.get('lat') or '').strip().replace(',', '.')
+    lon_raw = (post.get('lon') or '').strip().replace(',', '.')
+    lat = None
+    lon = None
+    try:
+        if lat_raw and lon_raw:
+            lat = float(lat_raw)
+            lon = float(lon_raw)
+    except (TypeError, ValueError):
+        lat = None
+        lon = None
+
+    if lat is not None and not (-90 <= lat <= 90):
+        lat = None
+        lon = None
+    if lon is not None and not (-180 <= lon <= 180):
+        lat = None
+        lon = None
+    return lat, lon
+
+
+def _validate_sms_confirm(code_entered, username, email, phone):
+    """Ошибки обязательных полей и уникальности формы подтверждения."""
+    errors: dict[str, str] = {}
+    if not code_entered:
+        errors['code'] = 'Введите код'
+    if not username:
+        errors['username'] = 'Введите username'
+    if not email:
+        errors['email'] = 'Введите email'
+
+    if username and LegacyUser.objects.filter(username=username).exists():
+        errors['username'] = 'Этот username уже занят'
+    if email and LegacyUser.objects.filter(email=email).exists():
+        errors['email'] = 'Этот email уже занят'
+    if phone and LegacyUser.objects.filter(phone=phone).exists():
+        errors['phone'] = 'Этот телефон уже зарегистрирован'
+    return errors
+
+
+def _safe_next_url(request):
+    """Безопасный next из POST/GET либо ''."""
+    next_raw = (request.POST.get('next') or request.GET.get('next') or '').strip()
+    if next_raw and url_has_allowed_host_and_scheme(
+        url=next_raw,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
+    ):
+        return next_raw
+    return ''
+
+
+def _create_legacy_user(username, email, name, phone, address='', contacts='',
+                        extra_contacts=None, lat=None, lon=None):
+    """Создать пользователя со случайным паролем и новым auth_key."""
+    now = timezone.now()
+    create_kwargs = dict(
+        type=0,
+        username=username,
+        auth_key=secrets.token_hex(16)[:32],
+        password_hash=make_password(secrets.token_urlsafe(12)),
+        email=email,
+        currency='RU',
+        name=name,
+        address=address,
+        phone=phone,
+        inn='',
+        status=USER_STATUS_ACTIVE,
+        created_at=now,
+        updated_at=now,
+        contacts=contacts,
+    )
+    if extra_contacts is not None:
+        create_kwargs['extra_contacts'] = extra_contacts or []
+    if lat is not None and lon is not None:
+        create_kwargs['location'] = Point(float(lon), float(lat), srid=4326)
+    return LegacyUser.objects.create(**create_kwargs)
+
+
+def _send_set_password_link(request, new_user, safe_next, flow):
+    """Отправить письмо со ссылкой установки пароля; ошибки только логируются."""
+    try:
+        token = _make_set_password_token(int(new_user.id), new_user.auth_key)
+        set_pw_url = request.build_absolute_uri(f"/set-password/{token}/")
+        if safe_next:
+            set_pw_url = f"{set_pw_url}?next={urllib.parse.quote(safe_next)}"
+        _send_registration_email(new_user.email, new_user.username, set_pw_url)
+    except Exception:
+        logger.exception('Failed to dispatch registration email (%s flow)', flow)
+
+
+def legacy_register_sms_confirm(request: HttpRequest) -> HttpResponse:
+    state = request.session.get('sms_register') or {}
+    phone = (state.get('phone') or '').strip()
+    otp_code = (state.get('code') or '').strip()
+    verify_attempts = int(state.get('verify_attempts') or 0)
+
+    errors: dict[str, str] = {}
+    errors_all = _sms_state_error(phone, otp_code, (state.get('created_at') or '').strip())
 
     reg_extra_contacts = []
 
@@ -188,54 +294,13 @@ def legacy_register_sms_confirm(request: HttpRequest) -> HttpResponse:
         code_entered = (request.POST.get('code') or '').strip()
         username = (request.POST.get('username') or '').strip()
         email = (request.POST.get('email') or '').strip()
-        name = (request.POST.get('name') or '').strip()
-        address = (request.POST.get('address') or '').strip()
         show_address_raw = (request.POST.get('show_address') or '').strip().lower()
-        lat_raw = (request.POST.get('lat') or '').strip().replace(',', '.')
-        lon_raw = (request.POST.get('lon') or '').strip().replace(',', '.')
-
         show_address = 1 if show_address_raw in {'1', 'true', 'yes', 'on'} else 0
 
-        _REG_CONTACT_TYPES = {'email', 'telegram', 'max', 'social', 'website'}
-        reg_extra_contacts = []
-        ec_types = request.POST.getlist('ec_type')
-        ec_values = request.POST.getlist('ec_value')
-        for ect, ecv in zip(ec_types, ec_values):
-            ect = (ect or '').strip()
-            ecv = (ecv or '').strip()
-            if ect in _REG_CONTACT_TYPES and ecv:
-                reg_extra_contacts.append({'type': ect, 'value': ecv})
+        reg_extra_contacts = _parse_reg_extra_contacts(request.POST)
+        lat, lon = _parse_reg_coords(request.POST)
 
-        lat = None
-        lon = None
-        try:
-            if lat_raw and lon_raw:
-                lat = float(lat_raw)
-                lon = float(lon_raw)
-        except (TypeError, ValueError):
-            lat = None
-            lon = None
-
-        if lat is not None and not (-90 <= lat <= 90):
-            lat = None
-            lon = None
-        if lon is not None and not (-180 <= lon <= 180):
-            lat = None
-            lon = None
-
-        if not code_entered:
-            errors['code'] = 'Введите код'
-        if not username:
-            errors['username'] = 'Введите username'
-        if not email:
-            errors['email'] = 'Введите email'
-
-        if username and LegacyUser.objects.filter(username=username).exists():
-            errors['username'] = 'Этот username уже занят'
-        if email and LegacyUser.objects.filter(email=email).exists():
-            errors['email'] = 'Этот email уже занят'
-        if phone and LegacyUser.objects.filter(phone=phone).exists():
-            errors['phone'] = 'Этот телефон уже зарегистрирован'
+        errors = _validate_sms_confirm(code_entered, username, email, phone)
 
         if not errors:
             if verify_attempts >= 10:
@@ -247,54 +312,24 @@ def legacy_register_sms_confirm(request: HttpRequest) -> HttpResponse:
                 request.session.modified = True
                 errors['code'] = 'Неверный код'
 
-        if not errors:
-            pw_hash = make_password(secrets.token_urlsafe(12))
-            auth_key = secrets.token_hex(16)[:32]
-
-            now = timezone.now()
-            contacts_val = 'show_address=0' if not show_address else ''
-            create_kwargs = dict(
-                type=0,
+        if not errors and not errors_all:
+            new_user = _create_legacy_user(
                 username=username,
-                auth_key=auth_key,
-                password_hash=pw_hash,
                 email=email,
-                currency='RU',
-                name=name,
-                address=address,
+                name=(request.POST.get('name') or '').strip(),
                 phone=phone,
-                inn='',
-                status=USER_STATUS_ACTIVE,
-                created_at=now,
-                updated_at=now,
-                contacts=contacts_val,
-                extra_contacts=reg_extra_contacts or [],
+                address=(request.POST.get('address') or '').strip(),
+                contacts='show_address=0' if not show_address else '',
+                extra_contacts=reg_extra_contacts,
+                lat=lat,
+                lon=lon,
             )
-            if lat is not None and lon is not None:
-                create_kwargs['location'] = Point(float(lon), float(lat), srid=4326)
-
-            new_user = LegacyUser.objects.create(**create_kwargs)
 
             request.session.pop('sms_register', None)
             request.session['legacy_user_id'] = int(new_user.id)
 
-            next_raw = (request.POST.get('next') or request.GET.get('next') or '').strip()
-            safe_next = ''
-            if next_raw and url_has_allowed_host_and_scheme(
-                url=next_raw,
-                allowed_hosts={request.get_host()},
-                require_https=request.is_secure(),
-            ):
-                safe_next = next_raw
-
-            try:
-                token = _make_set_password_token(int(new_user.id), auth_key)
-                set_pw_url = request.build_absolute_uri(f"/set-password/{token}/")
-                if safe_next:
-                    set_pw_url = f"{set_pw_url}?next={urllib.parse.quote(safe_next)}"
-                _send_registration_email(email, username, set_pw_url)
-            except Exception:
-                logger.exception('Failed to dispatch registration email (sms flow)')
+            safe_next = _safe_next_url(request)
+            _send_set_password_link(request, new_user, safe_next, 'sms')
             return redirect(safe_next or '/adverts/')
 
     resp = render(
@@ -363,46 +398,14 @@ def legacy_register_email(request: HttpRequest) -> HttpResponse:
             )
             return _no_store(resp)
 
-        pw_hash = make_password(secrets.token_urlsafe(12))
-        auth_key = secrets.token_hex(16)[:32]
-        now = timezone.now()
-
-        new_user = LegacyUser.objects.create(
-            type=0,
-            username=username,
-            auth_key=auth_key,
-            password_hash=pw_hash,
-            email=email,
-            currency='RU',
-            name=name,
-            address='',
-            phone=phone,
-            inn='',
-            status=USER_STATUS_ACTIVE,
-            created_at=now,
-            updated_at=now,
-            contacts='',
+        new_user = _create_legacy_user(
+            username=username, email=email, name=name, phone=phone,
         )
 
         request.session['legacy_user_id'] = int(new_user.id)
 
-        next_raw = (request.POST.get('next') or request.GET.get('next') or '').strip()
-        safe_next = ''
-        if next_raw and url_has_allowed_host_and_scheme(
-            url=next_raw,
-            allowed_hosts={request.get_host()},
-            require_https=request.is_secure(),
-        ):
-            safe_next = next_raw
-
-        try:
-            token = _make_set_password_token(int(new_user.id), auth_key)
-            set_pw_url = request.build_absolute_uri(f"/set-password/{token}/")
-            if safe_next:
-                set_pw_url = f"{set_pw_url}?next={urllib.parse.quote(safe_next)}"
-            _send_registration_email(email, username, set_pw_url)
-        except Exception:
-            logger.exception('Failed to dispatch registration email (email flow)')
+        safe_next = _safe_next_url(request)
+        _send_set_password_link(request, new_user, safe_next, 'email')
 
         return redirect(safe_next or '/adverts/')
 
@@ -424,6 +427,34 @@ def legacy_register_email(request: HttpRequest) -> HttpResponse:
     return _no_store(resp)
 
 
+def _resolve_set_password_user(token):
+    """(user, auth_key) по подписанному токену либо (None, '')."""
+    try:
+        payload = signing.loads(token, salt='legacy-set-password', max_age=60 * 60 * 24)
+        user_id = int(payload.get('uid') or 0)
+        auth_key = str(payload.get('ak') or '')
+    except Exception:
+        user_id = 0
+        auth_key = ''
+
+    user = None
+    if user_id > 0 and auth_key:
+        user = LegacyUser.objects.filter(pk=user_id, auth_key=auth_key).first()
+    return user, auth_key
+
+
+def _validate_new_password(p1, p2):
+    """Ошибки валидации пары паролей."""
+    errors: dict[str, str] = {}
+    if not p1:
+        errors['password1'] = 'Введите пароль'
+    elif len(p1) < 6:
+        errors['password1'] = 'Пароль слишком короткий'
+    if p1 and p2 and p1 != p2:
+        errors['password2'] = 'Пароли не совпадают'
+    return errors
+
+
 def legacy_set_password(request: HttpRequest, token: str) -> HttpResponse:
     errors: dict[str, str] = {}
     token = (token or '').strip()
@@ -441,29 +472,14 @@ def legacy_set_password(request: HttpRequest, token: str) -> HttpResponse:
     ):
         next_url = next_raw
 
-    try:
-        payload = signing.loads(token, salt='legacy-set-password', max_age=60 * 60 * 24)
-        user_id = int(payload.get('uid') or 0)
-        auth_key = str(payload.get('ak') or '')
-    except Exception:
-        user_id = 0
-        auth_key = ''
-
-    user = None
-    if user_id > 0 and auth_key:
-        user = LegacyUser.objects.filter(pk=user_id, auth_key=auth_key).first()
+    user, auth_key = _resolve_set_password_user(token)
     if user is None:
         return render(request, 'legacy/set_password.html', {'errors': {'token': 'Ссылка недействительна или устарела'}})
 
     if request.method == 'POST':
         p1 = (request.POST.get('password1') or '').strip()
         p2 = (request.POST.get('password2') or '').strip()
-        if not p1:
-            errors['password1'] = 'Введите пароль'
-        elif len(p1) < 6:
-            errors['password1'] = 'Пароль слишком короткий'
-        if p1 and p2 and p1 != p2:
-            errors['password2'] = 'Пароли не совпадают'
+        errors = _validate_new_password(p1, p2)
 
         if not errors:
             new_auth_key = secrets.token_hex(16)[:32]
