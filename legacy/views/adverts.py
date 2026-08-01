@@ -27,69 +27,81 @@ from .helpers import (
 from .reviews import _get_reviews, _avg_points
 
 
-def advert_list(request: HttpRequest, catalog_slug: str = '', category_slug: str = '') -> HttpResponse:
-    legacy_user = _get_current_legacy_user(request)
+def _int_param_or_none(value):
+    """GET-параметр → положительный int либо None (мусор/0 → None)."""
+    try:
+        return int((value or '').strip() or 0) or None
+    except Exception:
+        return None
 
-    # --- Resolve catalog/category from slug or GET params ---
-    slug_map = get_slug_map()
-    catalog_id = None
-    category_id = None
 
+def _legacy_params_redirect(request, slug_map, cat_id, categ_id):
+    """301 со старых GET-параметров catalog/category на slug-URL либо None.
+
+    В catalog-ветке параметр ``category`` намеренно не удаляется —
+    как в исходной версии.
+    """
+    if categ_id and categ_id in slug_map['category_by_id']:
+        cs, cats = slug_map['category_by_id'][categ_id]
+        params = request.GET.copy()
+        params.pop('catalog', None)
+        params.pop('category', None)
+        url = f'/adverts/{cs}/{cats}/'
+    elif cat_id and cat_id in slug_map['catalog_by_id']:
+        cs = slug_map['catalog_by_id'][cat_id]
+        params = request.GET.copy()
+        params.pop('catalog', None)
+        url = f'/adverts/{cs}/'
+    else:
+        return None
+    qs_str = params.urlencode()
+    if qs_str:
+        url += '?' + qs_str
+    return redirect(url, permanent=True)
+
+
+def _resolve_list_scope(request, slug_map, catalog_slug, category_slug):
+    """(catalog_id, category_id, redirect|None) по slug или GET-параметрам.
+
+    Неизвестный slug → Http404; старые GET-параметры с известным id →
+    301-редирект на slug-URL.
+    """
     if catalog_slug:
         catalog_id = slug_map['catalog_by_slug'].get(catalog_slug)
         if catalog_id is None:
             raise Http404
+        category_id = None
         if category_slug:
             category_id = slug_map['category_by_slug'].get((catalog_slug, category_slug))
             if category_id is None:
                 raise Http404
-    else:
-        # Legacy GET params — redirect to slug URL if possible
-        try:
-            _cat_id = int((request.GET.get('catalog') or '').strip() or 0) or None
-        except Exception:
-            _cat_id = None
-        try:
-            _categ_id = int((request.GET.get('category') or '').strip() or 0) or None
-        except Exception:
-            _categ_id = None
+        return catalog_id, category_id, None
+    cat_id = _int_param_or_none(request.GET.get('catalog'))
+    categ_id = _int_param_or_none(request.GET.get('category'))
+    resp = _legacy_params_redirect(request, slug_map, cat_id, categ_id)
+    if resp is not None:
+        return None, None, resp
+    return cat_id, categ_id, None
 
-        if _categ_id and _categ_id in slug_map['category_by_id']:
-            cs, cats = slug_map['category_by_id'][_categ_id]
-            params = request.GET.copy()
-            params.pop('catalog', None)
-            params.pop('category', None)
-            qs_str = params.urlencode()
-            url = f'/adverts/{cs}/{cats}/'
-            if qs_str:
-                url += '?' + qs_str
-            return redirect(url, permanent=True)
-        elif _cat_id and _cat_id in slug_map['catalog_by_id']:
-            cs = slug_map['catalog_by_id'][_cat_id]
-            params = request.GET.copy()
-            params.pop('catalog', None)
-            qs_str = params.urlencode()
-            url = f'/adverts/{cs}/'
-            if qs_str:
-                url += '?' + qs_str
-            return redirect(url, permanent=True)
-        else:
-            catalog_id = _cat_id
-            category_id = _categ_id
 
-    q = (request.GET.get('q') or '').strip()
+def _list_sort(request):
+    """Параметр sort с фолбэком на 'id'."""
     sort = (request.GET.get('sort') or 'id').strip()
-    if sort not in {'id', 'price', 'count'}:
-        sort = 'id'
+    return sort if sort in {'id', 'price', 'count'} else 'id'
 
+
+def _list_page_size(request):
+    """Параметр page_size с фолбэком на 12."""
     page_size_raw = (request.GET.get('page_size') or '12').strip()
     try:
         page_size = int(page_size_raw)
     except (TypeError, ValueError):
         page_size = 12
-    if page_size not in {12, 24, 36, 48}:
-        page_size = 12
+    return page_size if page_size in {12, 24, 36, 48} else 12
 
+
+def _list_base_queryset(legacy_user, q):
+    """База выборки: видимость по роли + полнотекстовый поиск."""
     _thumb_prefetch = Prefetch(
         'photos',
         queryset=AdvertPhoto.objects.order_by('sort', 'id'),
@@ -103,7 +115,11 @@ def advert_list(request: HttpRequest, catalog_slug: str = '', category_slug: str
     if q:
         qs = qs.extra(where=["search_vector @@ plainto_tsquery('russian', %s)"], params=[q])
         qs = qs.extra(select={'_rank': "ts_rank(search_vector, plainto_tsquery('russian', %s))"}, select_params=[q])
+    return qs
 
+
+def _apply_list_filters(qs, request, catalog_id, category_id):
+    """Фильтры type/opt/delivery/каталог/категория из GET-параметров."""
     type_raw = (request.GET.get('type') or '').strip().lower()
     if type_raw == 'offer':
         qs = qs.filter(type=0)
@@ -122,15 +138,37 @@ def advert_list(request: HttpRequest, catalog_slug: str = '', category_slug: str
         qs = qs.filter(category_id=category_id)
     if catalog_id is not None:
         qs = qs.filter(category__catalog_id=catalog_id)
+    return qs
 
+
+def _apply_list_ordering(qs, q, sort):
+    """Сортировка: релевантность при поиске, иначе price/count/updated."""
     if q and sort == 'id':
-        qs = qs.order_by('-_rank', '-updated_at', '-id')
-    elif sort == 'price':
-        qs = qs.order_by('-price', '-updated_at', '-id')
-    elif sort == 'count':
-        qs = qs.order_by('-priority', '-updated_at', '-id')
-    else:
-        qs = qs.order_by('-updated_at', '-id')
+        return qs.order_by('-_rank', '-updated_at', '-id')
+    if sort == 'price':
+        return qs.order_by('-price', '-updated_at', '-id')
+    if sort == 'count':
+        return qs.order_by('-priority', '-updated_at', '-id')
+    return qs.order_by('-updated_at', '-id')
+
+
+def advert_list(request: HttpRequest, catalog_slug: str = '', category_slug: str = '') -> HttpResponse:
+    legacy_user = _get_current_legacy_user(request)
+
+    slug_map = get_slug_map()
+    catalog_id, category_id, resp = _resolve_list_scope(
+        request, slug_map, catalog_slug, category_slug,
+    )
+    if resp is not None:
+        return resp
+
+    q = (request.GET.get('q') or '').strip()
+    sort = _list_sort(request)
+    page_size = _list_page_size(request)
+
+    qs = _list_base_queryset(legacy_user, q)
+    qs = _apply_list_filters(qs, request, catalog_id, category_id)
+    qs = _apply_list_ordering(qs, q, sort)
 
     paginator = Paginator(qs, page_size)
     adverts_page = paginator.get_page(request.GET.get('page') or 1)
@@ -487,13 +525,7 @@ def advert_create(request: HttpRequest) -> HttpResponse:
                 updated_at=now,
                 status=ADVERT_STATUS_MODERATION,
             )
-            for i, photo_file in enumerate(cleaned['photos']):
-                compressed, thumb = process_uploaded_image(photo_file)
-                photo = AdvertPhoto(advert=advert, sort=i)
-                photo.image.save(compressed.name, compressed, save=False)
-                if thumb:
-                    photo.thumbnail.save(thumb.name, thumb, save=False)
-                photo.save()
+            _save_advert_photos(advert, cleaned['photos'])
             invalidate_advert_caches()
             try:
                 advert_url = request.build_absolute_uri(f"/adverts/{int(advert.id)}/")
@@ -516,6 +548,86 @@ def advert_create(request: HttpRequest) -> HttpResponse:
     return _no_store(resp)
 
 
+def _save_advert_photos(advert, photo_files, start_sort=0):
+    """Сжать и сохранить загруженные фото начиная с сортировки start_sort."""
+    for i, photo_file in enumerate(photo_files):
+        compressed, thumb = process_uploaded_image(photo_file)
+        photo = AdvertPhoto(advert=advert, sort=start_sort + i)
+        photo.image.save(compressed.name, compressed, save=False)
+        if thumb:
+            photo.thumbnail.save(thumb.name, thumb, save=False)
+        photo.save()
+
+
+def _apply_advert_update(advert_id, cleaned):
+    """Обновить поля объявления из провалидированной формы.
+
+    ``created_at`` намеренно тоже обновляется (поднятие в выдаче) —
+    как в исходной версии.
+    """
+    Advert.objects.filter(pk=int(advert_id)).update(
+        type=cleaned['type'],
+        category_id=cleaned['category_id'],
+        address=cleaned['address'],
+        location=Point(float(cleaned['lon']), float(cleaned['lat']), srid=4326),
+        delivery=cleaned['delivery'],
+        contacts=cleaned['contacts'],
+        title=cleaned['title'],
+        text=cleaned['text'],
+        price=cleaned['price'],
+        price_unit=cleaned['price_unit'],
+        wholesale_price=cleaned['wholesale_price'],
+        min_volume=cleaned['min_volume'],
+        wholesale_volume=cleaned['wholesale_volume'],
+        volume=cleaned['volume'],
+        extra_contacts=cleaned['extra_contacts'] or [],
+        created_at=timezone.now(),
+        updated_at=timezone.now(),
+    )
+
+
+def _delete_marked_photos(post, advert_id):
+    """Удалить фото, отмеченные в форме чекбоксами delete_photo."""
+    delete_ids = []
+    for rid in post.getlist('delete_photo'):
+        try:
+            delete_ids.append(int(rid))
+        except Exception:
+            pass
+    if delete_ids:
+        AdvertPhoto.objects.filter(advert_id=int(advert_id), id__in=delete_ids).delete()
+
+
+def _advert_edit_initial(advert):
+    """Начальные значения формы редактирования из текущего объявления."""
+    try:
+        loc = getattr(advert, 'location', None)
+        lat_val = float(loc.y) if loc else ''
+        lon_val = float(loc.x) if loc else ''
+    except Exception:
+        lat_val = ''
+        lon_val = ''
+    return {
+        'type': getattr(advert, 'type', 0),
+        'catalog': getattr(advert.category, 'catalog_id', '') if advert.category_id else '',
+        'category': advert.category_id or '',
+        'title': advert.title or '',
+        'text': advert.text or '',
+        'contacts': advert.contacts or '',
+        'address': advert.address or '',
+        'price': advert.price or '',
+        'price_unit': getattr(advert, 'price_unit', 'кг') or 'кг',
+        'volume': advert.volume or '',
+        'min_volume': advert.min_volume or '',
+        'wholesale_volume': advert.wholesale_volume or '',
+        'opt': bool((advert.wholesale_price or 0) > 0),
+        'delivery': bool(advert.delivery),
+        'lat': lat_val,
+        'lon': lon_val,
+        'extra_contacts': getattr(advert, 'extra_contacts', None) or [],
+    }
+
+
 def advert_edit(request: HttpRequest, advert_id: int) -> HttpResponse:
     user = _get_current_legacy_user(request)
     if not user:
@@ -530,71 +642,14 @@ def advert_edit(request: HttpRequest, advert_id: int) -> HttpResponse:
     if request.method == 'POST':
         cleaned, errors, form_data = _parse_advert_form(request.POST, request.FILES)
         if not errors:
-            Advert.objects.filter(pk=int(advert_id)).update(
-                type=cleaned['type'],
-                category_id=cleaned['category_id'],
-                address=cleaned['address'],
-                location=Point(float(cleaned['lon']), float(cleaned['lat']), srid=4326),
-                delivery=cleaned['delivery'],
-                contacts=cleaned['contacts'],
-                title=cleaned['title'],
-                text=cleaned['text'],
-                price=cleaned['price'],
-                price_unit=cleaned['price_unit'],
-                wholesale_price=cleaned['wholesale_price'],
-                min_volume=cleaned['min_volume'],
-                wholesale_volume=cleaned['wholesale_volume'],
-                volume=cleaned['volume'],
-                extra_contacts=cleaned['extra_contacts'] or [],
-                created_at=timezone.now(),
-                updated_at=timezone.now(),
-            )
-            delete_ids_raw = request.POST.getlist('delete_photo')
-            delete_ids = []
-            for rid in delete_ids_raw:
-                try:
-                    delete_ids.append(int(rid))
-                except Exception:
-                    pass
-            if delete_ids:
-                AdvertPhoto.objects.filter(advert_id=int(advert_id), id__in=delete_ids).delete()
+            _apply_advert_update(advert_id, cleaned)
+            _delete_marked_photos(request.POST, advert_id)
             next_sort = AdvertPhoto.objects.filter(advert_id=int(advert_id)).count()
-            for i, photo_file in enumerate(cleaned['photos']):
-                compressed, thumb = process_uploaded_image(photo_file)
-                photo = AdvertPhoto(advert=advert, sort=next_sort + i)
-                photo.image.save(compressed.name, compressed, save=False)
-                if thumb:
-                    photo.thumbnail.save(thumb.name, thumb, save=False)
-                photo.save()
+            _save_advert_photos(advert, cleaned['photos'], next_sort)
             invalidate_advert_caches()
             return redirect(f"/adverts/{int(advert_id)}/")
     else:
-        try:
-            loc = getattr(advert, 'location', None)
-            lat_val = float(loc.y) if loc else ''
-            lon_val = float(loc.x) if loc else ''
-        except Exception:
-            lat_val = ''
-            lon_val = ''
-        form_data = {
-            'type': getattr(advert, 'type', 0),
-            'catalog': getattr(advert.category, 'catalog_id', '') if advert.category_id else '',
-            'category': advert.category_id or '',
-            'title': advert.title or '',
-            'text': advert.text or '',
-            'contacts': advert.contacts or '',
-            'address': advert.address or '',
-            'price': advert.price or '',
-            'price_unit': getattr(advert, 'price_unit', 'кг') or 'кг',
-            'volume': advert.volume or '',
-            'min_volume': advert.min_volume or '',
-            'wholesale_volume': advert.wholesale_volume or '',
-            'opt': bool((advert.wholesale_price or 0) > 0),
-            'delivery': bool(advert.delivery),
-            'lat': lat_val,
-            'lon': lon_val,
-            'extra_contacts': getattr(advert, 'extra_contacts', None) or [],
-        }
+        form_data = _advert_edit_initial(advert)
 
     resp = render(
         request,
