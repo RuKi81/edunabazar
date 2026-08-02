@@ -80,37 +80,19 @@ def messages_thread(request: HttpRequest, user_id: int) -> HttpResponse:
     return _no_store(resp)
 
 
-def message_send(request: HttpRequest) -> HttpResponse:
-    """Send a message to another user."""
-    if request.method != 'POST':
-        return redirect('/messages/')
-
-    user = _get_current_legacy_user(request)
-    if not user:
-        return redirect('/login/')
-
-    recipient_id_raw = (request.POST.get('recipient_id') or '').strip()
-    text = (request.POST.get('text') or '').strip()
-    advert_id_raw = (request.POST.get('advert_id') or '').strip()
-
+def _resolve_message_recipient(user, recipient_id_raw):
+    """Получатель сообщения либо None (мусор / сам себе / не найден)."""
     try:
         recipient_id = int(recipient_id_raw)
     except Exception:
-        return redirect('/messages/')
-
+        return None
     if recipient_id == user.id:
-        return redirect('/messages/')
+        return None
+    return LegacyUser.objects.filter(pk=recipient_id).first()
 
-    recipient = LegacyUser.objects.filter(pk=recipient_id).first()
-    if not recipient:
-        return redirect('/messages/')
 
-    if not text:
-        return redirect(f"/messages/{recipient_id}/")
-
-    if len(text) > 5000:
-        text = text[:5000]
-
+def _resolve_message_advert(advert_id_raw):
+    """(advert_id | None, advert_title) по необязательному advert_id из формы."""
     advert_id = None
     advert_title = ''
     try:
@@ -120,18 +102,11 @@ def message_send(request: HttpRequest) -> HttpResponse:
             advert_title = (getattr(advert_obj, 'title', '') or '') if advert_obj else ''
     except Exception:
         advert_id = None
+    return advert_id, advert_title
 
-    now = timezone.now()
-    Message.objects.create(
-        sender_id=int(user.id),
-        recipient_id=recipient_id,
-        advert_id=advert_id,
-        text=text,
-        is_read=False,
-        created_at=now,
-    )
 
-    # Email notification to recipient
+def _notify_message_recipient(request, user, recipient, advert_title):
+    """Email-уведомление получателю; ошибки только логируются."""
     try:
         recipient_email = (getattr(recipient, 'email', '') or '').strip()
         sender_name = (getattr(user, 'name', '') or getattr(user, 'username', '') or '').strip()
@@ -141,7 +116,38 @@ def message_send(request: HttpRequest) -> HttpResponse:
     except Exception:
         logger.exception('Failed to send new message email notification')
 
-    return redirect(f"/messages/{recipient_id}/")
+
+def message_send(request: HttpRequest) -> HttpResponse:
+    """Send a message to another user."""
+    if request.method != 'POST':
+        return redirect('/messages/')
+
+    user = _get_current_legacy_user(request)
+    if not user:
+        return redirect('/login/')
+
+    recipient = _resolve_message_recipient(user, (request.POST.get('recipient_id') or '').strip())
+    if not recipient:
+        return redirect('/messages/')
+
+    text = (request.POST.get('text') or '').strip()[:5000]
+    if not text:
+        return redirect(f"/messages/{recipient.id}/")
+
+    advert_id, advert_title = _resolve_message_advert((request.POST.get('advert_id') or '').strip())
+
+    Message.objects.create(
+        sender_id=int(user.id),
+        recipient_id=int(recipient.id),
+        advert_id=advert_id,
+        text=text,
+        is_read=False,
+        created_at=timezone.now(),
+    )
+
+    _notify_message_recipient(request, user, recipient, advert_title)
+
+    return redirect(f"/messages/{recipient.id}/")
 
 
 def messages_unread_count_api(request: HttpRequest) -> JsonResponse:

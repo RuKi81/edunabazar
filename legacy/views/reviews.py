@@ -43,6 +43,36 @@ def _avg_points(reviews) -> float | None:
     return round(total / count, 1) if count else None
 
 
+def _parse_review_form(post):
+    """(review_type, object_id | None, points, text) из POST-данных формы."""
+    try:
+        review_type = int((post.get('review_type') or '').strip())
+        if review_type not in {Review.REVIEW_TYPE_ADVERT, Review.REVIEW_TYPE_SELLER}:
+            review_type = Review.REVIEW_TYPE_ADVERT
+    except Exception:
+        review_type = Review.REVIEW_TYPE_ADVERT
+
+    try:
+        object_id = int((post.get('object_id') or '').strip())
+    except Exception:
+        object_id = None
+
+    try:
+        points = max(1, min(5, int((post.get('points') or '').strip())))
+    except Exception:
+        points = 5
+
+    text = (post.get('text') or '').strip()[:2000]
+    return review_type, object_id, points, text
+
+
+def _review_object_redirect(review_type, object_id):
+    """Редирект на страницу продавца либо объявления."""
+    if review_type == Review.REVIEW_TYPE_SELLER:
+        return redirect(f"/sellers/{object_id}/")
+    return redirect(f"/adverts/{object_id}/")
+
+
 def review_create(request: HttpRequest) -> HttpResponse:
     """Create a review for an advert (type=0) or seller (type=1)."""
     if request.method != 'POST':
@@ -52,37 +82,13 @@ def review_create(request: HttpRequest) -> HttpResponse:
     if not user:
         return redirect(f"/login/?next={urllib.parse.quote(request.META.get('HTTP_REFERER', '/adverts/'))}")
 
-    review_type_raw = (request.POST.get('review_type') or '').strip()
-    object_id_raw = (request.POST.get('object_id') or '').strip()
-    points_raw = (request.POST.get('points') or '').strip()
-    text = (request.POST.get('text') or '').strip()
-
-    try:
-        review_type = int(review_type_raw)
-        if review_type not in {Review.REVIEW_TYPE_ADVERT, Review.REVIEW_TYPE_SELLER}:
-            review_type = Review.REVIEW_TYPE_ADVERT
-    except Exception:
-        review_type = Review.REVIEW_TYPE_ADVERT
-
-    try:
-        object_id = int(object_id_raw)
-    except Exception:
+    review_type, object_id, points, text = _parse_review_form(request.POST)
+    if object_id is None:
         return redirect('/adverts/')
-
-    try:
-        points = int(points_raw)
-        points = max(1, min(5, points))
-    except Exception:
-        points = 5
 
     if not text:
         request.session['review_error'] = 'Введите текст отзыва'
-        if review_type == Review.REVIEW_TYPE_SELLER:
-            return redirect(f"/sellers/{object_id}/")
-        return redirect(f"/adverts/{object_id}/")
-
-    if len(text) > 2000:
-        text = text[:2000]
+        return _review_object_redirect(review_type, object_id)
 
     # Prevent duplicate: one review per user per object
     existing = Review.objects.filter(
@@ -90,9 +96,7 @@ def review_create(request: HttpRequest) -> HttpResponse:
     ).exclude(status=_REVIEW_STATUS_DELETED).exists()
     if existing:
         request.session['review_error'] = 'Вы уже оставили отзыв'
-        if review_type == Review.REVIEW_TYPE_SELLER:
-            return redirect(f"/sellers/{object_id}/")
-        return redirect(f"/adverts/{object_id}/")
+        return _review_object_redirect(review_type, object_id)
 
     now = timezone.now()
     Review.objects.create(
@@ -107,9 +111,7 @@ def review_create(request: HttpRequest) -> HttpResponse:
     )
 
     request.session['review_success'] = 'Отзыв отправлен на модерацию'
-    if review_type == Review.REVIEW_TYPE_SELLER:
-        return redirect(f"/sellers/{object_id}/")
-    return redirect(f"/adverts/{object_id}/")
+    return _review_object_redirect(review_type, object_id)
 
 
 def review_delete(request: HttpRequest, review_id: int) -> HttpResponse:
