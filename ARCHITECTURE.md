@@ -2,7 +2,7 @@
 
 > **Репозиторий:** <https://github.com/RuKi81/edunabazar>
 > **Домен:** edunabazar.ru / www.edunabazar.ru
-> **Дата:** 2026-05-11
+> **Дата:** 2026-06-17
 
 > См. также: [`README.md`](./README.md) (overview, quick start) ·
 > [`docs/AGROCOSMOS_API.md`](./docs/AGROCOSMOS_API.md) (API reference) ·
@@ -124,9 +124,19 @@ edunabazar/
 │   │   ├── district_ndvi_series.py  # Предагрегат per-district×date×crop
 │   │   ├── notifications.py         # Email для алертов и дайджестов
 │   │   └── gee_client.py            # Google Earth Engine wrapper
+│   ├── views/farmland_edit.py  # Admin CRUD над agro_farmland для GIS-редактора
 │   ├── static/agrocosmos/js/ndvi_chart.js  # Общий helper для Chart.js
 │   ├── templates/agrocosmos/
 │   └── management/commands/
+│
+├── my_fields/               # Приложение «Мои поля» (личные угодья + ГИС-редактор)
+│   ├── models.py            # Plan, UserPlan, UserField, FieldSeason,
+│   │                        #   FieldEvent, FieldPhoto
+│   ├── api.py / urls.py     # GeoJSON CRUD (поля/сезоны/журнал) + UI-страницы
+│   ├── views.py             # HTML-страницы: список, карточка поля, /me/gis/
+│   ├── services/            # geometry (площадь/резолв региона), quotas
+│   ├── permissions.py       # can_view_field / can_edit_field
+│   └── templates/my_fields/ # fields_list, field_detail, gis (MapLibre-редактор)
 │
 ├── deploy/                  # Деплой-скрипты и конфигурации
 │   ├── nginx.conf
@@ -192,6 +202,23 @@ edunabazar/
 | `AgroSubscription` | `agro_subscription` | Подписка `LegacyUser` на email-уведомления по региону/району (см. §15) |
 | `VegetationAlert` | `agro_vegetation_alert` | Биологическая аномалия на угодье **или** районе/культуре (baseline deviation / rapid drop) (см. §15) |
 
+### 5.3 `my_fields` — Личные угодья пользователя («Мои поля»)
+
+| Модель | Таблица | Описание |
+|--------|---------|----------|
+| `Plan` | `myf_plan` | Тарифный план (лимиты полей/площади, глубина NDVI-истории) |
+| `UserPlan` | `myf_user_plan` | Текущий тариф пользователя (OneToOne → `auth.User`); отсутствие = `free` |
+| `UserField` | `myf_field` | Угодье пользователя (MultiPolygon, авто-резолв region/district по centroid'у, `area_ha`) |
+| `FieldSeason` | `myf_field_season` | Сезон возделывания культуры на поле (уникальность `field × year × crop`) |
+| `FieldEvent` | `myf_field_event` | Запись агрожурнала (сев, СЗР, уборка, осмотр, …) + снимок погоды |
+| `FieldPhoto` | `myf_field_photo` | Фото поля/события (GPS из EXIF) |
+
+> Владелец поля — `auth.User`, который прозрачно создаётся из `legacy_user`
+> при первом логине через `LegacyUserBackend`. `region`/`district` ссылаются
+> на справочники `agrocosmos` с `on_delete=SET_NULL`. ГИС-модуль **не**
+> лимитируется тарифами — квоты (`services/quotas.py`) оставлены как
+> заготовка под платную фазу.
+
 ---
 
 ## 6. URL-маршруты
@@ -205,6 +232,15 @@ edunabazar/
 | `/api/redoc/` | ReDoc |
 | `/api/schema/` | OpenAPI-схема |
 | `/agrocosmos/` | Модуль Агрокосмос |
+| `/agrocosmos/api/farmland/` | Admin CRUD над `agro_farmland` (POST — создать) (см. §17) |
+| `/agrocosmos/api/farmland/<id>/` | Admin CRUD над `agro_farmland` (GET/PATCH/DELETE) (см. §17) |
+| `/me/fields/` | «Мои поля» — карта + список (Leaflet) |
+| `/me/fields/<id>/` | Карточка поля — журнал + сезоны |
+| `/me/gis/` | ГИС-редактор (MapLibre, **admin-only**) (см. §17) |
+| `/api/my/fields/` | GeoJSON CRUD полей пользователя (`my_fields`) |
+| `/api/my/fields/<id>/` | Поле: GET/PATCH/DELETE |
+| `/api/my/fields/<id>/events/` | Журнал событий поля |
+| `/api/my/fields/<id>/seasons/` | Сезоны поля |
 | `/healthz` | Health-check (для Docker / мониторинга) |
 | `/robots.txt` | SEO |
 | `/sitemap.xml` | Sitemap index (ссылки на sub-sitemaps) |
@@ -681,3 +717,81 @@ Scope по умолчанию ограничен районами, на кото
 `DistrictNdviSeries`) **не в отдельном cron** — он вызывается из
 `check_monitoring` / `modis_ndvi` после успешного пайплайна, чтобы
 таблицы обновлялись сразу после поступления новых данных.
+
+---
+
+## 17. ГИС-редактор (`/me/gis/`, admin-only)
+
+Экспериментальная страница `my_fields:gis_page`
+(`my_fields/templates/my_fields/gis.html`) — единый редактор геометрии
+поверх **MapLibre GL JS** + `mapbox-gl-draw`. Заменяет Leaflet-страницу
+«Мои поля» на массивах в десятки тысяч полигонов за счёт векторных
+тайлов и GPU-рендера. Доступ ограничен админом (та же проверка
+`_is_admin_legacy`, что и у MVT-эндпоинта); неавторизованным отдаётся
+404, чтобы страница не светилась в навигации.
+
+### 17.1 Два редактируемых слоя
+
+| Слой | Источник | API | Доступ |
+|---|---|---|---|
+| **Мои поля** | `UserField` (`myf_field`), GeoJSON | `/api/my/fields/…` | Владелец / админ |
+| **ЗСН (Росреестр)** | `Farmland` (`agro_farmland`), MVT-тайлы | `/agrocosmos/api/farmland/…` | **Admin-only** (read = MVT всем админам, write — admin) |
+
+> «ЗСН (Росреестр)» — историческое название слоя; по сути это **вектор
+> с.-х. угодий** (shp ЗСН 5.3), а не выгрузка Росреестра. Слой
+> отдаётся read-only MVT-тайлами для просмотра, а admin-CRUD
+> (`agrocosmos/views/farmland_edit.py`) позволяет двигать вершины,
+> резать, удалять и создавать полигоны напрямую в `agro_farmland`.
+> CRUD переиспользует `my_fields.services.geometry`
+> (площадь + резолв region/district).
+
+### 17.2 Инструменты редактирования
+
+- **Рисование** полигона/линии, правка вершин, создание и удаление
+  объектов; после завершения полигона инструмент остаётся активным
+  (sticky).
+- **Split** (линия / лассо): разрезает угодье на части; крупнейшая
+  часть сохраняет исходный `id`. Работает без предварительного выбора —
+  объекты под резом находятся через `queryRenderedFeatures`, полная
+  геометрия дотягивается по API.
+- **Ring-cut** (◎): вырез отверстия/кольца внутри полигона, sticky-режим
+  (можно резать несколько дырок подряд и сохранить одним коммитом).
+  Поддержан MultiPolygon.
+- **Clip by border**: при рисовании нового полигона вычитается геометрия
+  перекрывающихся соседних угодий (для обоих слоёв; для ЗСН геометрия
+  соседей тянется по API).
+- **Массовое выделение** двумя инструментами: ☑ клик-выбор и ▦
+  полигон-лассо (Shift). Подсветка через `feature-state`, выбор
+  накопительный, `Esc` выходит из режима.
+- **Массовые операции** над выделением: удаление (🗑 / Delete) и
+  **калькулятор атрибутов** (Этап A) — модалка «поле + значение»,
+  изменения попадают в общую batch-очередь.
+
+### 17.3 Batch-очередь и мгновенное превью
+
+- Правки обоих слоёв накапливаются в очередях (`flPending` для ЗСН,
+  очередь userfields), сохранение — общими кнопками **💾** (commit) /
+  **↶** (undo). Один коммит объединяет geometry + properties в один
+  `PATCH`/`POST` на объект.
+- **Мгновенное превью** выреза/правок рисуется слоем `fl_preview`
+  (`tolerance: 0`) — отверстие видно сразу, не дожидаясь сохранения.
+- После сохранения `refreshFarmlandTiles` **полностью пересоздаёт**
+  source + слои (а не `setTiles`), чтобы полигоны не пропадали на
+  overzoom-уровнях.
+- **Cache-buster токен** добавляется к URL MVT-тайлов при загрузке —
+  удалённые/изменённые угодья не возвращаются из кеша после reload
+  (tiles `cache_page` 10 мин + browser `max-age=600`).
+
+### 17.4 Эндпоинты редактирования ЗСН
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| `POST` | `/agrocosmos/api/farmland/` | Создать новый `Farmland` из GeoJSON |
+| `GET` | `/agrocosmos/api/farmland/<id>/` | Полная геометрия + атрибуты |
+| `PATCH` | `/agrocosmos/api/farmland/<id>/` | Обновить геометрию / `crop_type` / `cadastral_number` / `is_used` |
+| `DELETE` | `/agrocosmos/api/farmland/<id>/` | Удалить угодье |
+
+> `is_used` — tri-state: на проводе `1` (используется) / `0` (не
+> используется) / `-1` (неизвестно), в модели `Farmland.is_used` —
+> `bool` / `None` (MVT вырезает NULL, поэтому «неизвестно» кодируется
+> как `-1`).
