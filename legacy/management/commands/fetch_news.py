@@ -107,66 +107,84 @@ def _is_agro(title: str, summary: str, include_kw: list[str], exclude_kw: list[s
     return total_hits >= 2
 
 
-def _fetch_rss_entries(max_age_days: int = 3) -> list[dict]:
-    """Fetch and merge entries from all RSS feeds, filter by topic and age."""
-    cutoff = datetime.now() - timedelta(days=max_age_days)
-    entries = []
-
-    feed_sources = _get_feed_sources()
+def _load_keywords() -> tuple[list[str], list[str]]:
+    """(include, exclude) из БД; пустые списки заменяются дефолтами."""
     include_kw = _get_keywords('include')
     exclude_kw = _get_keywords('exclude')
-
-    if not feed_sources:
-        logger.warning('No active RSS sources in DB')
-        return []
     if not include_kw:
         logger.info('No active include keywords in DB, using defaults')
         include_kw = _DEFAULT_INCLUDE_KW
     if not exclude_kw:
         exclude_kw = _DEFAULT_EXCLUDE_KW
+    return include_kw, exclude_kw
 
-    _rss_agent = 'Mozilla/5.0 (compatible; EdunaBazarBot/1.0)'
+
+def _entry_to_item(entry, source_name, cutoff, include_kw, exclude_kw) -> dict | None:
+    """RSS-entry → словарь новости; None, если старая/неполная/не по теме."""
+    title = _clean_html(getattr(entry, 'title', ''))
+    summary = _clean_html(getattr(entry, 'summary', ''))
+    link = getattr(entry, 'link', '')
+
+    if not title or not link:
+        return None
+
+    # Parse date
+    pub_parsed = getattr(entry, 'published_parsed', None)
+    if pub_parsed:
+        pub_dt = datetime(*pub_parsed[:6])
+    else:
+        pub_dt = datetime.now()
+
+    if pub_dt < cutoff:
+        return None
+
+    if not _is_agro(title, summary, include_kw, exclude_kw):
+        return None
+
+    return {
+        'title': title,
+        'summary': summary[:1000],
+        'url': link,
+        'published': pub_dt,
+        'source': source_name,
+    }
+
+
+def _collect_feed_items(feed_info, cutoff, include_kw, exclude_kw) -> list[dict]:
+    """Загрузить один фид и отфильтровать его записи (ошибки сети глотаются)."""
+    items = []
+    try:
+        feed = feedparser.parse(
+            feed_info['url'],
+            agent='Mozilla/5.0 (compatible; EdunaBazarBot/1.0)',
+            request_headers={'Accept': 'application/rss+xml, application/xml, text/xml'},
+        )
+        if feed.bozo and not feed.entries:
+            logger.warning('RSS bozo error for %s: %s', feed_info['url'],
+                           getattr(feed, 'bozo_exception', 'unknown'))
+        logger.info('RSS %s: %d raw entries', feed_info['name'], len(feed.entries))
+        for entry in feed.entries[:30]:
+            item = _entry_to_item(entry, feed_info['name'], cutoff, include_kw, exclude_kw)
+            if item:
+                items.append(item)
+    except Exception as exc:
+        logger.warning('RSS fetch error for %s: %s', feed_info['url'], exc)
+    return items
+
+
+def _fetch_rss_entries(max_age_days: int = 3) -> list[dict]:
+    """Fetch and merge entries from all RSS feeds, filter by topic and age."""
+    cutoff = datetime.now() - timedelta(days=max_age_days)
+
+    feed_sources = _get_feed_sources()
+    if not feed_sources:
+        logger.warning('No active RSS sources in DB')
+        return []
+    include_kw, exclude_kw = _load_keywords()
+
+    entries = []
     for feed_info in feed_sources:
-        try:
-            feed = feedparser.parse(
-                feed_info['url'],
-                agent=_rss_agent,
-                request_headers={'Accept': 'application/rss+xml, application/xml, text/xml'},
-            )
-            if feed.bozo and not feed.entries:
-                logger.warning('RSS bozo error for %s: %s', feed_info['url'],
-                               getattr(feed, 'bozo_exception', 'unknown'))
-            logger.info('RSS %s: %d raw entries', feed_info['name'], len(feed.entries))
-            for entry in feed.entries[:30]:
-                title = _clean_html(getattr(entry, 'title', ''))
-                summary = _clean_html(getattr(entry, 'summary', ''))
-                link = getattr(entry, 'link', '')
-
-                if not title or not link:
-                    continue
-
-                # Parse date
-                pub_parsed = getattr(entry, 'published_parsed', None)
-                if pub_parsed:
-                    pub_dt = datetime(*pub_parsed[:6])
-                else:
-                    pub_dt = datetime.now()
-
-                if pub_dt < cutoff:
-                    continue
-
-                if not _is_agro(title, summary, include_kw, exclude_kw):
-                    continue
-
-                entries.append({
-                    'title': title,
-                    'summary': summary[:1000],
-                    'url': link,
-                    'published': pub_dt,
-                    'source': feed_info['name'],
-                })
-        except Exception as exc:
-            logger.warning('RSS fetch error for %s: %s', feed_info['url'], exc)
+        entries.extend(_collect_feed_items(feed_info, cutoff, include_kw, exclude_kw))
 
     # Sort by date descending (newest first)
     entries.sort(key=lambda e: e['published'], reverse=True)
@@ -252,38 +270,40 @@ def _rewrite_with_gigachat(title: str, summary: str) -> dict | None:
         resp.raise_for_status()
         data = resp.json()
         content = data['choices'][0]['message']['content'].strip()
-
-        # Parse response
-        new_title = ''
-        new_text = ''
-        collecting_text = False
-        text_lines = []
-        for line in content.split('\n'):
-            stripped = line.strip()
-            if stripped.upper().startswith('ЗАГОЛОВОК:'):
-                new_title = stripped.split(':', 1)[1].strip()
-                collecting_text = False
-            elif stripped.upper().startswith('ТЕКСТ:'):
-                text_lines = [stripped.split(':', 1)[1].strip()]
-                collecting_text = True
-            elif collecting_text and stripped:
-                text_lines.append(stripped)
-        new_text = ' '.join(text_lines).strip()
-
-        if new_title and new_text:
-            return {'title': new_title[:500], 'text': new_text[:1000]}
-
-        # Fallback: use full response as text
-        logger.warning('Could not parse GigaChat response, using raw content')
-        lines = [ln.strip() for ln in content.split('\n') if ln.strip()]
-        if len(lines) >= 2:
-            return {'title': lines[0][:500], 'text': ' '.join(lines[1:])[:1000]}
-
-        return None
+        return _parse_rewrite_response(content)
 
     except Exception as exc:
         logger.error('GigaChat API error: %s', exc)
         return None
+
+
+def _parse_rewrite_response(content: str) -> dict | None:
+    """Разобрать ответ вида 'ЗАГОЛОВОК:/ТЕКСТ:'; fallback — сырые строки."""
+    new_title = ''
+    collecting_text = False
+    text_lines = []
+    for line in content.split('\n'):
+        stripped = line.strip()
+        if stripped.upper().startswith('ЗАГОЛОВОК:'):
+            new_title = stripped.split(':', 1)[1].strip()
+            collecting_text = False
+        elif stripped.upper().startswith('ТЕКСТ:'):
+            text_lines = [stripped.split(':', 1)[1].strip()]
+            collecting_text = True
+        elif collecting_text and stripped:
+            text_lines.append(stripped)
+    new_text = ' '.join(text_lines).strip()
+
+    if new_title and new_text:
+        return {'title': new_title[:500], 'text': new_text[:1000]}
+
+    # Fallback: use full response as text
+    logger.warning('Could not parse GigaChat response, using raw content')
+    lines = [ln.strip() for ln in content.split('\n') if ln.strip()]
+    if len(lines) >= 2:
+        return {'title': lines[0][:500], 'text': ' '.join(lines[1:])[:1000]}
+
+    return None
 
 
 def _check_relevance_gigachat(title: str, summary: str) -> bool:
@@ -351,20 +371,18 @@ class Command(BaseCommand):
             logger.exception('fetch_news crashed')
             raise
 
-    def _do_fetch(self, dry, count, today):
-        # Check how many news we already have for today
+    def _preflight(self, dry, count, today):
+        """Дневная квота + наличие RSS-источников → remaining или None (стоп)."""
         existing_today = News.objects.filter(published_at=today).count()
         if existing_today >= count and not dry:
             self.stdout.write(self.style.WARNING(
                 f'Already have {existing_today} news for {today}, skipping.'
             ))
-            return
+            return None
 
         remaining = count - existing_today if not dry else count
         self.stdout.write(f'[fetch_news] Need {remaining} more article(s) for today')
 
-        # Check RSS sources
-        from legacy.models import NewsFeedSource
         src_count = NewsFeedSource.objects.filter(is_active=True).count()
         self.stdout.write(f'[fetch_news] Active RSS sources in DB: {src_count}')
         if src_count == 0:
@@ -372,12 +390,16 @@ class Command(BaseCommand):
                 '[fetch_news] ERROR: No active RSS sources in news_feed_source table! '
                 'Add sources via Django admin: /admin/legacy/newsfeedsource/'
             ))
-            return
+            return None
 
-        # Check GigaChat config
-        from django.conf import settings
         has_gigachat = bool(getattr(settings, 'GIGACHAT_AUTH_KEY', ''))
         self.stdout.write(f'[fetch_news] GigaChat configured: {has_gigachat}')
+        return remaining
+
+    def _do_fetch(self, dry, count, today):
+        remaining = self._preflight(dry, count, today)
+        if remaining is None:
+            return
 
         entries = _fetch_rss_entries(max_age_days=3)
         self.stdout.write(f'[fetch_news] RSS entries found (after keyword filter): {len(entries)}')
