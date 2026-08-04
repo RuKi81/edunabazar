@@ -118,6 +118,75 @@ def _parse_selected_years(raw):
     return out
 
 
+def _districts_for_region(region_id) -> object:
+    """Districts of the region for the <select>; мусорный id → пустой qs."""
+    if region_id:
+        try:
+            return (District.objects
+                    .filter(region_id=int(region_id))
+                    .only('id', 'name')
+                    .order_by('name'))
+        except (TypeError, ValueError):
+            pass
+    return District.objects.none()
+
+
+def _to_int_or_none(raw) -> int | None:
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _farmland_scope(region_id, district_id):
+    """Resolve dashboard scope → (farmland_qs, cache_key | None).
+
+    Important: any region_id that is not a real PK (empty, ``'all'``,
+    garbage) collapses to the *global* scope and MUST hit the cache.
+    The previous version left ``scope_key = None`` for ``region=all``,
+    which made every default dashboard load re-run the 20-second
+    aggregate against ~20M farmlands.
+    """
+    farmland_qs = Farmland.objects.all()
+    scope_key: str | None = 'agrocosmos:farmland_stats:global'
+    d_id_int = _to_int_or_none(district_id) if district_id else None
+    r_id_int = _to_int_or_none(region_id) if region_id else None
+    if d_id_int is not None:
+        farmland_qs = farmland_qs.filter(district_id=d_id_int)
+        scope_key = None
+    elif r_id_int is not None:
+        farmland_qs = farmland_qs.filter(district__region_id=r_id_int)
+        scope_key = None
+    return farmland_qs, scope_key
+
+
+def _farmland_stats(farmland_qs, scope_key):
+    """Summary stats. The unfiltered global aggregate scans ~20M farmlands
+    and takes ~20s; cache it. Filtered (region/district) aggregates use
+    the district_id index and are sub-second, so we don't cache them.
+    """
+    cached = cache.get(scope_key) if scope_key else None
+    if cached is not None:
+        return cached['summary'], cached['crop_stats']
+
+    summary = farmland_qs.aggregate(
+        total_count=Count('id'),
+        total_area=Sum('area_ha'),
+    )
+    crop_stats = list(
+        farmland_qs
+        .values('crop_type')
+        .annotate(cnt=Count('id'), area=Sum('area_ha'))
+        .order_by('-area')
+    )
+    if scope_key:
+        cache.set(scope_key, {
+            'summary': summary,
+            'crop_stats': crop_stats,
+        }, _YEARS_CACHE_TTL)
+    return summary, crop_stats
+
+
 def dashboard(request: HttpRequest) -> HttpResponse:
     """Main Agrocosmos map page — MODIS NDVI monitoring.
 
@@ -142,69 +211,10 @@ def dashboard(request: HttpRequest) -> HttpResponse:
     selected_years = _parse_selected_years(request.GET.get('year'))
     farmland_id = request.GET.get('farmland') or ''
 
-    districts = District.objects.none()
-    if region_id:
-        try:
-            districts = (District.objects
-                         .filter(region_id=int(region_id))
-                         .only('id', 'name')
-                         .order_by('name'))
-        except (TypeError, ValueError):
-            pass
+    districts = _districts_for_region(region_id)
 
-    # Summary stats. The unfiltered global aggregate scans ~20M farmlands
-    # and takes ~20s; cache it. Filtered (region/district) aggregates use
-    # the district_id index and are sub-second, so we don't cache them.
-    #
-    # Important: any region_id that is not a real PK (empty, ``'all'``,
-    # garbage) collapses to the *global* scope and MUST hit the cache.
-    # The previous version left ``scope_key = None`` for ``region=all``,
-    # which made every default dashboard load re-run the 20-second
-    # aggregate against ~20M farmlands.
-    farmland_qs = Farmland.objects.all()
-    scope_key: str | None = 'agrocosmos:farmland_stats:global'
-    d_id_int: int | None = None
-    r_id_int: int | None = None
-    if district_id:
-        try:
-            d_id_int = int(district_id)
-        except (TypeError, ValueError):
-            d_id_int = None
-    if region_id and r_id_int is None:
-        try:
-            r_id_int = int(region_id)
-        except (TypeError, ValueError):
-            r_id_int = None
-    if d_id_int is not None:
-        farmland_qs = farmland_qs.filter(district_id=d_id_int)
-        scope_key = None
-    elif r_id_int is not None:
-        farmland_qs = farmland_qs.filter(district__region_id=r_id_int)
-        scope_key = None
-
-    if scope_key:
-        cached = cache.get(scope_key)
-    else:
-        cached = None
-    if cached is not None:
-        summary = cached['summary']
-        crop_stats = cached['crop_stats']
-    else:
-        summary = farmland_qs.aggregate(
-            total_count=Count('id'),
-            total_area=Sum('area_ha'),
-        )
-        crop_stats = list(
-            farmland_qs
-            .values('crop_type')
-            .annotate(cnt=Count('id'), area=Sum('area_ha'))
-            .order_by('-area')
-        )
-        if scope_key:
-            cache.set(scope_key, {
-                'summary': summary,
-                'crop_stats': crop_stats,
-            }, _YEARS_CACHE_TTL)
+    farmland_qs, scope_key = _farmland_scope(region_id, district_id)
+    summary, crop_stats = _farmland_stats(farmland_qs, scope_key)
 
     # Available years: cheap MIN/MAX + Redis cache (previously DISTINCT
     # EXTRACT(YEAR) over 1B+ rows → 60-80s full scan per request).
@@ -235,15 +245,7 @@ def raster_dashboard(request: HttpRequest) -> HttpResponse:
     selected_years = _parse_selected_years(request.GET.get('year'))
     farmland_id = request.GET.get('farmland') or ''
 
-    districts = District.objects.none()
-    if region_id:
-        try:
-            districts = (District.objects
-                         .filter(region_id=int(region_id))
-                         .only('id', 'name')
-                         .order_by('name'))
-        except (TypeError, ValueError):
-            pass
+    districts = _districts_for_region(region_id)
 
     # Available years from raster scenes (cached helper)
     current_year = date.today().year
@@ -272,15 +274,7 @@ def report_region(request: HttpRequest) -> HttpResponse:
     current_year = date.today().year
     years = _available_modis_ndvi_years(current_year)
 
-    districts = District.objects.none()
-    if region_id:
-        try:
-            districts = (District.objects
-                         .filter(region_id=int(region_id))
-                         .only('id', 'name')
-                         .order_by('name'))
-        except (TypeError, ValueError):
-            pass
+    districts = _districts_for_region(region_id)
 
     return render(request, 'agrocosmos/report_region.html', {
         'legacy_user': _get_legacy_user(request),
