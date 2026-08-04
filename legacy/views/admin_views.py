@@ -56,37 +56,31 @@ def admin_users(request: HttpRequest) -> HttpResponse:
     return _no_store(resp)
 
 
-def admin_users_bulk_delete(request: HttpRequest) -> HttpResponse:
-    admin_user, deny = _require_admin(request)
-    if deny:
-        return deny
-    if request.method != 'POST':
-        return redirect('/legacy-admin/')
-    raw_ids = request.POST.getlist('user_id')
+def _safe_next_url(request: HttpRequest, default: str) -> str:
+    """Return POST['next'] if it is a local URL, else ``default``."""
     next_raw = (request.POST.get('next') or '').strip()
-    safe_next = '/legacy-admin/'
     if next_raw and url_has_allowed_host_and_scheme(
         url=next_raw,
         allowed_hosts={request.get_host()},
         require_https=request.is_secure(),
     ):
-        safe_next = next_raw
+        return next_raw
+    return default
 
+
+def _parse_user_ids(raw_ids) -> list[int]:
+    """Parse ids from POST: garbage is skipped, duplicates and non-positive dropped."""
     ids = []
     for rid in raw_ids:
         try:
             ids.append(int(str(rid).strip()))
         except Exception:
             continue
-    ids = sorted({x for x in ids if x > 0})
-    if not ids:
-        return redirect(safe_next)
+    return sorted({x for x in ids if x > 0})
 
-    protected_ids = set(LegacyUser.objects.filter(username__iexact='admin').values_list('id', flat=True))
-    delete_ids = [uid for uid in ids if uid not in protected_ids]
-    if not delete_ids:
-        return redirect(safe_next)
 
+def _delete_users_cascade(delete_ids: list[int]) -> None:
+    """Delete users and all their related rows in a single transaction."""
     try:
         with transaction.atomic():
             advert_qs = Advert.objects.filter(author_id__in=delete_ids)
@@ -101,6 +95,26 @@ def admin_users_bulk_delete(request: HttpRequest) -> HttpResponse:
     except Exception:
         logger.exception('admin_users_bulk_delete failed for ids=%s', delete_ids)
         raise
+
+
+def admin_users_bulk_delete(request: HttpRequest) -> HttpResponse:
+    admin_user, deny = _require_admin(request)
+    if deny:
+        return deny
+    if request.method != 'POST':
+        return redirect('/legacy-admin/')
+    safe_next = _safe_next_url(request, '/legacy-admin/')
+
+    ids = _parse_user_ids(request.POST.getlist('user_id'))
+    if not ids:
+        return redirect(safe_next)
+
+    protected_ids = set(LegacyUser.objects.filter(username__iexact='admin').values_list('id', flat=True))
+    delete_ids = [uid for uid in ids if uid not in protected_ids]
+    if not delete_ids:
+        return redirect(safe_next)
+
+    _delete_users_cascade(delete_ids)
     return redirect(safe_next)
 
 
@@ -421,47 +435,34 @@ def admin_campaign_send_test(request: HttpRequest, campaign_id: int) -> JsonResp
         return JsonResponse({'ok': False, 'error': str(e)[:500]})
 
 
-def admin_campaign_upload_excel(request: HttpRequest, campaign_id: int) -> HttpResponse:
-    admin_user, deny = _require_admin(request)
-    if deny:
-        return deny
-
-    campaign = get_object_or_404(EmailCampaign, pk=campaign_id)
-
-    if request.method != 'POST':
-        return redirect(f'/legacy-admin/campaigns/{campaign_id}/')
-
-    excel_file = request.FILES.get('excel_file')
+def _validate_excel_upload(excel_file) -> str | None:
+    """Return an error string if the uploaded file is missing or not Excel."""
     if not excel_file:
-        request.session['campaign_upload_error'] = 'Файл не выбран'
-        return redirect(f'/legacy-admin/campaigns/{campaign_id}/')
-
+        return 'Файл не выбран'
     if not excel_file.name.endswith(('.xlsx', '.xls')):
-        request.session['campaign_upload_error'] = 'Поддерживаются только файлы .xlsx / .xls'
-        return redirect(f'/legacy-admin/campaigns/{campaign_id}/')
+        return 'Поддерживаются только файлы .xlsx / .xls'
+    return None
 
-    try:
-        import openpyxl
-        wb = openpyxl.load_workbook(io.BytesIO(excel_file.read()), read_only=True)
-        ws = wb.active
 
-        email_re_pattern = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
-        raw_emails = set()
-        for row in ws.iter_rows(values_only=True):
-            for cell in row:
-                if cell and isinstance(cell, str):
-                    found = email_re_pattern.findall(cell.strip().lower())
-                    raw_emails.update(found)
-        wb.close()
-    except Exception as e:
-        request.session['campaign_upload_error'] = f'Ошибка чтения файла: {e}'
-        return redirect(f'/legacy-admin/campaigns/{campaign_id}/')
+def _extract_emails_from_excel(excel_file) -> set[str]:
+    """Collect lowercased email addresses from all string cells of the workbook."""
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(excel_file.read()), read_only=True)
+    ws = wb.active
 
-    if not raw_emails:
-        request.session['campaign_upload_error'] = 'В файле не найдено email-адресов'
-        return redirect(f'/legacy-admin/campaigns/{campaign_id}/')
+    email_re_pattern = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
+    raw_emails = set()
+    for row in ws.iter_rows(values_only=True):
+        for cell in row:
+            if cell and isinstance(cell, str):
+                found = email_re_pattern.findall(cell.strip().lower())
+                raw_emails.update(found)
+    wb.close()
+    return raw_emails
 
-    # Deduplicate against existing logs for this campaign
+
+def _add_campaign_recipients(campaign, raw_emails: set[str]) -> tuple[int, int]:
+    """Create EmailLog rows for new addresses; return (added, skipped_duplicates)."""
     existing = set(
         EmailLog.objects.filter(campaign=campaign)
         .values_list('recipient_email', flat=True)
@@ -475,12 +476,124 @@ def admin_campaign_upload_excel(request: HttpRequest, campaign_id: int) -> HttpR
         campaign.total_recipients = EmailLog.objects.filter(campaign=campaign).count()
         campaign.save(update_fields=['total_recipients'])
 
-    skipped = len(raw_emails) - len(new_emails)
-    msg = f'Загружено {len(new_emails)} новых адресов из файла «{excel_file.name}».'
+    return len(new_emails), len(raw_emails) - len(new_emails)
+
+
+def admin_campaign_upload_excel(request: HttpRequest, campaign_id: int) -> HttpResponse:
+    admin_user, deny = _require_admin(request)
+    if deny:
+        return deny
+
+    campaign = get_object_or_404(EmailCampaign, pk=campaign_id)
+    back = redirect(f'/legacy-admin/campaigns/{campaign_id}/')
+
+    if request.method != 'POST':
+        return back
+
+    excel_file = request.FILES.get('excel_file')
+    error = _validate_excel_upload(excel_file)
+    if error:
+        request.session['campaign_upload_error'] = error
+        return back
+
+    try:
+        raw_emails = _extract_emails_from_excel(excel_file)
+    except Exception as e:
+        request.session['campaign_upload_error'] = f'Ошибка чтения файла: {e}'
+        return back
+
+    if not raw_emails:
+        request.session['campaign_upload_error'] = 'В файле не найдено email-адресов'
+        return back
+
+    added, skipped = _add_campaign_recipients(campaign, raw_emails)
+
+    msg = f'Загружено {added} новых адресов из файла «{excel_file.name}».'
     if skipped:
         msg += f' Пропущено дублей: {skipped}.'
     request.session['campaign_upload_message'] = msg
-    return redirect(f'/legacy-admin/campaigns/{campaign_id}/')
+    return back
+
+
+def _mark_campaign_sending(campaign) -> None:
+    if campaign.status in (EmailCampaign.STATUS_DRAFT, EmailCampaign.STATUS_PAUSED):
+        campaign.status = EmailCampaign.STATUS_SENDING
+        if not campaign.started_at:
+            campaign.started_at = timezone.now()
+        campaign.save(update_fields=['status', 'started_at'])
+
+
+def _close_connection_quietly(connection) -> None:
+    if connection:
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+
+def _reopen_connection_or_none():
+    """Open a fresh SMTP connection; return None on failure (skip remaining sends)."""
+    try:
+        connection = get_connection()
+        connection.open()
+        return connection
+    except Exception:
+        return None
+
+
+def _send_campaign_message(campaign, log, from_email, connection) -> None:
+    """Send one campaign email and mark its log as sent. Raises on SMTP errors."""
+    msg = EmailMultiAlternatives(
+        subject=campaign.subject,
+        body=campaign.body_text or campaign.subject,
+        from_email=from_email,
+        to=[log.recipient_email],
+        connection=connection,
+    )
+    if campaign.body_html:
+        msg.attach_alternative(campaign.body_html, 'text/html')
+    msg.send(fail_silently=False)
+
+    log.status = EmailLog.STATUS_SENT
+    log.sent_at = timezone.now()
+    log.save(update_fields=['status', 'sent_at'])
+
+
+def _mark_log_failed(log, exc: Exception) -> None:
+    log.status = EmailLog.STATUS_FAILED
+    log.error_message = str(exc)[:500]
+    log.save(update_fields=['status', 'error_message'])
+
+
+def _send_campaign_batch(campaign, logs, connection) -> tuple[int, int]:
+    """Send emails one by one (1/sec); reconnect after failures. Return (sent, failed)."""
+    from_email = campaign.from_email or settings.DEFAULT_FROM_EMAIL
+    sent = 0
+    failed = 0
+    for log in logs:
+        try:
+            _send_campaign_message(campaign, log, from_email, connection)
+            sent += 1
+        except Exception as e:
+            _mark_log_failed(log, e)
+            failed += 1
+            # Try to reconnect for remaining emails
+            _close_connection_quietly(connection)
+            connection = _reopen_connection_or_none()
+        time.sleep(1)  # 1 email/sec throttle
+    _close_connection_quietly(connection)
+    return sent, failed
+
+
+def _update_campaign_counters(campaign) -> None:
+    """Refresh sent/failed counters; mark campaign done when nothing is pending."""
+    campaign.sent_count = EmailLog.objects.filter(campaign=campaign, status=EmailLog.STATUS_SENT).count()
+    campaign.failed_count = EmailLog.objects.filter(campaign=campaign, status=EmailLog.STATUS_FAILED).count()
+    remaining = EmailLog.objects.filter(campaign=campaign, status=EmailLog.STATUS_PENDING).count()
+    if remaining == 0:
+        campaign.status = EmailCampaign.STATUS_DONE
+        campaign.finished_at = timezone.now()
+    campaign.save(update_fields=['sent_count', 'failed_count', 'status', 'finished_at'])
 
 
 def admin_campaign_send_batch(request: HttpRequest, campaign_id: int) -> JsonResponse:
@@ -508,17 +621,7 @@ def admin_campaign_send_batch(request: HttpRequest, campaign_id: int) -> JsonRes
     if not logs:
         return JsonResponse({'ok': True, 'sent': 0, 'failed': 0, 'message': 'Нет писем для отправки'})
 
-    # Mark campaign as sending
-    if campaign.status in (EmailCampaign.STATUS_DRAFT, EmailCampaign.STATUS_PAUSED):
-        campaign.status = EmailCampaign.STATUS_SENDING
-        if not campaign.started_at:
-            campaign.started_at = timezone.now()
-        campaign.save(update_fields=['status', 'started_at'])
-
-    from_email = campaign.from_email or settings.DEFAULT_FROM_EMAIL
-    sent = 0
-    failed = 0
-    connection = None
+    _mark_campaign_sending(campaign)
 
     try:
         connection = get_connection()
@@ -526,60 +629,8 @@ def admin_campaign_send_batch(request: HttpRequest, campaign_id: int) -> JsonRes
     except Exception as e:
         return JsonResponse({'ok': False, 'error': f'SMTP connect error: {e}'})
 
-    for log in logs:
-        try:
-            msg = EmailMultiAlternatives(
-                subject=campaign.subject,
-                body=campaign.body_text or campaign.subject,
-                from_email=from_email,
-                to=[log.recipient_email],
-                connection=connection,
-            )
-            if campaign.body_html:
-                msg.attach_alternative(campaign.body_html, 'text/html')
-            msg.send(fail_silently=False)
-
-            log.status = EmailLog.STATUS_SENT
-            log.sent_at = timezone.now()
-            log.save(update_fields=['status', 'sent_at'])
-            sent += 1
-
-        except Exception as e:
-            error_msg = str(e)[:500]
-            log.status = EmailLog.STATUS_FAILED
-            log.error_message = error_msg
-            log.save(update_fields=['status', 'error_message'])
-            failed += 1
-
-            # Try to reconnect for remaining emails
-            if connection:
-                try:
-                    connection.close()
-                except Exception:
-                    pass
-                connection = None
-            try:
-                connection = get_connection()
-                connection.open()
-            except Exception:
-                connection = None
-
-        time.sleep(1)  # 1 email/sec throttle
-
-    if connection:
-        try:
-            connection.close()
-        except Exception:
-            pass
-
-    # Update campaign counters
-    campaign.sent_count = EmailLog.objects.filter(campaign=campaign, status=EmailLog.STATUS_SENT).count()
-    campaign.failed_count = EmailLog.objects.filter(campaign=campaign, status=EmailLog.STATUS_FAILED).count()
-    remaining = EmailLog.objects.filter(campaign=campaign, status=EmailLog.STATUS_PENDING).count()
-    if remaining == 0:
-        campaign.status = EmailCampaign.STATUS_DONE
-        campaign.finished_at = timezone.now()
-    campaign.save(update_fields=['sent_count', 'failed_count', 'status', 'finished_at'])
+    sent, failed = _send_campaign_batch(campaign, logs, connection)
+    _update_campaign_counters(campaign)
 
     return JsonResponse({
         'ok': True,
