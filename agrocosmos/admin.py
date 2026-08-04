@@ -939,6 +939,32 @@ def run_raster_view(request):
     return redirect('admin:agro_panel')
 
 
+def _run_log_tail(run: PipelineRun) -> str:
+    """Хвост лога: последние ~8 КБ из log_file, иначе — поле ``log``."""
+    if not run.log_file:
+        return run.log or ''
+    try:
+        with open(run.log_file, 'rb') as f:
+            try:
+                f.seek(-8192, os.SEEK_END)
+            except OSError:
+                f.seek(0)
+            return f.read().decode('utf-8', errors='replace')
+    except OSError:
+        return run.log or ''
+
+
+def _run_alive(run: PipelineRun) -> bool:
+    """Жив ли процесс запущенного пайплайна (только для status=running)."""
+    if not (run.pid and run.status == 'running'):
+        return False
+    try:
+        from agrocosmos.management.commands.cleanup_stale_runs import _pid_alive
+        return _pid_alive(run.pid)
+    except Exception:
+        return False
+
+
 def run_status_view(request, run_id: int):
     """JSON status + log tail for a single PipelineRun (polled by admin UI)."""
     from django.http import JsonResponse, Http404
@@ -947,27 +973,8 @@ def run_status_view(request, run_id: int):
     except PipelineRun.DoesNotExist:
         raise Http404
 
-    tail = ''
-    if run.log_file:
-        try:
-            with open(run.log_file, 'rb') as f:
-                try:
-                    f.seek(-8192, os.SEEK_END)
-                except OSError:
-                    f.seek(0)
-                tail = f.read().decode('utf-8', errors='replace')
-        except OSError:
-            tail = run.log or ''
-    else:
-        tail = run.log or ''
-
-    alive = False
-    if run.pid and run.status == 'running':
-        try:
-            from agrocosmos.management.commands.cleanup_stale_runs import _pid_alive
-            alive = _pid_alive(run.pid)
-        except Exception:
-            alive = False
+    tail = _run_log_tail(run)
+    alive = _run_alive(run)
 
     return JsonResponse({
         'id': run.pk,
@@ -1136,50 +1143,39 @@ def force_check_monitoring_view(request):
     return redirect('admin:agro_panel')
 
 
-def start_raster_monitoring_view(request):
-    """Create a raster (S2+L8) monitoring task and run an initial catch-up."""
-    if request.method != 'POST':
-        return redirect('admin:agro_panel')
+def _resolve_district(district_id):
+    """``(district, did)`` по POST-параметру; мусор → региональный scope."""
+    if not district_id:
+        return None, None
+    try:
+        did = int(district_id)
+        return District.objects.get(pk=did), did
+    except (TypeError, ValueError, District.DoesNotExist):
+        return None, None
 
-    region_id = request.POST.get('region_id')
-    district_id = request.POST.get('district_id')
-    year = request.POST.get('year')
-    min_valid = float(request.POST.get('min_valid', 0.7))
 
-    if not region_id or not year:
-        messages.error(request, 'Укажите регион и год')
-        return redirect('admin:agro_panel')
-
-    region = Region.objects.get(pk=int(region_id))
-    year = int(year)
-
-    district = None
-    did = None
-    if district_id:
-        try:
-            did = int(district_id)
-            district = District.objects.get(pk=did)
-        except (TypeError, ValueError, District.DoesNotExist):
-            did = None
-            district = None
-
+def _ensure_raster_task(request, region, district, year) -> MonitoringTask:
+    """get_or_create растровой задачи + реактивация приостановленной."""
     task, created = MonitoringTask.objects.get_or_create(
         task_type='raster', region=region, district=district, year=year,
         defaults={'status': 'active'},
     )
-    if not created:
-        if task.status != 'active':
-            task.status = 'active'
-            task.save(update_fields=['status'])
-            messages.info(request, f'Мониторинг S2+L8 возобновлён: {task}')
-        else:
-            messages.info(request, f'Мониторинг S2+L8 уже активен: {task}')
-    else:
+    if created:
         messages.success(request, f'Мониторинг S2+L8 создан: {task}')
+    elif task.status != 'active':
+        task.status = 'active'
+        task.save(update_fields=['status'])
+        messages.info(request, f'Мониторинг S2+L8 возобновлён: {task}')
+    else:
+        messages.info(request, f'Мониторинг S2+L8 уже активен: {task}')
+    return task
 
-    # Initial catch-up: fetch [year_start .. today-7] right now as detached
-    # subprocess via run_ndvi_pipeline. Subsequent updates are handled by
-    # the daily cron `check_raster_monitoring`.
+
+def _enqueue_initial_catchup(request, task, region, district, did, year, min_valid):
+    """Начальная выкачка [year_start .. today-7] через run_ndvi_pipeline.
+
+    Последующие обновления делает ежедневный cron ``check_raster_monitoring``.
+    """
     from datetime import timedelta
     today = date.today()
     year_start = date(year, 1, 1)
@@ -1194,7 +1190,7 @@ def start_raster_monitoring_view(request):
             f'Окно пока пустое ({window_from}..{window_to}) — '
             f'cron добавит данные, когда сцены опубликуют.'
         )
-        return redirect('admin:agro_panel')
+        return
 
     scope_desc = f'{region.name}' + (f' / {district.name}' if district else '')
     run = PipelineRun.objects.create(
@@ -1226,6 +1222,27 @@ def start_raster_monitoring_view(request):
         run.finished_at = timezone.now()
         run.save()
         messages.error(request, f'Не удалось поставить начальную выкачку в очередь: {exc}')
+
+
+def start_raster_monitoring_view(request):
+    """Create a raster (S2+L8) monitoring task and run an initial catch-up."""
+    if request.method != 'POST':
+        return redirect('admin:agro_panel')
+
+    region_id = request.POST.get('region_id')
+    year = request.POST.get('year')
+    min_valid = float(request.POST.get('min_valid', 0.7))
+
+    if not region_id or not year:
+        messages.error(request, 'Укажите регион и год')
+        return redirect('admin:agro_panel')
+
+    region = Region.objects.get(pk=int(region_id))
+    year = int(year)
+    district, did = _resolve_district(request.POST.get('district_id'))
+
+    task = _ensure_raster_task(request, region, district, year)
+    _enqueue_initial_catchup(request, task, region, district, did, year, min_valid)
     return redirect('admin:agro_panel')
 
 
