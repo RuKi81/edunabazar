@@ -22,6 +22,94 @@ from legacy.views.helpers import _get_current_legacy_user
 from ..models import AgroSubscription, District, Region
 
 
+def _handle_delete(request: HttpRequest, user) -> None:
+    sub_id = _to_int(request.POST.get('subscription_id'))
+    if sub_id:
+        AgroSubscription.objects.filter(
+            pk=sub_id, legacy_user_id=user.pk
+        ).delete()
+        messages.success(request, 'Подписка удалена.')
+
+
+def _handle_update(request: HttpRequest, user) -> None:
+    sub_id = _to_int(request.POST.get('subscription_id'))
+    if not sub_id:
+        return
+    try:
+        sub = AgroSubscription.objects.get(
+            pk=sub_id, legacy_user_id=user.pk)
+    except AgroSubscription.DoesNotExist:
+        messages.error(request, 'Подписка не найдена.')
+        return
+    sub.notify_anomalies = _checkbox(request.POST.get('notify_anomalies'))
+    sub.notify_updates = _checkbox(request.POST.get('notify_updates'))
+    sub.save(update_fields=['notify_anomalies', 'notify_updates', 'updated_at'])
+    messages.success(request, 'Настройки сохранены.')
+
+
+def _handle_add(request: HttpRequest, user) -> None:
+    region_id = _to_int(request.POST.get('region'))
+    district_id = _to_int(request.POST.get('district'))
+    notify_anomalies = _checkbox(request.POST.get('notify_anomalies'))
+    notify_updates = _checkbox(request.POST.get('notify_updates'))
+
+    if not region_id and not district_id:
+        messages.error(request, 'Укажите субъект или район.')
+        return
+
+    # Normalise: if district given, derive region from it.
+    if district_id:
+        try:
+            district = District.objects.select_related('region').get(pk=district_id)
+        except District.DoesNotExist:
+            messages.error(request, 'Район не найден.')
+            return
+        region_id = district.region_id
+
+    if not notify_anomalies and not notify_updates:
+        messages.error(request, 'Включите хотя бы один тип уведомлений.')
+        return
+
+    # Explicit duplicate check: the DB UniqueConstraint on
+    # (legacy_user_id, region, district) does NOT catch region-level
+    # duplicates — district is NULL there, and PostgreSQL treats NULLs
+    # as distinct. The IntegrityError branch below stays as a backstop
+    # for district-level races.
+    duplicate = AgroSubscription.objects.filter(
+        legacy_user_id=user.pk,
+        region_id=region_id,
+        district_id=district_id or None,
+    ).exists()
+    if duplicate:
+        messages.warning(
+            request,
+            'Подписка на этот scope уже существует. Измените существующую.',
+        )
+        return
+
+    try:
+        AgroSubscription.objects.create(
+            legacy_user_id=user.pk,
+            region_id=region_id,
+            district_id=district_id or None,
+            notify_anomalies=notify_anomalies,
+            notify_updates=notify_updates,
+        )
+        messages.success(request, 'Подписка добавлена.')
+    except IntegrityError:
+        messages.warning(
+            request,
+            'Подписка на этот scope уже существует. Измените существующую.',
+        )
+
+
+_POST_HANDLERS = {
+    'delete': _handle_delete,
+    'update': _handle_update,
+    'add': _handle_add,
+}
+
+
 def me_agrocosmos(request: HttpRequest) -> HttpResponse:
     """GET: show existing subscriptions + add/edit form.
 
@@ -36,71 +124,11 @@ def me_agrocosmos(request: HttpRequest) -> HttpResponse:
 
     if request.method == 'POST':
         action = (request.POST.get('action') or '').strip()
-
-        if action == 'delete':
-            sub_id = _to_int(request.POST.get('subscription_id'))
-            if sub_id:
-                AgroSubscription.objects.filter(
-                    pk=sub_id, legacy_user_id=user.pk
-                ).delete()
-                messages.success(request, 'Подписка удалена.')
-            return redirect('/me/agrocosmos/')
-
-        if action == 'update':
-            sub_id = _to_int(request.POST.get('subscription_id'))
-            if sub_id:
-                try:
-                    sub = AgroSubscription.objects.get(
-                        pk=sub_id, legacy_user_id=user.pk)
-                except AgroSubscription.DoesNotExist:
-                    messages.error(request, 'Подписка не найдена.')
-                    return redirect('/me/agrocosmos/')
-                sub.notify_anomalies = _checkbox(request.POST.get('notify_anomalies'))
-                sub.notify_updates = _checkbox(request.POST.get('notify_updates'))
-                sub.save(update_fields=['notify_anomalies', 'notify_updates', 'updated_at'])
-                messages.success(request, 'Настройки сохранены.')
-            return redirect('/me/agrocosmos/')
-
-        if action == 'add':
-            region_id = _to_int(request.POST.get('region'))
-            district_id = _to_int(request.POST.get('district'))
-            notify_anomalies = _checkbox(request.POST.get('notify_anomalies'))
-            notify_updates = _checkbox(request.POST.get('notify_updates'))
-
-            if not region_id and not district_id:
-                messages.error(request, 'Укажите субъект или район.')
-                return redirect('/me/agrocosmos/')
-
-            # Normalise: if district given, derive region from it.
-            if district_id:
-                try:
-                    district = District.objects.select_related('region').get(pk=district_id)
-                except District.DoesNotExist:
-                    messages.error(request, 'Район не найден.')
-                    return redirect('/me/agrocosmos/')
-                region_id = district.region_id
-
-            if not notify_anomalies and not notify_updates:
-                messages.error(request, 'Включите хотя бы один тип уведомлений.')
-                return redirect('/me/agrocosmos/')
-
-            try:
-                AgroSubscription.objects.create(
-                    legacy_user_id=user.pk,
-                    region_id=region_id,
-                    district_id=district_id or None,
-                    notify_anomalies=notify_anomalies,
-                    notify_updates=notify_updates,
-                )
-                messages.success(request, 'Подписка добавлена.')
-            except IntegrityError:
-                messages.warning(
-                    request,
-                    'Подписка на этот scope уже существует. Измените существующую.',
-                )
-            return redirect('/me/agrocosmos/')
-
-        messages.error(request, 'Неизвестное действие.')
+        handler = _POST_HANDLERS.get(action)
+        if handler:
+            handler(request, user)
+        else:
+            messages.error(request, 'Неизвестное действие.')
         return redirect('/me/agrocosmos/')
 
     # GET — render page
