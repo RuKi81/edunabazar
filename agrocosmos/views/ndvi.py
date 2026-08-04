@@ -19,31 +19,22 @@ from ..services.ndvi_stats import (
 from ._helpers import _satellite_filter, _safe_round, rate_limit
 
 
-@rate_limit('60/m')
-def api_farmland_ndvi(request: HttpRequest) -> JsonResponse:
-    """NDVI time series for a single farmland. Optional ?year=2025 filter."""
-    farmland_id = request.GET.get('farmland')
-    if not farmland_id:
-        return JsonResponse({'ok': False, 'error': 'farmland required'}, status=400)
-    try:
-        fid = int(farmland_id)
-    except (TypeError, ValueError):
-        return JsonResponse({'ok': False, 'error': 'invalid farmland'}, status=400)
-
-    source = request.GET.get('source')  # 'modis', 'raster', or empty
+def _farmland_vi_qs(fid, source, year):
+    """VI-ряд угодья: физический диапазон NDVI, спутник и (опц.) год."""
     qs = VegetationIndex.objects.filter(
         farmland_id=fid, index_type='ndvi',
         mean__gte=-1, mean__lte=1,
         **_satellite_filter(source),
     )
-
-    year = request.GET.get('year')
     if year:
         try:
             qs = qs.filter(acquired_date__year=int(year))
         except (TypeError, ValueError):
             pass
+    return qs
 
+
+def _serialize_vi_rows(qs):
     rows = qs.order_by('acquired_date').values(
         'acquired_date', 'mean', 'min_val', 'max_val', 'median',
         'mean_smooth', 'is_outlier',
@@ -59,14 +50,35 @@ def api_farmland_ndvi(request: HttpRequest) -> JsonResponse:
             'mean_smooth': (None if r['mean_smooth'] is None else _safe_round(r['mean_smooth'])),
             'is_outlier': bool(r['is_outlier']),
         })
-    # last_period_end for MODIS dashed extension line
-    last_period_end = None
-    if source == 'modis' and data:
-        try:
-            last_mid = date.fromisoformat(data[-1]['date'])
-            last_period_end = str(last_mid + timedelta(days=8))
-        except Exception:
-            pass
+    return data
+
+
+def _modis_tail(source, data):
+    """last_period_end for MODIS dashed extension line (mid + 8 days)."""
+    if source != 'modis' or not data:
+        return None
+    try:
+        last_mid = date.fromisoformat(data[-1]['date'])
+        return str(last_mid + timedelta(days=8))
+    except Exception:
+        return None
+
+
+@rate_limit('60/m')
+def api_farmland_ndvi(request: HttpRequest) -> JsonResponse:
+    """NDVI time series for a single farmland. Optional ?year=2025 filter."""
+    farmland_id = request.GET.get('farmland')
+    if not farmland_id:
+        return JsonResponse({'ok': False, 'error': 'farmland required'}, status=400)
+    try:
+        fid = int(farmland_id)
+    except (TypeError, ValueError):
+        return JsonResponse({'ok': False, 'error': 'invalid farmland'}, status=400)
+
+    source = request.GET.get('source')  # 'modis', 'raster', or empty
+    qs = _farmland_vi_qs(fid, source, request.GET.get('year'))
+    data = _serialize_vi_rows(qs)
+    last_period_end = _modis_tail(source, data)
 
     return JsonResponse({'ok': True, 'data': data, 'last_period_end': last_period_end})
 
