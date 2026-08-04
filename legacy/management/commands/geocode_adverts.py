@@ -62,88 +62,88 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         dry = options['dry']
-        advert_id = options['id']
-        limit = options['limit']
         force = options['force']
 
-        qs = Advert.objects.exclude(address__isnull=True).exclude(address='')
+        qs = self._advert_queryset(options['id'], options['limit'])
+        self.stdout.write(f'Found {qs.count()} adverts with addresses')
 
+        counters = {'updated': 0, 'skipped': 0, 'failed': 0}
+        for advert in qs:
+            outcome = self._process_advert(advert, dry, force)
+            counters[outcome] += 1
+
+        action = 'Would update' if dry else 'Updated'
+        self.stdout.write(self.style.SUCCESS(
+            f'\nDone. {action}: {counters["updated"]}, '
+            f'Skipped: {counters["skipped"]}, Failed: {counters["failed"]}'
+        ))
+
+    @staticmethod
+    def _advert_queryset(advert_id, limit):
+        qs = Advert.objects.exclude(address__isnull=True).exclude(address='')
         if advert_id:
             qs = qs.filter(pk=advert_id)
         else:
             qs = qs.order_by('id')
-
         if limit > 0:
             qs = qs[:limit]
+        return qs
 
-        total = qs.count()
-        self.stdout.write(f'Found {total} adverts with addresses')
+    @staticmethod
+    def _has_coords(advert) -> bool:
+        try:
+            loc = advert.location
+            return bool(loc and loc.x != 0 and loc.y != 0)
+        except Exception:
+            return False
 
-        updated = 0
-        skipped = 0
-        failed = 0
+    @staticmethod
+    def _distance_note(advert, new_lat, new_lon, force):
+        """(строка ' (Δ N km)', skip) — сравнение с текущими координатами.
 
-        for advert in qs:
-            address = (advert.address or '').strip()
-            if not address:
-                skipped += 1
-                continue
+        skip=True, когда новая точка ближе 1 км к старой и нет --force.
+        """
+        try:
+            old_lat = float(advert.location.y)
+            old_lon = float(advert.location.x)
+            # Rough distance in km (1 degree ≈ 111km)
+            dlat = abs(new_lat - old_lat) * 111
+            dlon = abs(new_lon - old_lon) * 111 * 0.6  # cos(55°) ≈ 0.57
+            dist_km = (dlat ** 2 + dlon ** 2) ** 0.5
+            return f' (Δ {dist_km:.1f} km)', (dist_km < 1.0 and not force)
+        except Exception:
+            return '', False
 
-            has_coords = False
-            try:
-                loc = advert.location
-                if loc and loc.x != 0 and loc.y != 0:
-                    has_coords = True
-            except Exception:
-                pass
+    def _process_advert(self, advert, dry, force) -> str:
+        """Геокодировать одно объявление → 'updated' | 'skipped' | 'failed'."""
+        address = (advert.address or '').strip()
+        if not address:
+            return 'skipped'
 
-            if has_coords and not force:
-                # Check if current coords roughly match address by comparing
-                # We still geocode to see if there's a mismatch
-                pass
+        result = _geocode(address)
+        time.sleep(REQUEST_DELAY)
 
-            result = _geocode(address)
-            time.sleep(REQUEST_DELAY)
+        if not result:
+            self.stdout.write(self.style.WARNING(
+                f'  FAIL geocode: [{advert.id}] {address[:60]}'
+            ))
+            return 'failed'
 
-            if not result:
-                self.stdout.write(self.style.WARNING(
-                    f'  FAIL geocode: [{advert.id}] {address[:60]}'
-                ))
-                failed += 1
-                continue
+        new_lat, new_lon = result
 
-            new_lat, new_lon = result
+        distance_note = ''
+        if self._has_coords(advert):
+            distance_note, skip = self._distance_note(advert, new_lat, new_lon, force)
+            if skip:
+                return 'skipped'
 
-            # Check distance from current coords
-            distance_note = ''
-            if has_coords:
-                try:
-                    old_lat = float(advert.location.y)
-                    old_lon = float(advert.location.x)
-                    # Rough distance in km (1 degree ≈ 111km)
-                    dlat = abs(new_lat - old_lat) * 111
-                    dlon = abs(new_lon - old_lon) * 111 * 0.6  # cos(55°) ≈ 0.57
-                    dist_km = (dlat ** 2 + dlon ** 2) ** 0.5
-                    distance_note = f' (Δ {dist_km:.1f} km)'
+        self.stdout.write(
+            f'  [{advert.id}] {address[:50]} → '
+            f'{new_lat:.6f}, {new_lon:.6f}{distance_note}'
+        )
 
-                    if dist_km < 1.0 and not force:
-                        skipped += 1
-                        continue
-                except Exception:
-                    pass
+        if not dry:
+            advert.location = Point(new_lon, new_lat, srid=4326)
+            advert.save(update_fields=['location'])
 
-            self.stdout.write(
-                f'  [{advert.id}] {address[:50]} → '
-                f'{new_lat:.6f}, {new_lon:.6f}{distance_note}'
-            )
-
-            if not dry:
-                advert.location = Point(new_lon, new_lat, srid=4326)
-                advert.save(update_fields=['location'])
-
-            updated += 1
-
-        action = 'Would update' if dry else 'Updated'
-        self.stdout.write(self.style.SUCCESS(
-            f'\nDone. {action}: {updated}, Skipped: {skipped}, Failed: {failed}'
-        ))
+        return 'updated'
