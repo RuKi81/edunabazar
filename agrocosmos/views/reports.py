@@ -21,41 +21,86 @@ from ..services.ndvi_stats import (
 from ._helpers import _safe_round, rate_limit
 
 
-@rate_limit('30/m')
-@cache_page(60 * 5)
-def api_report_region(request: HttpRequest) -> JsonResponse:
-    """Data for region-level MODIS report: NDVI time series per district.
+# --- shared report helpers ---------------------------------------------------
 
-    Query params:
-        region (required): region_id
-        year (required): year
-    """
-    region_id = request.GET.get('region')
-    year = request.GET.get('year')
-    if not region_id or not year:
-        return JsonResponse({'ok': False, 'error': 'region and year required'}, status=400)
-
+def _parse_report_params(request: HttpRequest, key: str):
+    """Parse required int GET-params ``key`` and ``year``; return (id, year, error)."""
+    raw_id = request.GET.get(key)
+    raw_year = request.GET.get('year')
+    if not raw_id or not raw_year:
+        return None, None, JsonResponse(
+            {'ok': False, 'error': f'{key} and year required'}, status=400,
+        )
     try:
-        region_id = int(region_id)
-        year = int(year)
+        return int(raw_id), int(raw_year), None
     except (TypeError, ValueError):
-        return JsonResponse({'ok': False, 'error': 'invalid params'}, status=400)
+        return None, None, JsonResponse(
+            {'ok': False, 'error': 'invalid params'}, status=400,
+        )
 
-    try:
-        region = Region.objects.get(pk=region_id)
-    except Region.DoesNotExist:
-        return JsonResponse({'ok': False, 'error': 'region not found'}, status=404)
 
-    districts = District.objects.filter(region=region).order_by('name')
-    district_names = {d.pk: d.name for d in districts}
+def _weighted_series(per_date):
+    """date → {sum_ndvi_area, sum_area} → хронологический area-weighted NDVI-ряд."""
+    series = []
+    for acq_date in sorted(per_date.keys()):
+        acc = per_date[acq_date]
+        weighted = weighted_mean(acc['sum_ndvi_area'], acc['sum_area'])
+        series.append({
+            'date': str(acq_date),
+            'mean_ndvi': _safe_round(weighted),
+        })
+    return series
 
-    # NDVI time series per district (area-weighted mean per date) —
-    # read from the DistrictNdviSeries pre-aggregate instead of raw
-    # VegetationIndex. The pre-aggregate is built with the same filters
-    # (modis, is_outlier=false, mean∈[-0.2,1], index_type=ndvi) by
-    # services.district_ndvi_series.refresh_range, so results are
-    # byte-equivalent but ~3 orders of magnitude cheaper to read
-    # (≈6 500 rows / region / year vs. tens of millions of raw VI).
+
+def _build_entity_rows(per_entity_date, names, bl_lookup, id_field, name_field):
+    """Серии по сущностям (район/регион) с latest-значениями и z-score.
+
+    per_entity_date: (entity_id, date) → {sum_ndvi_area, sum_area};
+    bl_lookup: entity_id → {doy: (mean, std)}.
+    """
+    data = {}
+    for (eid, d), acc in sorted(per_entity_date.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+        weighted = weighted_mean(acc['sum_ndvi_area'], acc['sum_area'])
+        doy = d.timetuple().tm_yday
+
+        bl_mean, bl_std = bl_lookup.get(eid, {}).get(doy, (None, None))
+        z_score = compute_z_score(weighted, bl_mean, bl_std)
+
+        if eid not in data:
+            data[eid] = {
+                id_field: eid,
+                name_field: names.get(eid, ''),
+                'series': [],
+                'latest_ndvi': None,
+                'latest_date': None,
+                'latest_z_score': None,
+            }
+        row = data[eid]
+        row['series'].append({
+            'date': str(d),
+            'mean_ndvi': _safe_round(weighted),
+            'z_score': z_score,
+        })
+        if row['latest_date'] is None or d > date.fromisoformat(row['latest_date']):
+            row['latest_ndvi'] = _safe_round(weighted)
+            row['latest_date'] = str(d)
+            row['latest_z_score'] = z_score
+    return data
+
+
+# --- api_report_region helpers -----------------------------------------------
+
+def _region_series_accumulators(region_id, year):
+    """Однопроходная агрегация предагрегата до (район, дата) и (регион, дата).
+
+    NDVI time series per district (area-weighted mean per date) —
+    read from the DistrictNdviSeries pre-aggregate instead of raw
+    VegetationIndex. The pre-aggregate is built with the same filters
+    (modis, is_outlier=false, mean∈[-0.2,1], index_type=ndvi) by
+    services.district_ndvi_series.refresh_range, so results are
+    byte-equivalent but ~3 orders of magnitude cheaper to read
+    (≈6 500 rows / region / year vs. tens of millions of raw VI).
+    """
     series_rows = DistrictNdviSeries.objects.filter(
         district__region_id=region_id,
         source=DistrictNdviSeries.Source.MODIS,
@@ -81,8 +126,11 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
         rd = per_region_date[acq_date]
         rd['sum_ndvi_area'] += float(sum_ndvi_area)
         rd['sum_area'] += float(sum_area)
+    return per_district_date, per_region_date
 
-    # Baseline lookup: district_id → {doy: (mean, std)}
+
+def _district_baseline_lookup(region_id):
+    """Baseline lookup: district_id → {doy: (mean, std)}."""
     baseline_qs = NdviBaseline.objects.filter(
         district__region_id=region_id,
         crop_type='',
@@ -92,75 +140,11 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
         bl_lookup.setdefault(b['district_id'], {})[b['day_of_year']] = (
             b['mean_ndvi'], b['std_ndvi']
         )
+    return bl_lookup
 
-    # Build per-district data, sorted chronologically
-    district_data = {}
-    for (did, d), acc in sorted(per_district_date.items(), key=lambda kv: (kv[0][0], kv[0][1])):
-        weighted = weighted_mean(acc['sum_ndvi_area'], acc['sum_area'])
-        doy = d.timetuple().tm_yday
 
-        bl_mean, bl_std = bl_lookup.get(did, {}).get(doy, (None, None))
-        z_score = compute_z_score(weighted, bl_mean, bl_std)
-
-        if did not in district_data:
-            district_data[did] = {
-                'district_id': did,
-                'district_name': district_names.get(did, ''),
-                'series': [],
-                'latest_ndvi': None,
-                'latest_date': None,
-                'latest_z_score': None,
-            }
-        district_data[did]['series'].append({
-            'date': str(d),
-            'mean_ndvi': _safe_round(weighted),
-            'z_score': z_score,
-        })
-        if district_data[did]['latest_date'] is None or d > date.fromisoformat(district_data[did]['latest_date']):
-            district_data[did]['latest_ndvi'] = _safe_round(weighted)
-            district_data[did]['latest_date'] = str(d)
-            district_data[did]['latest_z_score'] = z_score
-
-    # Build baseline series per district
-    baseline_series = {}
-    for did, doy_map in bl_lookup.items():
-        bl_list = []
-        for doy in sorted(doy_map.keys()):
-            m, s = doy_map[doy]
-            d_date = doy_to_date(doy, year)
-            bl_list.append({
-                'date': str(d_date),
-                'mean_ndvi': _safe_round(m),
-                'std_ndvi': _safe_round(s),
-            })
-        baseline_series[did] = bl_list
-
-    # Add assessment text
-    result = []
-    for d in districts:
-        dd = district_data.get(d.pk, {
-            'district_id': d.pk,
-            'district_name': d.name,
-            'series': [],
-            'latest_ndvi': None,
-            'latest_date': None,
-            'latest_z_score': None,
-        })
-        dd['assessment'] = _ndvi_assessment(dd.get('latest_ndvi'), dd.get('latest_z_score'))
-        dd['baseline'] = baseline_series.get(d.pk, [])
-        result.append(dd)
-
-    # Region-level overall NDVI series (built in the same single pass above)
-    region_overall = []
-    for acq_date in sorted(per_region_date.keys()):
-        acc = per_region_date[acq_date]
-        weighted = weighted_mean(acc['sum_ndvi_area'], acc['sum_area'])
-        region_overall.append({
-            'date': str(acq_date),
-            'mean_ndvi': _safe_round(weighted),
-        })
-
-    # Region-level baseline (average district baselines per DOY)
+def _region_avg_baseline(region_id, year):
+    """Region-level baseline (average district baselines per DOY)."""
     region_bl_qs = (
         NdviBaseline.objects.filter(
             district__region_id=region_id,
@@ -178,6 +162,64 @@ def api_report_region(request: HttpRequest) -> JsonResponse:
             'mean_ndvi': _safe_round(b['avg_mean']),
             'std_ndvi': _safe_round(b['avg_std']),
         })
+    return region_baseline
+
+
+@rate_limit('30/m')
+@cache_page(60 * 5)
+def api_report_region(request: HttpRequest) -> JsonResponse:
+    """Data for region-level MODIS report: NDVI time series per district.
+
+    Query params:
+        region (required): region_id
+        year (required): year
+    """
+    region_id, year, error = _parse_report_params(request, 'region')
+    if error:
+        return error
+
+    try:
+        region = Region.objects.get(pk=region_id)
+    except Region.DoesNotExist:
+        return JsonResponse({'ok': False, 'error': 'region not found'}, status=404)
+
+    districts = District.objects.filter(region=region).order_by('name')
+    district_names = {d.pk: d.name for d in districts}
+
+    per_district_date, per_region_date = _region_series_accumulators(region_id, year)
+
+    bl_lookup = _district_baseline_lookup(region_id)
+
+    # Build per-district data, sorted chronologically
+    district_data = _build_entity_rows(
+        per_district_date, district_names, bl_lookup,
+        id_field='district_id', name_field='district_name',
+    )
+
+    # Build baseline series per district
+    baseline_series = {
+        did: _bl_to_series(doy_map, year) for did, doy_map in bl_lookup.items()
+    }
+
+    # Add assessment text
+    result = []
+    for d in districts:
+        dd = district_data.get(d.pk, {
+            'district_id': d.pk,
+            'district_name': d.name,
+            'series': [],
+            'latest_ndvi': None,
+            'latest_date': None,
+            'latest_z_score': None,
+        })
+        dd['assessment'] = _ndvi_assessment(dd.get('latest_ndvi'), dd.get('latest_z_score'))
+        dd['baseline'] = baseline_series.get(d.pk, [])
+        result.append(dd)
+
+    # Region-level overall NDVI series (built in the same single pass above)
+    region_overall = _weighted_series(per_region_date)
+
+    region_baseline = _region_avg_baseline(region_id, year)
 
     # last_period_end for dashed extension line (MODIS 16-day: mid + 8 days)
     last_period_end = modis_last_period_end(region_overall)
@@ -208,30 +250,8 @@ def _country_category(z_score):
     return 'normal'
 
 
-@rate_limit('30/m')
-@cache_page(60 * 15)
-def api_report_country(request: HttpRequest) -> JsonResponse:
-    """Data for country-level MODIS report: NDVI time series per region.
-
-    Reads the DistrictNdviSeries pre-aggregate summed up to
-    (region, date) level — ≈2 000 points/year for the whole country —
-    plus per-region baselines (district baselines averaged per DOY).
-
-    Query params:
-        year (required): year
-    """
-    year = request.GET.get('year')
-    if not year:
-        return JsonResponse({'ok': False, 'error': 'year required'}, status=400)
-    try:
-        year = int(year)
-    except (TypeError, ValueError):
-        return JsonResponse({'ok': False, 'error': 'invalid params'}, status=400)
-
-    regions = Region.objects.only('id', 'name').order_by('name')
-    region_names = {r.pk: r.name for r in regions}
-
-    # (region, date) aggregation done DB-side: ~73 regions × ~25 dates.
+def _country_series_accumulators(year):
+    """(region, date) aggregation done DB-side: ~73 regions × ~25 dates."""
     series_rows = (
         DistrictNdviSeries.objects.filter(
             source=DistrictNdviSeries.Source.MODIS,
@@ -257,9 +277,14 @@ def api_report_country(request: HttpRequest) -> JsonResponse:
         cd = per_country_date[d]
         cd['sum_ndvi_area'] += float(row['s_ndvi_area'])
         cd['sum_area'] += s_area
+    return per_region_date, per_country_date
 
-    # Region baseline lookup: region_id → {doy: (avg_mean, avg_std)}
-    # (district baselines averaged per DOY, same trick as api_report_region).
+
+def _region_baseline_lookups():
+    """Region baseline lookup: region_id → {doy: (avg_mean, avg_std)}
+    (district baselines averaged per DOY, same trick as api_report_region),
+    plus country-wide accumulator per DOY.
+    """
     region_bl_qs = (
         NdviBaseline.objects.filter(crop_type='')
         .values('district__region_id', 'day_of_year')
@@ -275,55 +300,11 @@ def api_report_country(request: HttpRequest) -> JsonResponse:
         cb['sum_mean'] += float(b['avg_mean'] or 0)
         cb['sum_std'] += float(b['avg_std'] or 0)
         cb['n'] += 1
+    return bl_lookup, country_bl
 
-    # Build per-region data, sorted chronologically
-    region_data = {}
-    for (rid, d), acc in sorted(per_region_date.items(), key=lambda kv: (kv[0][0], kv[0][1])):
-        weighted = weighted_mean(acc['sum_ndvi_area'], acc['sum_area'])
-        doy = d.timetuple().tm_yday
 
-        bl_mean, bl_std = bl_lookup.get(rid, {}).get(doy, (None, None))
-        z_score = compute_z_score(weighted, bl_mean, bl_std)
-
-        if rid not in region_data:
-            region_data[rid] = {
-                'region_id': rid,
-                'region_name': region_names.get(rid, ''),
-                'series': [],
-                'latest_ndvi': None,
-                'latest_date': None,
-                'latest_z_score': None,
-            }
-        region_data[rid]['series'].append({
-            'date': str(d),
-            'mean_ndvi': _safe_round(weighted),
-            'z_score': z_score,
-        })
-        rd = region_data[rid]
-        if rd['latest_date'] is None or d > date.fromisoformat(rd['latest_date']):
-            rd['latest_ndvi'] = _safe_round(weighted)
-            rd['latest_date'] = str(d)
-            rd['latest_z_score'] = z_score
-
-    # Only regions with data — categorised by their OWN baseline z-score.
-    result = []
-    for rid in sorted(region_data.keys(), key=lambda r: region_names.get(r, '')):
-        rd = region_data[rid]
-        rd['category'] = _country_category(rd['latest_z_score'])
-        rd['assessment'] = _ndvi_assessment(rd['latest_ndvi'], rd['latest_z_score'])
-        result.append(rd)
-
-    # Country-level overall NDVI series (area-weighted across all regions)
-    country_overall = []
-    for acq_date in sorted(per_country_date.keys()):
-        acc = per_country_date[acq_date]
-        weighted = weighted_mean(acc['sum_ndvi_area'], acc['sum_area'])
-        country_overall.append({
-            'date': str(acq_date),
-            'mean_ndvi': _safe_round(weighted),
-        })
-
-    # Country baseline — VISUAL REFERENCE ONLY (see _country_category note).
+def _country_baseline_series(country_bl, year):
+    """Country baseline — VISUAL REFERENCE ONLY (see _country_category note)."""
     country_baseline = []
     for doy in sorted(country_bl.keys()):
         cb = country_bl[doy]
@@ -335,6 +316,54 @@ def api_report_country(request: HttpRequest) -> JsonResponse:
             'mean_ndvi': _safe_round(cb['sum_mean'] / cb['n']),
             'std_ndvi': _safe_round(cb['sum_std'] / cb['n']),
         })
+    return country_baseline
+
+
+@rate_limit('30/m')
+@cache_page(60 * 15)
+def api_report_country(request: HttpRequest) -> JsonResponse:
+    """Data for country-level MODIS report: NDVI time series per region.
+
+    Reads the DistrictNdviSeries pre-aggregate summed up to
+    (region, date) level — ≈2 000 points/year for the whole country —
+    plus per-region baselines (district baselines averaged per DOY).
+
+    Query params:
+        year (required): year
+    """
+    year = request.GET.get('year')
+    if not year:
+        return JsonResponse({'ok': False, 'error': 'year required'}, status=400)
+    try:
+        year = int(year)
+    except (TypeError, ValueError):
+        return JsonResponse({'ok': False, 'error': 'invalid params'}, status=400)
+
+    regions = Region.objects.only('id', 'name').order_by('name')
+    region_names = {r.pk: r.name for r in regions}
+
+    per_region_date, per_country_date = _country_series_accumulators(year)
+
+    bl_lookup, country_bl = _region_baseline_lookups()
+
+    # Build per-region data, sorted chronologically
+    region_data = _build_entity_rows(
+        per_region_date, region_names, bl_lookup,
+        id_field='region_id', name_field='region_name',
+    )
+
+    # Only regions with data — categorised by their OWN baseline z-score.
+    result = []
+    for rid in sorted(region_data.keys(), key=lambda r: region_names.get(r, '')):
+        rd = region_data[rid]
+        rd['category'] = _country_category(rd['latest_z_score'])
+        rd['assessment'] = _ndvi_assessment(rd['latest_ndvi'], rd['latest_z_score'])
+        result.append(rd)
+
+    # Country-level overall NDVI series (area-weighted across all regions)
+    country_overall = _weighted_series(per_country_date)
+
+    country_baseline = _country_baseline_series(country_bl, year)
 
     # last_period_end for dashed extension line (MODIS 16-day: mid + 8 days)
     last_period_end = modis_last_period_end(country_overall)
@@ -509,34 +538,8 @@ def _region_overall_series(region, year):
     return region_overall
 
 
-@rate_limit('30/m')
-@cache_page(60 * 5)
-def api_report_district(request: HttpRequest) -> JsonResponse:
-    """Data for district-level MODIS report: NDVI stats by crop type.
-
-    Query params:
-        district (required): district_id
-        year (required): year
-    """
-    district_id = request.GET.get('district')
-    year = request.GET.get('year')
-    if not district_id or not year:
-        return JsonResponse({'ok': False, 'error': 'district and year required'}, status=400)
-
-    try:
-        district_id = int(district_id)
-        year = int(year)
-    except (TypeError, ValueError):
-        return JsonResponse({'ok': False, 'error': 'invalid params'}, status=400)
-
-    try:
-        district = District.objects.select_related('region').get(pk=district_id)
-    except District.DoesNotExist:
-        return JsonResponse({'ok': False, 'error': 'district not found'}, status=404)
-
-    crop_labels = dict(Farmland.CropType.choices)
-
-    # Farmland summary by crop type
+def _farmland_info(district):
+    """Farmland summary by crop type: count и площадь по каждой категории."""
     fl_summary = (
         Farmland.objects.filter(district=district)
         .values('crop_type')
@@ -549,10 +552,14 @@ def api_report_district(request: HttpRequest) -> JsonResponse:
             'count': row['count'],
             'area_ha': round(row['total_area'] or 0, 1),
         }
+    return fl_info
 
-    # NDVI time series by crop type AND overall (area-weighted) —
-    # served from the DistrictNdviSeries pre-aggregate (same filters as
-    # raw VI, see api_report_region). ~120 rows / district / year.
+
+def _district_series_accumulators(district, year):
+    """NDVI time series by crop type AND overall (area-weighted) —
+    served from the DistrictNdviSeries pre-aggregate (same filters as
+    raw VI, see api_report_region). ~120 rows / district / year.
+    """
     series_rows = DistrictNdviSeries.objects.filter(
         district=district,
         source=DistrictNdviSeries.Source.MODIS,
@@ -573,15 +580,34 @@ def api_report_district(request: HttpRequest) -> JsonResponse:
         od = per_overall_date[acq_date]
         od['sum_ndvi_area'] += float(sum_ndvi_area)
         od['sum_area'] += float(sum_area)
+    return per_crop_date, per_overall_date
 
-    overall_series = []
-    for acq_date in sorted(per_overall_date.keys()):
-        acc = per_overall_date[acq_date]
-        weighted = weighted_mean(acc['sum_ndvi_area'], acc['sum_area'])
-        overall_series.append({
-            'date': str(acq_date),
-            'mean_ndvi': _safe_round(weighted),
-        })
+
+@rate_limit('30/m')
+@cache_page(60 * 5)
+def api_report_district(request: HttpRequest) -> JsonResponse:
+    """Data for district-level MODIS report: NDVI stats by crop type.
+
+    Query params:
+        district (required): district_id
+        year (required): year
+    """
+    district_id, year, error = _parse_report_params(request, 'district')
+    if error:
+        return error
+
+    try:
+        district = District.objects.select_related('region').get(pk=district_id)
+    except District.DoesNotExist:
+        return JsonResponse({'ok': False, 'error': 'district not found'}, status=404)
+
+    crop_labels = dict(Farmland.CropType.choices)
+
+    fl_info = _farmland_info(district)
+
+    per_crop_date, per_overall_date = _district_series_accumulators(district, year)
+
+    overall_series = _weighted_series(per_overall_date)
 
     # Baseline for the district (all crop types + per crop type)
     bl_lookup, bl_by_crop = _district_baselines(district)
