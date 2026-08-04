@@ -39,12 +39,32 @@ class Command(BaseCommand):
                             help='Show counts but do not create anything')
 
     def handle(self, *args, **options):
-        xlsx_path = options['xlsx']
-        exclude_ids = options['exclude_campaigns']
-        exclude_all = options['exclude_all']
-        dry_run = options['dry_run']
+        raw_emails = self._read_xlsx_emails(options['xlsx'])
+        valid_emails = self._validate_and_dedup(raw_emails)
 
-        # --- Read Excel ---
+        exclude_set = self._build_exclusion_set(
+            options['exclude_all'], options['exclude_campaigns'],
+        )
+        final_emails = [e for e in valid_emails if e not in exclude_set]
+        excluded_count = len(valid_emails) - len(final_emails)
+        self.stdout.write(f'  After exclusion: {len(final_emails)} (excluded {excluded_count})')
+
+        if options['dry_run']:
+            self.stdout.write(self.style.WARNING('DRY RUN — nothing created'))
+            return
+
+        if not final_emails:
+            raise CommandError('No emails to send after exclusion')
+
+        body_html = self._read_body_file(options['body_html_file'], 'HTML')
+        body_text = ''
+        if options['body_text_file']:
+            body_text = self._read_body_file(options['body_text_file'], 'text')
+
+        self._create_campaign(options, body_html, body_text, final_emails)
+
+    def _read_xlsx_emails(self, xlsx_path):
+        """Колонка A без заголовка → список lowercase-строк."""
         self.stdout.write(f'Reading {xlsx_path}...')
         try:
             wb = openpyxl.load_workbook(xlsx_path, read_only=True)
@@ -62,8 +82,10 @@ class Command(BaseCommand):
         wb.close()
 
         self.stdout.write(f'  Raw rows: {len(raw_emails)}')
+        return raw_emails
 
-        # --- Deduplicate & validate ---
+    def _validate_and_dedup(self, raw_emails):
+        """Уникальные адреса, прошедшие regex-валидацию (порядок сохраняется)."""
         email_re = re.compile(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$')
         seen = set()
         valid_emails = []
@@ -78,8 +100,10 @@ class Command(BaseCommand):
                 invalid_count += 1
 
         self.stdout.write(f'  Unique valid: {len(valid_emails)}, invalid: {invalid_count}')
+        return valid_emails
 
-        # --- Build exclusion set ---
+    def _build_exclusion_set(self, exclude_all, exclude_ids):
+        """Получатели прошлых кампаний (всех или выбранных) + отписавшиеся."""
         exclude_set = set()
         if exclude_all:
             exclude_set = set(
@@ -109,37 +133,16 @@ class Command(BaseCommand):
         unsub_set = {e.strip().lower() for e in unsub_set if e}
         if unsub_set:
             self.stdout.write(f'  Excluding {len(unsub_set)} unsubscribed addresses')
-        exclude_set |= unsub_set
+        return exclude_set | unsub_set
 
-        final_emails = [e for e in valid_emails if e not in exclude_set]
-        excluded_count = len(valid_emails) - len(final_emails)
-
-        self.stdout.write(f'  After exclusion: {len(final_emails)} (excluded {excluded_count})')
-
-        if dry_run:
-            self.stdout.write(self.style.WARNING('DRY RUN — nothing created'))
-            return
-
-        if not final_emails:
-            raise CommandError('No emails to send after exclusion')
-
-        # --- Read HTML body ---
-        body_html_file = options['body_html_file']
+    def _read_body_file(self, path, label):
         try:
-            with open(body_html_file, 'r', encoding='utf-8') as f:
-                body_html = f.read()
+            with open(path, 'r', encoding='utf-8') as f:
+                return f.read()
         except Exception as e:
-            raise CommandError(f'Cannot read HTML body file: {e}')
+            raise CommandError(f'Cannot read {label} body file: {e}')
 
-        body_text = ''
-        if options['body_text_file']:
-            try:
-                with open(options['body_text_file'], 'r', encoding='utf-8') as f:
-                    body_text = f.read()
-            except Exception as e:
-                raise CommandError(f'Cannot read text body file: {e}')
-
-        # --- Create campaign ---
+    def _create_campaign(self, options, body_html, body_text, final_emails):
         campaign = EmailCampaign.objects.create(
             name=options['name'],
             subject=options['subject'],
@@ -153,7 +156,6 @@ class Command(BaseCommand):
 
         self.stdout.write(f'  Created campaign #{campaign.pk}: {campaign.name}')
 
-        # --- Create logs in bulk ---
         logs = [
             EmailLog(campaign=campaign, recipient_email=email)
             for email in final_emails

@@ -298,6 +298,25 @@ class Command(BaseCommand):
                 f'sent={campaign.sent_count} failed={campaign.failed_count}'
             ))
 
+    def _announce_run(self, campaign, total_pending, limit, dry_run):
+        run_limit = min(limit, total_pending) if limit > 0 else total_pending
+        self.stdout.write(
+            f'Sending campaign #{campaign.pk}: '
+            f'{total_pending} pending of {campaign.total_recipients} total'
+        )
+        if limit > 0:
+            self.stdout.write(f'  Limit this run: {run_limit} emails')
+        if dry_run:
+            self.stdout.write(self.style.WARNING('  DRY RUN — no emails will be sent'))
+
+    def _report_progress(self, sent, failed, total_pending):
+        total_done = sent + failed
+        if total_done % 50 == 0 or total_done == total_pending:
+            self.stdout.write(
+                f'  [{total_done}/{total_pending}] '
+                f'sent={sent} failed={failed}'
+            )
+
     def _send_campaign(self, campaign, rate, batch_size, dry_run, limit=0):
         """Send pending emails with throttling and auto-reconnect."""
         campaign.status = EmailCampaign.STATUS_SENDING
@@ -317,15 +336,7 @@ class Command(BaseCommand):
         ).order_by('id')
 
         total_pending = pending_logs.count()
-        run_limit = min(limit, total_pending) if limit > 0 else total_pending
-        self.stdout.write(
-            f'Sending campaign #{campaign.pk}: '
-            f'{total_pending} pending of {campaign.total_recipients} total'
-        )
-        if limit > 0:
-            self.stdout.write(f'  Limit this run: {run_limit} emails')
-        if dry_run:
-            self.stdout.write(self.style.WARNING('  DRY RUN — no emails will be sent'))
+        self._announce_run(campaign, total_pending, limit, dry_run)
 
         sent = 0
         failed = 0
@@ -357,14 +368,7 @@ class Command(BaseCommand):
                 failed += 1
 
             self._cooldown_if_failing()
-
-            # Progress
-            total_done = sent + failed
-            if total_done % 50 == 0 or total_done == total_pending:
-                self.stdout.write(
-                    f'  [{total_done}/{total_pending}] '
-                    f'sent={sent} failed={failed}'
-                )
+            self._report_progress(sent, failed, total_pending)
 
             # Throttle
             if email_sent:
