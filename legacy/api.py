@@ -43,6 +43,46 @@ class IsLegacyAuthenticatedOrReadOnly(permissions.BasePermission):
 # Adverts
 # ---------------------------------------------------------------------------
 
+def _visible_adverts_qs(is_admin: bool):
+    """Base queryset with visibility rules: admin sees all but deleted."""
+    thumb_prefetch = Prefetch(
+        'photos',
+        queryset=AdvertPhoto.objects.order_by('sort', 'id'),
+        to_attr='prefetched_photos',
+    )
+    qs = Advert.objects.select_related('category', 'author').prefetch_related(thumb_prefetch)
+    if is_admin:
+        return qs.exclude(status=ADVERT_STATUS_DELETED)
+    return qs.filter(status=ADVERT_STATUS_PUBLISHED)
+
+
+def _apply_advert_api_filters(qs, params):
+    """Apply q/type/catalog/category query params; garbage values are ignored."""
+    q = (params.get('q') or '').strip()
+    if q:
+        qs = qs.filter(Q(title__icontains=q) | Q(text__icontains=q))
+
+    type_raw = (params.get('type') or '').strip().lower()
+    if type_raw == 'offer':
+        qs = qs.filter(type=0)
+    elif type_raw == 'demand':
+        qs = qs.filter(type=1)
+
+    catalog_raw = (params.get('catalog') or '').strip()
+    category_raw = (params.get('category') or '').strip()
+    try:
+        if category_raw:
+            qs = qs.filter(category_id=int(category_raw))
+    except (TypeError, ValueError):
+        pass
+    try:
+        if catalog_raw:
+            qs = qs.filter(category__catalog_id=int(catalog_raw))
+    except (TypeError, ValueError):
+        pass
+    return qs
+
+
 class AdvertViewSet(viewsets.GenericViewSet,
                     mixins.ListModelMixin,
                     mixins.RetrieveModelMixin,
@@ -63,44 +103,8 @@ class AdvertViewSet(viewsets.GenericViewSet,
 
     def get_queryset(self):
         user = _get_current_legacy_user(self.request)
-        is_admin = _is_admin_user(user)
-
-        _thumb_prefetch = Prefetch(
-            'photos',
-            queryset=AdvertPhoto.objects.order_by('sort', 'id'),
-            to_attr='prefetched_photos',
-        )
-        qs = Advert.objects.select_related('category', 'author').prefetch_related(_thumb_prefetch)
-
-        if is_admin:
-            qs = qs.exclude(status=ADVERT_STATUS_DELETED)
-        else:
-            qs = qs.filter(status=ADVERT_STATUS_PUBLISHED)
-
-        # Filters
-        q = (self.request.query_params.get('q') or '').strip()
-        if q:
-            qs = qs.filter(Q(title__icontains=q) | Q(text__icontains=q))
-
-        type_raw = (self.request.query_params.get('type') or '').strip().lower()
-        if type_raw == 'offer':
-            qs = qs.filter(type=0)
-        elif type_raw == 'demand':
-            qs = qs.filter(type=1)
-
-        catalog_raw = (self.request.query_params.get('catalog') or '').strip()
-        category_raw = (self.request.query_params.get('category') or '').strip()
-        try:
-            if category_raw:
-                qs = qs.filter(category_id=int(category_raw))
-        except (TypeError, ValueError):
-            pass
-        try:
-            if catalog_raw:
-                qs = qs.filter(category__catalog_id=int(catalog_raw))
-        except (TypeError, ValueError):
-            pass
-
+        qs = _visible_adverts_qs(is_admin=_is_admin_user(user))
+        qs = _apply_advert_api_filters(qs, self.request.query_params)
         return qs.order_by('-updated_at', '-id')
 
     def create(self, request, *args, **kwargs):
