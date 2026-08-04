@@ -46,3 +46,6 @@ _shp_preview.txt
 # Local-only data / one-off scripts (never commit personal data)
 *.xlsx
 seed_adverts.py
+
+# Presentation materials (pptx + screenshots, ~12 MB — keep out of repo/deploys)
+presentation/
