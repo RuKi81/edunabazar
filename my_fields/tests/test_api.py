@@ -167,6 +167,17 @@ class FieldListDetailTests(MyFieldsApiTestCase):
         self.assertEqual(self.field.name, 'Новое имя')
         self.assertTrue(self.field.is_archived)
 
+    def test_patch_valid_geometry_recomputes_area_and_region(self):
+        old_area = self.field.area_ha
+        bigger = {'type': 'Polygon', 'coordinates': [[
+            [34.10, 45.10], [34.20, 45.10], [34.20, 45.20], [34.10, 45.20], [34.10, 45.10],
+        ]]}
+        resp = self._patch_json(self.url, {'geometry': bigger})
+        self.assertEqual(resp.status_code, 200)
+        self.field.refresh_from_db()
+        self.assertGreater(self.field.area_ha, old_area)
+        self.assertEqual(self.field.region_id, self.region.pk)
+
     def test_patch_invalid_geometry_is_400(self):
         resp = self._patch_json(self.url, {
             'geometry': {'type': 'Point', 'coordinates': [1, 2]},
@@ -210,6 +221,39 @@ class EventsApiTests(MyFieldsApiTestCase):
     def test_stranger_forbidden(self):
         self.client.force_login(self.stranger)
         self.assertEqual(self.client.get(self.url).status_code, 403)
+
+    def test_create_with_season_link(self):
+        season = FieldSeason.objects.create(field=self.field, year=2026, crop='wheat')
+        resp = self._post_json(self.url, {
+            'event_type': 'sowing', 'event_date': '2026-05-02',
+            'season_id': season.pk,
+        })
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.json()['season_id'], season.pk)
+
+    def test_patch_event_fields(self):
+        self._post_json(self.url, {'event_type': 'scout', 'event_date': '2026-06-01'})
+        event = FieldEvent.objects.get(field=self.field)
+        season = FieldSeason.objects.create(field=self.field, year=2026, crop='wheat')
+        resp = self._patch_json(f'{self.url}{event.pk}/', {
+            'event_type': 'sowing', 'event_date': '2026-06-05',
+            'title': 'Пересев', 'quantity': 1.5, 'season_id': season.pk,
+        })
+        self.assertEqual(resp.status_code, 200)
+        event.refresh_from_db()
+        self.assertEqual(event.event_type, 'sowing')
+        self.assertEqual(str(event.event_date), '2026-06-05')
+        self.assertEqual(event.title, 'Пересев')
+        self.assertEqual(event.quantity, 1.5)
+        self.assertEqual(event.season_id, season.pk)
+
+    def test_patch_event_invalid_date_is_400(self):
+        self._post_json(self.url, {'event_type': 'scout', 'event_date': '2026-06-01'})
+        event = FieldEvent.objects.get(field=self.field)
+        resp = self._patch_json(f'{self.url}{event.pk}/', {'event_date': 'мусор'})
+        self.assertEqual(resp.status_code, 400)
+        event.refresh_from_db()
+        self.assertEqual(str(event.event_date), '2026-06-01')
 
     def test_delete_event(self):
         self._post_json(self.url, {'event_type': 'scout', 'event_date': '2026-06-01'})

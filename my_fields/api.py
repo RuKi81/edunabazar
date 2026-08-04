@@ -165,17 +165,23 @@ def fields_collection(request: HttpRequest) -> JsonResponse:
         return auth_err
 
     if request.method == 'GET':
-        # По умолчанию — только активные. ``?archived=1`` показывает все.
-        qs = UserField.objects.filter(owner=request.user)
-        if request.GET.get('archived') != '1':
-            qs = qs.filter(is_archived=False)
-        qs = qs.select_related('region', 'district').order_by('-updated_at')
-        return JsonResponse({
-            'type': 'FeatureCollection',
-            'features': [_field_to_feature(f) for f in qs],
-        })
+        return _fields_list(request)
+    return _field_create(request)
 
-    # POST: создать поле
+
+def _fields_list(request: HttpRequest) -> JsonResponse:
+    # По умолчанию — только активные. ``?archived=1`` показывает все.
+    qs = UserField.objects.filter(owner=request.user)
+    if request.GET.get('archived') != '1':
+        qs = qs.filter(is_archived=False)
+    qs = qs.select_related('region', 'district').order_by('-updated_at')
+    return JsonResponse({
+        'type': 'FeatureCollection',
+        'features': [_field_to_feature(f) for f in qs],
+    })
+
+
+def _field_create(request: HttpRequest) -> JsonResponse:
     payload, err = _parse_json(request)
     if err:
         return err
@@ -216,33 +222,40 @@ def fields_collection(request: HttpRequest) -> JsonResponse:
         return err
     field.save()
 
-    # Опционально — создаём сезон одной транзакцией. Все поля сезона
-    # необязательны, кроме ``year`` и ``crop`` — без них запись
-    # бессмысленна. Любая ошибка парсинга дат/чисел в сезоне НЕ должна
-    # откатывать создание поля; собираем такие случаи в ``season_warnings``.
-    season_payload = payload.get('season')
-    season_warning: str | None = None
-    if season_payload and season_payload.get('year') and season_payload.get('crop'):
-        try:
-            FieldSeason.objects.create(
-                field=field,
-                year=int(season_payload['year']),
-                crop=season_payload['crop'],
-                variety=(season_payload.get('variety') or '')[:120],
-                sowing_date=parse_date(season_payload.get('sowing_date') or ''),
-                planned_harvest_date=parse_date(
-                    season_payload.get('planned_harvest_date') or '',
-                ),
-                planned_yield_t_per_ha=season_payload.get('planned_yield_t_per_ha') or None,
-                notes=season_payload.get('notes', ''),
-            )
-        except (ValueError, TypeError) as exc:
-            season_warning = f'Сезон не создан: {exc}'
+    season_warning = _maybe_create_season(field, payload.get('season'))
 
     feature = _field_to_feature(field)
     if season_warning:
         feature['properties']['season_warning'] = season_warning
     return JsonResponse(feature, status=201)
+
+
+def _maybe_create_season(field: UserField, season_payload) -> str | None:
+    """Опциональный сезон при создании поля.
+
+    Все поля сезона необязательны, кроме ``year`` и ``crop`` — без них
+    запись бессмысленна. Любая ошибка парсинга дат/чисел в сезоне НЕ
+    должна откатывать создание поля — возвращаем текст предупреждения
+    для ``season_warning`` в ответе.
+    """
+    if not (season_payload and season_payload.get('year') and season_payload.get('crop')):
+        return None
+    try:
+        FieldSeason.objects.create(
+            field=field,
+            year=int(season_payload['year']),
+            crop=season_payload['crop'],
+            variety=(season_payload.get('variety') or '')[:120],
+            sowing_date=parse_date(season_payload.get('sowing_date') or ''),
+            planned_harvest_date=parse_date(
+                season_payload.get('planned_harvest_date') or '',
+            ),
+            planned_yield_t_per_ha=season_payload.get('planned_yield_t_per_ha') or None,
+            notes=season_payload.get('notes', ''),
+        )
+        return None
+    except (ValueError, TypeError) as exc:
+        return f'Сезон не создан: {exc}'
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -271,7 +284,10 @@ def field_detail(request: HttpRequest, pk: int) -> JsonResponse:
         field.delete()
         return JsonResponse({'ok': True}, status=200)
 
-    # PATCH
+    return _field_patch(request, field)
+
+
+def _field_patch(request: HttpRequest, field: UserField) -> JsonResponse:
     payload, err = _parse_json(request)
     if err:
         return err
@@ -380,6 +396,10 @@ def event_detail(request: HttpRequest, pk: int, eid: int) -> JsonResponse:
         event.delete()
         return JsonResponse({'ok': True})
 
+    return _event_patch(request, field, event)
+
+
+def _event_patch(request: HttpRequest, field: UserField, event: FieldEvent) -> JsonResponse:
     payload, err = _parse_json(request)
     if err:
         return err
@@ -476,6 +496,10 @@ def season_detail(request: HttpRequest, pk: int, sid: int) -> JsonResponse:
         season.delete()
         return JsonResponse({'ok': True})
 
+    return _season_patch(request, season)
+
+
+def _season_patch(request: HttpRequest, season: FieldSeason) -> JsonResponse:
     payload, err = _parse_json(request)
     if err:
         return err
