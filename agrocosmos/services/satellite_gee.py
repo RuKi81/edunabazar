@@ -197,6 +197,73 @@ def fetch_ndvi_stats(geometry_geojson, date_from, date_to, cloud_max=30,
     return results
 
 
+def _normalize_period(date_from, date_to) -> tuple[str, str, str]:
+    """``(date_from, date_to, mid_date)`` as ISO strings."""
+    if isinstance(date_from, date):
+        date_from = date_from.isoformat()
+    if isinstance(date_to, date):
+        date_to = date_to.isoformat()
+    d1 = date.fromisoformat(date_from)
+    d2 = date.fromisoformat(date_to)
+    mid_date = (d1 + (d2 - d1) / 2).isoformat()
+    return date_from, date_to, mid_date
+
+
+def _farmland_collection(farmlands):
+    """ee.FeatureCollection from farmland dicts ({'id', 'geometry'})."""
+    return ee.FeatureCollection([
+        ee.Feature(ee.Geometry(fl['geometry']), {'fl_id': fl['id']})
+        for fl in farmlands
+    ])
+
+
+def _zonal_stats_reducer():
+    """Combined mean/count/min/max/stdDev reducer for reduceRegions."""
+    return (ee.Reducer.mean()
+            .combine(ee.Reducer.count(), '', True)
+            .combine(ee.Reducer.min(), '', True)
+            .combine(ee.Reducer.max(), '', True)
+            .combine(ee.Reducer.stdDev(), '', True))
+
+
+def _parse_batch_features(data, mid_date, min_valid_ratio):
+    """Group reduceRegions output by fl_id, filtering by valid ratio.
+
+    Shared by the S2 and MODIS composite paths — both produce identical
+    property names (``NDVI_*``, ``total_count``, ``fl_id``).
+    """
+    results = {}
+    for feat in (data or {}).get('features', []):
+        props = feat.get('properties', {})
+        fl_id = props.get('fl_id')
+        if fl_id is None:
+            continue
+
+        total = props.get('total_count') or 0
+        valid = props.get('NDVI_count') or 0
+        mean = props.get('NDVI_mean')
+
+        if not total or not valid or mean is None:
+            continue
+
+        ratio = valid / total
+        if ratio < min_valid_ratio:
+            continue
+
+        results.setdefault(fl_id, []).append({
+            'date': mid_date,
+            'mean': round(mean, 4),
+            'median': round(mean, 4),
+            'min': round(props.get('NDVI_min', 0) or 0, 4),
+            'max': round(props.get('NDVI_max', 0) or 0, 4),
+            'std': round(props.get('NDVI_stdDev', 0) or 0, 4),
+            'pixel_count': int(total),
+            'valid_pixel_count': int(valid),
+            'valid_ratio': round(ratio, 4),
+        })
+    return results
+
+
 def fetch_ndvi_batch(farmlands, date_from, date_to, cloud_max=30,
                      min_valid_ratio=0.95):
     """
@@ -227,23 +294,8 @@ def fetch_ndvi_batch(farmlands, date_from, date_to, cloud_max=30,
     """
     initialize()
 
-    if isinstance(date_from, date):
-        date_from = date_from.isoformat()
-    if isinstance(date_to, date):
-        date_to = date_to.isoformat()
-
-    # Midpoint date for the composite record
-    d1 = date.fromisoformat(date_from)
-    d2 = date.fromisoformat(date_to)
-    mid_date = (d1 + (d2 - d1) / 2).isoformat()
-
-    # Build ee.FeatureCollection from farmland polygons
-    ee_features = []
-    for fl in farmlands:
-        ee_features.append(
-            ee.Feature(ee.Geometry(fl['geometry']), {'fl_id': fl['id']})
-        )
-    fc = ee.FeatureCollection(ee_features)
+    date_from, date_to, mid_date = _normalize_period(date_from, date_to)
+    fc = _farmland_collection(farmlands)
 
     try:
         aoi = fc.geometry().bounds()
@@ -277,15 +329,9 @@ def fetch_ndvi_batch(farmlands, date_from, date_to, cloud_max=30,
         stacked = composite.addBands(total_band)
 
         # Single reduceRegions call for ALL polygons
-        reducer = (ee.Reducer.mean()
-                   .combine(ee.Reducer.count(), '', True)
-                   .combine(ee.Reducer.min(), '', True)
-                   .combine(ee.Reducer.max(), '', True)
-                   .combine(ee.Reducer.stdDev(), '', True))
-
         result_fc = stacked.reduceRegions(
             collection=fc,
-            reducer=reducer,
+            reducer=_zonal_stats_reducer(),
             scale=10,
         )
 
@@ -294,39 +340,7 @@ def fetch_ndvi_batch(farmlands, date_from, date_to, cloud_max=30,
     except Exception as e:
         raise GEEError(f'GEE batch error: {e}')
 
-    # Parse and group by farmland_id
-    results = {}
-    for feat in (data or {}).get('features', []):
-        props = feat.get('properties', {})
-        fl_id = props.get('fl_id')
-        if fl_id is None:
-            continue
-
-        total = props.get('total_count') or 0
-        valid = props.get('NDVI_count') or 0
-        mean = props.get('NDVI_mean')
-
-        if not total or not valid or mean is None:
-            continue
-
-        ratio = valid / total
-        if ratio < min_valid_ratio:
-            continue
-
-        if fl_id not in results:
-            results[fl_id] = []
-
-        results[fl_id].append({
-            'date': mid_date,
-            'mean': round(mean, 4),
-            'median': round(mean, 4),
-            'min': round(props.get('NDVI_min', 0) or 0, 4),
-            'max': round(props.get('NDVI_max', 0) or 0, 4),
-            'std': round(props.get('NDVI_stdDev', 0) or 0, 4),
-            'pixel_count': int(total),
-            'valid_pixel_count': int(valid),
-            'valid_ratio': round(ratio, 4),
-        })
+    results = _parse_batch_features(data, mid_date, min_valid_ratio)
 
     logger.info(
         'GEE composite: %d images → median, %d/%d polygons pass filter (%s..%s)',
@@ -362,22 +376,8 @@ def fetch_modis_ndvi_batch(farmlands, date_from, date_to, min_valid_ratio=0.5):
     """
     initialize()
 
-    if isinstance(date_from, date):
-        date_from = date_from.isoformat()
-    if isinstance(date_to, date):
-        date_to = date_to.isoformat()
-
-    # Midpoint date for the composite record
-    d1 = date.fromisoformat(date_from)
-    d2 = date.fromisoformat(date_to)
-    mid_date = (d1 + (d2 - d1) / 2).isoformat()
-
-    ee_features = []
-    for fl in farmlands:
-        ee_features.append(
-            ee.Feature(ee.Geometry(fl['geometry']), {'fl_id': fl['id']})
-        )
-    fc = ee.FeatureCollection(ee_features)
+    date_from, date_to, mid_date = _normalize_period(date_from, date_to)
+    fc = _farmland_collection(farmlands)
 
     try:
         aoi = fc.geometry().bounds()
@@ -414,15 +414,9 @@ def fetch_modis_ndvi_batch(farmlands, date_from, date_to, min_valid_ratio=0.5):
         stacked = composite.addBands(total_band)
 
         # Single reduceRegions call for ALL polygons
-        reducer = (ee.Reducer.mean()
-                   .combine(ee.Reducer.count(), '', True)
-                   .combine(ee.Reducer.min(), '', True)
-                   .combine(ee.Reducer.max(), '', True)
-                   .combine(ee.Reducer.stdDev(), '', True))
-
         result_fc = stacked.reduceRegions(
             collection=fc,
-            reducer=reducer,
+            reducer=_zonal_stats_reducer(),
             scale=250,
         )
 
@@ -431,39 +425,7 @@ def fetch_modis_ndvi_batch(farmlands, date_from, date_to, min_valid_ratio=0.5):
     except Exception as e:
         raise GEEError(f'GEE MODIS error: {e}')
 
-    # Parse and group by farmland_id
-    results = {}
-    for feat in (data or {}).get('features', []):
-        props = feat.get('properties', {})
-        fl_id = props.get('fl_id')
-        if fl_id is None:
-            continue
-
-        total = props.get('total_count') or 0
-        valid = props.get('NDVI_count') or 0
-        mean = props.get('NDVI_mean')
-
-        if not total or not valid or mean is None:
-            continue
-
-        ratio = valid / total
-        if ratio < min_valid_ratio:
-            continue
-
-        if fl_id not in results:
-            results[fl_id] = []
-
-        results[fl_id].append({
-            'date': mid_date,
-            'mean': round(mean, 4),
-            'median': round(mean, 4),
-            'min': round(props.get('NDVI_min', 0) or 0, 4),
-            'max': round(props.get('NDVI_max', 0) or 0, 4),
-            'std': round(props.get('NDVI_stdDev', 0) or 0, 4),
-            'pixel_count': int(total),
-            'valid_pixel_count': int(valid),
-            'valid_ratio': round(ratio, 4),
-        })
+    results = _parse_batch_features(data, mid_date, min_valid_ratio)
 
     logger.info(
         'MODIS composite: %d images → median, %d/%d polygons pass filter (%s..%s)',
