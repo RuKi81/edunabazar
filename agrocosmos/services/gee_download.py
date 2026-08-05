@@ -148,6 +148,84 @@ def merge_tiles(tile_paths, out_path):
                 os.remove(p)
 
 
+def _write_single_tile(composite, tile, scale_deg, out_path):
+    """Download the only tile straight into ``out_path``."""
+    tx0, ty0, tx1, ty1 = tile
+    content = download_tile(composite, tx0, ty0, tx1, ty1, scale_deg)
+    with open(out_path, 'wb') as f:
+        f.write(content)
+
+
+def _remove_partials(tile_paths):
+    """Remove any partial tiles to keep the data dir clean."""
+    for p in tile_paths:
+        if p and os.path.exists(p):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
+def _download_tiles_parallel(composite, tiles, scale_deg, base,
+                             sensor_label) -> list[str]:
+    """Download all tiles concurrently; fail fast on the first error."""
+    conc = min(TILE_CONCURRENCY, len(tiles))
+    msg = (f'{sensor_label}: downloading {len(tiles)} tiles '
+           f'(concurrency={conc})…')
+    logger.info(msg)
+    print(f'    [tile] {msg}')
+
+    tile_paths: list[str | None] = [None] * len(tiles)
+
+    def _download_one(idx: int, bbox: tuple) -> tuple[int, str, int]:
+        tx0, ty0, tx1, ty1 = bbox
+        path = f'{base}_tile{idx}.tif'
+        content = download_tile(composite, tx0, ty0, tx1, ty1, scale_deg)
+        with open(path, 'wb') as f:
+            f.write(content)
+        return idx, path, len(content)
+
+    with ThreadPoolExecutor(max_workers=conc) as pool:
+        futures = {
+            pool.submit(_download_one, ti, bbox): ti
+            for ti, bbox in enumerate(tiles)
+        }
+        first_error: Exception | None = None
+        done = 0
+        for fut in as_completed(futures):
+            try:
+                ti, path, size = fut.result()
+            except Exception as exc:
+                # Fail fast: cancel the rest so we don't pile up
+                # partial tile files and network traffic.
+                if first_error is None:
+                    first_error = exc
+                for other in futures:
+                    other.cancel()
+                continue
+            tile_paths[ti] = path
+            done += 1
+            logger.info('  Tile %d/%d OK (%.1f MB)',
+                        done, len(tiles), size / 1e6)
+
+        if first_error is not None:
+            _remove_partials(tile_paths)
+            raise first_error
+
+    return [p for p in tile_paths if p]
+
+
+def _log_downloaded(out_path, sensor_label, n_images, n_tiles):
+    """Log final raster dimensions and size."""
+    import rasterio
+    with rasterio.open(out_path) as ds:
+        logger.info(
+            '%s: %s (%d×%d, %.1f MB, %d src images, %d tiles)',
+            sensor_label, out_path, ds.width, ds.height,
+            os.path.getsize(out_path) / 1e6, n_images, n_tiles,
+        )
+
+
 def download_tiled_composite(composite, extent, scale_m, out_path,
                              n_images=0, sensor_label=''):
     """
@@ -171,69 +249,13 @@ def download_tiled_composite(composite, extent, scale_m, out_path,
     tiles = tile_extents(xmin, ymin, xmax, ymax, scale_deg)
 
     if len(tiles) == 1:
-        tx0, ty0, tx1, ty1 = tiles[0]
-        content = download_tile(composite, tx0, ty0, tx1, ty1, scale_deg)
-        with open(out_path, 'wb') as f:
-            f.write(content)
+        _write_single_tile(composite, tiles[0], scale_deg, out_path)
     else:
         base = out_path.replace('.tif', '')
-        conc = min(TILE_CONCURRENCY, len(tiles))
-        msg = (f'{sensor_label}: downloading {len(tiles)} tiles '
-               f'(concurrency={conc})…')
-        logger.info(msg)
-        print(f'    [tile] {msg}')
-
-        tile_paths: list[str | None] = [None] * len(tiles)
-
-        def _download_one(idx: int, bbox: tuple) -> tuple[int, str, int]:
-            tx0, ty0, tx1, ty1 = bbox
-            path = f'{base}_tile{idx}.tif'
-            content = download_tile(composite, tx0, ty0, tx1, ty1, scale_deg)
-            with open(path, 'wb') as f:
-                f.write(content)
-            return idx, path, len(content)
-
-        with ThreadPoolExecutor(max_workers=conc) as pool:
-            futures = {
-                pool.submit(_download_one, ti, bbox): ti
-                for ti, bbox in enumerate(tiles)
-            }
-            first_error: Exception | None = None
-            done = 0
-            for fut in as_completed(futures):
-                try:
-                    ti, path, size = fut.result()
-                except Exception as exc:
-                    # Fail fast: cancel the rest so we don't pile up
-                    # partial tile files and network traffic.
-                    if first_error is None:
-                        first_error = exc
-                    for other in futures:
-                        other.cancel()
-                    continue
-                tile_paths[ti] = path
-                done += 1
-                logger.info('  Tile %d/%d OK (%.1f MB)',
-                            done, len(tiles), size / 1e6)
-
-            if first_error is not None:
-                # Remove any partial tiles to keep the data dir clean.
-                for p in tile_paths:
-                    if p and os.path.exists(p):
-                        try:
-                            os.remove(p)
-                        except OSError:
-                            pass
-                raise first_error
-
-        merge_tiles([p for p in tile_paths if p], out_path)
-
-    import rasterio
-    with rasterio.open(out_path) as ds:
-        logger.info(
-            '%s: %s (%d×%d, %.1f MB, %d src images, %d tiles)',
-            sensor_label, out_path, ds.width, ds.height,
-            os.path.getsize(out_path) / 1e6, n_images, len(tiles),
+        tile_paths = _download_tiles_parallel(
+            composite, tiles, scale_deg, base, sensor_label,
         )
+        merge_tiles(tile_paths, out_path)
 
+    _log_downloaded(out_path, sensor_label, n_images, len(tiles))
     return out_path

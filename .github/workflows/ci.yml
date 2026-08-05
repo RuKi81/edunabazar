@@ -56,13 +56,13 @@ jobs:
 
       # Complexity gate for packages brought to zero C901 in 2026-08
       # (safety-net tests + decompose campaign): ALL of legacy (except the
-      # one-off import_legacy_dump), my_fields, agrocosmos/views and the
-      # small core packages. agrocosmos commands/services are NOT yet
-      # clean — extend the path list as they get refactored, never
-      # shrink it.
+      # one-off import_legacy_dump), my_fields, agrocosmos/views and
+      # agrocosmos/services and the small core packages. agrocosmos
+      # commands are NOT yet clean — extend the path list as they get
+      # refactored, never shrink it.
       - name: Flake8 complexity gate (C901-clean packages)
         run: |
-          flake8 legacy my_fields agrocosmos/views users core enb_django --select=C901 --max-complexity=10 --count --show-source --extend-exclude=legacy/management/commands/import_legacy_dump.py
+          flake8 legacy my_fields agrocosmos/views agrocosmos/services users core enb_django --select=C901 --max-complexity=10 --count --show-source --extend-exclude=legacy/management/commands/import_legacy_dump.py
 
       - name: Flake8 (advisory formatting report)
         run: |
