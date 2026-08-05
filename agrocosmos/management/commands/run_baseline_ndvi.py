@@ -252,15 +252,42 @@ class Command(BaseCommand):
             self.stderr.write('--year-to must be >= --year-from')
             return
 
-        min_valid = options['min_valid']
-        concurrency = options['concurrency']
-        force = options['force']
-        skip_baseline = options['skip_baseline']
-        dry_run = options['dry_run']
-        no_monitor = options['no_monitor']
-        refresh_sec = max(5, int(options['refresh_sec']))
+        to_enqueue, skipped, already_running = self._plan(
+            regions, year_from, year_to, options['force'])
 
-        # ── Plan ────────────────────────────────────────────────────
+        self._print_banner(
+            options, regions, year_from, year_to,
+            to_enqueue, skipped, already_running,
+        )
+        self._print_skipped(skipped)
+
+        if options['dry_run']:
+            self.stdout.write('\n--dry-run: nothing was written.')
+            return
+
+        new_run_ids = self._enqueue_all(
+            to_enqueue, year_from, year_to,
+            options['min_valid'], options['skip_baseline'],
+        )
+
+        all_run_ids = new_run_ids + [rid for _, rid in already_running]
+
+        if not all_run_ids:
+            self.stdout.write('\nNothing to monitor — exiting.')
+            return
+
+        if options['no_monitor']:
+            self.stdout.write(
+                f'\nEnqueued {len(new_run_ids)} run(s); --no-monitor set, '
+                f'exiting. Workers will pick them up automatically.'
+            )
+            return
+
+        self._monitor(all_run_ids,
+                      refresh_sec=max(5, int(options['refresh_sec'])))
+
+    def _plan(self, regions, year_from, year_to, force):
+        """Split regions → (to_enqueue, skipped, already_running)."""
         to_enqueue: list[Region] = []
         skipped: list[tuple[Region, str]] = []  # (region, reason)
         already_running: list[tuple[Region, int]] = []  # (region, run_id)
@@ -278,15 +305,18 @@ class Command(BaseCommand):
             elif st == PipelineRun.Status.FAILED:
                 # Failed runs are retried automatically.
                 to_enqueue.append(r)
+        return to_enqueue, skipped, already_running
 
-        # ── Banner ──────────────────────────────────────────────────
+    def _print_banner(self, options, regions, year_from, year_to,
+                      to_enqueue, skipped, already_running):
+        concurrency = options['concurrency']
         self.stdout.write('═══════════════════════════════════════════════')
         self.stdout.write('  run_baseline_ndvi — mass orchestrator')
         self.stdout.write(f'  Regions matched : {len(regions)}')
         self.stdout.write(f'  Window          : {year_from}..{year_to}')
-        self.stdout.write(f'  Min valid ratio : {min_valid:.0%}')
-        self.stdout.write(f'  Skip baseline   : {skip_baseline}')
-        self.stdout.write(f'  Force re-run    : {force}')
+        self.stdout.write(f'  Min valid ratio : {options["min_valid"]:.0%}')
+        self.stdout.write(f'  Skip baseline   : {options["skip_baseline"]}')
+        self.stdout.write(f'  Force re-run    : {options["force"]}')
         self.stdout.write(f'  To enqueue      : {len(to_enqueue)}')
         self.stdout.write(f'  Skipped         : {len(skipped)}')
         self.stdout.write(f'  Already in queue: {len(already_running)}')
@@ -294,36 +324,21 @@ class Command(BaseCommand):
                           f'(set via "docker compose up -d --scale worker={concurrency}")')
         self.stdout.write('═══════════════════════════════════════════════')
 
-        if skipped:
-            self.stdout.write('\nSkipped:')
-            for r, why in skipped[:20]:
-                self.stdout.write(f'  {r.name:40s} — {why}')
-            if len(skipped) > 20:
-                self.stdout.write(f'  … and {len(skipped) - 20} more')
-
-        if dry_run:
-            self.stdout.write('\n--dry-run: nothing was written.')
+    def _print_skipped(self, skipped):
+        if not skipped:
             return
+        self.stdout.write('\nSkipped:')
+        for r, why in skipped[:20]:
+            self.stdout.write(f'  {r.name:40s} — {why}')
+        if len(skipped) > 20:
+            self.stdout.write(f'  … and {len(skipped) - 20} more')
 
-        # ── Enqueue ────────────────────────────────────────────────
+    def _enqueue_all(self, to_enqueue, year_from, year_to,
+                     min_valid, skip_baseline) -> list[int]:
         new_run_ids: list[int] = []
         for r in to_enqueue:
             run = self._enqueue_one(r, year_from, year_to, min_valid,
                                     skip_baseline)
             new_run_ids.append(run.pk)
             self.stdout.write(f'  + queued #{run.pk}: {r.name}')
-
-        all_run_ids = new_run_ids + [rid for _, rid in already_running]
-
-        if not all_run_ids:
-            self.stdout.write('\nNothing to monitor — exiting.')
-            return
-
-        if no_monitor:
-            self.stdout.write(
-                f'\nEnqueued {len(new_run_ids)} run(s); --no-monitor set, '
-                f'exiting. Workers will pick them up automatically.'
-            )
-            return
-
-        self._monitor(all_run_ids, refresh_sec=refresh_sec)
+        return new_run_ids
