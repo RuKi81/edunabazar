@@ -1,4 +1,5 @@
 """HTML page views: dashboards and report pages."""
+import time
 from datetime import date
 
 from django.core.cache import cache
@@ -17,6 +18,17 @@ from ._helpers import MODIS_SATELLITES, RASTER_SATELLITES
 # ``acquired_date`` column and build the year range in Python, plus cache
 # the result in Redis.
 _YEARS_CACHE_TTL = 3600  # seconds
+
+# Global farmland summary (region=all): a COUNT/SUM over ~20M rows takes
+# ~20 s. The data only changes when farmlands are (re)imported, so we cache
+# it with no TTL and rotate it explicitly:
+#   * ``prewarm_agro_caches`` on deploy (also covers a Redis flush),
+#   * lazily on a cache miss, guarded by a dogpile lock so concurrent
+#     visitors don't each run their own 20-second aggregate.
+_FARMLAND_STATS_KEY = 'agrocosmos:farmland_stats:global'
+_FARMLAND_STATS_LOCK = _FARMLAND_STATS_KEY + ':build_lock'
+_FARMLAND_STATS_LOCK_TTL = 300   # covers the slowest observed build
+_FARMLAND_STATS_POLL_MAX = 30    # seconds a follower waits for the winner
 
 
 def _years_range(first_year: int | None, last_year: int | None,
@@ -148,7 +160,7 @@ def _farmland_scope(region_id, district_id):
     aggregate against ~20M farmlands.
     """
     farmland_qs = Farmland.objects.all()
-    scope_key: str | None = 'agrocosmos:farmland_stats:global'
+    scope_key: str | None = _FARMLAND_STATS_KEY
     d_id_int = _to_int_or_none(district_id) if district_id else None
     r_id_int = _to_int_or_none(region_id) if region_id else None
     if d_id_int is not None:
@@ -160,15 +172,8 @@ def _farmland_scope(region_id, district_id):
     return farmland_qs, scope_key
 
 
-def _farmland_stats(farmland_qs, scope_key):
-    """Summary stats. The unfiltered global aggregate scans ~20M farmlands
-    and takes ~20s; cache it. Filtered (region/district) aggregates use
-    the district_id index and are sub-second, so we don't cache them.
-    """
-    cached = cache.get(scope_key) if scope_key else None
-    if cached is not None:
-        return cached['summary'], cached['crop_stats']
-
+def _compute_farmland_stats(farmland_qs):
+    """Run the aggregate SQL. ~20 s for the unfiltered global scope."""
     summary = farmland_qs.aggregate(
         total_count=Count('id'),
         total_area=Sum('area_ha'),
@@ -179,12 +184,51 @@ def _farmland_stats(farmland_qs, scope_key):
         .annotate(cnt=Count('id'), area=Sum('area_ha'))
         .order_by('-area')
     )
-    if scope_key:
-        cache.set(scope_key, {
-            'summary': summary,
-            'crop_stats': crop_stats,
-        }, _YEARS_CACHE_TTL)
     return summary, crop_stats
+
+
+def refresh_farmland_stats() -> dict:
+    """Rebuild the global farmland summary and replace the cached copy.
+
+    ``timeout=None`` — the data only changes on farmland (re)imports;
+    rotated by ``prewarm_agro_caches`` on deploy and lazily on a miss.
+    Returns the fresh payload so callers can log / inspect it.
+    """
+    summary, crop_stats = _compute_farmland_stats(Farmland.objects.all())
+    payload = {'summary': summary, 'crop_stats': crop_stats}
+    cache.set(_FARMLAND_STATS_KEY, payload, timeout=None)
+    return payload
+
+
+def _farmland_stats(farmland_qs, scope_key):
+    """Summary stats. The unfiltered global aggregate scans ~20M farmlands
+    and takes ~20s; it is cached eternally and rotated explicitly (see
+    ``refresh_farmland_stats``). Filtered (region/district) aggregates use
+    the district_id index and are sub-second, so we don't cache them.
+    """
+    if not scope_key:
+        return _compute_farmland_stats(farmland_qs)
+
+    cached = cache.get(scope_key)
+    if cached is not None:
+        return cached['summary'], cached['crop_stats']
+
+    # Cache miss (Redis flush / first run). Dogpile guard: only one
+    # worker runs the 20-second aggregate; followers poll the cache and
+    # fall through to their own build only if the winner died.
+    if not cache.add(_FARMLAND_STATS_LOCK, '1',
+                     timeout=_FARMLAND_STATS_LOCK_TTL):
+        for _ in range(_FARMLAND_STATS_POLL_MAX):
+            time.sleep(1.0)
+            cached = cache.get(scope_key)
+            if cached is not None:
+                return cached['summary'], cached['crop_stats']
+
+    try:
+        payload = refresh_farmland_stats()
+    finally:
+        cache.delete(_FARMLAND_STATS_LOCK)
+    return payload['summary'], payload['crop_stats']
 
 
 def dashboard(request: HttpRequest) -> HttpResponse:

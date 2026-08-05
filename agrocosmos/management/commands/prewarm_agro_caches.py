@@ -78,7 +78,23 @@ class Command(BaseCommand):
             f'cached in {time.time() - t:.1f}s'
         ))
 
-        # 2. Optional per-date timeline snapshots.
+        # 2. Global farmland summary for the dashboard header (region=all).
+        # Cached with no TTL; without this prewarm the first post-deploy /
+        # post-Redis-flush visitor pays the ~20 s aggregate inline.
+        t = time.time()
+        try:
+            from agrocosmos.views.pages import refresh_farmland_stats
+            stats = refresh_farmland_stats()
+            self.stdout.write(self.style.SUCCESS(
+                f'farmland_stats: {stats["summary"]["total_count"] or 0} '
+                f'farmlands summarised in {time.time() - t:.1f}s'
+            ))
+        except Exception as exc:
+            self.stderr.write(self.style.ERROR(
+                f'farmland_stats prewarm failed (non-fatal): {exc}'
+            ))
+
+        # 3. Optional per-date timeline snapshots.
         if not opts['with_timeline']:
             return
 
