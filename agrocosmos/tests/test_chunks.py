@@ -5,7 +5,18 @@ This function drives the MODIS 16-day compositing grid and MUST stay
 anchored to January 1st of the target year, otherwise downstream
 records get misaligned dates (regression test for the Mar 29 / Apr 2 bug).
 """
+import sys
 from datetime import date
+from unittest import mock
+
+# Локально нет earthengine-api/rasterio — подменяем до импорта сервисов.
+for _mod in ('ee', 'rasterio', 'rasterio.mask', 'rasterio.features',
+             'rasterstats'):
+    if _mod not in sys.modules:
+        try:
+            __import__(_mod)
+        except ImportError:
+            sys.modules[_mod] = mock.MagicMock()
 
 from django.test import SimpleTestCase
 

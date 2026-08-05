@@ -207,52 +207,64 @@ class Command(BaseCommand):
         total_staged = 0
         total_inserted = 0
         for idx, shp in enumerate(shps, 1):
-            staging = f'staging_farmland_{self._slug(region.code)}_{idx}'
-            self.stdout.write(
-                f'  [{idx}/{len(shps)}] running ogr2ogr {shp.name} → {staging}…'
+            staged_rows, inserted = self._import_shp(
+                shp, idx, len(shps), region, schema, source_id, options,
             )
-            ogr_result = run_ogr2ogr(
-                shp, staging, schema,
-                binary=options['ogr2ogr'],
-                log_stream=self.stdout,
-            )
-            if ogr_result.returncode != 0:
-                self.stderr.write(self.style.WARNING(
-                    f'    ogr2ogr rc={ogr_result.returncode} '
-                    f'(continuing — some features may have been skipped)'
-                ))
-
-            with connection.cursor() as cur:
-                try:
-                    cur.execute(build_count_staging_sql(staging))
-                    staged_rows = cur.fetchone()[0]
-                except Exception as exc:
-                    self._drop_staging_silent(staging)
-                    self.stderr.write(self.style.WARNING(
-                        f'    staging missing after ogr2ogr: {exc}; skipping this half'
-                    ))
-                    continue
-
-                if staged_rows == 0:
-                    self.stdout.write(self.style.WARNING(
-                        '    staging is empty (no agricultural rows matched)'
-                    ))
-                    cur.execute(build_drop_staging_sql(staging))
-                    continue
-
-                self.stdout.write(f'    staged {staged_rows:,} rows, promoting…')
-                insert_sql = build_insert_sql(
-                    schema, staging, region_id=region.pk, source_id=source_id,
-                )
-                with transaction.atomic():
-                    cur.execute(insert_sql)
-                    inserted = cur.rowcount
-                cur.execute(build_drop_staging_sql(staging))
-
             total_staged += staged_rows
             total_inserted += inserted
 
         return {'status': 'ok', 'staged': total_staged, 'inserted': total_inserted}
+
+    def _import_shp(self, shp: Path, idx: int, shp_count: int,
+                    region: Region, schema, source_id: str,
+                    options: dict) -> tuple[int, int]:
+        """ogr2ogr one .shp into staging, then promote → agro_farmland.
+
+        Returns (staged_rows, inserted_rows); (0, 0) if the staging table
+        is missing or empty after ogr2ogr."""
+        staging = f'staging_farmland_{self._slug(region.code)}_{idx}'
+        self.stdout.write(
+            f'  [{idx}/{shp_count}] running ogr2ogr {shp.name} → {staging}…'
+        )
+        ogr_result = run_ogr2ogr(
+            shp, staging, schema,
+            binary=options['ogr2ogr'],
+            log_stream=self.stdout,
+        )
+        if ogr_result.returncode != 0:
+            self.stderr.write(self.style.WARNING(
+                f'    ogr2ogr rc={ogr_result.returncode} '
+                f'(continuing — some features may have been skipped)'
+            ))
+
+        with connection.cursor() as cur:
+            try:
+                cur.execute(build_count_staging_sql(staging))
+                staged_rows = cur.fetchone()[0]
+            except Exception as exc:
+                self._drop_staging_silent(staging)
+                self.stderr.write(self.style.WARNING(
+                    f'    staging missing after ogr2ogr: {exc}; skipping this half'
+                ))
+                return 0, 0
+
+            if staged_rows == 0:
+                self.stdout.write(self.style.WARNING(
+                    '    staging is empty (no agricultural rows matched)'
+                ))
+                cur.execute(build_drop_staging_sql(staging))
+                return 0, 0
+
+            self.stdout.write(f'    staged {staged_rows:,} rows, promoting…')
+            insert_sql = build_insert_sql(
+                schema, staging, region_id=region.pk, source_id=source_id,
+            )
+            with transaction.atomic():
+                cur.execute(insert_sql)
+                inserted = cur.rowcount
+            cur.execute(build_drop_staging_sql(staging))
+
+        return staged_rows, inserted
 
     # ------------------------------------------------------------------
     # Helpers
