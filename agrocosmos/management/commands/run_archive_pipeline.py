@@ -249,13 +249,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         self._run_id = options['run_id']
-        try:
-            self._log_file_path = (
-                PipelineRun.objects.filter(pk=self._run_id)
-                .values_list('log_file', flat=True).first() or None
-            )
-        except Exception:
-            self._log_file_path = None
+        self._load_log_file_path()
 
         region_id = options['region_id']
         year_from = options['year_from']
@@ -269,50 +263,17 @@ class Command(BaseCommand):
             self._mark('failed')
             return
 
-        # ── SIGTERM / SIGINT: mark failed so we don't leak running ──
-        def _on_term(signum, _frame):
-            self._log(f'[signal] received signal {signum}, marking failed')
-            self._flush_log_to_db(final=True)
-            self._mark('failed')
-            sys.exit(1)
+        self._install_signal_handlers()
 
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            try:
-                signal.signal(sig, _on_term)
-            except (ValueError, OSError):
-                pass
-
-        # ── Resolve scope ──
-        try:
-            reg = Region.objects.get(pk=region_id)
-        except Region.DoesNotExist as exc:
-            self._log(f'scope error: {exc}')
-            self._flush_log_to_db(final=True)
-            self._mark('failed')
+        reg = self._resolve_region(region_id)
+        if reg is None:
             return
 
-        # ── Bootstrap: save PID, mark running ──
-        try:
-            PipelineRun.objects.filter(pk=self._run_id).update(
-                pid=os.getpid(),
-                status='running',
-                heartbeat_at=timezone.now(),
-            )
-        except Exception as exc:
-            print(f'[bootstrap] warning: {exc}', flush=True)
+        self._bootstrap_run()
 
         sw = _Stopwatch()
-        self._log('═══════════════════════════════════════════════')
-        self._log(f'  Archive pipeline run_id={self._run_id}  pid={os.getpid()}')
-        self._log(f'  Region: {reg.name} (id={reg.pk})')
-        self._log(f'  Window: {year_from}..{year_to}   Min valid: {min_valid:.0%}')
-        flags = []
-        if overwrite:
-            flags.append('overwrite')
-        if skip_baseline:
-            flags.append('skip-baseline')
-        self._log(f'  Flags: [{", ".join(flags) or "none"}]')
-        self._log('═══════════════════════════════════════════════')
+        self._print_header(reg, year_from, year_to, min_valid,
+                           overwrite, skip_baseline)
 
         self._start_heartbeat()
         try:
@@ -341,3 +302,61 @@ class Command(BaseCommand):
             raise
         finally:
             self._stop_heartbeat()
+
+    def _load_log_file_path(self) -> None:
+        try:
+            self._log_file_path = (
+                PipelineRun.objects.filter(pk=self._run_id)
+                .values_list('log_file', flat=True).first() or None
+            )
+        except Exception:
+            self._log_file_path = None
+
+    def _install_signal_handlers(self) -> None:
+        """SIGTERM / SIGINT: mark failed so we don't leak running."""
+        def _on_term(signum, _frame):
+            self._log(f'[signal] received signal {signum}, marking failed')
+            self._flush_log_to_db(final=True)
+            self._mark('failed')
+            sys.exit(1)
+
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                signal.signal(sig, _on_term)
+            except (ValueError, OSError):
+                pass
+
+    def _resolve_region(self, region_id):
+        """Validate scope → Region; None → abort (run marked failed)."""
+        try:
+            return Region.objects.get(pk=region_id)
+        except Region.DoesNotExist as exc:
+            self._log(f'scope error: {exc}')
+            self._flush_log_to_db(final=True)
+            self._mark('failed')
+            return None
+
+    def _bootstrap_run(self) -> None:
+        """Bootstrap: save PID, mark running."""
+        try:
+            PipelineRun.objects.filter(pk=self._run_id).update(
+                pid=os.getpid(),
+                status='running',
+                heartbeat_at=timezone.now(),
+            )
+        except Exception as exc:
+            print(f'[bootstrap] warning: {exc}', flush=True)
+
+    def _print_header(self, reg, year_from, year_to, min_valid,
+                      overwrite, skip_baseline) -> None:
+        self._log('═══════════════════════════════════════════════')
+        self._log(f'  Archive pipeline run_id={self._run_id}  pid={os.getpid()}')
+        self._log(f'  Region: {reg.name} (id={reg.pk})')
+        self._log(f'  Window: {year_from}..{year_to}   Min valid: {min_valid:.0%}')
+        flags = []
+        if overwrite:
+            flags.append('overwrite')
+        if skip_baseline:
+            flags.append('skip-baseline')
+        self._log(f'  Flags: [{", ".join(flags) or "none"}]')
+        self._log('═══════════════════════════════════════════════')
