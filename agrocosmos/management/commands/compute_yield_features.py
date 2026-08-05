@@ -124,29 +124,43 @@ class Command(BaseCommand):
             f'  Версия фичей:   {version}'
         ))
 
-        # Skip уже посчитанных, если не --force
         if not opts['force']:
-            existing = set(
-                YieldFeatures.objects
-                .filter(crop=crop, feature_set_version=version, district__isnull=True)
-                .values_list('region_id', 'year')
-            )
-            before = len(pairs)
-            pairs = [(r, y) for (r, y) in pairs if (r.id, y) not in existing]
-            if before != len(pairs):
-                self.stdout.write(
-                    f'  Пропущено уже посчитанных: {before - len(pairs)} '
-                    f'(используйте --force, чтобы пересчитать)'
-                )
+            pairs = self._skip_existing(pairs, crop, version)
 
-        # ── Прогон ───────────────────────────────────────────────────
+        stats, results = self._compute_all(pairs, crop_type, opts['verbose'])
+
+        if opts['dry_run']:
+            self._print_summary(stats, results, dry_run=True, version=version)
+            return
+
+        self._save_results(results, crop, version, stats)
+        self._print_summary(stats, results, dry_run=False, version=version)
+
+    def _skip_existing(self, pairs, crop, version):
+        """Убрать пары, для которых YieldFeatures уже посчитаны."""
+        existing = set(
+            YieldFeatures.objects
+            .filter(crop=crop, feature_set_version=version, district__isnull=True)
+            .values_list('region_id', 'year')
+        )
+        before = len(pairs)
+        pairs = [(r, y) for (r, y) in pairs if (r.id, y) not in existing]
+        if before != len(pairs):
+            self.stdout.write(
+                f'  Пропущено уже посчитанных: {before - len(pairs)} '
+                f'(используйте --force, чтобы пересчитать)'
+            )
+        return pairs
+
+    def _compute_all(self, pairs, crop_type, verbose):
+        """Прогон ``compute_region_features`` по всем парам."""
         stats = defaultdict(int)
         results: list[tuple[Region, int, object]] = []
         for region, year in pairs:
             features = compute_region_features(region, year, crop_type=crop_type)
             if features is None:
                 stats['skipped'] += 1
-                if opts['verbose']:
+                if verbose:
                     self.stdout.write(
                         self.style.WARNING(
                             f'  ✗ {region.name} / {year} — фенология не детектируется'
@@ -155,22 +169,23 @@ class Command(BaseCommand):
                 continue
             stats['computed'] += 1
             results.append((region, year, features))
-            if opts['verbose']:
-                f = features
-                self.stdout.write(
-                    f'  ✓ {region.name:30s} / {year}  '
-                    f'peak={f.peak_ndvi:.3f} @DOY{f.peak_ndvi_doy:3d}  '
-                    f'SOS={f.sos_doy:3d}  LOS={f.length_of_season:3d}d  '
-                    f'iNDVI_tot={f.indvi_total:5.1f}  '
-                    f'iNDVI_rep={f.indvi_repro:4.1f}  '
-                    f'(n={f.n_observations})'
-                )
+            if verbose:
+                self._print_pair(region, year, features)
+        return stats, results
 
-        # ── Сохранение ───────────────────────────────────────────────
-        if opts['dry_run']:
-            self._print_summary(stats, results, dry_run=True, version=version)
-            return
+    def _print_pair(self, region, year, f):
+        self.stdout.write(
+            f'  ✓ {region.name:30s} / {year}  '
+            f'peak={f.peak_ndvi:.3f} @DOY{f.peak_ndvi_doy:3d}  '
+            f'SOS={f.sos_doy:3d}  LOS={f.length_of_season:3d}d  '
+            f'iNDVI_tot={f.indvi_total:5.1f}  '
+            f'iNDVI_rep={f.indvi_repro:4.1f}  '
+            f'(n={f.n_observations})'
+        )
 
+    @staticmethod
+    def _save_results(results, crop, version, stats):
+        """Upsert результатов в YieldFeatures (region-scope)."""
         with transaction.atomic():
             for region, year, features in results:
                 _, created = YieldFeatures.objects.update_or_create(
@@ -182,12 +197,7 @@ class Command(BaseCommand):
                         'season_complete': is_season_complete(year),
                     },
                 )
-                if created:
-                    stats['created'] += 1
-                else:
-                    stats['updated'] += 1
-
-        self._print_summary(stats, results, dry_run=False, version=version)
+                stats['created' if created else 'updated'] += 1
 
     # ── Хелперы выбора входных данных ────────────────────────────────
     def _select_regions(self, region_arg: str | None) -> list[Region]:
