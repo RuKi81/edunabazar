@@ -287,162 +287,207 @@ def import_farmland_vector(uploaded_file, region_id,
         return 0, 0, ['Неподдерживаемый формат. Используйте ZIP (с .shp) или GeoJSON.']
 
 
+def _district_lookup(region):
+    """``(name->District, fallback)``; fallback — единственный район региона."""
+    districts = {d.name.lower(): d for d in District.objects.filter(region=region)}
+    fallback = list(districts.values())[0] if len(districts) == 1 else None
+    return districts, fallback
+
+
+def _ensure_area(area, geom):
+    """Площадь из атрибута, а при отсутствии — из геометрии (UTM 37N, га)."""
+    if area > 0:
+        return area
+    try:
+        gp = geom.clone()
+        gp.transform(32637)
+        return round(gp.area / 10000, 4)
+    except Exception:
+        return 0
+
+
+class _FarmlandBatch:
+    """Накопитель для bulk_create по 500 записей."""
+
+    def __init__(self, size=500):
+        self._size = size
+        self._batch = []
+        self.created = 0
+
+    def add(self, farmland):
+        self._batch.append(farmland)
+        if len(self._batch) >= self._size:
+            self.flush()
+
+    def flush(self):
+        if self._batch:
+            Farmland.objects.bulk_create(self._batch)
+            self.created += len(self._batch)
+            self._batch = []
+
+
+def _geojson_farmland(feat, region, crop_field, area_field, cad_field,
+                      dist_field, districts, fallback, auto_create):
+    """``(Farmland | None, error | None)`` из GeoJSON-фичи.
+
+    ``(None, None)`` — пропуск без ошибки (нет района).
+    """
+    props = feat.get('properties', {})
+    dist_name = str(props.get(dist_field, '')).strip()
+    district = _resolve_district(
+        dist_name, districts, region, auto_create, fallback,
+    )
+    if not district:
+        return None, None
+
+    crop_type = _resolve_crop_type(str(props.get(crop_field, '')))
+
+    try:
+        area = float(props.get(area_field, 0) or 0)
+    except (TypeError, ValueError):
+        area = 0
+
+    cadastral = str(props.get(cad_field, '') or '').strip()
+
+    try:
+        geom = GEOSGeometry(json.dumps(feat['geometry']), srid=4326)
+        geom = _to_multi(geom)
+    except Exception as e:
+        return None, str(e)
+
+    area = _ensure_area(area, geom)
+
+    return Farmland(
+        district=district, crop_type=crop_type,
+        cadastral_number=cadastral, area_ha=area, geom=geom,
+        properties={k: str(v) for k, v in props.items()} if props else None,
+    ), None
+
+
 def _import_farmland_geojson(path, region, crop_field, area_field,
-                              cad_field, dist_field, encoding,
-                              auto_create_districts):
+                             cad_field, dist_field, encoding,
+                             auto_create_districts):
     with open(path, 'r', encoding=encoding) as f:
         data = json.load(f)
 
-    features = data.get('features', [])
-    districts = {d.name.lower(): d for d in District.objects.filter(region=region)}
-    fallback = list(districts.values())[0] if len(districts) == 1 else None
-
-    batch = []
-    created = skipped = 0
+    districts, fallback = _district_lookup(region)
+    batch = _FarmlandBatch()
+    skipped = 0
     errors = []
 
-    for feat in features:
-        props = feat.get('properties', {})
-        dist_name = str(props.get(dist_field, '')).strip()
-        district = _resolve_district(
-            dist_name, districts, region, auto_create_districts, fallback,
+    for feat in data.get('features', []):
+        farmland, error = _geojson_farmland(
+            feat, region, crop_field, area_field, cad_field,
+            dist_field, districts, fallback, auto_create_districts,
         )
-        if not district:
+        if error:
+            errors.append(error)
+        if farmland is None:
             skipped += 1
             continue
+        batch.add(farmland)
 
-        crop_type = _resolve_crop_type(str(props.get(crop_field, '')))
+    batch.flush()
+    return batch.created, skipped, errors
 
-        try:
-            area = float(props.get(area_field, 0) or 0)
-        except (TypeError, ValueError):
-            area = 0
 
-        cadastral = str(props.get(cad_field, '') or '').strip()
+def _shp_attr(feat, field, default=''):
+    """Строковый атрибут SHP-фичи; ошибка чтения → default."""
+    try:
+        return str(feat.get(field))
+    except Exception:
+        return default
 
-        try:
-            geom = GEOSGeometry(json.dumps(feat['geometry']), srid=4326)
-            geom = _to_multi(geom)
-        except Exception as e:
-            errors.append(str(e))
-            skipped += 1
+
+def _shp_geom(feat):
+    """MultiPolygon 4326 из геометрии SHP-фичи."""
+    geom = GEOSGeometry(feat.geom.wkt, srid=feat.geom.srid or 4326)
+    if geom.srid != 4326:
+        geom.transform(4326)
+    return _to_multi(geom)
+
+
+def _shp_extra_props(feat, layer_fields, used_fields):
+    """Остальные атрибуты слоя в dict строк (кроме уже использованных)."""
+    extra_props = {}
+    for field_name in layer_fields:
+        if field_name in used_fields:
             continue
+        try:
+            val = feat.get(field_name)
+            if val is not None:
+                extra_props[field_name] = str(val)
+        except Exception:
+            pass
+    return extra_props
 
-        if area <= 0:
-            try:
-                gp = geom.clone()
-                gp.transform(32637)
-                area = round(gp.area / 10000, 4)
-            except Exception:
-                area = 0
 
-        batch.append(Farmland(
-            district=district, crop_type=crop_type,
-            cadastral_number=cadastral, area_ha=area, geom=geom,
-            properties={k: str(v) for k, v in props.items()} if props else None,
-        ))
+def _shp_farmland(feat, layer_fields, region, crop_field, area_field,
+                  cad_field, dist_field, districts, fallback, auto_create):
+    """``(Farmland | None, error | None)`` из SHP-фичи."""
+    dist_name = _shp_attr(feat, dist_field)
+    district = _resolve_district(
+        dist_name, districts, region, auto_create, fallback,
+    )
+    if not district:
+        return None, None
 
-        if len(batch) >= 500:
-            Farmland.objects.bulk_create(batch)
-            created += len(batch)
-            batch = []
+    crop_type = _resolve_crop_type(_shp_attr(feat, crop_field))
 
-    if batch:
-        Farmland.objects.bulk_create(batch)
-        created += len(batch)
+    try:
+        area = float(feat.get(area_field) or 0)
+    except Exception:
+        area = 0
 
-    return created, skipped, errors
+    try:
+        cadastral = str(feat.get(cad_field) or '').strip()
+    except Exception:
+        cadastral = ''
+
+    try:
+        geom = _shp_geom(feat)
+    except Exception as e:
+        return None, str(e)
+
+    area = _ensure_area(area, geom)
+    extra_props = _shp_extra_props(
+        feat, layer_fields, (dist_field, crop_field, area_field, cad_field),
+    )
+
+    return Farmland(
+        district=district, crop_type=crop_type,
+        cadastral_number=cadastral, area_ha=area, geom=geom,
+        properties=extra_props if extra_props else None,
+    ), None
 
 
 def _import_farmland_shp(path, region, crop_field, area_field,
-                          cad_field, dist_field, encoding,
-                          auto_create_districts):
+                         cad_field, dist_field, encoding,
+                         auto_create_districts):
     from django.contrib.gis.gdal import DataSource
     ds = DataSource(path, encoding=encoding)
     layer = ds[0]
 
-    districts = {d.name.lower(): d for d in District.objects.filter(region=region)}
-    fallback = list(districts.values())[0] if len(districts) == 1 else None
-
-    batch = []
-    created = skipped = 0
+    districts, fallback = _district_lookup(region)
+    batch = _FarmlandBatch()
+    skipped = 0
     errors = []
 
     for feat in layer:
-        dist_name = ''
-        try:
-            dist_name = str(feat.get(dist_field))
-        except Exception:
-            pass
-
-        district = _resolve_district(
-            dist_name, districts, region, auto_create_districts, fallback,
+        farmland, error = _shp_farmland(
+            feat, layer.fields, region, crop_field, area_field,
+            cad_field, dist_field, districts, fallback,
+            auto_create_districts,
         )
-        if not district:
+        if error:
+            errors.append(error)
+        if farmland is None:
             skipped += 1
             continue
+        batch.add(farmland)
 
-        crop_raw = ''
-        try:
-            crop_raw = str(feat.get(crop_field))
-        except Exception:
-            pass
-        crop_type = _resolve_crop_type(crop_raw)
-
-        try:
-            area = float(feat.get(area_field) or 0)
-        except Exception:
-            area = 0
-
-        try:
-            cadastral = str(feat.get(cad_field) or '').strip()
-        except Exception:
-            cadastral = ''
-
-        try:
-            geom = GEOSGeometry(feat.geom.wkt, srid=feat.geom.srid or 4326)
-            if geom.srid != 4326:
-                geom.transform(4326)
-            geom = _to_multi(geom)
-        except Exception as e:
-            errors.append(str(e))
-            skipped += 1
-            continue
-
-        if area <= 0:
-            try:
-                gp = geom.clone()
-                gp.transform(32637)
-                area = round(gp.area / 10000, 4)
-            except Exception:
-                area = 0
-
-        extra_props = {}
-        for field_name in layer.fields:
-            if field_name not in (dist_field, crop_field, area_field, cad_field):
-                try:
-                    val = feat.get(field_name)
-                    if val is not None:
-                        extra_props[field_name] = str(val)
-                except Exception:
-                    pass
-
-        batch.append(Farmland(
-            district=district, crop_type=crop_type,
-            cadastral_number=cadastral, area_ha=area, geom=geom,
-            properties=extra_props if extra_props else None,
-        ))
-
-        if len(batch) >= 500:
-            Farmland.objects.bulk_create(batch)
-            created += len(batch)
-            batch = []
-
-    if batch:
-        Farmland.objects.bulk_create(batch)
-        created += len(batch)
-
-    return created, skipped, errors
+    batch.flush()
+    return batch.created, skipped, errors
 
 
 def _resolve_district(raw, districts, region, auto_create, fallback):
