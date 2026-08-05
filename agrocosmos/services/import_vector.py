@@ -327,7 +327,8 @@ class _FarmlandBatch:
 
 
 def _geojson_farmland(feat, region, crop_field, area_field, cad_field,
-                      dist_field, districts, fallback, auto_create):
+                      dist_field, districts, fallback, auto_create,
+                      default_crop='arable'):
     """``(Farmland | None, error | None)`` из GeoJSON-фичи.
 
     ``(None, None)`` — пропуск без ошибки (нет района).
@@ -340,7 +341,7 @@ def _geojson_farmland(feat, region, crop_field, area_field, cad_field,
     if not district:
         return None, None
 
-    crop_type = _resolve_crop_type(str(props.get(crop_field, '')))
+    crop_type = _resolve_crop_type(str(props.get(crop_field, '')), default_crop)
 
     try:
         area = float(props.get(area_field, 0) or 0)
@@ -423,7 +424,8 @@ def _shp_extra_props(feat, layer_fields, used_fields):
 
 
 def _shp_farmland(feat, layer_fields, region, crop_field, area_field,
-                  cad_field, dist_field, districts, fallback, auto_create):
+                  cad_field, dist_field, districts, fallback, auto_create,
+                  default_crop='arable'):
     """``(Farmland | None, error | None)`` из SHP-фичи."""
     dist_name = _shp_attr(feat, dist_field)
     district = _resolve_district(
@@ -432,7 +434,7 @@ def _shp_farmland(feat, layer_fields, region, crop_field, area_field,
     if not district:
         return None, None
 
-    crop_type = _resolve_crop_type(_shp_attr(feat, crop_field))
+    crop_type = _resolve_crop_type(_shp_attr(feat, crop_field), default_crop)
 
     try:
         area = float(feat.get(area_field) or 0)
