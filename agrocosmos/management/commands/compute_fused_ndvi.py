@@ -101,57 +101,69 @@ class Command(BaseCommand):
             )
 
         try:
-            # 1. Optional wipe
-            if overwrite and not dry_run:
-                deleted = self._wipe_existing(region, district, year)
-                self.stdout.write(f'  [wipe] Removed {deleted} existing fused records')
-
-            # 2. Stream source observations and bucket per farmland
-            per_fl = self._load_observations(region, district, year)
-            if not per_fl:
-                self.stdout.write(self.style.WARNING(
-                    '  No S2/Landsat observations found for the given scope.'
-                ))
-                if run:
-                    run.status = PipelineRun.Status.COMPLETED
-                    run.finished_at = timezone.now()
-                    run.save(update_fields=['status', 'finished_at'])
-                return
-
-            self.stdout.write(f'  [load] {len(per_fl)} farmlands with source data')
-
-            # 3. Fuse in memory
-            fused_by_farmland = self._fuse_all(per_fl)
-            total_points = sum(len(v) for v in fused_by_farmland.values())
-            self.stdout.write(f'  [fuse] {total_points} fused observations produced')
-
-            if dry_run:
-                self.stdout.write(self.style.SUCCESS('  Dry-run — nothing written.'))
-                return
-
-            # 4. Persist: scenes + vegetation indices
-            created_scenes, created_vi = self._persist(
-                fused_by_farmland, region, district,
-            )
-            self.stdout.write(self.style.SUCCESS(
-                f'  [write] scenes={created_scenes}, vegetation_index={created_vi}'
-            ))
-
-            if run:
-                run.status = PipelineRun.Status.COMPLETED
-                run.records_count = created_vi
-                run.finished_at = timezone.now()
-                run.save(update_fields=['status', 'records_count', 'finished_at'])
-
+            self._execute(region, district, year, overwrite, dry_run, run)
         except Exception as exc:
-            if run:
-                run.status = PipelineRun.Status.FAILED
-                run.log = str(exc)[:4000]
-                run.finished_at = timezone.now()
-                run.save(update_fields=['status', 'log', 'finished_at'])
+            self._fail_run(run, exc)
             raise
 
+    def _execute(self, region, district, year, overwrite, dry_run, run):
+        """Run the fusion pipeline: wipe → load → fuse → persist."""
+        # 1. Optional wipe
+        if overwrite and not dry_run:
+            deleted = self._wipe_existing(region, district, year)
+            self.stdout.write(f'  [wipe] Removed {deleted} existing fused records')
+
+        # 2. Stream source observations and bucket per farmland
+        per_fl = self._load_observations(region, district, year)
+        if not per_fl:
+            self.stdout.write(self.style.WARNING(
+                '  No S2/Landsat observations found for the given scope.'
+            ))
+            self._complete_run(run)
+            return
+
+        self.stdout.write(f'  [load] {len(per_fl)} farmlands with source data')
+
+        # 3. Fuse in memory
+        fused_by_farmland = self._fuse_all(per_fl)
+        total_points = sum(len(v) for v in fused_by_farmland.values())
+        self.stdout.write(f'  [fuse] {total_points} fused observations produced')
+
+        if dry_run:
+            self.stdout.write(self.style.SUCCESS('  Dry-run — nothing written.'))
+            return
+
+        # 4. Persist: scenes + vegetation indices
+        created_scenes, created_vi = self._persist(
+            fused_by_farmland, region, district,
+        )
+        self.stdout.write(self.style.SUCCESS(
+            f'  [write] scenes={created_scenes}, vegetation_index={created_vi}'
+        ))
+        self._complete_run(run, records_count=created_vi)
+
     # ------------------------------------------------------------------ helpers
+
+    @staticmethod
+    def _complete_run(run, records_count=None):
+        if not run:
+            return
+        run.status = PipelineRun.Status.COMPLETED
+        run.finished_at = timezone.now()
+        fields = ['status', 'finished_at']
+        if records_count is not None:
+            run.records_count = records_count
+            fields.append('records_count')
+        run.save(update_fields=fields)
+
+    @staticmethod
+    def _fail_run(run, exc):
+        if not run:
+            return
+        run.status = PipelineRun.Status.FAILED
+        run.log = str(exc)[:4000]
+        run.finished_at = timezone.now()
+        run.save(update_fields=['status', 'log', 'finished_at'])
 
     def _resolve_scope(self, region_id, district_id):
         if district_id:
@@ -281,7 +293,15 @@ class Command(BaseCommand):
             .values_list('pk', 'district_id')
         )
 
-        # 1. Collect unique (district_id, acquired_date) scene keys
+        scene_keys = self._collect_scene_keys(fused_by_farmland, fl_to_district)
+        scene_lookup, created_scenes = self._upsert_scenes(scene_keys)
+        objs = self._build_vi_rows(fused_by_farmland, fl_to_district, scene_lookup)
+        created_vi = self._bulk_upsert_vi(objs)
+        return created_scenes, created_vi
+
+    @staticmethod
+    def _collect_scene_keys(fused_by_farmland, fl_to_district):
+        """Unique ``(district_id, acquired_date)`` scene keys."""
         scene_keys = set()
         for fl_id, pts in fused_by_farmland.items():
             did = fl_to_district.get(fl_id)
@@ -289,8 +309,11 @@ class Command(BaseCommand):
                 continue
             for acq_date, _, _ in pts:
                 scene_keys.add((did, acq_date))
+        return scene_keys
 
-        # 2. Upsert scenes (one per (district, date))
+    @staticmethod
+    def _upsert_scenes(scene_keys):
+        """One fused scene per (district, date); returns lookup + created count."""
         scene_lookup = {}
         created_scenes = 0
         with transaction.atomic():
@@ -308,8 +331,10 @@ class Command(BaseCommand):
                 scene_lookup[(did, acq_date)] = scene
                 if created:
                     created_scenes += 1
+        return scene_lookup, created_scenes
 
-        # 3. Bulk-upsert VegetationIndex rows
+    @staticmethod
+    def _build_vi_rows(fused_by_farmland, fl_to_district, scene_lookup):
         objs = []
         for fl_id, pts in fused_by_farmland.items():
             did = fl_to_district.get(fl_id)
@@ -333,9 +358,11 @@ class Command(BaseCommand):
                     valid_pixel_count=fused_n,
                     is_outlier=False,
                 ))
+        return objs
 
-        # bulk_create with update_conflicts — same pattern as fetch_raster_ndvi
-        batch_size = 5_000
+    @staticmethod
+    def _bulk_upsert_vi(objs, batch_size=5_000):
+        """bulk_create with update_conflicts — same pattern as fetch_raster_ndvi."""
         created_vi = 0
         for offset in range(0, len(objs), batch_size):
             batch = objs[offset:offset + batch_size]
@@ -349,4 +376,4 @@ class Command(BaseCommand):
                 ],
             )
             created_vi += len(batch)
-        return created_scenes, created_vi
+        return created_vi
