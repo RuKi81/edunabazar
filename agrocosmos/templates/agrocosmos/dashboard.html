@@ -9,14 +9,16 @@
 {% block og_image_alt %}Агрокосмос — карта-хороплет состояния посевов России по данным MODIS NDVI{% endblock %}
 
 {% block head %}
-  {# Override the site-wide viewport for the fullscreen map app (last
+  {% comment %}
+     Override the site-wide viewport for the fullscreen map app (last
      <meta name="viewport"> wins). iOS-specific: ``maximum-scale=1``
      stops Safari auto-zooming the page when a <select>/input with
      font-size < 16px gets focus (our compact sidebar controls are
      9-13px), and ``viewport-fit=cover`` removes the notch letterbox in
      landscape so ``env(safe-area-inset-*)`` paddings below take over.
      Pinch-zoom of the page is intentionally disabled — Leaflet handles
-     its own pinch on the map. Android ignores all of this. #}
+     its own pinch on the map. Android ignores all of this.
+  {% endcomment %}
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <link rel="stylesheet" href="{% static 'legacy/css/leaflet.css' %}" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
