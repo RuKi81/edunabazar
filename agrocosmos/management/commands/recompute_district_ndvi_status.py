@@ -157,26 +157,36 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **opts):
-        from agrocosmos.models import Region
-
         timeout_ms = int(opts['statement_timeout'])
-        only_region = opts.get('region_id')
 
-        # Build the list of regions to process. We restrict to regions
-        # that actually have farmlands attached — empty regions would
-        # just do a no-op join and waste a round-trip.
-        regions_qs = Region.objects.all()
-        if only_region:
-            regions_qs = regions_qs.filter(pk=only_region)
-        else:
-            regions_qs = regions_qs.filter(farmlands__isnull=False).distinct()
-        regions = list(regions_qs.order_by('name').values_list('id', 'name'))
-
+        regions = self._resolve_regions(opts.get('region_id'))
         self.stdout.write(
             f'Recomputing district NDVI status for {len(regions)} region(s) '
             f'(per-region statement_timeout = {timeout_ms} ms)'
         )
 
+        self._upsert_regions(regions, timeout_ms)
+        self._refresh_geojson_cache()
+        self._refresh_series()
+        self._prewarm_timeline(int(opts.get('prewarm_recent') or 0))
+
+    @staticmethod
+    def _resolve_regions(only_region):
+        """Regions to process as [(id, name)].
+
+        We restrict to regions that actually have farmlands attached —
+        empty regions would just do a no-op join and waste a round-trip.
+        """
+        from agrocosmos.models import Region
+
+        regions_qs = Region.objects.all()
+        if only_region:
+            regions_qs = regions_qs.filter(pk=only_region)
+        else:
+            regions_qs = regions_qs.filter(farmlands__isnull=False).distinct()
+        return list(regions_qs.order_by('name').values_list('id', 'name'))
+
+    def _upsert_regions(self, regions, timeout_ms):
         t_all = time.time()
         total_rows = 0
         ok = 0
@@ -226,12 +236,14 @@ class Command(BaseCommand):
                 + ', '.join(name for _, name, _ in failed)
             ))
 
-        # Refresh the cached GeoJSON FeatureCollection that backs the
-        # all-Russia choropleth endpoint. Doing it here means the next
-        # API hit is a sub-millisecond `cache.get()` instead of a 20s
-        # rebuild — important on deploy days when traffic ramps up.
-        # Failure must NOT mask the successful upsert above; the view
-        # transparently falls back to inline rebuild.
+    def _refresh_geojson_cache(self):
+        """Refresh the cached GeoJSON FeatureCollection that backs the
+        all-Russia choropleth endpoint. Doing it here means the next
+        API hit is a sub-millisecond `cache.get()` instead of a 20s
+        rebuild — important on deploy days when traffic ramps up.
+        Failure must NOT mask the successful upsert above; the view
+        transparently falls back to inline rebuild.
+        """
         try:
             from agrocosmos.services import districts_status_geojson
             t2 = time.time()
@@ -245,12 +257,15 @@ class Command(BaseCommand):
                 f'  GeoJSON cache refresh failed (non-fatal): {exc}'
             ))
 
-        # Refresh the pre-aggregated district × date × crop NDVI series.
-        # Keeps the region-level dashboard chart (``/api/ndvi-stats/``)
-        # fast even for huge subjects (Moscow Oblast: ~56 districts ×
-        # ~23 composites × 5 crop types instead of millions of raw VI
-        # rows). Covers a 70-day window to absorb any late-arriving MODIS
-        # composite from the last 60-day look-back used above.
+    def _refresh_series(self):
+        """Refresh the pre-aggregated district × date × crop NDVI series.
+
+        Keeps the region-level dashboard chart (``/api/ndvi-stats/``)
+        fast even for huge subjects (Moscow Oblast: ~56 districts ×
+        ~23 composites × 5 crop types instead of millions of raw VI
+        rows). Covers a 70-day window to absorb any late-arriving MODIS
+        composite from the last 60-day look-back used above.
+        """
         try:
             from agrocosmos.services import district_ndvi_series
             res = district_ndvi_series.refresh_recent(days=70, source='modis')
@@ -264,47 +279,49 @@ class Command(BaseCommand):
                 f'  district_ndvi_series refresh failed (non-fatal): {exc}'
             ))
 
-        # Pre-build the most recent timeline snapshots so the dashboard
-        # slider is instant for the dates users actually scrub through
-        # right after a fresh MODIS ingest. Older dates remain lazy —
-        # rebuilding them all every day would be wasteful.
-        prewarm_recent = int(opts.get('prewarm_recent') or 0)
-        if prewarm_recent > 0:
-            try:
-                from datetime import date as _date
-                from agrocosmos.services import districts_status_geojson as svc
-                year = _date.today().year
-                # Bust the 1 h list-of-dates cache so the composite that
-                # was just ingested actually shows up.
-                svc.invalidate_available_dates(year)
-                dates = svc.list_available_dates(year)
-                if dates:
-                    recent = dates[-prewarm_recent:]
-                    # ``force=True``: snapshots for the freshest composites
-                    # may have been cached *during* the ingest pipeline,
-                    # while ``agro_vegetation_index`` still held only a
-                    # subset of regions. The 60-day carry-forward in
-                    # ``build_snapshot`` would then have backfilled those
-                    # missing regions with stale values from older
-                    # composites and stored the partial snapshot
-                    # eternally (``timeout=None``). Past-cycle dates are
-                    # truly immutable, but the last few are not — we
-                    # always rebuild them at the end of the pipeline so
-                    # the slider stays consistent with the always-on
-                    # choropleth.
-                    built, skipped, elapsed = svc.prewarm_snapshots(
-                        recent, force=True,
-                    )
-                    self.stdout.write(self.style.SUCCESS(
-                        f'timeline prewarm ({year}, last {len(recent)}, '
-                        f'force=True): {built} built, {skipped} cached '
-                        f'in {elapsed:.1f}s'
-                    ))
-                else:
-                    self.stdout.write(
-                        f'timeline prewarm: no dates for {year}, skipped'
-                    )
-            except Exception as exc:
-                self.stderr.write(self.style.WARNING(
-                    f'  timeline prewarm failed (non-fatal): {exc}'
+    def _prewarm_timeline(self, prewarm_recent: int):
+        """Pre-build the most recent timeline snapshots so the dashboard
+        slider is instant for the dates users actually scrub through
+        right after a fresh MODIS ingest. Older dates remain lazy —
+        rebuilding them all every day would be wasteful.
+        """
+        if prewarm_recent <= 0:
+            return
+        try:
+            from datetime import date as _date
+            from agrocosmos.services import districts_status_geojson as svc
+            year = _date.today().year
+            # Bust the 1 h list-of-dates cache so the composite that
+            # was just ingested actually shows up.
+            svc.invalidate_available_dates(year)
+            dates = svc.list_available_dates(year)
+            if dates:
+                recent = dates[-prewarm_recent:]
+                # ``force=True``: snapshots for the freshest composites
+                # may have been cached *during* the ingest pipeline,
+                # while ``agro_vegetation_index`` still held only a
+                # subset of regions. The 60-day carry-forward in
+                # ``build_snapshot`` would then have backfilled those
+                # missing regions with stale values from older
+                # composites and stored the partial snapshot
+                # eternally (``timeout=None``). Past-cycle dates are
+                # truly immutable, but the last few are not — we
+                # always rebuild them at the end of the pipeline so
+                # the slider stays consistent with the always-on
+                # choropleth.
+                built, skipped, elapsed = svc.prewarm_snapshots(
+                    recent, force=True,
+                )
+                self.stdout.write(self.style.SUCCESS(
+                    f'timeline prewarm ({year}, last {len(recent)}, '
+                    f'force=True): {built} built, {skipped} cached '
+                    f'in {elapsed:.1f}s'
                 ))
+            else:
+                self.stdout.write(
+                    f'timeline prewarm: no dates for {year}, skipped'
+                )
+        except Exception as exc:
+            self.stderr.write(self.style.WARNING(
+                f'  timeline prewarm failed (non-fatal): {exc}'
+            ))
