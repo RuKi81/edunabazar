@@ -115,30 +115,10 @@ class Command(BaseCommand):
         sensor = options['sensor']
         cfg = SENSOR_CONFIG[sensor]
 
-        # Import sensor-specific modules
-        if sensor == 's2':
-            from agrocosmos.services.satellite_s2_raster import (
-                download_composite, s2_chunks as get_chunks, _raster_path,
-            )
-        elif sensor == 'l8':
-            from agrocosmos.services.satellite_landsat_raster import (
-                download_composite, landsat_chunks as get_chunks, _raster_path,
-            )
-        else:  # modis
-            from agrocosmos.services.satellite_modis_raster import (
-                download_composite, _biweekly_chunks as get_chunks, _raster_path,
-            )
-
+        download_composite, get_chunks, _raster_path = self._sensor_imports(sensor)
         from agrocosmos.services.zonal_stats import compute_zonal_stats
 
-        # Graceful Ctrl+C
-        if threading.current_thread() is threading.main_thread():
-            def _signal_handler(sig, frame):
-                self._stop_requested = True
-                self.stderr.write(self.style.WARNING(
-                    '\n⚠ Ctrl+C — finishing current step…'
-                ))
-            signal.signal(signal.SIGINT, _signal_handler)
+        self._install_signal_handler()
 
         # Resolve region/district
         region, district = self._resolve_region(options)
@@ -220,6 +200,36 @@ class Command(BaseCommand):
     # Helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _sensor_imports(sensor):
+        """Import sensor-specific modules → (download_composite, get_chunks,
+        _raster_path)."""
+        if sensor == 's2':
+            from agrocosmos.services.satellite_s2_raster import (
+                download_composite, s2_chunks as get_chunks, _raster_path,
+            )
+        elif sensor == 'l8':
+            from agrocosmos.services.satellite_landsat_raster import (
+                download_composite, landsat_chunks as get_chunks, _raster_path,
+            )
+        else:  # modis
+            from agrocosmos.services.satellite_modis_raster import (
+                download_composite, _biweekly_chunks as get_chunks, _raster_path,
+            )
+        return download_composite, get_chunks, _raster_path
+
+    def _install_signal_handler(self):
+        """Graceful Ctrl+C (only works in main thread)."""
+        if threading.current_thread() is not threading.main_thread():
+            return
+
+        def _signal_handler(sig, frame):
+            self._stop_requested = True
+            self.stderr.write(self.style.WARNING(
+                '\n⚠ Ctrl+C — finishing current step…'
+            ))
+        signal.signal(signal.SIGINT, _signal_handler)
+
     def _resolve_region(self, options):
         region = None
         district = None
@@ -289,12 +299,8 @@ class Command(BaseCommand):
             f'\n  Download: {downloaded} OK, {skipped} empty, {errors} errors'
         )
 
-    def _stats_step(self, chunks, raster_path_fn, region_id, region,
-                    district, cfg, min_valid, compute_fn):
-        self.stdout.write('\n📊 Computing zonal statistics…')
-        sys.stdout.flush()
-
-        # Load farmlands
+    def _load_farmland_geoms(self, region, district, cfg):
+        """Load farmlands + prepare GeoJSON → (fl_geoms, fl_map)."""
         self.stdout.write('  Loading farmlands…', ending='')
         sys.stdout.flush()
 
@@ -307,8 +313,7 @@ class Command(BaseCommand):
 
         farmlands = list(qs)
         if not farmlands:
-            self.stderr.write('No farmlands found')
-            return
+            return [], {}
 
         self.stdout.write(f' {len(farmlands)}')
         sys.stdout.flush()
@@ -339,12 +344,102 @@ class Command(BaseCommand):
 
         self.stdout.write(f' → {len(fl_geoms)} ready')
         sys.stdout.flush()
+        return fl_geoms, fl_map
+
+    def _compute_chunk(self, compute_fn, tif_path, fl_geoms, min_valid):
+        """Zonal stats for one composite; None → error (counted by caller)."""
+        def _progress(done, total):
+            self.stdout.write(f' [{done}/{total}]', ending='')
+            sys.stdout.flush()
+
+        try:
+            return compute_fn(
+                tif_path, fl_geoms,
+                min_valid_ratio=min_valid,
+                progress_callback=_progress,
+            )
+        except Exception as e:
+            self.stderr.write(f'  → ERROR: {e}')
+            return None
+
+    def _save_chunk_results(self, results, fl_map, mid_date, cfg):
+        """Upsert VegetationIndex rows for one composite; returns count."""
+        satellite_type = cfg['satellite_type']
+        scene_prefix = cfg['scene_prefix']
+
+        # Pre-create scenes per district
+        district_scenes = {}
+        district_ids_needed = set()
+        for fl_id in results:
+            fl_obj = fl_map.get(fl_id)
+            if fl_obj:
+                district_ids_needed.add(fl_obj.district_id or 0)
+
+        for did in district_ids_needed:
+            scene_id = f'{scene_prefix}_{mid_date.isoformat()}_{did}'
+            scene, _ = SatelliteScene.objects.get_or_create(
+                scene_id=scene_id,
+                defaults={
+                    'satellite': satellite_type,
+                    'acquired_date': mid_date,
+                    'cloud_cover': 0,
+                    'processed': True,
+                },
+            )
+            district_scenes[did] = scene
+
+        # Bulk upsert
+        self.stdout.write(' DB…', ending='')
+        sys.stdout.flush()
+
+        objs = []
+        for fl_id, st in results.items():
+            fl_obj = fl_map.get(fl_id)
+            if not fl_obj:
+                continue
+            scene = district_scenes.get(fl_obj.district_id or 0)
+            if not scene:
+                continue
+            objs.append(VegetationIndex(
+                farmland=fl_obj,
+                scene=scene,
+                index_type='ndvi',
+                acquired_date=mid_date,
+                mean=st['mean'],
+                median=st['median'],
+                min_val=st['min'],
+                max_val=st['max'],
+                std_val=st['std'],
+                pixel_count=st['pixel_count'],
+                valid_pixel_count=st['valid_pixel_count'],
+            ))
+
+        if objs:
+            VegetationIndex.objects.bulk_create(
+                objs,
+                batch_size=5000,
+                update_conflicts=True,
+                unique_fields=['farmland', 'scene', 'index_type'],
+                update_fields=[
+                    'acquired_date', 'mean', 'median', 'min_val',
+                    'max_val', 'std_val', 'pixel_count',
+                    'valid_pixel_count',
+                ],
+            )
+        return len(objs)
+
+    def _stats_step(self, chunks, raster_path_fn, region_id, region,
+                    district, cfg, min_valid, compute_fn):
+        self.stdout.write('\n📊 Computing zonal statistics…')
+        sys.stdout.flush()
+
+        fl_geoms, fl_map = self._load_farmland_geoms(region, district, cfg)
+        if not fl_geoms:
+            self.stderr.write('No farmlands found')
+            return
 
         created_total = 0
         errors = 0
-
-        satellite_type = cfg['satellite_type']
-        scene_prefix = cfg['scene_prefix']
 
         for i, (cf, ct) in enumerate(chunks):
             if self._stop_requested:
@@ -360,21 +455,11 @@ class Command(BaseCommand):
                 ending='',
             )
 
-            def _progress(done, total):
-                self.stdout.write(f' [{done}/{total}]', ending='')
-                sys.stdout.flush()
-
-            try:
-                results = compute_fn(
-                    tif_path, fl_geoms,
-                    min_valid_ratio=min_valid,
-                    progress_callback=_progress,
-                )
-            except Exception as e:
-                self.stderr.write(f'  → ERROR: {e}')
+            results = self._compute_chunk(
+                compute_fn, tif_path, fl_geoms, min_valid)
+            if results is None:
                 errors += 1
                 continue
-
             if not results:
                 self.stdout.write('  → 0 farmlands')
                 continue
@@ -382,68 +467,9 @@ class Command(BaseCommand):
             # Midpoint date for the composite record
             mid_date = cf + (ct - cf) / 2
 
-            # Pre-create scenes per district
-            district_scenes = {}
-            district_ids_needed = set()
-            for fl_id in results:
-                fl_obj = fl_map.get(fl_id)
-                if fl_obj:
-                    district_ids_needed.add(fl_obj.district_id or 0)
-
-            for did in district_ids_needed:
-                scene_id = f'{scene_prefix}_{mid_date.isoformat()}_{did}'
-                scene, _ = SatelliteScene.objects.get_or_create(
-                    scene_id=scene_id,
-                    defaults={
-                        'satellite': satellite_type,
-                        'acquired_date': mid_date,
-                        'cloud_cover': 0,
-                        'processed': True,
-                    },
-                )
-                district_scenes[did] = scene
-
-            # Bulk upsert
-            self.stdout.write(' DB…', ending='')
-            sys.stdout.flush()
-
-            objs = []
-            for fl_id, st in results.items():
-                fl_obj = fl_map.get(fl_id)
-                if not fl_obj:
-                    continue
-                scene = district_scenes.get(fl_obj.district_id or 0)
-                if not scene:
-                    continue
-                objs.append(VegetationIndex(
-                    farmland=fl_obj,
-                    scene=scene,
-                    index_type='ndvi',
-                    acquired_date=mid_date,
-                    mean=st['mean'],
-                    median=st['median'],
-                    min_val=st['min'],
-                    max_val=st['max'],
-                    std_val=st['std'],
-                    pixel_count=st['pixel_count'],
-                    valid_pixel_count=st['valid_pixel_count'],
-                ))
-
-            if objs:
-                VegetationIndex.objects.bulk_create(
-                    objs,
-                    batch_size=5000,
-                    update_conflicts=True,
-                    unique_fields=['farmland', 'scene', 'index_type'],
-                    update_fields=[
-                        'acquired_date', 'mean', 'median', 'min_val',
-                        'max_val', 'std_val', 'pixel_count',
-                        'valid_pixel_count',
-                    ],
-                )
-
-            created_total += len(objs)
-            self.stdout.write(f'  → {len(objs)} records')
+            saved = self._save_chunk_results(results, fl_map, mid_date, cfg)
+            created_total += saved
+            self.stdout.write(f'  → {saved} records')
 
         self.stdout.write(
             f'\n  Stats: {created_total} records saved, {errors} errors'
