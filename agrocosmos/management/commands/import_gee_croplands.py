@@ -151,20 +151,7 @@ class Command(BaseCommand):
                 totals['failed'] += 1
                 continue
 
-            dt = time.time() - t0
-            if result['status'] == 'skipped':
-                totals['skipped'] += 1
-                self.stdout.write(self.style.WARNING(
-                    f'[{region.name}] skipped: {result["reason"]}'
-                ))
-            else:
-                totals['ok'] += 1
-                totals['inserted'] += result.get('inserted', 0)
-                self.stdout.write(self.style.SUCCESS(
-                    f'[{region.name}] inserted={result["inserted"]:,} '
-                    f'polygons_raw={result.get("polygons_raw", 0):,} '
-                    f'{dt:.1f}s'
-                ))
+            self._report_result(region, result, time.time() - t0, totals)
 
         elapsed = time.time() - started
         self.stdout.write(self.style.NOTICE(
@@ -173,24 +160,45 @@ class Command(BaseCommand):
             f'inserted={totals["inserted"]:,}  in {elapsed:.1f}s'
         ))
 
+    def _report_result(self, region: Region, result: dict, dt: float,
+                       totals: dict) -> None:
+        if result['status'] == 'skipped':
+            totals['skipped'] += 1
+            self.stdout.write(self.style.WARNING(
+                f'[{region.name}] skipped: {result["reason"]}'
+            ))
+        else:
+            totals['ok'] += 1
+            totals['inserted'] += result.get('inserted', 0)
+            self.stdout.write(self.style.SUCCESS(
+                f'[{region.name}] inserted={result["inserted"]:,} '
+                f'polygons_raw={result.get("polygons_raw", 0):,} '
+                f'{dt:.1f}s'
+            ))
+
     # ------------------------------------------------------------------
     # Per-region pipeline
     # ------------------------------------------------------------------
 
-    def _process_region(self, region: Region, options: dict, tmp_dir: Path) -> dict:
-        if options['skip_existing'] and not options['dry_run']:
-            if Farmland.objects.filter(region=region).exists():
-                return {'status': 'skipped',
-                        'reason': 'already has farmlands (drop --skip-existing to reimport)'}
-
-        # 1. Extent
+    @staticmethod
+    def _skip_reason(region: Region, options: dict) -> str | None:
+        if options['skip_existing'] and not options['dry_run'] \
+                and Farmland.objects.filter(region=region).exists():
+            return 'already has farmlands (drop --skip-existing to reimport)'
         if region.geom is None:
-            return {'status': 'skipped', 'reason': 'region has no geom'}
-        extent = region.geom.extent  # (xmin, ymin, xmax, ymax) in region SRID
+            return 'region has no geom'
         if region.geom.srid and region.geom.srid != 4326:
             # Very rare — Region.geom is SRID 4326 by schema. Fail loudly.
-            return {'status': 'skipped',
-                    'reason': f'region.geom SRID={region.geom.srid} (expected 4326)'}
+            return f'region.geom SRID={region.geom.srid} (expected 4326)'
+        return None
+
+    def _process_region(self, region: Region, options: dict, tmp_dir: Path) -> dict:
+        reason = self._skip_reason(region, options)
+        if reason:
+            return {'status': 'skipped', 'reason': reason}
+
+        # 1. Extent
+        extent = region.geom.extent  # (xmin, ymin, xmax, ymax) in region SRID
 
         slug = self._slug(region.code or str(region.pk))
         tif_path = tmp_dir / f'worldcover_{slug}_{options["scale"]}m.tif'
@@ -207,11 +215,7 @@ class Command(BaseCommand):
             return {'status': 'ok', 'inserted': 0, 'polygons_raw': 0}
 
         # 2. Download WC raster (cropland-only mask)
-        if not tif_path.exists() or options['overwrite']:
-            self.stdout.write('  Downloading ESA WorldCover from GEE…')
-            self._download_worldcover_mask(extent, options['scale'], str(tif_path))
-        else:
-            self.stdout.write(f'  Raster exists, reusing: {tif_path.name}')
+        self._ensure_raster(tif_path, extent, options)
 
         # 3. Vectorise → GeoJSON
         self.stdout.write('  Vectorising cropland pixels…')
@@ -221,7 +225,25 @@ class Command(BaseCommand):
             return {'status': 'ok', 'inserted': 0, 'polygons_raw': 0}
         self.stdout.write(f'  Raw polygons: {n_raw:,}')
 
-        # 4. Load GeoJSON → staging table via ogr2ogr
+        # 4–5. Load GeoJSON → staging → INSERT … SELECT into agro_farmland
+        inserted, error = self._stage_and_promote(
+            region, geojson_path, staging, options,
+        )
+        self._cleanup(tif_path, geojson_path)
+        if error:
+            return {'status': 'skipped', 'reason': error}
+        return {'status': 'ok', 'inserted': inserted, 'polygons_raw': n_raw}
+
+    def _ensure_raster(self, tif_path: Path, extent: tuple, options: dict) -> None:
+        if not tif_path.exists() or options['overwrite']:
+            self.stdout.write('  Downloading ESA WorldCover from GEE…')
+            self._download_worldcover_mask(extent, options['scale'], str(tif_path))
+        else:
+            self.stdout.write(f'  Raster exists, reusing: {tif_path.name}')
+
+    def _stage_and_promote(self, region: Region, geojson_path: Path,
+                           staging: str, options: dict):
+        """ogr2ogr → staging, затем clip + promote. Returns (inserted, error)."""
         self.stdout.write(f'  ogr2ogr → {staging}…')
         rc = self._ogr2ogr_geojson_to_pg(geojson_path, staging, options['ogr2ogr'])
         if rc != 0:
@@ -235,13 +257,11 @@ class Command(BaseCommand):
                 staged_rows = cur.fetchone()[0]
             except Exception as exc:
                 self._drop_staging_silent(staging)
-                self._cleanup(tif_path, geojson_path)
-                return {'status': 'skipped',
-                        'reason': f'staging missing after ogr2ogr: {exc}'}
+                return 0, f'staging missing after ogr2ogr: {exc}'
 
             self.stdout.write(f'  Staged: {staged_rows:,} rows, clipping + promoting…')
 
-            # 5. INSERT … SELECT with clip to region.geom and area filter
+            # INSERT … SELECT with clip to region.geom and area filter
             min_area_m2 = options['min_area_ha'] * 10000
             source_id = options['source_id'][:40]
             sql = self._build_insert_sql(staging, region.pk, source_id, min_area_m2)
@@ -251,8 +271,7 @@ class Command(BaseCommand):
 
             cur.execute(build_drop_staging_sql(staging))
 
-        self._cleanup(tif_path, geojson_path)
-        return {'status': 'ok', 'inserted': inserted, 'polygons_raw': n_raw}
+        return inserted, None
 
     # ------------------------------------------------------------------
     # GEE download

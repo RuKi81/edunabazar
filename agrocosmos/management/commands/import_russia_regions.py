@@ -95,63 +95,59 @@ class Command(BaseCommand):
         total = len(relations)
         self.stdout.write(f'Processing {total} relations…')
 
-        created = updated = skipped = failed = 0
-
+        counts = {'created': 0, 'updated': 0, 'skipped': 0, 'failed': 0}
         for i, rel in enumerate(relations, 1):
-            name = rel['name']
-            tags = rel['tags']
-            code = (
-                tags.get('ISO3166-2')
-                or tags.get('ref')
-                or f'osm_{rel["osm_id"]}'
-            ).strip()
-
-            if not name:
-                self.stderr.write(f'[{i}/{total}] skip: no name on relation {rel["osm_id"]}')
-                failed += 1
-                continue
-
-            if opts['skip_existing'] and Region.objects.filter(code=code).exists():
-                self.stdout.write(f'[{i}/{total}] skip existing: {name} ({code})')
-                skipped += 1
-                continue
-
-            self.stdout.write(f'[{i}/{total}] {name} ({code}) …')
-            raw = fetch_polygon_geojson(rel['osm_id'])
-            if not raw:
-                self.stderr.write('  ! polygons.osm.fr returned no geometry')
-                failed += 1
-                time.sleep(opts['sleep'])
-                continue
-
-            try:
-                geom = _coerce_multipolygon(raw)
-            except Exception as exc:
-                self.stderr.write(f'  ! geometry decode failed: {exc}')
-                failed += 1
-                time.sleep(opts['sleep'])
-                continue
-
-            with transaction.atomic():
-                _, is_new = Region.objects.update_or_create(
-                    code=code,
-                    defaults={
-                        'name': name,
-                        'geom': geom,
-                        'osm_id': rel['osm_id'],
-                    },
-                )
-            if is_new:
-                created += 1
-            else:
-                updated += 1
-
-            time.sleep(opts['sleep'])
+            status = self._import_relation(rel, i, total, opts)
+            counts[status] += 1
 
         self.stdout.write(self.style.SUCCESS(
-            f'Done: {created} created, {updated} updated, '
-            f'{skipped} skipped, {failed} failed'
+            f'Done: {counts["created"]} created, {counts["updated"]} updated, '
+            f'{counts["skipped"]} skipped, {counts["failed"]} failed'
         ))
+
+    def _import_relation(self, rel, i, total, opts) -> str:
+        """Fetch + upsert one relation. Returns a counter key."""
+        name = rel['name']
+        tags = rel['tags']
+        code = (
+            tags.get('ISO3166-2')
+            or tags.get('ref')
+            or f'osm_{rel["osm_id"]}'
+        ).strip()
+
+        if not name:
+            self.stderr.write(f'[{i}/{total}] skip: no name on relation {rel["osm_id"]}')
+            return 'failed'
+
+        if opts['skip_existing'] and Region.objects.filter(code=code).exists():
+            self.stdout.write(f'[{i}/{total}] skip existing: {name} ({code})')
+            return 'skipped'
+
+        self.stdout.write(f'[{i}/{total}] {name} ({code}) …')
+        raw = fetch_polygon_geojson(rel['osm_id'])
+        if not raw:
+            self.stderr.write('  ! polygons.osm.fr returned no geometry')
+            time.sleep(opts['sleep'])
+            return 'failed'
+
+        try:
+            geom = _coerce_multipolygon(raw)
+        except Exception as exc:
+            self.stderr.write(f'  ! geometry decode failed: {exc}')
+            time.sleep(opts['sleep'])
+            return 'failed'
+
+        with transaction.atomic():
+            _, is_new = Region.objects.update_or_create(
+                code=code,
+                defaults={
+                    'name': name,
+                    'geom': geom,
+                    'osm_id': rel['osm_id'],
+                },
+            )
+        time.sleep(opts['sleep'])
+        return 'created' if is_new else 'updated'
 
     def _handle_single(self, opts: dict) -> None:
         """Point-update one Region by OSM relation id."""
@@ -193,32 +189,11 @@ class Command(BaseCommand):
             self.stderr.write(f'Overpass error: {exc}')
             return
 
-        # Build a normalised-name → osm_id map, indexing every name-like
-        # tag we can find on the relation plus a stop-word-stripped form
-        # (e.g. "республика башкортостан" ↔ "башкортостан") so the DB's
-        # canonical "Республика Башкортостан" matches OSM's name:ru
-        # "Башкортостан" and vice-versa.
-        by_name: dict[str, int] = {}
-        for rel in relations:
-            tags = rel['tags']
-            candidates = {
-                tags.get('name'), tags.get('name:ru'),
-                tags.get('official_name'), tags.get('official_name:ru'),
-                tags.get('short_name'), tags.get('short_name:ru'),
-                tags.get('alt_name'), tags.get('alt_name:ru'),
-                rel.get('name'),
-            }
-            for raw in candidates:
-                for norm in _name_variants(raw):
-                    by_name.setdefault(norm, rel['osm_id'])
+        by_name = self._build_name_index(relations)
 
         matched = unmatched = already = 0
         for r in Region.objects.all():
-            osm_id = None
-            for norm in _name_variants(r.name):
-                osm_id = by_name.get(norm)
-                if osm_id is not None:
-                    break
+            osm_id = self._match_osm_id(r.name, by_name)
             if osm_id is None:
                 self.stderr.write(f'  ! no OSM match for {r.name!r} (code={r.code!r})')
                 unmatched += 1
@@ -234,6 +209,38 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f'Done: {matched} set, {already} already correct, {unmatched} unmatched'
         ))
+
+    @staticmethod
+    def _build_name_index(relations) -> dict[str, int]:
+        """Build a normalised-name → osm_id map.
+
+        Indexes every name-like tag we can find on the relation plus a
+        stop-word-stripped form (e.g. "республика башкортостан" ↔
+        "башкортостан") so the DB's canonical "Республика Башкортостан"
+        matches OSM's name:ru "Башкортостан" and vice-versa.
+        """
+        by_name: dict[str, int] = {}
+        for rel in relations:
+            tags = rel['tags']
+            candidates = {
+                tags.get('name'), tags.get('name:ru'),
+                tags.get('official_name'), tags.get('official_name:ru'),
+                tags.get('short_name'), tags.get('short_name:ru'),
+                tags.get('alt_name'), tags.get('alt_name:ru'),
+                rel.get('name'),
+            }
+            for raw in candidates:
+                for norm in _name_variants(raw):
+                    by_name.setdefault(norm, rel['osm_id'])
+        return by_name
+
+    @staticmethod
+    def _match_osm_id(name: str, by_name: dict[str, int]) -> int | None:
+        for norm in _name_variants(name):
+            osm_id = by_name.get(norm)
+            if osm_id is not None:
+                return osm_id
+        return None
 
 
 _STOP_WORDS = (

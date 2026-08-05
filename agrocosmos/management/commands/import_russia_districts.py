@@ -82,22 +82,9 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **opts):
-        # Resolve which Region rows to process.
-        if opts['region_code']:
-            try:
-                regions = [Region.objects.get(code=opts['region_code'])]
-            except Region.DoesNotExist:
-                self.stderr.write(f'Region code {opts["region_code"]!r} not found.')
-                return
-        else:
-            regions = list(Region.objects.exclude(osm_id__isnull=True).order_by('name'))
-            if not regions:
-                self.stderr.write(
-                    'No Region rows with osm_id set. Run '
-                    '`python manage.py import_russia_regions --refresh-osm-ids` '
-                    'first, or pass --region-code with --parent-osm-id.'
-                )
-                return
+        regions = self._resolve_regions(opts)
+        if regions is None:
+            return
 
         manual_parent = opts.get('parent_osm_id')
         if manual_parent and len(regions) > 1:
@@ -107,44 +94,19 @@ class Command(BaseCommand):
             )
             return
 
-        admin_level = opts['admin_level']
-        limit = opts['limit']
-        sleep_s = opts['sleep']
-        skip_existing = opts['skip_existing']
-
         total_created = total_updated = total_skipped = 0
         total_failed = total_regions_skipped = 0
 
         for ri, region in enumerate(regions, 1):
-            scope_osm_id = manual_parent or region.osm_id
-            if not scope_osm_id:
-                self.stderr.write(
-                    f'[region {ri}/{len(regions)}] {region.name}: '
-                    'no osm_id — skipping (run import_russia_regions '
-                    '--refresh-osm-ids).'
-                )
+            relations = self._fetch_region_relations(
+                region, manual_parent, ri, len(regions), opts,
+            )
+            if relations is None:
                 total_regions_skipped += 1
                 continue
-
-            self.stdout.write(self.style.HTTP_INFO(
-                f'[region {ri}/{len(regions)}] {region.name} '
-                f'(code={region.code}, scope=osm:{scope_osm_id}) — '
-                f'fetching admin_level={admin_level}…'
-            ))
-            try:
-                relations = fetch_admin_relations_in(scope_osm_id, admin_level)
-            except Exception as exc:
-                self.stderr.write(f'  ! Overpass error: {exc}')
-                total_regions_skipped += 1
-                continue
-
-            if limit:
-                relations = relations[:limit]
-            total = len(relations)
-            self.stdout.write(f'  {total} districts in {region.name}')
 
             c, u, s, f = self._process_region(
-                region, relations, skip_existing, sleep_s,
+                region, relations, opts['skip_existing'], opts['sleep'],
             )
             total_created += c
             total_updated += u
@@ -158,6 +120,53 @@ class Command(BaseCommand):
             + (f', {total_regions_skipped} region(s) skipped'
                if total_regions_skipped else '')
         ))
+
+    def _resolve_regions(self, opts) -> list[Region] | None:
+        """Resolve which Region rows to process; None → abort."""
+        if opts['region_code']:
+            try:
+                return [Region.objects.get(code=opts['region_code'])]
+            except Region.DoesNotExist:
+                self.stderr.write(f'Region code {opts["region_code"]!r} not found.')
+                return None
+
+        regions = list(Region.objects.exclude(osm_id__isnull=True).order_by('name'))
+        if not regions:
+            self.stderr.write(
+                'No Region rows with osm_id set. Run '
+                '`python manage.py import_russia_regions --refresh-osm-ids` '
+                'first, or pass --region-code with --parent-osm-id.'
+            )
+            return None
+        return regions
+
+    def _fetch_region_relations(self, region, manual_parent, ri, n_regions, opts):
+        """Overpass-запрос admin_level-реляций одного региона; None → skip."""
+        scope_osm_id = manual_parent or region.osm_id
+        if not scope_osm_id:
+            self.stderr.write(
+                f'[region {ri}/{n_regions}] {region.name}: '
+                'no osm_id — skipping (run import_russia_regions '
+                '--refresh-osm-ids).'
+            )
+            return None
+
+        admin_level = opts['admin_level']
+        self.stdout.write(self.style.HTTP_INFO(
+            f'[region {ri}/{n_regions}] {region.name} '
+            f'(code={region.code}, scope=osm:{scope_osm_id}) — '
+            f'fetching admin_level={admin_level}…'
+        ))
+        try:
+            relations = fetch_admin_relations_in(scope_osm_id, admin_level)
+        except Exception as exc:
+            self.stderr.write(f'  ! Overpass error: {exc}')
+            return None
+
+        if opts['limit']:
+            relations = relations[: opts['limit']]
+        self.stdout.write(f'  {len(relations)} districts in {region.name}')
+        return relations
 
     def _process_region(self, region, relations, skip_existing, sleep_s):
         created = updated = skipped = failed = 0

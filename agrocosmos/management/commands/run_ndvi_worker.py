@@ -137,18 +137,7 @@ class Command(BaseCommand):
         # Django ``OutputWrapper`` grabs ``sys.stdout`` at construction time.
         # To capture *all* of that we must redirect ``sys.stdout``/``stderr``
         # at the interpreter level, not just pass ``stdout=`` to call_command.
-        log_file_path = run.log_file or ''
-        log_f = None
-        if log_file_path:
-            try:
-                os.makedirs(os.path.dirname(log_file_path) or '.', exist_ok=True)
-                # line-buffered text mode so ``tail -f`` sees updates live
-                log_f = open(log_file_path, 'a', encoding='utf-8',
-                             errors='replace', buffering=1)
-            except OSError as exc:
-                self.stderr.write(f'[worker] cannot open log file {log_file_path}: {exc}')
-                log_f = None
-
+        log_f = self._open_log_file(run.log_file or '')
         redirect_ctx = (
             contextlib.ExitStack()
             if log_f is None
@@ -179,41 +168,61 @@ class Command(BaseCommand):
             # pipeline orchestrators call sys.exit(1) on SIGTERM — let it go.
             raise
         except Exception:
-            tb = traceback.format_exc()
             logger.exception('worker: pipeline raised')
-            try:
-                # Mark FAILED only if the pipeline didn't already mark
-                # itself COMPLETED. Otherwise a late background-thread
-                # exception (e.g. heartbeat trying to write after the
-                # main connection was closed) would clobber a successful
-                # run's status.
-                updated = PipelineRun.objects.filter(
-                    pk=run.pk,
-                ).exclude(
-                    status=PipelineRun.Status.COMPLETED,
-                ).update(
-                    status=PipelineRun.Status.FAILED,
-                    finished_at=timezone.now(),
-                    log=(run.log or '') + '\n[worker] ' + tb[-4000:],
-                )
-                if not updated:
-                    logger.warning(
-                        'worker: run #%s already completed, '
-                        'ignoring late exception: %s',
-                        run.pk, tb.splitlines()[-1] if tb else '',
-                    )
-            except Exception:
-                logger.exception('worker: failed to mark run as failed')
+            self._mark_failed(run, traceback.format_exc())
         finally:
-            if log_f is not None:
-                try:
-                    log_f.flush()
-                except OSError:
-                    pass
-                try:
-                    log_f.close()
-                except OSError:
-                    pass
+            self._close_log_file(log_f)
+
+    def _open_log_file(self, log_file_path: str):
+        if not log_file_path:
+            return None
+        try:
+            os.makedirs(os.path.dirname(log_file_path) or '.', exist_ok=True)
+            # line-buffered text mode so ``tail -f`` sees updates live
+            return open(log_file_path, 'a', encoding='utf-8',
+                        errors='replace', buffering=1)
+        except OSError as exc:
+            self.stderr.write(f'[worker] cannot open log file {log_file_path}: {exc}')
+            return None
+
+    @staticmethod
+    def _mark_failed(run: PipelineRun, tb: str) -> None:
+        try:
+            # Mark FAILED only if the pipeline didn't already mark
+            # itself COMPLETED. Otherwise a late background-thread
+            # exception (e.g. heartbeat trying to write after the
+            # main connection was closed) would clobber a successful
+            # run's status.
+            updated = PipelineRun.objects.filter(
+                pk=run.pk,
+            ).exclude(
+                status=PipelineRun.Status.COMPLETED,
+            ).update(
+                status=PipelineRun.Status.FAILED,
+                finished_at=timezone.now(),
+                log=(run.log or '') + '\n[worker] ' + tb[-4000:],
+            )
+            if not updated:
+                logger.warning(
+                    'worker: run #%s already completed, '
+                    'ignoring late exception: %s',
+                    run.pk, tb.splitlines()[-1] if tb else '',
+                )
+        except Exception:
+            logger.exception('worker: failed to mark run as failed')
+
+    @staticmethod
+    def _close_log_file(log_f) -> None:
+        if log_f is None:
+            return
+        try:
+            log_f.flush()
+        except OSError:
+            pass
+        try:
+            log_f.close()
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------
 

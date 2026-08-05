@@ -50,60 +50,55 @@ class Command(BaseCommand):
 
         self.stdout.write(f'Found {len(files)} file(s) in {directory}')
 
-        created = 0
-        updated = 0
-        errors = 0
-
+        counts = {'created': 0, 'updated': 0, 'errors': 0}
         for fname in files:
             filepath = os.path.join(directory, fname)
-            code = os.path.splitext(fname)[0]  # filename without extension as code
-
-            try:
-                with open(filepath, 'r', encoding=encoding) as f:
-                    data = json.load(f)
-            except Exception as e:
-                self.stderr.write(f'  ERROR reading {fname}: {e}')
-                errors += 1
-                continue
-
-            features = data.get('features', [])
-            if not features:
-                self.stderr.write(f'  SKIP {fname}: no features')
-                errors += 1
-                continue
-
-            # Take first feature (each file = one region)
-            feat = features[0]
-            props = feat.get('properties', {})
-            name = str(props.get(name_field, '')).strip()
-
-            if not name:
-                self.stderr.write(f'  SKIP {fname}: no NAME property')
-                errors += 1
-                continue
-
-            try:
-                geom_json = json.dumps(feat['geometry'])
-                geom = GEOSGeometry(geom_json, srid=4326)
-                if geom.geom_type == 'Polygon':
-                    geom = MultiPolygon(geom, srid=4326)
-            except Exception as e:
-                self.stderr.write(f'  ERROR {fname} geometry: {e}')
-                errors += 1
-                continue
-
-            obj, is_new = Region.objects.update_or_create(
-                code=code,
-                defaults={'name': name, 'geom': geom},
-            )
-
-            if is_new:
-                created += 1
-                self.stdout.write(f'  + {name} ({code})')
-            else:
-                updated += 1
-                self.stdout.write(f'  ~ {name} ({code})')
+            status = self._import_file(filepath, fname, name_field, encoding)
+            counts[status] += 1
 
         self.stdout.write(self.style.SUCCESS(
-            f'\nDone: {created} created, {updated} updated, {errors} errors'
+            f'\nDone: {counts["created"]} created, '
+            f'{counts["updated"]} updated, {counts["errors"]} errors'
         ))
+
+    def _import_file(self, filepath, fname, name_field, encoding):
+        """Import one GeoJSON file. Returns 'created'/'updated'/'errors'."""
+        code = os.path.splitext(fname)[0]  # filename without extension as code
+
+        try:
+            with open(filepath, 'r', encoding=encoding) as f:
+                data = json.load(f)
+        except Exception as e:
+            self.stderr.write(f'  ERROR reading {fname}: {e}')
+            return 'errors'
+
+        features = data.get('features', [])
+        if not features:
+            self.stderr.write(f'  SKIP {fname}: no features')
+            return 'errors'
+
+        # Take first feature (each file = one region)
+        feat = features[0]
+        props = feat.get('properties', {})
+        name = str(props.get(name_field, '')).strip()
+
+        if not name:
+            self.stderr.write(f'  SKIP {fname}: no NAME property')
+            return 'errors'
+
+        try:
+            geom_json = json.dumps(feat['geometry'])
+            geom = GEOSGeometry(geom_json, srid=4326)
+            if geom.geom_type == 'Polygon':
+                geom = MultiPolygon(geom, srid=4326)
+        except Exception as e:
+            self.stderr.write(f'  ERROR {fname} geometry: {e}')
+            return 'errors'
+
+        obj, is_new = Region.objects.update_or_create(
+            code=code,
+            defaults={'name': name, 'geom': geom},
+        )
+        marker = '+' if is_new else '~'
+        self.stdout.write(f'  {marker} {name} ({code})')
+        return 'created' if is_new else 'updated'
