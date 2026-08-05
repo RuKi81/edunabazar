@@ -131,16 +131,9 @@ class Command(BaseCommand):
     def _process_task(self, task, today, dry_run, force, max_periods_per_task):
         region = task.region
         year = task.year
-
         year_end = date(year, 12, 31)
 
-        # If we've already completed the year, mark as completed
-        if task.last_date_to and task.last_date_to >= year_end:
-            task.status = 'completed'
-            task.save()
-            self.stdout.write(
-                f'  [{region.name} {year}] Year complete, marking as completed.'
-            )
+        if self._year_complete(task, year_end):
             return
 
         # Process ALL available periods in one run (catch-up from year start)
@@ -148,20 +141,8 @@ class Command(BaseCommand):
         while True:
             next_from, next_to = _next_aligned_period(task.last_date_to, year)
 
-            # Don't process future dates (even with --force)
-            if next_from > today:
-                self.stdout.write(
-                    f'  [{region.name} {year}] Next period {next_from} is in the future. Stop.'
-                )
-                break
-
-            # Check if data should be available (--force skips this check)
-            data_available_date = next_to + timedelta(days=AVAILABILITY_LAG_DAYS)
-            if today < data_available_date and not force:
-                self.stdout.write(
-                    f'  [{region.name} {year}] Period {next_from}..{next_to}: '
-                    f'data available after {data_available_date}. Stop.'
-                )
+            if not self._period_due(region, year, next_from, next_to,
+                                    today, force):
                 break
 
             self.stdout.write(
@@ -173,104 +154,42 @@ class Command(BaseCommand):
                 # Simulate advance for dry-run preview
                 task.last_date_to = next_to
                 periods_done += 1
-                if next_to >= year_end:
-                    break
                 # Apply the same safety cap in dry-run so the preview
                 # honestly reflects what a real cron invocation would do.
-                if max_periods_per_task and periods_done >= max_periods_per_task:
-                    self.stdout.write(
-                        f'    → reached --max-periods-per-task={max_periods_per_task} '
-                        f'(dry-run preview).'
-                    )
+                if self._should_stop(next_to, year_end, periods_done,
+                                     max_periods_per_task, dry_run=True):
                     break
                 continue
 
-            # Run NDVI pipeline for this specific period.
-            #
-            # ``skip_status_refresh=True`` is the critical flag here:
-            # the global ``recompute_district_ndvi_status`` SQL costs
-            # ~10 minutes on cold DB cache and rewrites all 2200
-            # districts of all 85 regions. Calling it after every
-            # region pile-up to ~14 hours of pure SQL per cron run.
-            # The single batch-tail refresh in ``handle()`` covers
-            # everything this loop wrote in one shot instead.
-            t0 = time.time()
-            out = StringIO()
-            try:
-                call_command(
-                    NDVI_COMMAND,
-                    region_id=region.pk,
-                    date_from=next_from.isoformat(),
-                    date_to=next_to.isoformat(),
-                    skip_status_refresh=True,
-                    stdout=out,
-                    stderr=out,
-                )
-                elapsed = time.time() - t0
-                log_text = out.getvalue()
-
-                # Parse records count
-                records_saved = 0
-                for line in log_text.splitlines():
-                    if 'Records saved:' in line:
-                        try:
-                            records_saved = int(line.split('Records saved:')[1].strip())
-                        except (ValueError, IndexError):
-                            pass
-
-                # Update task
-                task.last_check = timezone.now()
-                task.records_total += records_saved
-
-                # Append to log (keep last 10K chars)
-                entry = f'\n[{timezone.now():%Y-%m-%d %H:%M}] {next_from}..{next_to}: '
-                for line in log_text.splitlines():
-                    if 'records saved' in line.lower() or 'Done in' in line:
-                        entry += line.strip() + ' '
-                task.log = (task.log + entry)[-10000:]
-
-                # Only advance last_date_to if data was actually saved;
-                # if 0 records — data likely not available yet, retry next time
-                if records_saved > 0:
-                    task.last_date_to = next_to
-                    periods_done += 1
-                    self.stdout.write(
-                        f'    → {records_saved} records in {elapsed:.0f}s (period {periods_done})'
-                    )
-                else:
-                    self.stdout.write(
-                        f'    → 0 records in {elapsed:.0f}s — no data yet, stop.'
-                    )
-                    task.save()
-                    break
-
-                # Check if year is now complete
-                if next_to >= year_end:
-                    task.status = 'completed'
-
-                task.save()
-
-                if next_to >= year_end:
-                    break
-
-                # Safety cap: never process more than N periods per task
-                # in one cron invocation. Catch-up converges within a few
-                # cron runs and the heartbeat window stays comfortable.
-                if max_periods_per_task and periods_done >= max_periods_per_task:
-                    self.stdout.write(
-                        f'    → reached --max-periods-per-task={max_periods_per_task}, '
-                        f'will continue on next cron run.'
-                    )
-                    break
-
-            except Exception as e:
-                logger.error('check_monitoring error for %s %s: %s', region.name, year, e)
-                self.stderr.write(f'    → ERROR: {e}')
-
-                task.last_check = timezone.now()
-                task.log = (task.log + f'\n[{timezone.now():%Y-%m-%d %H:%M}] ERROR: {e}')[-10000:]
-                task.save()
+            records_saved, elapsed = self._run_period(
+                task, region, year, next_from, next_to)
+            if records_saved is None:
                 break  # Stop on error, will retry next cron run
+
+            # Only advance last_date_to if data was actually saved;
+            # if 0 records — data likely not available yet, retry next time
+            if records_saved > 0:
+                task.last_date_to = next_to
+                periods_done += 1
+                self.stdout.write(
+                    f'    → {records_saved} records in {elapsed:.0f}s (period {periods_done})'
+                )
+            else:
+                self.stdout.write(
+                    f'    → 0 records in {elapsed:.0f}s — no data yet, stop.'
+                )
+                task.save()
+                break
+
+            # Check if year is now complete
+            if next_to >= year_end:
+                task.status = 'completed'
+
+            task.save()
+
+            if self._should_stop(next_to, year_end, periods_done,
+                                 max_periods_per_task):
+                break
 
         self.stdout.write(
             f'  [{region.name} {year}] Finished: {periods_done} period(s) processed, '
@@ -279,3 +198,118 @@ class Command(BaseCommand):
         # Returned to ``handle()`` so it knows whether to run the
         # single batch-tail ``recompute_district_ndvi_status``.
         return periods_done
+
+    def _year_complete(self, task, year_end) -> bool:
+        """If we've already completed the year, mark as completed."""
+        if task.last_date_to and task.last_date_to >= year_end:
+            task.status = 'completed'
+            task.save()
+            self.stdout.write(
+                f'  [{task.region.name} {task.year}] Year complete, '
+                f'marking as completed.'
+            )
+            return True
+        return False
+
+    def _period_due(self, region, year, next_from, next_to,
+                    today, force) -> bool:
+        """Is the period processable now? Prints the stop reason if not."""
+        # Don't process future dates (even with --force)
+        if next_from > today:
+            self.stdout.write(
+                f'  [{region.name} {year}] Next period {next_from} is in the future. Stop.'
+            )
+            return False
+
+        # Check if data should be available (--force skips this check)
+        data_available_date = next_to + timedelta(days=AVAILABILITY_LAG_DAYS)
+        if today < data_available_date and not force:
+            self.stdout.write(
+                f'  [{region.name} {year}] Period {next_from}..{next_to}: '
+                f'data available after {data_available_date}. Stop.'
+            )
+            return False
+        return True
+
+    def _run_period(self, task, region, year, next_from, next_to):
+        """Run the NDVI pipeline for one period.
+
+        Returns (records_saved, elapsed); records_saved is None on error
+        (the task is already updated and saved in that case).
+
+        ``skip_status_refresh=True`` is the critical flag here:
+        the global ``recompute_district_ndvi_status`` SQL costs
+        ~10 minutes on cold DB cache and rewrites all 2200
+        districts of all 85 regions. Calling it after every
+        region pile-up to ~14 hours of pure SQL per cron run.
+        The single batch-tail refresh in ``handle()`` covers
+        everything this loop wrote in one shot instead.
+        """
+        t0 = time.time()
+        out = StringIO()
+        try:
+            call_command(
+                NDVI_COMMAND,
+                region_id=region.pk,
+                date_from=next_from.isoformat(),
+                date_to=next_to.isoformat(),
+                skip_status_refresh=True,
+                stdout=out,
+                stderr=out,
+            )
+        except Exception as e:
+            logger.error('check_monitoring error for %s %s: %s', region.name, year, e)
+            self.stderr.write(f'    → ERROR: {e}')
+
+            task.last_check = timezone.now()
+            task.log = (task.log + f'\n[{timezone.now():%Y-%m-%d %H:%M}] ERROR: {e}')[-10000:]
+            task.save()
+            return None, time.time() - t0
+
+        elapsed = time.time() - t0
+        log_text = out.getvalue()
+        records_saved = self._parse_records_saved(log_text)
+
+        # Update task
+        task.last_check = timezone.now()
+        task.records_total += records_saved
+
+        # Append to log (keep last 10K chars)
+        entry = f'\n[{timezone.now():%Y-%m-%d %H:%M}] {next_from}..{next_to}: '
+        for line in log_text.splitlines():
+            if 'records saved' in line.lower() or 'Done in' in line:
+                entry += line.strip() + ' '
+        task.log = (task.log + entry)[-10000:]
+
+        return records_saved, elapsed
+
+    @staticmethod
+    def _parse_records_saved(log_text: str) -> int:
+        records_saved = 0
+        for line in log_text.splitlines():
+            if 'Records saved:' in line:
+                try:
+                    records_saved = int(line.split('Records saved:')[1].strip())
+                except (ValueError, IndexError):
+                    pass
+        return records_saved
+
+    def _should_stop(self, next_to, year_end, periods_done,
+                     max_periods_per_task, dry_run=False) -> bool:
+        """Year finished or safety cap reached?
+
+        The cap ensures a single cron invocation never processes more
+        than N periods per task: catch-up converges within a few cron
+        runs and the PipelineRun heartbeat window stays comfortable.
+        """
+        if next_to >= year_end:
+            return True
+        if max_periods_per_task and periods_done >= max_periods_per_task:
+            suffix = ('(dry-run preview).' if dry_run
+                      else 'will continue on next cron run.')
+            self.stdout.write(
+                f'    → reached --max-periods-per-task={max_periods_per_task} '
+                f'{suffix}'
+            )
+            return True
+        return False

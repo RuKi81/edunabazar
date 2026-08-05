@@ -6,7 +6,18 @@ by check_monitoring advancing `last_date_to` using a fixed ``timedelta``
 instead of snapping to the Jan-1-anchored 16-day grid. These tests ensure
 the helper stays aligned with `_biweekly_chunks`.
 """
+import sys
 from datetime import date
+from unittest import mock
+
+# Локально нет earthengine-api/rasterio — подменяем до импорта сервисов.
+for _mod in ('ee', 'rasterio', 'rasterio.mask', 'rasterio.features',
+             'rasterstats'):
+    if _mod not in sys.modules:
+        try:
+            __import__(_mod)
+        except ImportError:
+            sys.modules[_mod] = mock.MagicMock()
 
 from django.test import SimpleTestCase
 
