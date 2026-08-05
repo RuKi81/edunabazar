@@ -293,8 +293,6 @@ class Command(BaseCommand):
         ``AgroSubscription.notify_anomalies=True`` subscribers whose
         scope covers this farmland.
         """
-        from agrocosmos.services.notifications import send_anomaly_email
-
         existing = (
             VegetationAlert.objects
             .filter(farmland=farmland, alert_type=alert_type)
@@ -305,35 +303,47 @@ class Command(BaseCommand):
 
         if detection is None:
             # Nothing wrong right now — resolve any active alert.
-            if existing is not None:
-                if not dry:
-                    with transaction.atomic():
-                        existing.status = VegetationAlert.Status.RESOLVED
-                        existing.resolved_at = timezone.now()
-                        existing.save(update_fields=['status', 'resolved_at'])
-                return (0, 0, 1)
-            return (0, 0, 0)
+            return self._resolve_existing(existing, dry)
 
-        # We have a detection.
         if existing is None:
-            if not dry:
-                alert = VegetationAlert.objects.create(
-                    farmland=farmland,
-                    alert_type=alert_type,
-                    severity=detection['severity'],
-                    status=VegetationAlert.Status.ACTIVE,
-                    detected_on=detection['detected_on'],
-                    context=detection['context'],
-                    message=detection['message'],
-                )
-                try:
-                    send_anomaly_email(alert)
-                except Exception:
-                    logger.exception('Failed to notify subscribers for alert #%s', alert.pk)
-            return (1, 0, 0)
+            return self._create_alert(farmland, alert_type, detection, dry)
 
         # Update existing (same or escalated severity, newer observation).
-        prev_severity = existing.severity
+        return self._update_existing(existing, detection, dry)
+
+    @staticmethod
+    def _resolve_existing(existing, dry):
+        if existing is not None:
+            if not dry:
+                with transaction.atomic():
+                    existing.status = VegetationAlert.Status.RESOLVED
+                    existing.resolved_at = timezone.now()
+                    existing.save(update_fields=['status', 'resolved_at'])
+            return (0, 0, 1)
+        return (0, 0, 0)
+
+    @staticmethod
+    def _create_alert(farmland, alert_type, detection, dry):
+        from agrocosmos.services.notifications import send_anomaly_email
+
+        if not dry:
+            alert = VegetationAlert.objects.create(
+                farmland=farmland,
+                alert_type=alert_type,
+                severity=detection['severity'],
+                status=VegetationAlert.Status.ACTIVE,
+                detected_on=detection['detected_on'],
+                context=detection['context'],
+                message=detection['message'],
+            )
+            try:
+                send_anomaly_email(alert)
+            except Exception:
+                logger.exception('Failed to notify subscribers for alert #%s', alert.pk)
+        return (1, 0, 0)
+
+    @staticmethod
+    def _sync_alert_fields(existing, detection) -> bool:
         changed = False
         if existing.severity != detection['severity']:
             existing.severity = detection['severity']
@@ -347,6 +357,13 @@ class Command(BaseCommand):
         if existing.message != detection['message']:
             existing.message = detection['message']
             changed = True
+        return changed
+
+    def _update_existing(self, existing, detection, dry):
+        from agrocosmos.services.notifications import send_anomaly_email
+
+        prev_severity = existing.severity
+        changed = self._sync_alert_fields(existing, detection)
 
         if changed and not dry:
             existing.save(update_fields=[
