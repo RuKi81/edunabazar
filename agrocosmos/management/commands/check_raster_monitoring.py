@@ -82,34 +82,13 @@ class Command(BaseCommand):
         region = task.region
         district = task.district
         year = task.year
-        year_start = date(year, 1, 1)
         year_end = date(year, 12, 31)
         scope = f'{region.name}' + (f' / {district.name}' if district else '')
 
-        if task.last_date_to and task.last_date_to >= year_end:
-            task.status = 'completed'
-            task.save(update_fields=['status'])
-            self.stdout.write(f'  [{scope} {year}] year complete — marking completed.')
+        window = self._resolve_window(task, scope, today, force)
+        if window is None:
             return
-
-        window_from = (task.last_date_to + timedelta(days=1)) if task.last_date_to else year_start
-        if window_from > year_end:
-            self.stdout.write(f'  [{scope} {year}] next window past year end — done.')
-            task.status = 'completed'
-            task.save(update_fields=['status'])
-            return
-
-        hard_cap = today if force else today - timedelta(days=AVAILABILITY_LAG_DAYS)
-        window_to = min(year_end, hard_cap)
-
-        if window_to < window_from:
-            self.stdout.write(
-                f'  [{scope} {year}] no new data yet '
-                f'(window_from={window_from}, cap={window_to}).'
-            )
-            task.last_check = timezone.now()
-            task.save(update_fields=['last_check'])
-            return
+        window_from, window_to = window
 
         self.stdout.write(
             f'  [{scope} {year}] window {window_from}..{window_to}'
@@ -124,56 +103,17 @@ class Command(BaseCommand):
 
         try:
             for sensor in ('s2', 'l8'):
-                kwargs = {
-                    'sensor': sensor,
-                    'date_from': window_from.isoformat(),
-                    'date_to': window_to.isoformat(),
-                    'min_valid_ratio': min_valid,
-                }
-                if district:
-                    kwargs['district_id'] = district.pk
-                else:
-                    kwargs['region_id'] = region.pk
-
-                out = StringIO()
-                call_command('fetch_raster_ndvi', stdout=out, stderr=out, **kwargs)
-                text = out.getvalue()
-                records = 0
-                for line in text.splitlines():
-                    if 'records saved' in line.lower():
-                        try:
-                            token = line.split('records saved')[0].split()[-1]
-                            records += int(''.join(c for c in token if c.isdigit()) or 0)
-                        except (ValueError, IndexError):
-                            pass
+                records = self._fetch_sensor(
+                    task, sensor, window_from, window_to, min_valid)
                 total_records += records
                 log_entry += f'{sensor.upper()}={records} '
 
-            # Full-year fusion & postprocess (идемпотентно, ~1-2 мин)
-            fusion_kwargs = {'year': year, 'overwrite': True}
-            if district:
-                fusion_kwargs['district_id'] = district.pk
-            else:
-                fusion_kwargs['region_id'] = region.pk
-            call_command('compute_fused_ndvi', **fusion_kwargs)
-
-            call_command(
-                'ndvi_postprocess',
-                region_id=region.pk, year=year, source='fused',
-            )
+            self._run_fusion(task)
 
             elapsed = time.time() - t0
             log_entry += f'fusion+pp in {elapsed:.0f}s'
-            task.records_total = (task.records_total or 0) + total_records
-            task.last_check = timezone.now()
-            if total_records > 0:
-                task.last_date_to = window_to
-            else:
-                log_entry += ' [no new data, will retry]'
-            if window_to >= year_end:
-                task.status = 'completed'
-            task.log = (task.log + log_entry)[-LOG_MAX_CHARS:]
-            task.save()
+            self._finalize_task(
+                task, total_records, window_to, year_end, log_entry)
             self.stdout.write(
                 f'    → {total_records} records in {elapsed:.0f}s '
                 f'(last_date_to={task.last_date_to})'
@@ -186,3 +126,98 @@ class Command(BaseCommand):
             task.last_check = timezone.now()
             task.save(update_fields=['log', 'last_check'])
             self.stderr.write(f'    → ERROR: {exc}')
+
+    # ------------------------------------------------------------------ helpers
+
+    def _resolve_window(self, task: MonitoringTask, scope: str,
+                        today: date, force: bool):
+        """Окно добора ``(window_from, window_to)``; None — обрабатывать
+        нечего (задача уже обновлена/помечена)."""
+        year = task.year
+        year_start = date(year, 1, 1)
+        year_end = date(year, 12, 31)
+
+        if task.last_date_to and task.last_date_to >= year_end:
+            task.status = 'completed'
+            task.save(update_fields=['status'])
+            self.stdout.write(f'  [{scope} {year}] year complete — marking completed.')
+            return None
+
+        window_from = (task.last_date_to + timedelta(days=1)) if task.last_date_to else year_start
+        if window_from > year_end:
+            self.stdout.write(f'  [{scope} {year}] next window past year end — done.')
+            task.status = 'completed'
+            task.save(update_fields=['status'])
+            return None
+
+        hard_cap = today if force else today - timedelta(days=AVAILABILITY_LAG_DAYS)
+        window_to = min(year_end, hard_cap)
+
+        if window_to < window_from:
+            self.stdout.write(
+                f'  [{scope} {year}] no new data yet '
+                f'(window_from={window_from}, cap={window_to}).'
+            )
+            task.last_check = timezone.now()
+            task.save(update_fields=['last_check'])
+            return None
+        return window_from, window_to
+
+    @staticmethod
+    def _scope_kwargs(task: MonitoringTask) -> dict:
+        if task.district:
+            return {'district_id': task.district.pk}
+        return {'region_id': task.region.pk}
+
+    def _fetch_sensor(self, task: MonitoringTask, sensor: str,
+                      window_from: date, window_to: date,
+                      min_valid: float) -> int:
+        """Запуск fetch_raster_ndvi для одного сенсора → число записей."""
+        kwargs = {
+            'sensor': sensor,
+            'date_from': window_from.isoformat(),
+            'date_to': window_to.isoformat(),
+            'min_valid_ratio': min_valid,
+            **self._scope_kwargs(task),
+        }
+        out = StringIO()
+        call_command('fetch_raster_ndvi', stdout=out, stderr=out, **kwargs)
+        return self._parse_records(out.getvalue())
+
+    @staticmethod
+    def _parse_records(text: str) -> int:
+        records = 0
+        for line in text.splitlines():
+            if 'records saved' in line.lower():
+                try:
+                    token = line.split('records saved')[0].split()[-1]
+                    records += int(''.join(c for c in token if c.isdigit()) or 0)
+                except (ValueError, IndexError):
+                    pass
+        return records
+
+    def _run_fusion(self, task: MonitoringTask) -> None:
+        """Full-year fusion & postprocess (идемпотентно, ~1-2 мин)."""
+        call_command(
+            'compute_fused_ndvi',
+            year=task.year, overwrite=True, **self._scope_kwargs(task),
+        )
+        call_command(
+            'ndvi_postprocess',
+            region_id=task.region.pk, year=task.year, source='fused',
+        )
+
+    @staticmethod
+    def _finalize_task(task: MonitoringTask, total_records: int,
+                       window_to: date, year_end: date,
+                       log_entry: str) -> None:
+        task.records_total = (task.records_total or 0) + total_records
+        task.last_check = timezone.now()
+        if total_records > 0:
+            task.last_date_to = window_to
+        else:
+            log_entry += ' [no new data, will retry]'
+        if window_to >= year_end:
+            task.status = 'completed'
+        task.log = (task.log + log_entry)[-LOG_MAX_CHARS:]
+        task.save()
