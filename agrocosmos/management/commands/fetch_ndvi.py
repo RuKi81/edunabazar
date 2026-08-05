@@ -88,52 +88,16 @@ class Command(BaseCommand):
                             help='API backend: gee (Google Earth Engine) or cdse (Copernicus)')
 
     def handle(self, *args, **options):
-        # Select backend
         backend = options['backend']
-        if backend == 'gee':
-            from agrocosmos.services.satellite_gee import fetch_ndvi_stats, GEEError as BackendError
-        else:
-            from agrocosmos.services.satellite import fetch_ndvi_stats, CDSEError as BackendError
+        fetch_fn, backend_error = self._backend_config(backend)
 
-        # Graceful stop on Ctrl+C
-        def _signal_handler(sig, frame):
-            self._stop_requested = True
-            self.stderr.write(self.style.WARNING('\n⚠ Ctrl+C — finishing current farmland…'))
-        signal.signal(signal.SIGINT, _signal_handler)
+        self._install_signal_handler()
 
-        # Build queryset
-        qs = Farmland.objects.select_related('district').all()
-        if options['farmland_id']:
-            qs = qs.filter(pk=options['farmland_id'])
-        elif options['district_id']:
-            qs = qs.filter(district_id=options['district_id'])
-        elif options['region_id']:
-            qs = qs.filter(district__region_id=options['region_id'])
-        else:
-            self.stderr.write('Specify --region-id, --district-id, or --farmland-id')
+        farmlands = self._load_farmlands(options)
+        if farmlands is None:
             return
 
-        if options['start_from_id']:
-            qs = qs.filter(pk__gte=options['start_from_id'])
-
-        qs = qs.order_by('pk')
-
-        if options['limit']:
-            qs = qs[:options['limit']]
-
-        farmlands = list(qs)
-        if not farmlands:
-            self.stderr.write('No farmlands found matching criteria')
-            return
-
-        # Date range
-        date_to = date.today()
-        date_from = date_to - timedelta(days=30)
-        if options['date_from']:
-            date_from = date.fromisoformat(options['date_from'])
-        if options['date_to']:
-            date_to = date.fromisoformat(options['date_to'])
-
+        date_from, date_to = self._resolve_dates(options)
         cloud_max = options['cloud_max']
         min_valid = options['min_valid_ratio']
         resume = options['resume']
@@ -151,11 +115,8 @@ class Command(BaseCommand):
             f'═══════════════════════════════════════════════'
         )
 
-        created_total = 0
-        updated_total = 0
-        skipped_total = 0
-        errors = 0
-        api_calls = 0
+        totals = {'created': 0, 'updated': 0, 'skipped': 0,
+                  'errors': 0, 'api_calls': 0}
         t0 = time.time()
 
         for i, fl in enumerate(farmlands, 1):
@@ -167,123 +128,18 @@ class Command(BaseCommand):
                 f' ({fl.area_ha:.1f} ha, {fl.district.name})'
             )
 
-            # Convert MultiPolygon → Polygon GeoJSON for API
-            geom = fl.geom
-            if geom.geom_type == 'MultiPolygon' and len(geom) == 1:
-                geom_json = json.loads(geom[0].geojson)
-            else:
-                geom_json = json.loads(geom.geojson)
+            self._process_farmland(
+                fl, chunks, fetch_fn, backend_error,
+                cloud_max, min_valid, resume, throttle, totals,
+            )
 
-            fl_created = 0
-            fl_updated = 0
+            self._print_progress(i, len(farmlands), totals, t0)
 
-            for chunk_from, chunk_to in chunks:
-                if self._stop_requested:
-                    break
-
-                # Resume: check if data already exists for this farmland+month
-                if resume:
-                    existing = VegetationIndex.objects.filter(
-                        farmland=fl,
-                        index_type='ndvi',
-                        acquired_date__gte=chunk_from,
-                        acquired_date__lte=chunk_to,
-                    ).exists()
-                    if existing:
-                        skipped_total += 1
-                        continue
-
-                # Throttle between API calls
-                if api_calls > 0:
-                    time.sleep(throttle)
-
-                try:
-                    stats = fetch_ndvi_stats(
-                        geometry_geojson=geom_json,
-                        date_from=chunk_from,
-                        date_to=chunk_to,
-                        cloud_max=cloud_max,
-                        min_valid_ratio=min_valid,
-                    )
-                    api_calls += 1
-                except BackendError as e:
-                    self.stderr.write(f'    ERROR ({chunk_from}..{chunk_to}): {e}')
-                    errors += 1
-                    # Retry once after wait
-                    self.stderr.write('    Retrying in 10s…')
-                    time.sleep(10)
-                    try:
-                        stats = fetch_ndvi_stats(
-                            geometry_geojson=geom_json,
-                            date_from=chunk_from,
-                            date_to=chunk_to,
-                            cloud_max=cloud_max,
-                            min_valid_ratio=min_valid,
-                        )
-                        api_calls += 1
-                        errors -= 1  # retry succeeded
-                    except Exception:
-                        continue
-                except Exception as e:
-                    self.stderr.write(f'    UNEXPECTED ERROR ({chunk_from}..{chunk_to}): {e}')
-                    errors += 1
-                    continue
-
-                if not stats:
-                    continue
-
-                for s in stats:
-                    scene_id = f's2_{s["date"]}_{fl.district_id or 0}'
-                    scene, _ = SatelliteScene.objects.get_or_create(
-                        scene_id=scene_id,
-                        defaults={
-                            'satellite': 'sentinel2',
-                            'acquired_date': s['date'],
-                            'cloud_cover': 0,
-                            'processed': True,
-                        },
-                    )
-
-                    _, is_new = VegetationIndex.objects.update_or_create(
-                        farmland=fl,
-                        scene=scene,
-                        index_type='ndvi',
-                        defaults={
-                            'acquired_date': s['date'],
-                            'mean': s['mean'],
-                            'median': s['median'],
-                            'min_val': s['min'],
-                            'max_val': s['max'],
-                            'std_val': s['std'],
-                            'pixel_count': s['pixel_count'],
-                            'valid_pixel_count': s['valid_pixel_count'],
-                        },
-                    )
-                    if is_new:
-                        fl_created += 1
-                    else:
-                        fl_updated += 1
-
-            created_total += fl_created
-            updated_total += fl_updated
-            if fl_created or fl_updated:
-                self.stdout.write(
-                    f'    → +{fl_created} new, {fl_updated} updated'
-                )
-
-            # Progress estimate
-            elapsed = time.time() - t0
-            if i > 0 and elapsed > 0:
-                rate = i / elapsed
-                eta = (len(farmlands) - i) / rate if rate > 0 else 0
-                eta_min = int(eta // 60)
-                eta_sec = int(eta % 60)
-                self.stdout.write(
-                    f'    [{i}/{len(farmlands)}] '
-                    f'{api_calls} API calls, '
-                    f'{created_total} new, {errors} err | '
-                    f'ETA: {eta_min}m{eta_sec:02d}s'
-                )
+        created_total = totals['created']
+        updated_total = totals['updated']
+        skipped_total = totals['skipped']
+        errors = totals['errors']
+        api_calls = totals['api_calls']
 
         # Final summary
         elapsed = time.time() - t0
@@ -304,3 +160,193 @@ class Command(BaseCommand):
                 f'Interrupted at farmland #{farmlands[min(i, len(farmlands))-1].pk}. '
                 f'Use --start-from-id {farmlands[min(i, len(farmlands))-1].pk} to continue.'
             ))
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _backend_config(backend):
+        """Return (fetch_ndvi_stats, BackendError) for the backend."""
+        if backend == 'gee':
+            from agrocosmos.services.satellite_gee import fetch_ndvi_stats, GEEError
+            return fetch_ndvi_stats, GEEError
+        from agrocosmos.services.satellite import fetch_ndvi_stats, CDSEError
+        return fetch_ndvi_stats, CDSEError
+
+    def _install_signal_handler(self):
+        """Graceful stop on Ctrl+C."""
+        def _signal_handler(sig, frame):
+            self._stop_requested = True
+            self.stderr.write(self.style.WARNING('\n⚠ Ctrl+C — finishing current farmland…'))
+        signal.signal(signal.SIGINT, _signal_handler)
+
+    def _load_farmlands(self, options):
+        """Build the farmland list from filters; None → abort."""
+        qs = Farmland.objects.select_related('district').all()
+        if options['farmland_id']:
+            qs = qs.filter(pk=options['farmland_id'])
+        elif options['district_id']:
+            qs = qs.filter(district_id=options['district_id'])
+        elif options['region_id']:
+            qs = qs.filter(district__region_id=options['region_id'])
+        else:
+            self.stderr.write('Specify --region-id, --district-id, or --farmland-id')
+            return None
+
+        if options['start_from_id']:
+            qs = qs.filter(pk__gte=options['start_from_id'])
+
+        qs = qs.order_by('pk')
+
+        if options['limit']:
+            qs = qs[:options['limit']]
+
+        farmlands = list(qs)
+        if not farmlands:
+            self.stderr.write('No farmlands found matching criteria')
+            return None
+        return farmlands
+
+    @staticmethod
+    def _resolve_dates(options):
+        """Date range: defaults to the last 30 days."""
+        date_to = date.today()
+        date_from = date_to - timedelta(days=30)
+        if options['date_from']:
+            date_from = date.fromisoformat(options['date_from'])
+        if options['date_to']:
+            date_to = date.fromisoformat(options['date_to'])
+        return date_from, date_to
+
+    def _process_farmland(self, fl, chunks, fetch_fn, backend_error,
+                          cloud_max, min_valid, resume, throttle, totals):
+        """Fetch + save NDVI for one farmland across all month chunks."""
+        # Convert MultiPolygon → Polygon GeoJSON for API
+        geom = fl.geom
+        if geom.geom_type == 'MultiPolygon' and len(geom) == 1:
+            geom_json = json.loads(geom[0].geojson)
+        else:
+            geom_json = json.loads(geom.geojson)
+
+        fl_created = 0
+        fl_updated = 0
+
+        for chunk_from, chunk_to in chunks:
+            if self._stop_requested:
+                break
+
+            # Resume: check if data already exists for this farmland+month
+            if resume and VegetationIndex.objects.filter(
+                farmland=fl,
+                index_type='ndvi',
+                acquired_date__gte=chunk_from,
+                acquired_date__lte=chunk_to,
+            ).exists():
+                totals['skipped'] += 1
+                continue
+
+            # Throttle between API calls
+            if totals['api_calls'] > 0:
+                time.sleep(throttle)
+
+            stats, calls_made, errs = self._fetch_stats(
+                fetch_fn, backend_error, geom_json,
+                chunk_from, chunk_to, cloud_max, min_valid,
+            )
+            totals['api_calls'] += calls_made
+            totals['errors'] += errs
+            if not stats:
+                continue
+
+            created, updated = self._save_stats(stats, fl)
+            fl_created += created
+            fl_updated += updated
+
+        totals['created'] += fl_created
+        totals['updated'] += fl_updated
+        if fl_created or fl_updated:
+            self.stdout.write(
+                f'    → +{fl_created} new, {fl_updated} updated'
+            )
+
+    def _fetch_stats(self, fetch_fn, backend_error, geom_json,
+                     chunk_from, chunk_to, cloud_max, min_valid):
+        """One API call with a single retry on backend error.
+
+        Returns (stats | None, calls_made, errors_delta).
+        """
+        call_kwargs = dict(
+            geometry_geojson=geom_json,
+            date_from=chunk_from,
+            date_to=chunk_to,
+            cloud_max=cloud_max,
+            min_valid_ratio=min_valid,
+        )
+        try:
+            return fetch_fn(**call_kwargs), 1, 0
+        except backend_error as e:
+            self.stderr.write(f'    ERROR ({chunk_from}..{chunk_to}): {e}')
+            # Retry once after wait
+            self.stderr.write('    Retrying in 10s…')
+            time.sleep(10)
+            try:
+                return fetch_fn(**call_kwargs), 1, 0
+            except Exception:
+                return None, 0, 1
+        except Exception as e:
+            self.stderr.write(f'    UNEXPECTED ERROR ({chunk_from}..{chunk_to}): {e}')
+            return None, 0, 1
+
+    @staticmethod
+    def _save_stats(stats, fl):
+        """Upsert VegetationIndex rows → (created, updated)."""
+        created = 0
+        updated = 0
+        for s in stats:
+            scene_id = f's2_{s["date"]}_{fl.district_id or 0}'
+            scene, _ = SatelliteScene.objects.get_or_create(
+                scene_id=scene_id,
+                defaults={
+                    'satellite': 'sentinel2',
+                    'acquired_date': s['date'],
+                    'cloud_cover': 0,
+                    'processed': True,
+                },
+            )
+
+            _, is_new = VegetationIndex.objects.update_or_create(
+                farmland=fl,
+                scene=scene,
+                index_type='ndvi',
+                defaults={
+                    'acquired_date': s['date'],
+                    'mean': s['mean'],
+                    'median': s['median'],
+                    'min_val': s['min'],
+                    'max_val': s['max'],
+                    'std_val': s['std'],
+                    'pixel_count': s['pixel_count'],
+                    'valid_pixel_count': s['valid_pixel_count'],
+                },
+            )
+            if is_new:
+                created += 1
+            else:
+                updated += 1
+        return created, updated
+
+    def _print_progress(self, i, total, totals, t0):
+        elapsed = time.time() - t0
+        if i <= 0 or elapsed <= 0:
+            return
+        rate = i / elapsed
+        eta = (total - i) / rate if rate > 0 else 0
+        eta_min = int(eta // 60)
+        eta_sec = int(eta % 60)
+        self.stdout.write(
+            f'    [{i}/{total}] '
+            f'{totals["api_calls"]} API calls, '
+            f'{totals["created"]} new, {totals["errors"]} err | '
+            f'ETA: {eta_min}m{eta_sec:02d}s'
+        )
