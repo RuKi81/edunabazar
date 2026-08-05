@@ -38,8 +38,8 @@ from pathlib import Path
 from django.core.management.base import BaseCommand
 
 from agrocosmos.services.raster_storage import (
-    DATE_RE as _DATE_RE,
     SENSORS,
+    _parse_period,
     sensor_root,
 )
 
@@ -104,41 +104,46 @@ class Command(BaseCommand):
         removed = 0
         freed = 0
         scanned = 0
-        pattern = f'**/{prefix}_*.tif'
 
-        for f in root.glob(pattern):
+        for f in root.glob(f'**/{prefix}_*.tif'):
             scanned += 1
-            m = _DATE_RE.search(f.name)
-            if not m:
+            period = _parse_period(f.name)
+            if period is None:
                 # Filename doesn't match expected format — leave alone.
                 continue
-            try:
-                date_to = date.fromisoformat(m.group(2))
-            except ValueError:
-                continue
-
+            date_to = period[1]
             if date_to >= cutoff:
                 continue
 
-            size = f.stat().st_size
-            if dry:
-                self.stdout.write(f'    would remove: {f} ({size/1e6:.1f} MB, date_to={date_to})')
-            else:
-                try:
-                    f.unlink()
-                except OSError as e:
-                    self.stderr.write(f'    failed to remove {f}: {e}')
-                    continue
+            size = self._remove_one(f, date_to, dry)
+            if size is None:
+                continue
             removed += 1
             freed += size
 
-        # Prune now-empty year directories (scope/year/).
         if not dry:
-            for year_dir in root.glob('*/*'):
-                if year_dir.is_dir() and not any(year_dir.iterdir()):
-                    try:
-                        year_dir.rmdir()
-                    except OSError:
-                        pass
+            self._prune_empty_dirs(root)
 
         return removed, freed, scanned
+
+    def _remove_one(self, f: Path, date_to: date, dry: bool):
+        """Delete (or report in dry-run) one file; size in bytes or None."""
+        size = f.stat().st_size
+        if dry:
+            self.stdout.write(f'    would remove: {f} ({size/1e6:.1f} MB, date_to={date_to})')
+            return size
+        try:
+            f.unlink()
+        except OSError as e:
+            self.stderr.write(f'    failed to remove {f}: {e}')
+            return None
+        return size
+
+    def _prune_empty_dirs(self, root: Path):
+        """Prune now-empty year directories (scope/year/)."""
+        for year_dir in root.glob('*/*'):
+            if year_dir.is_dir() and not any(year_dir.iterdir()):
+                try:
+                    year_dir.rmdir()
+                except OSError:
+                    pass
