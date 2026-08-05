@@ -76,60 +76,78 @@ class RasterFile:
         return self.size_bytes / 1e6
 
 
+def _parse_period(name: str) -> tuple[date, date] | None:
+    """``(date_from, date_to)`` from a raster filename, or None."""
+    m = DATE_RE.search(name)
+    if not m:
+        return None
+    try:
+        return date.fromisoformat(m.group(1)), date.fromisoformat(m.group(2))
+    except ValueError:
+        return None
+
+
+def _summarize_folder(sensor: str, prefix: str,
+                      scope_dir: Path, year_dir: Path) -> FolderSummary | None:
+    """Aggregate one ``{scope}/{year}`` directory; None when empty."""
+    count = 0
+    size = 0
+    oldest: date | None = None
+    newest: date | None = None
+
+    for f in year_dir.glob(f'{prefix}_*.tif'):
+        try:
+            size += f.stat().st_size
+        except OSError:
+            continue
+        count += 1
+        period = _parse_period(f.name)
+        if period:
+            d_from, d_to = period
+            if oldest is None or d_from < oldest:
+                oldest = d_from
+            if newest is None or d_to > newest:
+                newest = d_to
+
+    if count == 0:
+        return None
+    return FolderSummary(
+        sensor=sensor,
+        scope=scope_dir.name,
+        year=year_dir.name,
+        count=count,
+        size_bytes=size,
+        oldest=oldest,
+        newest=newest,
+    )
+
+
+def _sensor_folders(sensor: str) -> list[FolderSummary]:
+    """Walk one sensor root two levels deep (scope/year)."""
+    root = sensor_root(sensor)
+    prefix = SENSORS[sensor]['prefix']
+    if not root.exists():
+        return []
+
+    summaries: list[FolderSummary] = []
+    for scope_dir in sorted(root.iterdir()):
+        if not scope_dir.is_dir():
+            continue
+        for year_dir in sorted(scope_dir.iterdir()):
+            if not year_dir.is_dir():
+                continue
+            summary = _summarize_folder(sensor, prefix, scope_dir, year_dir)
+            if summary:
+                summaries.append(summary)
+    return summaries
+
+
 def list_folders(sensors: Iterable[str] | None = None) -> list[FolderSummary]:
     """Walk each sensor root two levels deep and aggregate per-folder."""
     sensors = list(sensors) if sensors else list(SENSORS)
     summaries: list[FolderSummary] = []
-
     for sensor in sensors:
-        root = sensor_root(sensor)
-        prefix = SENSORS[sensor]['prefix']
-        if not root.exists():
-            continue
-
-        # Each scope/year is one folder summary.
-        for scope_dir in sorted(root.iterdir()):
-            if not scope_dir.is_dir():
-                continue
-            for year_dir in sorted(scope_dir.iterdir()):
-                if not year_dir.is_dir():
-                    continue
-
-                count = 0
-                size = 0
-                oldest: date | None = None
-                newest: date | None = None
-
-                for f in year_dir.glob(f'{prefix}_*.tif'):
-                    try:
-                        size += f.stat().st_size
-                    except OSError:
-                        continue
-                    count += 1
-                    m = DATE_RE.search(f.name)
-                    if m:
-                        try:
-                            d_from = date.fromisoformat(m.group(1))
-                            d_to = date.fromisoformat(m.group(2))
-                        except ValueError:
-                            continue
-                        if oldest is None or d_from < oldest:
-                            oldest = d_from
-                        if newest is None or d_to > newest:
-                            newest = d_to
-
-                if count == 0:
-                    continue
-                summaries.append(FolderSummary(
-                    sensor=sensor,
-                    scope=scope_dir.name,
-                    year=year_dir.name,
-                    count=count,
-                    size_bytes=size,
-                    oldest=oldest,
-                    newest=newest,
-                ))
-
+        summaries.extend(_sensor_folders(sensor))
     return summaries
 
 
@@ -170,30 +188,22 @@ def list_files(sensor: str, scope: str, year: str) -> list[RasterFile]:
     return files
 
 
-def delete_paths(paths: Iterable[str]) -> tuple[int, int]:
-    """Delete given absolute paths; returns ``(removed_count, freed_bytes)``.
+def _delete_one(path: Path, allowed_roots: list[Path]) -> tuple[bool, int]:
+    """Delete a single raster; returns ``(deleted, freed_bytes)``."""
+    if not any(str(path).startswith(str(root)) for root in allowed_roots):
+        return False, 0
+    if not path.is_file():
+        return False, 0
+    try:
+        size = path.stat().st_size
+        path.unlink()
+    except OSError:
+        return False, 0
+    return True, size
 
-    Silently ignores files outside of the configured sensor roots
-    (defense-in-depth against path traversal from form posts).
-    """
-    allowed_roots = [sensor_root(s).resolve() for s in SENSORS]
-    removed = 0
-    freed = 0
-    for p in paths:
-        path = Path(p).resolve()
-        if not any(str(path).startswith(str(root)) for root in allowed_roots):
-            continue
-        if not path.is_file():
-            continue
-        try:
-            size = path.stat().st_size
-            path.unlink()
-        except OSError:
-            continue
-        removed += 1
-        freed += size
 
-    # Prune empty year directories.
+def _prune_empty_year_dirs() -> None:
+    """Remove now-empty ``{scope}/{year}`` directories in all sensor roots."""
     for sensor in SENSORS:
         root = sensor_root(sensor)
         if not root.exists():
@@ -208,6 +218,23 @@ def delete_paths(paths: Iterable[str]) -> tuple[int, int]:
                     except OSError:
                         pass
 
+
+def delete_paths(paths: Iterable[str]) -> tuple[int, int]:
+    """Delete given absolute paths; returns ``(removed_count, freed_bytes)``.
+
+    Silently ignores files outside of the configured sensor roots
+    (defense-in-depth against path traversal from form posts).
+    """
+    allowed_roots = [sensor_root(s).resolve() for s in SENSORS]
+    removed = 0
+    freed = 0
+    for p in paths:
+        deleted, size = _delete_one(Path(p).resolve(), allowed_roots)
+        if deleted:
+            removed += 1
+            freed += size
+
+    _prune_empty_year_dirs()
     return removed, freed
 
 
