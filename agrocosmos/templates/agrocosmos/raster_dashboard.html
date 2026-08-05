@@ -9,6 +9,9 @@
 {% block og_image_alt %}Агрокосмос — растровая карта NDVI Sentinel-2 / Landsat{% endblock %}
 
 {% block head %}
+  {# iOS viewport override — same rationale as dashboard.html: stop the
+     select-focus auto-zoom, uncover the notch, keep pinch on Leaflet. #}
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <link rel="stylesheet" href="{% static 'legacy/css/leaflet.css' %}" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
   <style>
@@ -226,6 +229,30 @@
       }
       .agro-ui__left.open { transform: translateX(0); }
       .basemap-bar { bottom: 56px; }
+    }
+
+    /* ── iOS Safari fixes — see dashboard.html for the full rationale.
+       dvh tracks the dynamic toolbar, env() pads the notch/home
+       indicator, min-height guard is desktop-only. All no-ops on
+       Android (env() = 0, dvh = vh). */
+    @supports (height: 100dvh) {
+      .agro-ui,
+      .agro-ui__left,
+      .agro-ui__right { height: 100dvh; bottom: auto; }
+    }
+    @media (max-width: 992px) {
+      .agro-ui { min-height: 0; }
+    }
+    .basemap-bar {
+      right: calc(14px + env(safe-area-inset-right));
+      bottom: calc(12px + env(safe-area-inset-bottom));
+    }
+    .agro-measure-bar { bottom: calc(12px + env(safe-area-inset-bottom)); }
+    .measure-result { bottom: calc(60px + env(safe-area-inset-bottom)); }
+    .agro-ui__left { padding-left: calc(14px + env(safe-area-inset-left)); }
+    .agro-ui__right { padding-right: env(safe-area-inset-right); }
+    @media (max-width: 600px) {
+      .basemap-bar { bottom: calc(56px + env(safe-area-inset-bottom)); }
     }
   </style>
 {% endblock %}

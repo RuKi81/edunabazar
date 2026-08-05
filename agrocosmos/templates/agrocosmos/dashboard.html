@@ -9,6 +9,15 @@
 {% block og_image_alt %}Агрокосмос — карта-хороплет состояния посевов России по данным MODIS NDVI{% endblock %}
 
 {% block head %}
+  {# Override the site-wide viewport for the fullscreen map app (last
+     <meta name="viewport"> wins). iOS-specific: ``maximum-scale=1``
+     stops Safari auto-zooming the page when a <select>/input with
+     font-size < 16px gets focus (our compact sidebar controls are
+     9-13px), and ``viewport-fit=cover`` removes the notch letterbox in
+     landscape so ``env(safe-area-inset-*)`` paddings below take over.
+     Pinch-zoom of the page is intentionally disabled — Leaflet handles
+     its own pinch on the map. Android ignores all of this. #}
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <link rel="stylesheet" href="{% static 'legacy/css/leaflet.css' %}" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
   <style>
@@ -225,6 +234,41 @@
       }
       .agro-ui__left.open { transform: translateX(0); }
       .basemap-bar { bottom: 56px; }
+    }
+
+    /* ── iOS Safari fixes ──────────────────────────────────────────
+       Android renders the rules above correctly; mobile Safari needs
+       three extra guards (all no-ops elsewhere: env() is 0 and dvh
+       equals vh on browsers without a dynamic toolbar):
+
+       1. Dynamic toolbar: ``bottom: 0`` fixed panels are sized against
+          the *layout* viewport, so the map bottom and the toolbars end
+          up hidden behind Safari's collapsing bottom bar. ``100dvh``
+          tracks the actually visible viewport.
+       2. Safe area: with ``viewport-fit=cover`` (meta above) content
+          may extend under the notch (landscape) / home indicator —
+          pad the fixed sidebars and bottom toolbars with env() insets.
+       3. ``min-height: 650px`` on .agro-ui is a desktop guard; on a
+          phone in landscape (~370px tall) it forces the fixed
+          container far past the screen edge. */
+    @supports (height: 100dvh) {
+      .agro-ui,
+      .agro-ui__left,
+      .agro-ui__right { height: 100dvh; bottom: auto; }
+    }
+    @media (max-width: 992px) {
+      .agro-ui { min-height: 0; }
+    }
+    .basemap-bar {
+      right: calc(14px + env(safe-area-inset-right));
+      bottom: calc(12px + env(safe-area-inset-bottom));
+    }
+    .agro-measure-bar { bottom: calc(12px + env(safe-area-inset-bottom)); }
+    .measure-result { bottom: calc(60px + env(safe-area-inset-bottom)); }
+    .agro-ui__left { padding-left: calc(14px + env(safe-area-inset-left)); }
+    .agro-ui__right { padding-right: env(safe-area-inset-right); }
+    @media (max-width: 600px) {
+      .basemap-bar { bottom: calc(56px + env(safe-area-inset-bottom)); }
     }
   </style>
 {% endblock %}
