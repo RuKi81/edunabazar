@@ -288,108 +288,24 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         self._run_id = options['run_id']
-        # Pick up the on-disk log file path (set by admin launcher) so the
-        # heartbeat can mirror its tail into PipelineRun.log.
-        try:
-            self._log_file_path = (
-                PipelineRun.objects.filter(pk=self._run_id)
-                .values_list('log_file', flat=True).first() or None
-            )
-        except Exception:
-            self._log_file_path = None
-        region_id = options.get('region_id')
-        district_id = options.get('district_id')
-        year = options['year']
-        min_valid = options['min_valid']
-        overwrite = options['overwrite']
-        do_fusion = options['fusion']
-        skip_s2 = options['skip_s2']
-        skip_l8 = options['skip_l8']
-        date_from = options.get('date_from')
-        date_to = options.get('date_to')
+        self._load_log_file_path()
 
-        # ── Handle SIGTERM / SIGINT: mark failed so we don't leak running ──
-        def _on_term(signum, _frame):
-            self._log(f'[signal] received signal {signum}, marking failed')
-            self._flush_log_to_db(final=True)
-            self._mark('failed')
-            sys.exit(1)
+        self._install_signal_handlers()
 
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            try:
-                signal.signal(sig, _on_term)
-            except (ValueError, OSError):
-                pass   # not main thread or unsupported; that's fine
-
-        # ── Resolve scope (validate) ──
-        try:
-            if district_id:
-                dist = District.objects.select_related('region').get(pk=district_id)
-                scope_desc = f'район "{dist.name}" ({dist.region.name})'
-                if not region_id:
-                    region_id = dist.region_id
-            elif region_id:
-                reg = Region.objects.get(pk=region_id)
-                scope_desc = f'регион "{reg.name}"'
-            else:
-                self.stderr.write('--region-id or --district-id required')
-                self._mark('failed')
-                return
-        except (District.DoesNotExist, Region.DoesNotExist) as exc:
-            self._log(f'scope error: {exc}')
-            self._flush_log_to_db(final=True)
-            self._mark('failed')
+        scope = self._resolve_scope(
+            options.get('region_id'), options.get('district_id'))
+        if scope is None:
             return
+        region_id, district_id, scope_desc = scope
 
-        # ── Update run: save our own PID for the admin to track ──
-        try:
-            PipelineRun.objects.filter(pk=self._run_id).update(
-                pid=os.getpid(),
-                status='running',
-                heartbeat_at=timezone.now(),
-            )
-        except Exception as exc:
-            print(f'[bootstrap] warning: {exc}', flush=True)
+        self._bootstrap_run()
 
         sw = _Stopwatch()
-        self._log('═══════════════════════════════════════════════')
-        self._log(f'  Pipeline run_id={self._run_id}  pid={os.getpid()}')
-        self._log(f'  Scope: {scope_desc}   Year: {year}')
-        flags = []
-        if overwrite:
-            flags.append('overwrite')
-        if do_fusion:
-            flags.append('+fusion')
-        if skip_s2:
-            flags.append('skip-s2')
-        if skip_l8:
-            flags.append('skip-l8')
-        if date_from or date_to:
-            flags.append(f'window={date_from or "…"}..{date_to or "…"}')
-        self._log(f'  Flags: [{", ".join(flags) or "none"}]   Min valid: {min_valid:.0%}')
-        self._log('═══════════════════════════════════════════════')
+        self._print_header(scope_desc, options)
 
         self._start_heartbeat()
         try:
-            if not skip_s2:
-                self._total_records += self._stage_raster(
-                    's2', region_id=region_id, district_id=district_id,
-                    year=year, min_valid=min_valid, overwrite=overwrite,
-                    date_from=date_from, date_to=date_to,
-                )
-
-            if not skip_l8:
-                self._total_records += self._stage_raster(
-                    'l8', region_id=region_id, district_id=district_id,
-                    year=year, min_valid=min_valid, overwrite=overwrite,
-                    date_from=date_from, date_to=date_to,
-                )
-
-            if do_fusion:
-                self._stage_fusion(
-                    region_id=region_id, district_id=district_id, year=year,
-                )
-                self._stage_postprocess(region_id=region_id, year=year)
+            self._execute_stages(region_id, district_id, options)
 
             self._log(f'═══ Pipeline completed in {sw.elapsed()} — '
                       f'{self._total_records} raster records ═══')
@@ -406,3 +322,105 @@ class Command(BaseCommand):
             raise
         finally:
             self._stop_heartbeat()
+
+    def _load_log_file_path(self) -> None:
+        """Pick up the on-disk log file path (set by admin launcher) so the
+        heartbeat can mirror its tail into PipelineRun.log."""
+        try:
+            self._log_file_path = (
+                PipelineRun.objects.filter(pk=self._run_id)
+                .values_list('log_file', flat=True).first() or None
+            )
+        except Exception:
+            self._log_file_path = None
+
+    def _install_signal_handlers(self) -> None:
+        """Handle SIGTERM / SIGINT: mark failed so we don't leak running."""
+        def _on_term(signum, _frame):
+            self._log(f'[signal] received signal {signum}, marking failed')
+            self._flush_log_to_db(final=True)
+            self._mark('failed')
+            sys.exit(1)
+
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                signal.signal(sig, _on_term)
+            except (ValueError, OSError):
+                pass   # not main thread or unsupported; that's fine
+
+    def _resolve_scope(self, region_id, district_id):
+        """Validate scope → (region_id, district_id, scope_desc); None → abort
+        (run already marked failed)."""
+        try:
+            if district_id:
+                dist = District.objects.select_related('region').get(pk=district_id)
+                scope_desc = f'район "{dist.name}" ({dist.region.name})'
+                if not region_id:
+                    region_id = dist.region_id
+            elif region_id:
+                reg = Region.objects.get(pk=region_id)
+                scope_desc = f'регион "{reg.name}"'
+            else:
+                self.stderr.write('--region-id or --district-id required')
+                self._mark('failed')
+                return None
+        except (District.DoesNotExist, Region.DoesNotExist) as exc:
+            self._log(f'scope error: {exc}')
+            self._flush_log_to_db(final=True)
+            self._mark('failed')
+            return None
+        return region_id, district_id, scope_desc
+
+    def _bootstrap_run(self) -> None:
+        """Update run: save our own PID for the admin to track."""
+        try:
+            PipelineRun.objects.filter(pk=self._run_id).update(
+                pid=os.getpid(),
+                status='running',
+                heartbeat_at=timezone.now(),
+            )
+        except Exception as exc:
+            print(f'[bootstrap] warning: {exc}', flush=True)
+
+    def _print_header(self, scope_desc: str, options: dict) -> None:
+        date_from = options.get('date_from')
+        date_to = options.get('date_to')
+        self._log('═══════════════════════════════════════════════')
+        self._log(f'  Pipeline run_id={self._run_id}  pid={os.getpid()}')
+        self._log(f'  Scope: {scope_desc}   Year: {options["year"]}')
+        flags = []
+        if options['overwrite']:
+            flags.append('overwrite')
+        if options['fusion']:
+            flags.append('+fusion')
+        if options['skip_s2']:
+            flags.append('skip-s2')
+        if options['skip_l8']:
+            flags.append('skip-l8')
+        if date_from or date_to:
+            flags.append(f'window={date_from or "…"}..{date_to or "…"}')
+        self._log(f'  Flags: [{", ".join(flags) or "none"}]   '
+                  f'Min valid: {options["min_valid"]:.0%}')
+        self._log('═══════════════════════════════════════════════')
+
+    def _execute_stages(self, region_id, district_id, options: dict) -> None:
+        year = options['year']
+        raster_kwargs = dict(
+            region_id=region_id, district_id=district_id,
+            year=year, min_valid=options['min_valid'],
+            overwrite=options['overwrite'],
+            date_from=options.get('date_from'),
+            date_to=options.get('date_to'),
+        )
+
+        if not options['skip_s2']:
+            self._total_records += self._stage_raster('s2', **raster_kwargs)
+
+        if not options['skip_l8']:
+            self._total_records += self._stage_raster('l8', **raster_kwargs)
+
+        if options['fusion']:
+            self._stage_fusion(
+                region_id=region_id, district_id=district_id, year=year,
+            )
+            self._stage_postprocess(region_id=region_id, year=year)
