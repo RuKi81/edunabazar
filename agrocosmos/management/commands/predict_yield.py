@@ -95,78 +95,52 @@ class Command(BaseCommand):
         }
 
         # ── Подобрать YieldFeatures ─────────────────────────────────
-        yf_qs = YieldFeatures.objects.filter(
-            crop=crop, year=year,
-            feature_set_version=version,
-            district__isnull=True,
-            region__isnull=False,
-        ).select_related('region')
+        yf_list = self._collect_features(crop, year, version, opts['region'])
+        if yf_list is None:
+            return
 
-        if opts['region']:
-            r = (
-                Region.objects.filter(name=opts['region']).first()
-                or Region.objects.filter(code=opts['region']).first()
-            )
-            if r is None:
-                self.stdout.write(self.style.ERROR(
-                    f'Регион "{opts["region"]}" не найден.'
-                ))
-                return
-            yf_qs = yf_qs.filter(region=r)
-
-        yf_list = list(yf_qs)
-        self.stdout.write(f'YieldFeatures найдено: {len(yf_list)}')
-
-        # Trivial-модель (feature_names == []) не использует NDVI-фичи —
-        # прогноз = baseline по году. Если YieldFeatures для запрошенного
-        # года ещё не посчитаны (типичный сценарий для текущего года, где
-        # сезон не завершён), генерируем синтетический список из самих
-        # регионов, для которых известна baseline. Это позволяет получить
-        # ранний прогноз тренда сразу после обновления EMISS-данных.
         if not yf_list and not model.feature_names:
-            rb = model_state.get('regional_baselines') or {}
-            baseline_ids = {int(k) for k in rb.keys()}
-            regions_qs = Region.objects.filter(id__in=baseline_ids)
-            if opts['region']:
-                regions_qs = regions_qs.filter(name=opts['region']) | \
-                             regions_qs.filter(code=opts['region'])
-            yf_list = [
-                _SyntheticYF(region=r, region_id=r.id, features={})
-                for r in regions_qs
-            ]
-            self.stdout.write(self.style.WARNING(
-                f'  [trivial-fallback] YieldFeatures отсутствуют — '
-                f'итерируем по {len(yf_list)} регионам с известной baseline.'
-            ))
+            yf_list = self._trivial_fallback(model_state, opts['region'])
 
         if not yf_list:
             return
 
         # ── Подсчёт прогноза для каждого ────────────────────────────
-        season_progress = self._estimate_season_progress(year)
-        forecasted_at = _dt.date.today()
+        results, skipped = self._predict_all(
+            yf_list, model_state, year, verbose=opts['verbose'],
+        )
+        self._print_summary(results, skipped)
 
+        if opts['dry_run']:
+            self.stdout.write('')
+            self.stdout.write(self.style.WARNING('Dry-run: прогнозы не сохранены.'))
+            return
+
+        n_created, n_replaced = self._persist(results, model, crop, year)
+        self.stdout.write('')
+        self.stdout.write(self.style.SUCCESS(
+            f'✓ Сохранено прогнозов: {n_created} '
+            f'(заменено предыдущих is_latest: {n_replaced})'
+        ))
+
+    def _predict_all(self, yf_list, model_state, year, *, verbose):
+        """Прогон ``model_predict`` по всем YieldFeatures."""
         results = []
-        skipped_no_baseline = 0
-        skipped_bad_features = 0
-
+        skipped = {'no_baseline': 0, 'bad_features': 0}
         for yf in yf_list:
             pred = model_predict(yf.features, model_state, yf.region_id, year)
             if pred is None:
                 rb = model_state['regional_baselines']
                 has_bl = (str(yf.region_id) in rb) or (yf.region_id in rb)
-                if not has_bl:
-                    skipped_no_baseline += 1
-                else:
-                    skipped_bad_features += 1
-                if opts['verbose']:
+                skipped['bad_features' if has_bl else 'no_baseline'] += 1
+                if verbose:
                     self.stdout.write(self.style.WARNING(
                         f'  ✗ {yf.region.name} — '
                         f'{"нет baseline" if not has_bl else "битые фичи"}'
                     ))
                 continue
             results.append((yf, pred))
-            if opts['verbose']:
+            if verbose:
                 self.stdout.write(
                     f'  ✓ {yf.region.name:30s}  '
                     f'baseline={pred["baseline"]:.2f}  '
@@ -174,19 +148,20 @@ class Command(BaseCommand):
                     f'forecast={pred["forecast_t_per_ha"]:.2f}  '
                     f'CI80=[{pred["ci_lower"]:.2f}; {pred["ci_upper"]:.2f}]'
                 )
+        return results, skipped
 
-        # ── Сводка ──────────────────────────────────────────────────
+    def _print_summary(self, results, skipped):
         self.stdout.write('')
         self.stdout.write(self.style.MIGRATE_HEADING('═══ Сводка ═══'))
         self.stdout.write(f'  Прогнозов сделано: {len(results)}')
-        if skipped_no_baseline:
+        if skipped['no_baseline']:
             self.stdout.write(
                 f'  Пропущено (нет baseline ≥5 лет факт-данных): '
-                f'{skipped_no_baseline}'
+                f'{skipped["no_baseline"]}'
             )
-        if skipped_bad_features:
+        if skipped['bad_features']:
             self.stdout.write(
-                f'  Пропущено (битые фичи): {skipped_bad_features}'
+                f'  Пропущено (битые фичи): {skipped["bad_features"]}'
             )
         if results:
             forecasts = [p['forecast_t_per_ha'] for _, p in results]
@@ -203,12 +178,10 @@ class Command(BaseCommand):
                 f'  Средняя аномалия: {sum(anoms)/len(anoms):+.3f} т/га'
             )
 
-        # ── Сохранение ──────────────────────────────────────────────
-        if opts['dry_run']:
-            self.stdout.write('')
-            self.stdout.write(self.style.WARNING('Dry-run: прогнозы не сохранены.'))
-            return
-
+    def _persist(self, results, model, crop, year):
+        """Сохранить прогнозы; старые is_latest сбрасываются."""
+        season_progress = self._estimate_season_progress(year)
+        forecasted_at = _dt.date.today()
         n_created = 0
         n_replaced = 0
         with transaction.atomic():
@@ -235,14 +208,60 @@ class Command(BaseCommand):
                     is_latest=True,
                 )
                 n_created += 1
-
-        self.stdout.write('')
-        self.stdout.write(self.style.SUCCESS(
-            f'✓ Сохранено прогнозов: {n_created} '
-            f'(заменено предыдущих is_latest: {n_replaced})'
-        ))
+        return n_created, n_replaced
 
     # ── Хелперы ──────────────────────────────────────────────────────
+    def _collect_features(self, crop, year, version, region_arg):
+        """Список региональных YieldFeatures; None — регион не найден."""
+        yf_qs = YieldFeatures.objects.filter(
+            crop=crop, year=year,
+            feature_set_version=version,
+            district__isnull=True,
+            region__isnull=False,
+        ).select_related('region')
+
+        if region_arg:
+            r = (
+                Region.objects.filter(name=region_arg).first()
+                or Region.objects.filter(code=region_arg).first()
+            )
+            if r is None:
+                self.stdout.write(self.style.ERROR(
+                    f'Регион "{region_arg}" не найден.'
+                ))
+                return None
+            yf_qs = yf_qs.filter(region=r)
+
+        yf_list = list(yf_qs)
+        self.stdout.write(f'YieldFeatures найдено: {len(yf_list)}')
+        return yf_list
+
+    def _trivial_fallback(self, model_state, region_arg):
+        """Синтетический список для trivial-модели без YieldFeatures.
+
+        Trivial-модель (feature_names == []) не использует NDVI-фичи —
+        прогноз = baseline по году. Если YieldFeatures для запрошенного
+        года ещё не посчитаны (типичный сценарий для текущего года, где
+        сезон не завершён), генерируем синтетический список из самих
+        регионов, для которых известна baseline. Это позволяет получить
+        ранний прогноз тренда сразу после обновления EMISS-данных.
+        """
+        rb = model_state.get('regional_baselines') or {}
+        baseline_ids = {int(k) for k in rb.keys()}
+        regions_qs = Region.objects.filter(id__in=baseline_ids)
+        if region_arg:
+            regions_qs = regions_qs.filter(name=region_arg) | \
+                         regions_qs.filter(code=region_arg)
+        yf_list = [
+            _SyntheticYF(region=r, region_id=r.id, features={})
+            for r in regions_qs
+        ]
+        self.stdout.write(self.style.WARNING(
+            f'  [trivial-fallback] YieldFeatures отсутствуют — '
+            f'итерируем по {len(yf_list)} регионам с известной baseline.'
+        ))
+        return yf_list
+
     def _load_model(
         self, crop: str, model_id: int | None,
     ) -> YieldForecastModel | None:
