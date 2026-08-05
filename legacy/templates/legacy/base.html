@@ -111,6 +111,10 @@
     .hide-on-large-only .sidenav-trigger { line-height: 56px; height: 56px; }
     .hide-on-large-only .sidenav-trigger i.material-icons { line-height: 56px; font-size: 28px; }
 
+    /* Sidenav must overlay sticky page chrome (sticky headers/controls use z-index up to 2000) */
+    .sidenav { z-index: 3001; }
+    .sidenav-overlay { z-index: 3000; }
+
     /* Sidenav mobile styling */
     .sidenav .sidenav-logo { padding: 16px 20px 8px; border-bottom: 1px solid #eee; margin-bottom: 4px; }
     .sidenav .sidenav-logo img { height: 48px; width: auto; }
