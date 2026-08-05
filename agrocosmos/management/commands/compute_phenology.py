@@ -166,6 +166,51 @@ def _flush_phenology(batch):
         cur.executemany(sql, batch)
 
 
+def _find_pos(doys, vals):
+    """Peak-of-season index within the spring/summer window (Mar–Sep).
+
+    Prevents selecting the autumn re-greening peak (bimodal winter-wheat
+    pattern). Returns index or None.
+    """
+    best_idx = None
+    best_val = -1
+    for j in range(len(vals)):
+        if MIN_DOY_POS <= doys[j] <= MAX_DOY_POS and vals[j] > best_val:
+            best_val = vals[j]
+            best_idx = j
+    return best_idx
+
+
+def _find_sos(dates, doys, vals, best_idx, threshold):
+    """First crossing above threshold, constrained to [MIN_DOY_SOS, POS]."""
+    for j in range(best_idx + 1):
+        if doys[j] >= MIN_DOY_SOS and vals[j] >= threshold:
+            return dates[j]
+    return None
+
+
+def _find_eos(dates, doys, vals, best_idx, threshold):
+    """Last crossing above threshold, constrained to [POS, MAX_DOY_EOS]."""
+    for j in range(len(vals) - 1, best_idx - 1, -1):
+        if doys[j] <= MAX_DOY_EOS and vals[j] >= threshold:
+            return dates[j]
+    return None
+
+
+def _season_stats(dates, vals, sos_date, eos_date):
+    """``(mean_ndvi, ti)`` over the growing season SOS..EOS."""
+    season_vals = []
+    ti = 0.0
+    for j in range(len(dates)):
+        if sos_date <= dates[j] <= eos_date:
+            season_vals.append(vals[j])
+        if j < len(dates) - 1 and dates[j] >= sos_date and dates[j + 1] <= eos_date:
+            dt = (dates[j + 1] - dates[j]).days
+            ti += 0.5 * (vals[j] + vals[j + 1]) * dt
+    mean_ndvi = float(np.mean(season_vals)) if season_vals else None
+    return mean_ndvi, ti
+
+
 def _compute_phenology(dates, vals):
     """
     Threshold-based phenology extraction with calendar window constraints
@@ -175,19 +220,11 @@ def _compute_phenology(dates, vals):
     """
     doys = [d.timetuple().tm_yday for d in dates]
 
-    # Find POS only within the spring/summer window (Mar–Sep)
-    # This prevents selecting the autumn re-greening peak (bimodal winter-wheat pattern)
-    best_idx = None
-    best_val = -1
-    for j in range(len(vals)):
-        if MIN_DOY_POS <= doys[j] <= MAX_DOY_POS and vals[j] > best_val:
-            best_val = vals[j]
-            best_idx = j
-
+    best_idx = _find_pos(doys, vals)
     if best_idx is None:
         return None  # no observations in the growing window
 
-    max_ndvi = float(best_val)
+    max_ndvi = float(vals[best_idx])
     pos_date = dates[best_idx]
 
     amplitude = max_ndvi - BASE_NDVI
@@ -196,20 +233,8 @@ def _compute_phenology(dates, vals):
 
     threshold = BASE_NDVI + SOS_EOS_RATIO * amplitude
 
-    # SOS: first crossing above threshold, constrained to [MIN_DOY_SOS, POS]
-    sos_date = None
-    for j in range(best_idx + 1):
-        if doys[j] >= MIN_DOY_SOS and vals[j] >= threshold:
-            sos_date = dates[j]
-            break
-
-    # EOS: last crossing above threshold, constrained to [POS, MAX_DOY_EOS]
-    eos_date = None
-    for j in range(len(vals) - 1, best_idx - 1, -1):
-        if doys[j] <= MAX_DOY_EOS and vals[j] >= threshold:
-            eos_date = dates[j]
-            break
-
+    sos_date = _find_sos(dates, doys, vals, best_idx, threshold)
+    eos_date = _find_eos(dates, doys, vals, best_idx, threshold)
     if sos_date is None or eos_date is None:
         return None
 
@@ -217,17 +242,7 @@ def _compute_phenology(dates, vals):
     if los < 30 or los > MAX_LOS_DAYS:
         return None  # unrealistic season length
 
-    # Collect values within the growing season (SOS..EOS)
-    season_vals = []
-    ti = 0.0
-    for j in range(len(dates)):
-        if sos_date <= dates[j] <= eos_date:
-            season_vals.append(vals[j])
-        if j < len(dates) - 1 and dates[j] >= sos_date and dates[j + 1] <= eos_date:
-            dt = (dates[j + 1] - dates[j]).days
-            ti += 0.5 * (vals[j] + vals[j + 1]) * dt
-
-    mean_ndvi = float(np.mean(season_vals)) if season_vals else None
+    mean_ndvi, ti = _season_stats(dates, vals, sos_date, eos_date)
 
     return {
         'sos': sos_date,
