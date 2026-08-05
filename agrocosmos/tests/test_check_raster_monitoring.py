@@ -72,7 +72,7 @@ class CheckRasterMonitoringTests(TestCase):
         self.assertIn('year complete', out)
 
     def test_dry_run_shows_window_without_calls(self):
-        task = self._task()
+        self._task()
         out, _, mock_cc = self._run(dry_run=True)
         self.assertIn(f'window {PAST_YEAR}-01-01..{PAST_YEAR}-12-31', out)
         self.assertIn('[DRY RUN]', out)

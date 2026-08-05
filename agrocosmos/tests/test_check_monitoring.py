@@ -68,7 +68,7 @@ class CheckMonitoringTests(TestCase):
         self.assertIn('Year complete', out)
 
     def test_future_period_stops(self):
-        task = self._task(year=date.today().year + 1)
+        self._task(year=date.today().year + 1)
         out, _, mock_cc = self._run()
         mock_cc.assert_not_called()
         self.assertIn('is in the future', out)
@@ -135,7 +135,7 @@ class CheckMonitoringTests(TestCase):
             chunk_from, chunk_to = _next_aligned_period(chunk_to, year)
         prev_end = chunk_from - timedelta(days=1) \
             if chunk_from != date(year, 1, 1) else None
-        task = self._task(year=year, last_date_to=prev_end)
+        self._task(year=year, last_date_to=prev_end)
 
         out, _, mock_cc = self._run(inner=_saved_inner())
         self.assertIn('data available after', out)

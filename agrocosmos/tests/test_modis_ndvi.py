@@ -19,11 +19,11 @@ for _mod in ('ee', 'rasterio', 'rasterio.mask', 'rasterio.features',
         except ImportError:
             sys.modules[_mod] = mock.MagicMock()
 
-from django.contrib.gis.geos import MultiPolygon, Polygon
-from django.core.management import call_command
-from django.test import TestCase
+from django.contrib.gis.geos import MultiPolygon, Polygon  # noqa: E402
+from django.core.management import call_command  # noqa: E402
+from django.test import TestCase  # noqa: E402
 
-from agrocosmos.models import (
+from agrocosmos.models import (  # noqa: E402
     District, Farmland, Region, SatelliteScene, VegetationIndex,
 )
 

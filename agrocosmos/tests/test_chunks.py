@@ -18,9 +18,9 @@ for _mod in ('ee', 'rasterio', 'rasterio.mask', 'rasterio.features',
         except ImportError:
             sys.modules[_mod] = mock.MagicMock()
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase  # noqa: E402
 
-from agrocosmos.services.satellite_modis_raster import _biweekly_chunks
+from agrocosmos.services.satellite_modis_raster import _biweekly_chunks  # noqa: E402
 
 
 class BiweeklyChunksTests(SimpleTestCase):
