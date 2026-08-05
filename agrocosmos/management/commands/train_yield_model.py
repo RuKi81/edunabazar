@@ -98,21 +98,7 @@ class Command(BaseCommand):
             ))
             return
 
-        years = sorted(set(data['years'].tolist()))
-        self.stdout.write(
-            f'Точек обучения: {n}\n'
-            f'Регионов в выборке: {len(set(data["region_ids"].tolist()))}\n'
-            f'Годы: {years}\n'
-        )
-
-        # Описательная статистика таргета (аномалии).
-        y = data['y']
-        self.stdout.write(
-            f'Аномалия y = yield − baseline:\n'
-            f'  mean: {y.mean():+.3f} т/га   (≈0 если baseline корректен)\n'
-            f'  std:  {y.std():.3f} т/га\n'
-            f'  диапазон: [{y.min():+.2f}, {y.max():+.2f}]\n'
-        )
+        self._print_data_stats(data)
 
         # ── Обучение ────────────────────────────────────────────────
         if opts['trivial']:
@@ -122,6 +108,48 @@ class Command(BaseCommand):
                 data, alpha=opts['alpha'], alpha_grid=opts['alpha_grid'],
             )
 
+        self._print_result(result)
+
+        # ── Сохранение ──────────────────────────────────────────────
+        if opts['dry_run']:
+            self.stdout.write('')
+            self.stdout.write(self.style.WARNING('Dry-run: модель не сохранена.'))
+            return
+
+        model = self._save_model(
+            result, crop, model_version, version, activate=opts['activate'],
+        )
+
+        self.stdout.write('')
+        flag = ' [PRODUCTION]' if opts['activate'] else ''
+        self.stdout.write(self.style.SUCCESS(
+            f'✓ Модель сохранена: id={model.id}, R²_cv={result["r2_cv"]:.3f}{flag}'
+        ))
+        if not opts['activate']:
+            self.stdout.write(
+                '  Чтобы активировать: --activate при следующем запуске, '
+                'либо вручную через admin.'
+            )
+
+    # ── Хелперы ────────────────────────────────────────────────────
+    def _print_data_stats(self, data):
+        """Сводка по обучающей выборке и таргету-аномалии."""
+        years = sorted(set(data['years'].tolist()))
+        self.stdout.write(
+            f'Точек обучения: {len(data["y"])}\n'
+            f'Регионов в выборке: {len(set(data["region_ids"].tolist()))}\n'
+            f'Годы: {years}\n'
+        )
+        y = data['y']
+        self.stdout.write(
+            f'Аномалия y = yield − baseline:\n'
+            f'  mean: {y.mean():+.3f} т/га   (≈0 если baseline корректен)\n'
+            f'  std:  {y.std():.3f} т/га\n'
+            f'  диапазон: [{y.min():+.2f}, {y.max():+.2f}]\n'
+        )
+
+    def _print_result(self, result):
+        """Отчёт по метрикам обучения и CV."""
         self.stdout.write(self.style.MIGRATE_HEADING('═══ Результат ═══'))
         if result.get('alpha_grid_scores'):
             self.stdout.write('  α grid search (LOYO RMSE на аномалиях):')
@@ -147,25 +175,24 @@ class Command(BaseCommand):
                 f'    {yr}: n={m["n"]:3d}  rmse={m["rmse"]:.3f}  mae={m["mae"]:.3f}'
             )
         self.stdout.write('')
-        if result['feature_names']:
-            self.stdout.write('  Коэффициенты (на стандартизованных фичах):')
-            for name in result['feature_names']:
-                self.stdout.write(
-                    f'    {name:>20s} : {result["coefficients"][name]:+.4f}'
-                )
-            self.stdout.write(f'    {"intercept":>20s} : {result["intercept"]:+.4f}')
-        else:
+        self._print_coefficients(result)
+
+    def _print_coefficients(self, result):
+        if not result['feature_names']:
             self.stdout.write('  Фичи не используются (trivial baseline).')
-
-        # ── Сохранение ──────────────────────────────────────────────
-        if opts['dry_run']:
-            self.stdout.write('')
-            self.stdout.write(self.style.WARNING('Dry-run: модель не сохранена.'))
             return
+        self.stdout.write('  Коэффициенты (на стандартизованных фичах):')
+        for name in result['feature_names']:
+            self.stdout.write(
+                f'    {name:>20s} : {result["coefficients"][name]:+.4f}'
+            )
+        self.stdout.write(f'    {"intercept":>20s} : {result["intercept"]:+.4f}')
 
+    @staticmethod
+    def _save_model(result, crop, model_version, version, *, activate):
+        """Создать YieldForecastModel; при activate снять предыдущую с прода."""
         with transaction.atomic():
-            if opts['activate']:
-                # Снимаем PRODUCTION с предыдущих моделей этой пары.
+            if activate:
                 YieldForecastModel.objects.filter(
                     scope=YieldForecastModel.Scope.NATIONAL,
                     region__isnull=True,
@@ -173,7 +200,7 @@ class Command(BaseCommand):
                     is_production=True,
                 ).update(is_production=False)
 
-            model = YieldForecastModel.objects.create(
+            return YieldForecastModel.objects.create(
                 scope=YieldForecastModel.Scope.NATIONAL,
                 region=None,
                 crop=crop,
@@ -189,7 +216,7 @@ class Command(BaseCommand):
                 n_samples=result['n_samples'],
                 train_years=result['train_years'],
                 residuals_cv=result['residuals_cv'],
-                is_production=opts['activate'],
+                is_production=activate,
                 diagnostics={
                     'alpha': result['alpha'],
                     'alpha_grid_scores': result['alpha_grid_scores'],
@@ -199,15 +226,4 @@ class Command(BaseCommand):
                     'feature_set_version': version,
                     'regional_baselines': result['regional_baselines'],
                 },
-            )
-
-        self.stdout.write('')
-        flag = ' [PRODUCTION]' if opts['activate'] else ''
-        self.stdout.write(self.style.SUCCESS(
-            f'✓ Модель сохранена: id={model.id}, R²_cv={result["r2_cv"]:.3f}{flag}'
-        ))
-        if not opts['activate']:
-            self.stdout.write(
-                '  Чтобы активировать: --activate при следующем запуске, '
-                'либо вручную через admin.'
             )
