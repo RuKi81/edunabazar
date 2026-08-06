@@ -2260,17 +2260,21 @@
         var labels = Array.from(allLabels).sort();
 
         var datasets = [];
+        // year -> mm-dd -> histogram ([b0..b4]); used in the tooltip below.
+        var histLookup = {};
         results.forEach(function (res, idx) {
           var color = yearColors[idx % yearColors.length];
           // Lookup by mm-dd key. Store both raw mean and is_outlier flag.
           var meanLookup = {};
           var smoothLookup = {};
           var outlierLookup = {};
+          histLookup[res.year] = {};
           res.data.forEach(function (d) {
             var key = d.date.substring(5);
             meanLookup[key] = d.mean;
             smoothLookup[key] = (d.mean_smooth !== undefined ? d.mean_smooth : null);
             outlierLookup[key] = !!d.is_outlier;
+            if (d.histogram) histLookup[res.year][key] = d.histogram;
           });
           var vals = labels.map(function (l) {
             return meanLookup[l] !== undefined ? meanLookup[l] : null;
@@ -2335,6 +2339,31 @@
               legend: {
                 display: years.length > 1,
                 labels: { boxWidth: 14, font: { size: 11 }, filter: function (item) { return item.text.indexOf('(период)') < 0; } }
+              },
+              tooltip: {
+                callbacks: {
+                  // Show the 5-bin NDVI distribution for the hovered point
+                  // (heterogeneity / bimodality). Only for year series that
+                  // carry a histogram; skipped for smoothed/period lines.
+                  afterBody: function (items) {
+                    if (!items || !items.length) return '';
+                    var ctx = items[0];
+                    var yr = ctx.dataset.label;
+                    var lbl = labels[ctx.dataIndex];
+                    var h = histLookup[yr] && histLookup[yr][lbl];
+                    if (!h) return '';
+                    var total = h.reduce(function (a, b) { return a + b; }, 0);
+                    if (!total) return '';
+                    var edges = ['0.0-0.2', '0.2-0.4', '0.4-0.6', '0.6-0.8', '0.8-1.0'];
+                    var lines = ['Распределение пикселей:'];
+                    h.forEach(function (c, i) {
+                      var pct = Math.round(c / total * 100);
+                      var bars = '█'.repeat(Math.round(pct / 10));
+                      lines.push(edges[i] + '  ' + bars + ' ' + pct + '%');
+                    });
+                    return lines;
+                  }
+                }
               }
             },
             scales: {
