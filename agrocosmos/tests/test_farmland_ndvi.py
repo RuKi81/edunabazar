@@ -61,6 +61,7 @@ class FarmlandNdviApiTests(TestCase):
             farmland=cls.farmland, scene=cls.scene_modis, index_type='ndvi',
             acquired_date=date(YEAR, 6, 10), mean=0.61234, median=0.6,
             min_val=0.4, max_val=0.8, mean_smooth=0.6, is_outlier=False,
+            histogram=[1, 0, 12, 0, 1],
         )
         cls.vi_s2 = VegetationIndex.objects.create(
             farmland=cls.farmland, scene=cls.scene_s2, index_type='ndvi',
@@ -106,10 +107,12 @@ class FarmlandNdviApiTests(TestCase):
         self.assertEqual(modis_point['median'], 0.6)
         self.assertEqual(modis_point['mean_smooth'], 0.6)
         self.assertFalse(modis_point['is_outlier'])
+        self.assertEqual(modis_point['histogram'], [1, 0, 12, 0, 1])
 
         s2_point = resp['data'][1]
         self.assertIsNone(s2_point['mean_smooth'])
         self.assertTrue(s2_point['is_outlier'])
+        self.assertIsNone(s2_point['histogram'])  # старые записи без гистограммы
 
     def test_source_filter(self):
         resp = self._get(farmland=self.farmland.pk, source='raster').json()

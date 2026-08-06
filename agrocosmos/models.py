@@ -172,6 +172,15 @@ class VegetationIndex(models.Model):
     )
     mean_smooth = models.FloatField(null=True, blank=True, verbose_name='NDVI сглаженное')
 
+    # Распределение валидных пикселей по 5 бинам NDVI:
+    # [0-0.2, 0.2-0.4, 0.4-0.6, 0.6-0.8, 0.8-1.0] (значения < 0 попадают
+    # в первый бин). Позволяет выявлять неоднородность поля и частичную
+    # гибель посевов (бимодальное распределение). Заполняется зональной
+    # статистикой растровых пайплайнов; None для старых записей.
+    histogram = models.JSONField(
+        null=True, blank=True, verbose_name='Гистограмма NDVI (5 бинов)',
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

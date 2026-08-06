@@ -18,6 +18,18 @@ logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 10_000  # polygons per rasterize batch
 
+# NDVI histogram bins: [0-0.2, 0.2-0.4, 0.4-0.6, 0.6-0.8, 0.8-1.0].
+# Values below 0 (water/artefacts within the physical [-0.2, 1.0] range)
+# fall into the first bin; NDVI == 1.0 falls into the last.
+HIST_BINS = 5
+
+
+def _ndvi_histogram(vals):
+    """Count valid pixels per NDVI bin. Returns a plain list of ints."""
+    idx = np.clip((np.clip(vals, 0.0, 1.0) * HIST_BINS).astype(np.int64),
+                  0, HIST_BINS - 1)
+    return np.bincount(idx, minlength=HIST_BINS).tolist()
+
 
 def _stats_for_chunk(ndvi, valid_mask, transform, chunk_geoms, chunk_ids,
                      min_valid_ratio):
@@ -76,6 +88,7 @@ def _stats_for_chunk(ndvi, valid_mask, transform, chunk_geoms, chunk_ids,
             'pixel_count': tc,
             'valid_pixel_count': int(vc),
             'valid_ratio': round(ratio, 4),
+            'histogram': _ndvi_histogram(vals),
         }
     return results
 
@@ -96,7 +109,8 @@ def compute_zonal_stats(tif_path, farmland_geometries, min_valid_ratio=0.5,
 
     Returns:
         dict: {farmland_id: {'mean', 'median', 'min', 'max', 'std',
-               'pixel_count', 'valid_pixel_count', 'valid_ratio'}}
+               'pixel_count', 'valid_pixel_count', 'valid_ratio',
+               'histogram'}}
     """
     if not tif_path or not os.path.exists(tif_path):
         return {}

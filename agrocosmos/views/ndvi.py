@@ -37,7 +37,7 @@ def _farmland_vi_qs(fid, source, year):
 def _serialize_vi_rows(qs):
     rows = qs.order_by('acquired_date').values(
         'acquired_date', 'mean', 'min_val', 'max_val', 'median',
-        'mean_smooth', 'is_outlier',
+        'mean_smooth', 'is_outlier', 'histogram',
     )
     data = []
     for r in rows:
@@ -49,6 +49,7 @@ def _serialize_vi_rows(qs):
             'median': _safe_round(r['median']),
             'mean_smooth': (None if r['mean_smooth'] is None else _safe_round(r['mean_smooth'])),
             'is_outlier': bool(r['is_outlier']),
+            'histogram': r['histogram'],
         })
     return data
 

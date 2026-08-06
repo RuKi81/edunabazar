@@ -161,7 +161,14 @@ NDVI_fused = (NDVI_s2 × N_valid_s2 + NDVI_l8 × N_valid_l8) / (N_valid_s2 + N_v
 
 Хранить как JSON: histogram = [12, 8, 45, 130, 55] (количество пикселей по бинам).
 
-**Статус**: [ ] Не реализовано
+**Статус**: [x] Реализовано — `VegetationIndex.histogram` (JSONField, nullable,
+миграция 0035); считается в `services/zonal_stats.py` (`_ndvi_histogram`,
+значения < 0 попадают в первый бин), пишется обоими растровыми
+пайплайнами (`modis_ndvi`, `fetch_raster_ndvi`), отдаётся в
+`/agrocosmos/api/farmland/ndvi/`. GEE-composite путь (fetch_ndvi_batch)
+гистограмму не считает — там нет попиксельного доступа без
+дорогого reduceRegions с fixedHistogram. Старые записи — NULL,
+заполняются при пересчёте (`--recompute-stats`).
 
 ---
 
@@ -221,7 +228,7 @@ NDVI_fused = (NDVI_s2 × N_valid_s2 + NDVI_l8 × N_valid_l8) / (N_valid_s2 + N_v
 | 7 | Временна́я интерполяция (1.1) | Средняя | Высокое | [x] |
 | 8 | Фенологические метрики (1.4) | Средняя | Высокое | [x] |
 | 9 | Baseline + z-score (1.5) | Средняя | Высокое | [x] |
-| 10 | Гистограмма по полигону (2.5) | Средняя | Среднее | [ ] |
+| 10 | Гистограмма по полигону (2.5) | Средняя | Среднее | [x] |
 | 11 | Доп. индексы EVI, NDMI (2.4) | Средняя | Среднее | [ ] |
 | 12 | Алерты change detection (2.6) | Высокая | Высокое | [x] |
 

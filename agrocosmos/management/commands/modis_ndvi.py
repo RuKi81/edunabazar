@@ -453,6 +453,7 @@ class Command(BaseCommand):
                 std_val=st['std'],
                 pixel_count=st['pixel_count'],
                 valid_pixel_count=st['valid_pixel_count'],
+                histogram=st.get('histogram'),
             ))
 
         if objs:
@@ -464,7 +465,7 @@ class Command(BaseCommand):
                 update_fields=[
                     'acquired_date', 'mean', 'median', 'min_val',
                     'max_val', 'std_val', 'pixel_count',
-                    'valid_pixel_count',
+                    'valid_pixel_count', 'histogram',
                 ],
             )
         return len(objs)
