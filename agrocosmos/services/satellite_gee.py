@@ -33,6 +33,54 @@ class GEEError(Exception):
     """Raised when GEE API returns an error."""
 
 
+# s2cloudless: mask pixels with cloud probability >= this % (ESA standard: 40)
+S2_CLOUD_PROB_MAX = getattr(settings, 'S2_CLOUD_PROB_MAX', 40)
+
+
+def s2_collection(date_from, date_to, area, cloud_max):
+    """Sentinel-2 SR collection joined with s2cloudless cloud probability.
+
+    Each image in the returned collection carries its matching
+    ``COPERNICUS/S2_CLOUD_PROBABILITY`` image in the ``cloud_prob``
+    property (inner join on ``system:index``).
+    """
+    s2 = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+          .filterDate(date_from, date_to)
+          .filterBounds(area)
+          .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', cloud_max)))
+    clouds = (ee.ImageCollection('COPERNICUS/S2_CLOUD_PROBABILITY')
+              .filterDate(date_from, date_to)
+              .filterBounds(area))
+    joined = ee.Join.saveFirst('cloud_prob').apply(
+        primary=s2,
+        secondary=clouds,
+        condition=ee.Filter.equals(
+            leftField='system:index', rightField='system:index',
+        ),
+    )
+    return ee.ImageCollection(joined)
+
+
+def s2_clear_mask(image):
+    """Clear-sky mask: SCL whitelist AND s2cloudless probability < threshold.
+
+    SCL alone misses ~10-15% of thin/semi-transparent clouds
+    (Coluzzi et al., 2018); combining with s2cloudless removes them.
+    SCL: 4=vegetation, 5=bare_soil, 6=water, 7=low_cloud_prob.
+    """
+    scl = image.select('SCL')
+    scl_clear = (scl.eq(4).Or(scl.eq(5))
+                 .Or(scl.eq(6)).Or(scl.eq(7)))
+    prob = ee.Image(image.get('cloud_prob')).select('probability')
+    return scl_clear.And(prob.lt(S2_CLOUD_PROB_MAX))
+
+
+def s2_ndvi(image):
+    """Cloud-masked NDVI band for an S2 image from :func:`s2_collection`."""
+    ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI')
+    return ndvi.updateMask(s2_clear_mask(image))
+
+
 def initialize():
     """Initialize Earth Engine. Handles both interactive and service account auth."""
     global _initialized
@@ -107,22 +155,13 @@ def fetch_ndvi_stats(geometry_geojson, date_from, date_to, cloud_max=30,
     try:
         geometry = ee.Geometry(geometry_geojson)
 
-        # Sentinel-2 Surface Reflectance (Harmonized)
-        s2 = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
-              .filterDate(date_from, date_to)
-              .filterBounds(geometry)
-              .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', cloud_max)))
+        # Sentinel-2 Surface Reflectance (Harmonized) + s2cloudless
+        s2 = s2_collection(date_from, date_to, geometry, cloud_max)
 
         def _process_image(image):
-            """Cloud-mask via SCL, compute NDVI, reduce over polygon."""
-            # SCL: 4=vegetation, 5=bare_soil, 6=water, 7=low_cloud_prob
-            scl = image.select('SCL')
-            cloud_mask = (scl.eq(4).Or(scl.eq(5))
-                          .Or(scl.eq(6)).Or(scl.eq(7)))
-
+            """Cloud-mask via SCL + s2cloudless, compute NDVI, reduce over polygon."""
             # NDVI = (NIR - Red) / (NIR + Red)
-            ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI')
-            ndvi_masked = ndvi.updateMask(cloud_mask)
+            ndvi_masked = s2_ndvi(image)
 
             # Total pixel count (all data pixels before cloud mask)
             total = image.select('B4').reduceRegion(
@@ -300,25 +339,15 @@ def fetch_ndvi_batch(farmlands, date_from, date_to, cloud_max=30,
     try:
         aoi = fc.geometry().bounds()
 
-        s2 = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
-              .filterDate(date_from, date_to)
-              .filterBounds(aoi)
-              .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', cloud_max)))
+        s2 = s2_collection(date_from, date_to, aoi, cloud_max)
 
         n_images = s2.size().getInfo()
         if n_images == 0:
             logger.info('No images for batch %s..%s', date_from, date_to)
             return {}
 
-        # Cloud-mask + NDVI for every image
-        def _add_ndvi(image):
-            scl = image.select('SCL')
-            clear = (scl.eq(4).Or(scl.eq(5))
-                     .Or(scl.eq(6)).Or(scl.eq(7)))
-            ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI')
-            return ndvi.updateMask(clear)
-
-        ndvi_col = s2.map(_add_ndvi)
+        # Cloud-mask (SCL + s2cloudless) + NDVI for every image
+        ndvi_col = s2.map(s2_ndvi)
 
         # Median composite — one clean image from all observations
         composite = ndvi_col.median().rename('NDVI')

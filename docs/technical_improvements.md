@@ -104,7 +104,7 @@ s2_clouds = ee.ImageCollection('COPERNICUS/S2_CLOUD_PROBABILITY')
 
 Порог 40% — стандарт ESA; можно сделать настраиваемым. Даёт на ~30% меньше облачных артефактов.
 
-**Статус**: [ ] Не реализовано
+**Статус**: [x] Реализовано — `satellite_gee.py`: `s2_collection()` (join s2cloudless по `system:index`) + `s2_clear_mask()` (SCL-whitelist ∧ probability < `S2_CLOUD_PROB_MAX`, настраивается через settings, дефолт 40). Используется во всех трёх S2-путях: `fetch_ndvi_stats`, `fetch_ndvi_batch`, `satellite_s2_raster.download_composite`.
 
 ---
 
@@ -207,7 +207,7 @@ NDVI_fused = (NDVI_s2 × N_valid_s2 + NDVI_l8 × N_valid_l8) / (N_valid_s2 + N_v
 | 1 | Взвешивание по площади (1.2) | Низкая | Высокое | [x] |
 | 2 | Валидация диапазонов NDVI (2.7) | Низкая | Среднее | [x] |
 | 3 | Улучшенная маска L8 (2.2) | Низкая | Среднее | [x] |
-| 4 | s2cloudless вместо SCL (2.1) | Низкая | Высокое | [ ] |
+| 4 | s2cloudless вместо SCL (2.1) | Низкая | Высокое | [x] |
 | 5 | Фильтрация аномалий (1.3) | Средняя | Высокое | [x] |
 | 6 | S2+L8 data fusion (2.3) | Средняя | Высокое | [x] |
 | 7 | Временна́я интерполяция (1.1) | Средняя | Высокое | [x] |

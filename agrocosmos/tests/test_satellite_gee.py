@@ -50,16 +50,17 @@ class GEEBatchTestCase(SimpleTestCase):
         self.ee = patcher_ee.start()
         self.addCleanup(patcher_ee.stop)
 
-        # Коллекция изображений: s2/modis chain → self.col
+        # Любая ee.ImageCollection(...) → self.col, включая обёртку
+        # ee.ImageCollection(joined) после s2cloudless-join.
         self.col = mock.MagicMock(name='image_collection')
         self.col.size.return_value.getInfo.return_value = 3
-        (self.ee.ImageCollection.return_value
-         .filterDate.return_value
+        self.ee.ImageCollection.return_value = self.col
+        # S2: col.filterDate().filterBounds().filter() → col (сам себя)
+        (self.col.filterDate.return_value
          .filterBounds.return_value
          .filter.return_value) = self.col
         # MODIS: terra.filterBounds() → terra_col; terra_col.merge(aqua) → col
-        (self.ee.ImageCollection.return_value
-         .filterDate.return_value
+        (self.col.filterDate.return_value
          .filterBounds.return_value
          .merge.return_value) = self.col
 

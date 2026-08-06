@@ -6,7 +6,7 @@ then delegates zonal statistics to the shared zonal_stats module.
 
 Approach:
 - 5-day median composites (S2A + S2B revisit = 5 days)
-- Cloud mask via SCL band (keep vegetation, bare soil, water, low cloud prob)
+- Cloud mask via SCL band + s2cloudless probability (COPERNICUS/S2_CLOUD_PROBABILITY)
 - NDVI = (B8 - B4) / (B8 + B4)
 - Download via getDownloadURL + requests (with timeout, no hangs)
 - Auto-tiling for large regions (each tile ≤ 2500×2500 px)
@@ -22,7 +22,7 @@ from pathlib import Path
 import ee
 from django.conf import settings
 
-from .satellite_gee import GEEError, initialize
+from .satellite_gee import GEEError, initialize, s2_collection, s2_ndvi
 
 logger = logging.getLogger(__name__)
 
@@ -103,25 +103,15 @@ def download_composite(region_geom_extent, region_id, date_from, date_to,
     dt = (date_to + timedelta(days=1)).isoformat()
 
     try:
-        s2 = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
-              .filterDate(df, dt)
-              .filterBounds(aoi)
-              .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', cloud_max)))
+        s2 = s2_collection(df, dt, aoi, cloud_max)
 
         n_images = s2.size().getInfo()
         if n_images == 0:
             logger.info('No S2 images for %s..%s', df, dt)
             return None
 
-        # Cloud mask via SCL + NDVI
-        def _add_ndvi(image):
-            scl = image.select('SCL')
-            clear = (scl.eq(4).Or(scl.eq(5))
-                     .Or(scl.eq(6)).Or(scl.eq(7)))
-            ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI')
-            return ndvi.updateMask(clear)
-
-        composite = s2.map(_add_ndvi).median().rename('NDVI').toFloat()
+        # Cloud mask via SCL + s2cloudless, then NDVI
+        composite = s2.map(s2_ndvi).median().rename('NDVI').toFloat()
 
         download_tiled_composite(
             composite,
