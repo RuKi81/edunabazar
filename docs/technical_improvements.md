@@ -175,7 +175,13 @@ NDVI_fused = (NDVI_s2 × N_valid_s2 + NDVI_l8 × N_valid_l8) / (N_valid_s2 + N_v
 
 Реализуется как Django management command + модель Alert.
 
-**Статус**: [ ] Не реализовано
+**Статус**: [x] Реализовано (частично) — модель `VegetationAlert` + команды
+`detect_vegetation_alerts` (per-farmland) и `detect_district_ndvi_alerts`
+(per-district): `rapid_drop` (падение ≥ 0.15/0.20 за ~16 дней) и
+`baseline_deviation` (z ≤ −1.5σ warning / −2.0σ critical, ≥ 2 наблюдения
+подряд), с дедупликацией, авто-resolve и email-уведомлениями
+подписчиков. Не реализован только третий паттерн — «поле не
+зеленеет к SOS ± 15 дней» (требует связки с `FarmlandPhenology`).
 
 ---
 
@@ -187,7 +193,9 @@ NDVI_fused = (NDVI_s2 × N_valid_s2 + NDVI_l8 × N_valid_l8) / (N_valid_s2 + N_v
 - NDVI > 1.0 (невозможно)
 - Для с/х угодий: NDVI < 0.05 в вегетационный период → подозрительно (распашка? пожар?)
 
-**Статус**: [ ] Не реализовано
+**Статус**: [x] Реализовано — `services/zonal_stats.py`: valid-маска
+отсекает NDVI вне [−0.2, 1.0] (плюс nodata/NaN). Эвристика «NDVI < 0.05
+в вегетационный период» не внедрялась — покрывается алертами 2.6.
 
 ---
 
@@ -215,7 +223,7 @@ NDVI_fused = (NDVI_s2 × N_valid_s2 + NDVI_l8 × N_valid_l8) / (N_valid_s2 + N_v
 | 9 | Baseline + z-score (1.5) | Средняя | Высокое | [x] |
 | 10 | Гистограмма по полигону (2.5) | Средняя | Среднее | [ ] |
 | 11 | Доп. индексы EVI, NDMI (2.4) | Средняя | Среднее | [ ] |
-| 12 | Алерты change detection (2.6) | Высокая | Высокое | [ ] |
+| 12 | Алерты change detection (2.6) | Высокая | Высокое | [x] |
 
 ---
 
