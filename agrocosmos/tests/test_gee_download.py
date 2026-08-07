@@ -44,9 +44,10 @@ class TileExtentsTests(SimpleTestCase):
 class DownloadTileTests(SimpleTestCase):
 
     def test_returns_content(self):
-        with mock.patch.object(gd, '_compute_pixels', return_value=b'tif'):
+        payload = b'T' * gd.MIN_TILE_BYTES
+        with mock.patch.object(gd, '_compute_pixels', return_value=payload):
             out = gd.download_tile('composite', 0, 0, 0.01, 0.01, 0.0001)
-        self.assertEqual(out, b'tif')
+        self.assertEqual(out, payload)
 
     def test_too_large_tile_raises(self):
         with self.assertRaises(GEEError):
@@ -55,6 +56,18 @@ class DownloadTileTests(SimpleTestCase):
     def test_compute_error_wrapped(self):
         with mock.patch.object(gd, '_compute_pixels',
                                side_effect=RuntimeError('quota')):
+            with self.assertRaises(GEEError):
+                gd.download_tile('composite', 0, 0, 0.01, 0.01, 0.0001)
+
+    def test_empty_response_raises(self):
+        # GEE изредка отдаёт пустое тело с HTTP 200 — не должно
+        # превращаться в нулевой тайл на диске.
+        with mock.patch.object(gd, '_compute_pixels', return_value=b''):
+            with self.assertRaises(GEEError):
+                gd.download_tile('composite', 0, 0, 0.01, 0.01, 0.0001)
+
+    def test_truncated_response_raises(self):
+        with mock.patch.object(gd, '_compute_pixels', return_value=b'x' * 10):
             with self.assertRaises(GEEError):
                 gd.download_tile('composite', 0, 0, 0.01, 0.01, 0.0001)
 
@@ -123,3 +136,23 @@ class DownloadTiledCompositeTests(SimpleTestCase):
         merge.assert_not_called()
         leftovers = list(Path(self.tmp.name).glob('*_tile*.tif'))
         self.assertEqual(leftovers, [])
+
+    def test_stale_tiles_removed_before_download(self):
+        # Нулевые/битые тайлы от убитого прогона не должны пережить
+        # новый запуск (иначе отравляют merge).
+        base = self.out_path.replace('.tif', '')
+        stale_tile = Path(f'{base}_tile7.tif')
+        stale_part = Path(f'{base}.tif.part')
+        stale_tile.write_bytes(b'')          # zero-size leftover
+        stale_part.write_bytes(b'partial')
+
+        with mock.patch.object(gd, 'tile_extents',
+                               return_value=[(0, 0, 1, 1)]), \
+             mock.patch.object(gd, 'download_tile', return_value=b'DATA'), \
+             mock.patch.object(gd, 'merge_tiles'):
+            gd.download_tiled_composite(
+                'comp', (0, 0, 1, 1), 10, self.out_path,
+            )
+        self.assertFalse(stale_tile.exists())
+        self.assertFalse(stale_part.exists())
+        self.assertEqual(Path(self.out_path).read_bytes(), b'DATA')

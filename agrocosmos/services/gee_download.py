@@ -8,6 +8,7 @@ Uses computePixels() with:
 
 MAX_TILE_PX = 2000 → each tile ≈ 2000×2000 = 4M pixels ≈ 16 MB (< 48 MB).
 """
+import glob
 import logging
 import math
 import os
@@ -25,6 +26,11 @@ MAX_RESPONSE_BYTES = 50_331_648  # GEE computePixels hard limit
 # starts throwing RESOURCE_EXHAUSTED; 6 is a safe default. Retries on 429
 # are handled inside services.gee_client.call_compute_pixels.
 TILE_CONCURRENCY = max(1, int(os.environ.get('GEE_TILE_CONCURRENCY', '6')))
+
+# A valid single-band GeoTIFF cannot be smaller than this (header alone is
+# ~1 KB). GEE occasionally returns an empty/truncated body without raising;
+# writing it to disk would leave a corrupt tile that breaks the merge.
+MIN_TILE_BYTES = 512
 
 
 def tile_extents(xmin, ymin, xmax, ymax, scale_deg, max_px=MAX_TILE_PX):
@@ -111,7 +117,7 @@ def download_tile(composite, tx0, ty0, tx1, ty1, scale_deg,
     try:
         with ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(_compute_pixels, params)
-            return future.result(timeout=timeout)
+            content = future.result(timeout=timeout)
     except TimeoutError:
         raise GEEError(
             f'computePixels timeout ({timeout}s) for tile {w}×{h}'
@@ -119,14 +125,45 @@ def download_tile(composite, tx0, ty0, tx1, ty1, scale_deg,
     except Exception as e:
         raise GEEError(f'computePixels failed: {e}')
 
+    # GEE sometimes returns an empty/truncated body with HTTP 200 — treat
+    # it as a failure here so a zero-size tile never reaches the disk.
+    if not content or len(content) < MIN_TILE_BYTES:
+        raise GEEError(
+            f'computePixels returned {len(content) if content else 0} bytes '
+            f'for tile {w}×{h} — empty/truncated response'
+        )
+    return content
+
+
+def _atomic_write(path, content):
+    """Write bytes to ``path`` atomically (tmp file + os.replace).
+
+    If the process is killed mid-write, only the ``.part`` file is left
+    behind — never a truncated file under the final name.
+    """
+    tmp = path + '.part'
+    with open(tmp, 'wb') as f:
+        f.write(content)
+    os.replace(tmp, path)
+
 
 def merge_tiles(tile_paths, out_path):
-    """Merge multiple GeoTIFF tiles into one LZW-compressed file."""
+    """Merge multiple GeoTIFF tiles into one LZW-compressed file.
+
+    Tiles are opened INSIDE the try block: if any tile is corrupt
+    (e.g. zero-size leftover from a killed process), the finally-cleanup
+    still removes every tile instead of leaving debris on disk.
+    The mosaic is written to a temp name and moved into place atomically,
+    so ``out_path`` either exists complete or not at all.
+    """
     import rasterio
     from rasterio.merge import merge as rasterio_merge
 
-    datasets = [rasterio.open(p) for p in tile_paths]
+    tmp_out = out_path + '.part'
+    datasets = []
     try:
+        for p in tile_paths:
+            datasets.append(rasterio.open(p))
         mosaic, transform = rasterio_merge(datasets)
         profile = datasets[0].profile.copy()
         profile.update(
@@ -138,22 +175,28 @@ def merge_tiles(tile_paths, out_path):
             blockxsize=256,
             blockysize=256,
         )
-        with rasterio.open(out_path, 'w', **profile) as dst:
+        with rasterio.open(tmp_out, 'w', **profile) as dst:
             dst.write(mosaic)
+        os.replace(tmp_out, out_path)
     finally:
         for ds in datasets:
-            ds.close()
-        for p in tile_paths:
-            if os.path.exists(p):
-                os.remove(p)
+            try:
+                ds.close()
+            except Exception:
+                pass
+        for p in list(tile_paths) + [tmp_out]:
+            if p and os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
 
 def _write_single_tile(composite, tile, scale_deg, out_path):
-    """Download the only tile straight into ``out_path``."""
+    """Download the only tile straight into ``out_path`` (atomically)."""
     tx0, ty0, tx1, ty1 = tile
     content = download_tile(composite, tx0, ty0, tx1, ty1, scale_deg)
-    with open(out_path, 'wb') as f:
-        f.write(content)
+    _atomic_write(out_path, content)
 
 
 def _remove_partials(tile_paths):
@@ -164,6 +207,17 @@ def _remove_partials(tile_paths):
                 os.remove(p)
             except OSError:
                 pass
+
+
+def _cleanup_stale_tiles(base):
+    """Delete leftover ``<base>_tile*.tif`` / ``*.part`` from crashed runs."""
+    stale = glob.glob(f'{base}_tile*.tif') + glob.glob(f'{base}*.part')
+    for p in stale:
+        try:
+            os.remove(p)
+            logger.info('Removed stale tile: %s', p)
+        except OSError:
+            pass
 
 
 def _download_tiles_parallel(composite, tiles, scale_deg, base,
@@ -181,8 +235,7 @@ def _download_tiles_parallel(composite, tiles, scale_deg, base,
         tx0, ty0, tx1, ty1 = bbox
         path = f'{base}_tile{idx}.tif'
         content = download_tile(composite, tx0, ty0, tx1, ty1, scale_deg)
-        with open(path, 'wb') as f:
-            f.write(content)
+        _atomic_write(path, content)
         return idx, path, len(content)
 
     with ThreadPoolExecutor(max_workers=conc) as pool:
@@ -246,12 +299,17 @@ def download_tiled_composite(composite, extent, scale_m, out_path,
     xmin, ymin, xmax, ymax = extent
     scale_deg = scale_m / 111320
 
+    base = out_path.replace('.tif', '')
+    # Remove stale tiles / partials from previous crashed runs — they may
+    # be zero-size or belong to a different tile grid and would poison
+    # the merge below.
+    _cleanup_stale_tiles(base)
+
     tiles = tile_extents(xmin, ymin, xmax, ymax, scale_deg)
 
     if len(tiles) == 1:
         _write_single_tile(composite, tiles[0], scale_deg, out_path)
     else:
-        base = out_path.replace('.tif', '')
         tile_paths = _download_tiles_parallel(
             composite, tiles, scale_deg, base, sensor_label,
         )

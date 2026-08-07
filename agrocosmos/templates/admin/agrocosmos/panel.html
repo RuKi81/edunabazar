@@ -335,9 +335,9 @@
     </div>
   </div>
 
-  <!-- ═══ 3b. Raster NDVI Download (S2 + L8) ═══ -->
+  <!-- ═══ 3b. Sentinel-2 + Landsat: загрузка + мониторинг (единое меню) ═══ -->
   <div class="agro-section">
-    <h2>🛰️ Загрузка NDVI (Sentinel-2 + Landsat)</h2>
+    <h2>🛰️ Sentinel-2 + Landsat — детальный NDVI (загрузка и мониторинг)</h2>
     <div class="body">
       <form method="post" action="{% url 'admin:agro_run_raster' %}">
         {% csrf_token %}
@@ -364,16 +364,13 @@
             <label>Год</label>
             <select name="year" required>
               {% for y in years %}
-                <option value="{{ y }}">{{ y }}</option>
+                <option value="{{ y }}" {% if y == current_year %}selected{% endif %}>{{ y }}</option>
               {% endfor %}
             </select>
           </div>
           <div class="agro-field">
             <label>Min valid, %</label>
             <input type="number" name="min_valid" value="70" min="10" max="100" step="5" style="width:70px;">
-          </div>
-          <div>
-            <button type="submit" class="agro-btn" style="background:#1565C0;">Загрузить S2+L8</button>
           </div>
         </div>
         <div class="agro-row" style="margin-top:8px;">
@@ -386,13 +383,25 @@
             Пересобрать HLS fusion + postprocess после загрузки
           </label>
         </div>
+        <div class="agro-row" style="margin-top:10px;">
+          <div>
+            <button type="submit" class="agro-btn" style="background:#1565C0;">Загрузить разово (год)</button>
+          </div>
+          <div style="margin-left:10px;">
+            <button type="submit" class="agro-btn agro-btn--orange"
+                    formaction="{% url 'admin:agro_start_raster_monitoring' %}">Поставить на мониторинг</button>
+          </div>
+        </div>
         <div class="agro-hint">
-          Скачает S2 (10м, 5‑дн.) и L8/9 (30м, 16‑дн.) композиты и рассчитает статистику.<br>
+          Скачает S2 (10м, 5‑дн.) и L8/9 (30м, 16‑дн.) композиты и рассчитает статистику.
           Рекомендуется выбрать район для ускорения. S2 весь регион ~3—6ч, район ~1—2ч.<br>
-          <b>Overwrite</b>: удалит существующие TIFF и перекачает (применяет новые QA-маски).<br>
+          <b>Загрузить разово</b>: выкачает весь выбранный год одним запуском (без подписки на обновления).<br>
+          <b>Поставить на мониторинг</b>: создаст задачу (task_type=raster), сразу выкачает окно
+          <code>[начало_года .. сегодня − 7 дней]</code>, далее cron раз в сутки добирает новые сцены,
+          обновляя fusion + postprocess.<br>
+          <b>Overwrite</b>: удалит существующие TIFF и перекачает (только для разовой загрузки).
           <b>Rebuild fusion</b>: после S2+L8 автоматически запустит
-          <code>compute_fused_ndvi --overwrite</code> и
-          <code>ndvi_postprocess --source fused</code>.
+          <code>compute_fused_ndvi --overwrite</code> и <code>ndvi_postprocess --source fused</code>.
         </div>
       </form>
     </div>
@@ -428,57 +437,6 @@
         </div>
         <div class="agro-hint">
           MODIS MOD13Q1 / MYD13Q1 — 16-дневные композиты, 250м. Cron добирает новые периоды ежедневно.
-        </div>
-      </form>
-    </div>
-  </div>
-
-  <!-- ═══ 4b. Start Monitoring (Sentinel-2 + Landsat) ═══ -->
-  <div class="agro-section">
-    <h2>🛰️ Постановка на мониторинг — Sentinel-2 + Landsat (оперативно)</h2>
-    <div class="body">
-      <form method="post" action="{% url 'admin:agro_start_raster_monitoring' %}">
-        {% csrf_token %}
-        <div class="agro-row">
-          <div class="agro-field">
-            <label>Регион</label>
-            <select name="region_id" id="raster-mon-region" required>
-              <option value="">— Выберите —</option>
-              {% for r in regions %}
-                <option value="{{ r.id }}">{{ r.name }} {% if r.farmland_count %}({{ r.farmland_count }} угодий){% endif %}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div class="agro-field">
-            <label>Район (опц.)</label>
-            <select name="district_id" id="raster-mon-district">
-              <option value="">— Весь регион —</option>
-              {% for d in districts %}
-                <option value="{{ d.id }}" data-region="{{ d.region_id }}">{{ d.name }} ({{ d.region.name }})</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div class="agro-field">
-            <label>Год</label>
-            <select name="year" required>
-              {% for y in years %}
-                <option value="{{ y }}" {% if y == current_year %}selected{% endif %}>{{ y }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div class="agro-field">
-            <label>Min valid, %</label>
-            <input type="number" name="min_valid" value="70" min="10" max="100" step="5" style="width:70px;">
-          </div>
-          <div>
-            <button type="submit" class="agro-btn" style="background:#1565C0;">Начать S2+L8 мониторинг</button>
-          </div>
-        </div>
-        <div class="agro-hint">
-          Создаст задачу (task_type=raster) и сразу запустит начальную выкачку окна
-          <code>[начало_года .. сегодня − 7 дней]</code> через detached-подпроцесс.
-          Далее cron раз в сутки добирает новые сцены S2 (5 дн.) и L8 (16 дн.),
-          обновляя fusion + postprocess.
         </div>
       </form>
     </div>
@@ -698,8 +656,7 @@
 })();
 
 // Filter district dropdown by selected region (per pair)
-[['raster-region', 'raster-district'],
- ['raster-mon-region', 'raster-mon-district']].forEach(function(pair) {
+[['raster-region', 'raster-district']].forEach(function(pair) {
   var regionSel = document.getElementById(pair[0]);
   var districtSel = document.getElementById(pair[1]);
   if (!regionSel || !districtSel) return;
