@@ -1,15 +1,17 @@
-"""Report API endpoints: region-level and district-level MODIS NDVI reports."""
+"""Report API endpoints: region/district/country MODIS reports and the
+per-farmland detailed-monitoring «field passport» report."""
+import json
 from collections import defaultdict
 from datetime import date
 
-from django.db.models import Avg, Count, Sum
+from django.db.models import Avg, Count, Q, Sum
 from django.db.models.functions import Extract
 from django.http import HttpRequest, JsonResponse
 from django.views.decorators.cache import cache_page
 
 from ..models import (
     Region, District, DistrictNdviSeries, Farmland, FarmlandPhenology,
-    NdviBaseline,
+    NdviBaseline, VegetationAlert, VegetationIndex,
 )
 # ``ndvi_assessment`` реэкспортируется под историческим именем: хелпер
 # вынесен в сервис-слой, но импортируется извне через agrocosmos.views
@@ -18,7 +20,10 @@ from ..services.ndvi_stats import (
     compute_z_score, doy_to_date, modis_last_period_end,
     ndvi_assessment as _ndvi_assessment, weighted_mean,
 )
-from ._helpers import _safe_round, rate_limit
+from ._helpers import (
+    FUSED_SATELLITES, MODIS_SATELLITES, RASTER_SATELLITES,
+    _safe_round, rate_limit,
+)
 
 
 # --- shared report helpers ---------------------------------------------------
@@ -641,4 +646,250 @@ def api_report_district(request: HttpRequest) -> JsonResponse:
         'region_overall_series': region_overall,
         'crop_types': result,
         'last_period_end': last_period_end,
+    })
+
+
+# --- api_report_farmland (field passport) ------------------------------------
+
+def _farmland_vi_series(fid, satellites, year):
+    """NDVI-ряд угодья за год для набора спутников (хронологический).
+
+    Включает сырое ``mean``, сглаженное ``mean_smooth``, флаг выброса и
+    попиксельную гистограмму (5 бинов, может быть None для старых записей).
+    """
+    rows = VegetationIndex.objects.filter(
+        farmland_id=fid, index_type='ndvi',
+        mean__gte=-1, mean__lte=1,
+        acquired_date__year=year,
+        scene__satellite__in=satellites,
+    ).order_by('acquired_date').values(
+        'acquired_date', 'mean', 'mean_smooth', 'is_outlier', 'histogram',
+    )
+    series = []
+    for r in rows:
+        series.append({
+            'date': str(r['acquired_date']),
+            'mean_ndvi': _safe_round(r['mean']),
+            'mean_smooth': (
+                None if r['mean_smooth'] is None else _safe_round(r['mean_smooth'])
+            ),
+            'is_outlier': bool(r['is_outlier']),
+            'histogram': r['histogram'],
+        })
+    return series
+
+
+def _farmland_geometry(farmland):
+    """Упрощённый GeoJSON контура для inline-SVG мини-карты.
+
+    Поля из вектора ЗСН бывают с тысячами вершин — для миниатюры 200×200 px
+    хватает допуска ~10 м (1e-4°). При сбое simplify отдаём оригинал.
+    """
+    geom = farmland.geom
+    if geom is None:
+        return None
+    try:
+        simplified = geom.simplify(0.0001, preserve_topology=True)
+        if not simplified.empty:
+            geom = simplified
+    except Exception:
+        pass
+    try:
+        gj = json.loads(geom.geojson)
+        # simplify() может схлопнуть MultiPolygon из одного полигона в
+        # Polygon — нормализуем тип, фронтенд рисует MultiPolygon.
+        if gj.get('type') == 'Polygon':
+            gj = {'type': 'MultiPolygon', 'coordinates': [gj['coordinates']]}
+        return gj
+    except Exception:
+        return None
+
+
+def _farmland_crop_baseline(farmland):
+    """Baseline района по культуре угодья; fallback — общий (crop_type='')."""
+    if farmland.district_id is None:
+        return {}
+    rows = NdviBaseline.objects.filter(
+        district_id=farmland.district_id,
+        crop_type__in=['', farmland.crop_type],
+    ).values('day_of_year', 'mean_ndvi', 'std_ndvi', 'crop_type')
+    overall, by_crop = {}, {}
+    for b in rows:
+        target = by_crop if b['crop_type'] else overall
+        target[b['day_of_year']] = (b['mean_ndvi'], b['std_ndvi'])
+    return by_crop or overall
+
+
+def _farmland_phenology(farmland, year):
+    """Фенометрики угодья за год (по источникам) + средние по району
+    для той же культуры (MODIS) — контекст «раньше/позже нормы района»."""
+    own = {}
+    rows = FarmlandPhenology.objects.filter(farmland=farmland, year=year)
+    for p in rows:
+        own[p.source] = {
+            'sos_date': str(p.sos_date) if p.sos_date else None,
+            'eos_date': str(p.eos_date) if p.eos_date else None,
+            'pos_date': str(p.pos_date) if p.pos_date else None,
+            'max_ndvi': _safe_round(p.max_ndvi) if p.max_ndvi is not None else None,
+            'mean_ndvi': _safe_round(p.mean_ndvi) if p.mean_ndvi is not None else None,
+            'los_days': p.los_days,
+            'total_ndvi': _safe_round(p.total_ndvi) if p.total_ndvi is not None else None,
+        }
+
+    district_avg = None
+    if farmland.district_id is not None:
+        agg = (
+            FarmlandPhenology.objects.filter(
+                farmland__district_id=farmland.district_id,
+                farmland__crop_type=farmland.crop_type,
+                year=year,
+                source=FarmlandPhenology.Source.MODIS,
+            )
+            .aggregate(
+                count=Count('id'),
+                avg_max_ndvi=Avg('max_ndvi'),
+                avg_los=Avg('los_days'),
+                avg_ti=Avg('total_ndvi'),
+                avg_sos=Avg(Extract('sos_date', 'doy')),
+                avg_eos=Avg(Extract('eos_date', 'doy')),
+                avg_pos=Avg(Extract('pos_date', 'doy')),
+            )
+        )
+        if agg['count']:
+            def _doy_str(doy_val):
+                if doy_val is None:
+                    return None
+                try:
+                    return str(doy_to_date(int(round(doy_val)), year))
+                except Exception:
+                    return None
+            district_avg = {
+                'count': agg['count'],
+                'avg_max_ndvi': _safe_round(agg['avg_max_ndvi']),
+                'avg_los': round(agg['avg_los']) if agg['avg_los'] else None,
+                'avg_total_ndvi': _safe_round(agg['avg_ti']),
+                'avg_sos': _doy_str(agg['avg_sos']),
+                'avg_eos': _doy_str(agg['avg_eos']),
+                'avg_pos': _doy_str(agg['avg_pos']),
+            }
+    return own, district_avg
+
+
+def _farmland_alerts(farmland, year):
+    """Алерты за сезон: per-farmland + district-level по культуре угодья."""
+    scope = Q(farmland=farmland)
+    if farmland.district_id is not None:
+        scope |= Q(
+            farmland__isnull=True,
+            district_id=farmland.district_id,
+            crop_type=farmland.crop_type,
+        )
+    qs = (
+        VegetationAlert.objects.filter(scope, detected_on__year=year)
+        .order_by('-detected_on')
+    )
+    alerts = []
+    for a in qs[:50]:
+        alerts.append({
+            'scope': 'farmland' if a.farmland_id else 'district',
+            'alert_type': a.alert_type,
+            'alert_type_label': a.get_alert_type_display(),
+            'severity': a.severity,
+            'status': a.status,
+            'status_label': a.get_status_display(),
+            'detected_on': str(a.detected_on),
+            'source': a.source,
+            'message': a.message,
+        })
+    return alerts
+
+
+def _latest_valid_point(series):
+    """Последняя точка ряда без флага выброса (или None)."""
+    for row in reversed(series):
+        if not row['is_outlier']:
+            return row
+    return None
+
+
+@rate_limit('30/m')
+@cache_page(60 * 5)
+def api_report_farmland(request: HttpRequest) -> JsonResponse:
+    """Data for the per-farmland «field passport» report.
+
+    Detailed-monitoring series (fused HLS if present, else raw S2/L8)
+    plus the MODIS reference series, district baseline for the crop,
+    phenology metrics vs district average, per-pixel NDVI histograms
+    and season alerts.
+
+    Query params:
+        farmland (required): farmland id
+        year (required): year
+    """
+    farmland_id, year, error = _parse_report_params(request, 'farmland')
+    if error:
+        return error
+
+    try:
+        farmland = Farmland.objects.select_related('district', 'region').get(pk=farmland_id)
+    except Farmland.DoesNotExist:
+        return JsonResponse({'ok': False, 'error': 'farmland not found'}, status=404)
+
+    # Detailed series: fused composite preferred, raw S2/L8 as fallback.
+    detailed_source = 'fused'
+    detailed = _farmland_vi_series(farmland.pk, FUSED_SATELLITES, year)
+    if not detailed:
+        detailed_source = 'raster'
+        detailed = _farmland_vi_series(farmland.pk, RASTER_SATELLITES, year)
+    modis = _farmland_vi_series(farmland.pk, MODIS_SATELLITES, year)
+
+    bl_doy_map = _farmland_crop_baseline(farmland)
+    baseline = _bl_to_series(bl_doy_map, year)
+
+    # Assessment from the latest non-outlier detailed observation
+    # (fallback to MODIS when no detailed data exists at all).
+    latest = _latest_valid_point(detailed) or _latest_valid_point(modis)
+    latest_z = None
+    if latest is not None:
+        doy = date.fromisoformat(latest['date']).timetuple().tm_yday
+        bl_mean, bl_std = bl_doy_map.get(doy, (None, None))
+        latest_z = compute_z_score(latest['mean_ndvi'], bl_mean, bl_std)
+    assessment = _ndvi_assessment(
+        latest['mean_ndvi'] if latest else None, latest_z,
+    )
+
+    phenology, district_phenology = _farmland_phenology(farmland, year)
+    alerts = _farmland_alerts(farmland, year)
+
+    district = farmland.district
+    region = farmland.region or (district.region if district else None)
+
+    return JsonResponse({
+        'ok': True,
+        'farmland': {
+            'id': farmland.pk,
+            'crop_type': farmland.crop_type,
+            'crop_type_label': farmland.get_crop_type_display(),
+            'area_ha': _safe_round(farmland.area_ha, 2),
+            'is_used': farmland.is_used,
+            'cadastral_number': farmland.cadastral_number,
+            'district': {'id': district.pk, 'name': district.name} if district else None,
+            'region': {'id': region.pk, 'name': region.name} if region else None,
+            'geometry': _farmland_geometry(farmland),
+        },
+        'year': year,
+        'detailed_source': detailed_source if detailed else None,
+        'detailed_series': detailed,
+        'modis_series': modis,
+        'baseline': baseline,
+        'latest': {
+            'date': latest['date'] if latest else None,
+            'mean_ndvi': latest['mean_ndvi'] if latest else None,
+            'z_score': latest_z,
+            'assessment': assessment,
+        },
+        'phenology': phenology,
+        'district_phenology': district_phenology,
+        'alerts': alerts,
+        'last_period_end': modis_last_period_end(modis),
     })

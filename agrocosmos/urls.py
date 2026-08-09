@@ -7,6 +7,7 @@ urlpatterns = [
     path('', views.dashboard, name='dashboard'),
     path('raster/', views.raster_dashboard, name='raster_dashboard'),
     path('report/region/', views.report_region, name='report_region'),
+    path('report/farmland/', views.report_farmland, name='report_farmland'),
     path('api/regions/', views.api_regions, name='api_regions'),
     path('api/districts/', views.api_districts, name='api_districts'),
     path('api/districts/status/', views.api_districts_status, name='api_districts_status'),
@@ -23,6 +24,7 @@ urlpatterns = [
     path('api/report/region/', views.api_report_region, name='api_report_region'),
     path('api/report/district/', views.api_report_district, name='api_report_district'),
     path('api/report/country/', views.api_report_country, name='api_report_country'),
+    path('api/report/farmland/', views.api_report_farmland, name='api_report_farmland'),
     path('api/yield/forecast/', views.api_yield_forecast, name='api_yield_forecast'),
     path(
         'api/yield/forecast/region/<int:region_id>/',

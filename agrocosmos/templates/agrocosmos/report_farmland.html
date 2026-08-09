@@ -1,0 +1,602 @@
+{% extends 'legacy/base.html' %}
+{% load static %}
+
+{% block title %}Паспорт поля — Агрокосмос{% endblock %}
+{% block meta_description %}Детальный мониторинг угодья: NDVI Sentinel-2/Landsat, фенология, однородность поля, алерты вегетации.{% endblock %}
+{% block og_title %}Паспорт поля — Агрокосмос{% endblock %}
+{% block og_description %}Детальный спутниковый мониторинг сельхозугодья: динамика NDVI высокого разрешения, фенологические метрики, распределение NDVI по полю, алерты.{% endblock %}
+{% block og_image %}https://edunabazar.ru{% static 'legacy/images/og-agrocosmos.jpg' %}?v=2{% endblock %}
+{% block og_image_alt %}Агрокосмос — паспорт поля с графиком NDVI{% endblock %}
+
+{% block head %}
+  <style>
+    .brand-logo, .brand-logo__img, .sidenav-logo { display: none !important; }
+
+    .report-wrap {
+      max-width: 1100px; margin: 24px auto; padding: 0 20px;
+      font-family: 'Segoe UI', Roboto, Arial, sans-serif;
+    }
+    .report-header {
+      text-align: center; margin-bottom: 28px; padding-bottom: 16px;
+      border-bottom: 2px solid #2e7d32;
+    }
+    .report-header h1 { font-size: 22px; font-weight: 700; color: #1b5e20; margin: 0 0 6px 0; }
+    .report-header .subtitle { font-size: 14px; color: #555; }
+
+    .report-nav {
+      display: flex; gap: 0; margin-bottom: 16px;
+      border: 1px solid rgba(0,0,0,.12); border-radius: 6px; overflow: hidden;
+    }
+    .report-nav a {
+      flex: 1; text-align: center; padding: 8px 4px; font-size: 12px; font-weight: 600;
+      color: #555; text-decoration: none; background: #fafafa;
+      transition: background .15s, color .15s;
+    }
+    .report-nav a:hover { background: #e8f5e9; }
+    .report-nav a.active { background: #2e7d32; color: #fff; }
+
+    .report-controls {
+      display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+      margin-bottom: 20px; padding: 12px 16px;
+      background: #f5f9f5; border-radius: 8px; border: 1px solid #c8e6c9;
+    }
+    .report-controls label { font-size: 13px; font-weight: 600; color: #333; }
+    .report-controls select, .report-controls input[type="number"] {
+      height: 34px; padding: 0 8px; border: 1px solid #ccc; border-radius: 4px;
+      font-size: 13px; background: #fff; width: auto;
+    }
+    .report-controls input[type="number"] { width: 130px; margin: 0; }
+    .report-controls .btn-generate {
+      padding: 7px 20px; background: #2e7d32; color: #fff; border: none;
+      border-radius: 4px; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .report-controls .btn-generate:hover { background: #1b5e20; }
+    .report-actions { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+    .action-btn {
+      width: 34px; height: 34px; border-radius: 4px; border: 1px solid #ccc;
+      background: #fff; cursor: pointer; display: inline-flex;
+      align-items: center; justify-content: center; color: #555;
+      text-decoration: none; transition: background .15s; padding: 0;
+    }
+    .action-btn:hover { background: #e8f5e9; }
+    .action-btn i { font-size: 18px; }
+    .copied-toast {
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+      background: #333; color: #fff; padding: 8px 18px; border-radius: 20px;
+      font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .3s; z-index: 9999;
+    }
+    .copied-toast.show { opacity: 1; }
+
+    .report-summary {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px; margin-bottom: 20px;
+    }
+    .summary-card {
+      background: #fff; border: 1px solid #e0e0e0; border-radius: 8px;
+      padding: 12px 14px; text-align: center;
+    }
+    .summary-card .val { font-size: 17px; font-weight: 700; color: #1b5e20; }
+    .summary-card .lbl { font-size: 11px; color: #888; margin-top: 3px; }
+
+    .passport-grid { display: grid; grid-template-columns: 240px 1fr; gap: 16px; margin-bottom: 20px; }
+    @media (max-width: 800px) { .passport-grid { grid-template-columns: 1fr; } }
+    .pp-section {
+      background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px 18px;
+      margin-bottom: 20px; page-break-inside: avoid;
+    }
+    .pp-section h2 {
+      font-size: 15px; font-weight: 700; color: #1b5e20; margin: 0 0 12px 0;
+    }
+    .pp-section h2 i { font-size: 18px; vertical-align: -3px; color: #2e7d32; }
+    .pp-minimap { text-align: center; }
+    .pp-minimap svg { width: 100%; max-width: 220px; height: auto; }
+    .pp-minimap .mm-caption { font-size: 11px; color: #888; margin-top: 6px; }
+
+    .assessment-badge {
+      display: inline-block; padding: 4px 14px; border-radius: 14px;
+      font-size: 12px; font-weight: 700; color: #fff;
+    }
+    .badge-good { background: #2e7d32; }
+    .badge-moderate { background: #F9A825; }
+    .badge-low { background: #D32F2F; }
+    .badge-nodata { background: #9E9E9E; }
+
+    .pheno-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .pheno-table th, .pheno-table td {
+      padding: 7px 10px; border-bottom: 1px solid #f0f0f0; text-align: center;
+    }
+    .pheno-table th { background: #f5f9f5; font-weight: 600; color: #333; font-size: 12px; }
+    .pheno-table td:first-child, .pheno-table th:first-child { text-align: left; }
+
+    .alerts-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .alerts-table th, .alerts-table td {
+      padding: 6px 10px; border-bottom: 1px solid #f0f0f0; text-align: left;
+    }
+    .alerts-table th { background: #f5f9f5; font-weight: 600; }
+    .sev-critical { color: #D32F2F; font-weight: 700; }
+    .sev-warning { color: #F9A825; font-weight: 700; }
+
+    .report-loader { text-align: center; padding: 40px; font-size: 15px; color: #777; }
+    .report-loader.hidden { display: none; }
+    #report-content.hidden { display: none; }
+    .empty-note { color: #999; font-size: 13px; padding: 8px 0; }
+
+    @media print {
+      .report-controls, .report-actions, .copied-toast, .report-nav, nav, footer,
+      .hide-on-med-and-down, .hide-on-large-only { display: none !important; }
+      .report-wrap { max-width: 100%; margin: 0; padding: 0 10px; }
+      .pp-section { break-inside: avoid; }
+    }
+  </style>
+{% endblock %}
+
+{% block content %}
+<div class="report-wrap">
+  <div class="report-nav">
+    <a href="{% url 'agrocosmos:dashboard' %}">
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">timeline</i> Карта MODIS
+    </a>
+    <a href="{% url 'agrocosmos:raster_dashboard' %}">
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">satellite</i> Sentinel / Landsat
+    </a>
+    <a href="{% url 'agrocosmos:report_region' %}">
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">assessment</i> Отчёт NDVI
+    </a>
+    <a href="{% url 'agrocosmos:report_farmland' %}" class="active">
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">description</i> Паспорт поля
+    </a>
+  </div>
+
+  <div class="report-header">
+    <h1><i class="material-icons" style="font-size:24px; vertical-align:-4px; color:#2e7d32;">description</i> <span id="rpt-title">Паспорт поля</span></h1>
+    <div class="subtitle" id="rpt-subtitle">Детальный мониторинг угодья: Sentinel-2 / Landsat + MODIS</div>
+  </div>
+
+  <div class="report-controls">
+    <label>Угодье №:</label>
+    <input type="number" id="rpt-farmland" min="1" placeholder="ID угодья" value="{{ farmland_id }}">
+
+    <label>Год:</label>
+    <select id="rpt-year" class="browser-default">
+      {% for y in years %}
+        <option value="{{ y }}" {% if year|stringformat:'s' == y|stringformat:'s' %}selected{% endif %}>{{ y }}</option>
+      {% endfor %}
+    </select>
+
+    <button class="btn-generate" id="btn-generate">Сформировать паспорт</button>
+    <div class="report-actions">
+      <button class="action-btn" onclick="window.print()" title="Печать"><i class="material-icons">print</i></button>
+      <button class="action-btn" id="btn-copy" title="Скопировать ссылку"><i class="material-icons">content_copy</i></button>
+    </div>
+  </div>
+  <div class="copied-toast" id="copied-toast">Ссылка скопирована!</div>
+
+  <div class="report-loader hidden" id="rpt-loader">
+    <i class="material-icons" style="font-size:36px; color:#2e7d32; animation: spin 1s linear infinite;">autorenew</i>
+    <div style="margin-top:8px;">Формирование паспорта…</div>
+    <style>@keyframes spin { 100% { transform: rotate(360deg); } }</style>
+  </div>
+
+  <div id="report-content" class="hidden">
+    <div class="report-summary" id="rpt-summary"></div>
+
+    <div class="passport-grid">
+      <div class="pp-section pp-minimap" style="margin-bottom:0;">
+        <h2><i class="material-icons">map</i> Контур</h2>
+        <div id="pp-svg-map"></div>
+        <div class="mm-caption" id="pp-map-caption"></div>
+      </div>
+      <div class="pp-section" style="margin-bottom:0;">
+        <h2><i class="material-icons">show_chart</i> Динамика NDVI <span id="pp-chart-src" style="font-weight:400; font-size:12px; color:#888;"></span></h2>
+        <div style="height:260px; position:relative;"><canvas id="chart-ndvi"></canvas></div>
+        <div class="empty-note" id="pp-chart-empty" style="display:none;">Нет данных NDVI за выбранный год.</div>
+      </div>
+    </div>
+
+    <div class="pp-section" id="pp-hist-section" style="display:none;">
+      <h2><i class="material-icons">bar_chart</i> Однородность поля (распределение NDVI по пикселям)</h2>
+      <div style="height:220px; position:relative;"><canvas id="chart-hist"></canvas></div>
+      <div class="empty-note" id="pp-hist-note"></div>
+    </div>
+
+    <div class="pp-section" id="pp-pheno-section" style="display:none;">
+      <h2><i class="material-icons">eco</i> Фенология сезона</h2>
+      <table class="pheno-table">
+        <thead>
+          <tr>
+            <th>Источник</th><th>Начало (SOS)</th><th>Пик (POS)</th><th>Конец (EOS)</th>
+            <th>Сезон, дн.</th><th>Макс. NDVI</th><th>∫ NDVI (TI)</th>
+          </tr>
+        </thead>
+        <tbody id="pp-pheno-body"></tbody>
+      </table>
+      <div class="empty-note" id="pp-pheno-note" style="margin-top:8px;"></div>
+    </div>
+
+    <div class="pp-section" id="pp-alerts-section" style="display:none;">
+      <h2><i class="material-icons">warning</i> Алерты вегетации за сезон</h2>
+      <table class="alerts-table">
+        <thead>
+          <tr><th>Дата</th><th>Тип</th><th>Критичность</th><th>Статус</th><th>Уровень</th><th>Описание</th></tr>
+        </thead>
+        <tbody id="pp-alerts-body"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block site_footer %}{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="{% static 'agrocosmos/js/ndvi_chart.js' %}"></script>
+<script>
+(function () {
+  var farmlandInput = document.getElementById('rpt-farmland');
+  var yearSel = document.getElementById('rpt-year');
+  var btnGen = document.getElementById('btn-generate');
+  var loader = document.getElementById('rpt-loader');
+  var content = document.getElementById('report-content');
+  var summaryEl = document.getElementById('rpt-summary');
+
+  var charts = [];
+  function destroyCharts() { charts.forEach(function (c) { c.destroy(); }); charts = []; }
+
+  function esc(s) { return (s || '').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  function updateUrl() {
+    var params = new URLSearchParams();
+    if (farmlandInput.value) params.set('farmland', farmlandInput.value);
+    if (yearSel.value) params.set('year', yearSel.value);
+    var qs = params.toString();
+    history.replaceState(null, '', location.pathname + (qs ? '?' + qs : ''));
+  }
+  document.getElementById('btn-copy').addEventListener('click', function () {
+    navigator.clipboard.writeText(location.href).then(function () {
+      var toast = document.getElementById('copied-toast');
+      toast.classList.add('show');
+      setTimeout(function () { toast.classList.remove('show'); }, 2000);
+    });
+  });
+
+  function ndviBadgeClass(ndvi) {
+    if (ndvi === null || ndvi === undefined) return 'badge-nodata';
+    if (ndvi >= 0.4) return 'badge-good';
+    if (ndvi >= 0.2) return 'badge-moderate';
+    return 'badge-low';
+  }
+
+  /* ── Inline-SVG контур поля из GeoJSON MultiPolygon ── */
+  function renderContourSvg(geometry) {
+    var el = document.getElementById('pp-svg-map');
+    if (!geometry || !geometry.coordinates || !geometry.coordinates.length) {
+      el.innerHTML = '<div class="empty-note">Нет геометрии</div>';
+      return;
+    }
+    // Собираем все кольца всех полигонов, находим bbox
+    var rings = [];
+    geometry.coordinates.forEach(function (poly) {
+      poly.forEach(function (ring) { rings.push(ring); });
+    });
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    rings.forEach(function (ring) {
+      ring.forEach(function (pt) {
+        if (pt[0] < minX) minX = pt[0];
+        if (pt[0] > maxX) maxX = pt[0];
+        if (pt[1] < minY) minY = pt[1];
+        if (pt[1] > maxY) maxY = pt[1];
+      });
+    });
+    var W = 220, H = 200, pad = 8;
+    var spanX = maxX - minX || 1e-9, spanY = maxY - minY || 1e-9;
+    // Компенсация сжатия долготы: масштаб по X умножаем на cos(широты)
+    var latMid = (minY + maxY) / 2;
+    var kx = Math.cos(latMid * Math.PI / 180);
+    var scale = Math.min((W - 2 * pad) / (spanX * kx), (H - 2 * pad) / spanY);
+    var offX = (W - spanX * kx * scale) / 2;
+    var offY = (H - spanY * scale) / 2;
+    function px(pt) {
+      var x = offX + (pt[0] - minX) * kx * scale;
+      var y = H - offY - (pt[1] - minY) * scale;
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    }
+    var paths = rings.map(function (ring) {
+      return '<polygon points="' + ring.map(px).join(' ') + '" fill="rgba(139,195,74,0.35)" stroke="#2e7d32" stroke-width="1.5"/>';
+    });
+    el.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" aria-hidden="true">' + paths.join('') + '</svg>';
+  }
+
+  /* ── Основной график NDVI ── */
+  function renderNdviChart(resp) {
+    var detailed = resp.detailed_series || [];
+    var modis = resp.modis_series || [];
+    var baseline = resp.baseline || [];
+    var srcEl = document.getElementById('pp-chart-src');
+    var emptyEl = document.getElementById('pp-chart-empty');
+    var canvas = document.getElementById('chart-ndvi');
+
+    if (!detailed.length && !modis.length) {
+      emptyEl.style.display = 'block';
+      canvas.style.display = 'none';
+      srcEl.textContent = '';
+      return;
+    }
+    emptyEl.style.display = 'none';
+    canvas.style.display = 'block';
+    srcEl.textContent = resp.detailed_source === 'fused' ? '(S2+L8 fused + MODIS)'
+      : resp.detailed_source === 'raster' ? '(Sentinel-2 / Landsat + MODIS)' : '(MODIS)';
+
+    var labelSet = new Set();
+    detailed.forEach(function (s) { labelSet.add(s.date.substring(5)); });
+    modis.forEach(function (s) { labelSet.add(s.date.substring(5)); });
+    baseline.forEach(function (b) { labelSet.add(b.date.substring(5)); });
+    var labels = Array.from(labelSet).sort();
+
+    var datasets = NdviChart.buildBaselineDatasets(baseline, labels);
+
+    if (detailed.length) {
+      var dLookup = {};
+      detailed.forEach(function (s) { dLookup[s.date.substring(5)] = s; });
+      var ptColors = labels.map(function (l) {
+        var s = dLookup[l];
+        return (s && s.is_outlier) ? '#D32F2F' : '#1565C0';
+      });
+      datasets.push({
+        label: 'NDVI (детальный)',
+        data: labels.map(function (l) { var s = dLookup[l]; return s ? s.mean_ndvi : null; }),
+        borderColor: '#1565C0', backgroundColor: 'transparent',
+        borderWidth: 2, fill: false, pointRadius: 3,
+        pointBackgroundColor: ptColors, pointBorderColor: ptColors,
+        tension: 0.3, spanGaps: true,
+      });
+      var hasSmooth = detailed.some(function (s) { return s.mean_smooth !== null && s.mean_smooth !== undefined; });
+      if (hasSmooth) {
+        datasets.push({
+          label: 'NDVI сглаженный',
+          data: labels.map(function (l) {
+            var s = dLookup[l];
+            return (s && s.mean_smooth !== null && s.mean_smooth !== undefined) ? s.mean_smooth : null;
+          }),
+          borderColor: '#2e7d32', backgroundColor: 'transparent',
+          borderWidth: 2.5, fill: false, pointRadius: 0, tension: 0.35, spanGaps: true,
+        });
+      }
+    }
+
+    if (modis.length) {
+      var mLookup = {};
+      modis.forEach(function (s) { mLookup[s.date.substring(5)] = s.mean_ndvi; });
+      datasets.push({
+        label: 'MODIS (250 м)',
+        data: labels.map(function (l) { return mLookup[l] !== undefined ? mLookup[l] : null; }),
+        borderColor: '#9E9E9E', backgroundColor: 'transparent',
+        borderWidth: 1.5, borderDash: [4, 3], fill: false, pointRadius: 2,
+        tension: 0.3, spanGaps: true,
+      });
+      NdviChart.pushExtensionLine({
+        datasets: datasets, labels: labels,
+        series: modis, lastPeriodEnd: resp.last_period_end,
+        color: '#9E9E9E',
+      });
+    }
+
+    var chart = new Chart(canvas, {
+      type: 'line',
+      data: { labels: labels, datasets: datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: true, labels: { usePointStyle: true, pointStyle: 'line', boxWidth: 30, font: { size: 11 }, filter: NdviChart.legendFilter } }
+        },
+        scales: {
+          x: { ticks: { font: { size: 9 }, maxRotation: 45 } },
+          y: { min: 0, max: 1, ticks: { font: { size: 10 } } }
+        }
+      }
+    });
+    charts.push(chart);
+  }
+
+  /* ── Гистограммы по датам: stacked % bar ── */
+  var HIST_BINS = [
+    { label: '< 0.2', color: '#D32F2F' },
+    { label: '0.2–0.4', color: '#F57C00' },
+    { label: '0.4–0.6', color: '#FBC02D' },
+    { label: '0.6–0.8', color: '#8BC34A' },
+    { label: '0.8–1.0', color: '#2e7d32' }
+  ];
+
+  function renderHistChart(resp) {
+    var section = document.getElementById('pp-hist-section');
+    var note = document.getElementById('pp-hist-note');
+    var withHist = (resp.detailed_series || []).filter(function (s) {
+      return s.histogram && s.histogram.length === 5 && !s.is_outlier;
+    });
+    if (!withHist.length) { section.style.display = 'none'; return; }
+    section.style.display = 'block';
+
+    var labels = withHist.map(function (s) { return s.date.substring(5); });
+    var datasets = HIST_BINS.map(function (bin, bi) {
+      return {
+        label: bin.label,
+        backgroundColor: bin.color,
+        data: withHist.map(function (s) {
+          var total = s.histogram.reduce(function (a, b) { return a + b; }, 0);
+          return total ? Math.round(s.histogram[bi] / total * 1000) / 10 : 0;
+        }),
+      };
+    });
+
+    var chart = new Chart(document.getElementById('chart-hist'), {
+      type: 'bar',
+      data: { labels: labels, datasets: datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: true, labels: { boxWidth: 14, font: { size: 10 } } },
+          tooltip: { callbacks: { label: function (ctx) { return ctx.dataset.label + ': ' + ctx.parsed.y + '%'; } } }
+        },
+        scales: {
+          x: { stacked: true, ticks: { font: { size: 9 }, maxRotation: 45 } },
+          y: { stacked: true, min: 0, max: 100, ticks: { font: { size: 10 }, callback: function (v) { return v + '%'; } } }
+        }
+      }
+    });
+    charts.push(chart);
+
+    // Текстовый вывод по последней гистограмме
+    var last = withHist[withHist.length - 1];
+    var total = last.histogram.reduce(function (a, b) { return a + b; }, 0);
+    if (total) {
+      var lowPct = Math.round((last.histogram[0] + last.histogram[1]) / total * 100);
+      note.textContent = 'На ' + last.date + ': ' + lowPct + '% площади поля с NDVI < 0.4'
+        + (lowPct >= 30 ? ' — возможна неоднородность или частичная деградация.' : '.');
+    } else {
+      note.textContent = '';
+    }
+  }
+
+  /* ── Фенология ── */
+  var SRC_LABELS = { modis: 'MODIS (250 м)', raster: 'Sentinel / Landsat' };
+
+  function renderPhenology(resp) {
+    var section = document.getElementById('pp-pheno-section');
+    var body = document.getElementById('pp-pheno-body');
+    var note = document.getElementById('pp-pheno-note');
+    var own = resp.phenology || {};
+    var da = resp.district_phenology;
+    var keys = Object.keys(own);
+    if (!keys.length && !da) { section.style.display = 'none'; return; }
+    section.style.display = 'block';
+
+    var rows = '';
+    keys.forEach(function (src) {
+      var p = own[src];
+      rows += '<tr>'
+        + '<td>' + esc(SRC_LABELS[src] || src) + '</td>'
+        + '<td>' + esc(p.sos_date || '—') + '</td>'
+        + '<td>' + esc(p.pos_date || '—') + '</td>'
+        + '<td>' + esc(p.eos_date || '—') + '</td>'
+        + '<td>' + (p.los_days != null ? p.los_days : '—') + '</td>'
+        + '<td>' + (p.max_ndvi != null ? p.max_ndvi : '—') + '</td>'
+        + '<td>' + (p.total_ndvi != null ? p.total_ndvi : '—') + '</td>'
+        + '</tr>';
+    });
+    if (da) {
+      rows += '<tr style="background:#fafafa; color:#666;">'
+        + '<td>Среднее по району (' + da.count + ' полей той же культуры)</td>'
+        + '<td>' + esc(da.avg_sos || '—') + '</td>'
+        + '<td>' + esc(da.avg_pos || '—') + '</td>'
+        + '<td>' + esc(da.avg_eos || '—') + '</td>'
+        + '<td>' + (da.avg_los != null ? da.avg_los : '—') + '</td>'
+        + '<td>' + (da.avg_max_ndvi != null ? da.avg_max_ndvi : '—') + '</td>'
+        + '<td>' + (da.avg_total_ndvi != null ? da.avg_total_ndvi : '—') + '</td>'
+        + '</tr>';
+    }
+    body.innerHTML = rows;
+
+    // Сравнение SOS поля с районом
+    note.textContent = '';
+    var ownModis = own.modis || own.raster;
+    if (ownModis && ownModis.sos_date && da && da.avg_sos) {
+      var d1 = new Date(ownModis.sos_date), d2 = new Date(da.avg_sos);
+      var diff = Math.round((d1 - d2) / 86400000);
+      if (Math.abs(diff) >= 5) {
+        note.textContent = 'Сезон вегетации начался на ' + Math.abs(diff) + ' дн. '
+          + (diff > 0 ? 'позже' : 'раньше') + ' среднего по району.';
+      }
+    }
+  }
+
+  /* ── Алерты ── */
+  function renderAlerts(resp) {
+    var section = document.getElementById('pp-alerts-section');
+    var body = document.getElementById('pp-alerts-body');
+    var alerts = resp.alerts || [];
+    if (!alerts.length) { section.style.display = 'none'; return; }
+    section.style.display = 'block';
+    body.innerHTML = alerts.map(function (a) {
+      return '<tr>'
+        + '<td>' + esc(a.detected_on) + '</td>'
+        + '<td>' + esc(a.alert_type_label) + '</td>'
+        + '<td class="sev-' + esc(a.severity) + '">' + (a.severity === 'critical' ? 'Критично' : 'Предупреждение') + '</td>'
+        + '<td>' + esc(a.status_label) + '</td>'
+        + '<td>' + (a.scope === 'farmland' ? 'Поле' : 'Район (' + esc(a.source) + ')') + '</td>'
+        + '<td>' + esc(a.message) + '</td>'
+        + '</tr>';
+    }).join('');
+  }
+
+  function generate() {
+    var fid = farmlandInput.value;
+    var year = yearSel.value;
+    if (!fid) { alert('Укажите номер угодья'); return; }
+    updateUrl();
+
+    loader.classList.remove('hidden');
+    content.classList.add('hidden');
+    destroyCharts();
+
+    fetch('/agrocosmos/api/report/farmland/?farmland=' + encodeURIComponent(fid) + '&year=' + encodeURIComponent(year))
+      .then(function (r) { return r.json(); })
+      .then(function (resp) {
+        loader.classList.add('hidden');
+        if (!resp.ok) {
+          alert('Ошибка: ' + (resp.error === 'farmland not found' ? 'угодье не найдено' : (resp.error || 'неизвестная')));
+          return;
+        }
+        content.classList.remove('hidden');
+        render(resp);
+      })
+      .catch(function (err) {
+        loader.classList.add('hidden');
+        console.error(err);
+        alert('Ошибка загрузки данных');
+      });
+  }
+
+  function render(resp) {
+    var f = resp.farmland;
+    var latest = resp.latest || {};
+
+    document.getElementById('rpt-title').textContent =
+      'Паспорт поля №' + f.id + ' — ' + f.crop_type_label;
+    var subtitle = [];
+    if (f.district) subtitle.push(f.district.name);
+    if (f.region) subtitle.push(f.region.name);
+    document.getElementById('rpt-subtitle').textContent = subtitle.join(', ') + ' · ' + resp.year + ' г.';
+
+    var zStr = '—';
+    if (latest.z_score !== null && latest.z_score !== undefined) {
+      zStr = (latest.z_score >= 0 ? '+' : '') + latest.z_score.toFixed(2);
+    }
+    var usedStr = f.is_used === true ? 'Используется' : f.is_used === false ? 'Не используется' : '—';
+    summaryEl.innerHTML =
+      '<div class="summary-card"><div class="val">' + esc(f.crop_type_label) + '</div><div class="lbl">Вид угодья</div></div>'
+      + '<div class="summary-card"><div class="val">' + f.area_ha.toLocaleString('ru', {maximumFractionDigits:1}) + ' га</div><div class="lbl">Площадь</div></div>'
+      + '<div class="summary-card"><div class="val">' + (latest.mean_ndvi !== null && latest.mean_ndvi !== undefined ? latest.mean_ndvi.toFixed(3) : '—') + '</div><div class="lbl">NDVI ' + esc(latest.date || '') + '</div></div>'
+      + '<div class="summary-card"><div class="val">' + zStr + '</div><div class="lbl">z-score vs норма</div></div>'
+      + '<div class="summary-card"><div class="val" style="font-size:13px; padding-top:3px;"><span class="assessment-badge ' + ndviBadgeClass(latest.mean_ndvi) + '">' + esc(latest.assessment || 'Нет данных') + '</span></div><div class="lbl">Оценка</div></div>'
+      + '<div class="summary-card"><div class="val" style="font-size:14px;">' + usedStr + '</div><div class="lbl">Факт использования</div></div>';
+
+    renderContourSvg(f.geometry);
+    var cap = [];
+    if (f.cadastral_number) cap.push('Кадастр: ' + f.cadastral_number);
+    cap.push('ID: ' + f.id);
+    document.getElementById('pp-map-caption').textContent = cap.join(' · ');
+
+    renderNdviChart(resp);
+    renderHistChart(resp);
+    renderPhenology(resp);
+    renderAlerts(resp);
+  }
+
+  btnGen.addEventListener('click', generate);
+  farmlandInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') generate(); });
+  yearSel.addEventListener('change', updateUrl);
+
+  if (farmlandInput.value) generate();
+})();
+</script>
+{% endblock %}

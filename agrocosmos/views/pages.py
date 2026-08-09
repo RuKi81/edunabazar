@@ -330,3 +330,25 @@ def report_region(request: HttpRequest) -> HttpResponse:
         'years': years,
         'active_page': 'report_region',
     })
+
+
+def report_farmland(request: HttpRequest) -> HttpResponse:
+    """Per-farmland «field passport» report page (detailed monitoring).
+
+    The farmland id normally arrives via the URL (links from the
+    dashboards); the page itself only renders the shell — all data is
+    fetched from ``/agrocosmos/api/report/farmland/``.
+    """
+    farmland_id = request.GET.get('farmland') or ''
+    year = request.GET.get('year')
+
+    current_year = date.today().year
+    years = _available_ndvi_years(current_year)
+
+    return render(request, 'agrocosmos/report_farmland.html', {
+        'legacy_user': _get_legacy_user(request),
+        'farmland_id': farmland_id,
+        'year': year or str(current_year),
+        'years': years,
+        'active_page': 'report_farmland',
+    })
