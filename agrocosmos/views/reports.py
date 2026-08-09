@@ -1337,6 +1337,82 @@ def _unused_signals(stats, has_sos):
     return signals
 
 
+def _unused_row(f, stats, has_sos, signals):
+    """Строка отчёта по одному угодью."""
+    return {
+        'farmland_id': f['id'],
+        'crop_type': f['crop_type'],
+        'crop_type_label': (
+            Farmland.CropType(f['crop_type']).label if f['crop_type'] else ''
+        ),
+        'area_ha': _safe_round(float(f['area_ha'] or 0), 2),
+        'is_used': f['is_used'],
+        'cadastral_number': f['cadastral_number'],
+        'max_ndvi': _safe_round(stats['max_ndvi']),
+        'amplitude': _safe_round(stats['max_ndvi'] - stats['min_ndvi']),
+        'n_obs': stats['n_obs'],
+        'has_sos': has_sos,
+        'signals': signals,
+    }
+
+
+def _classify_district_usage(district_id, year):
+    """Классификация угодий района: (suspects, reactivated, totals).
+
+    suspects — заявлено используемым/неизвестно, но есть сигналы
+    неиспользования (high → площадь); reactivated — заявлено
+    неиспользуемым, но виден полный вегетационный цикл.
+    """
+    season_stats = _farmland_season_stats(district_id, year)
+    sos_ids = _farmlands_with_sos(district_id, year)
+
+    farmlands = Farmland.objects.filter(district_id=district_id).values(
+        'id', 'crop_type', 'area_ha', 'is_used', 'cadastral_number',
+    )
+
+    suspects, reactivated = [], []
+    totals = {
+        'farmlands_total': 0,
+        'declared_unused': 0,
+        'declared_unused_area': 0.0,
+        'with_data': 0,
+        'suspect_area': 0.0,
+    }
+    for f in farmlands:
+        totals['farmlands_total'] += 1
+        area = float(f['area_ha'] or 0)
+        if f['is_used'] is False:
+            totals['declared_unused'] += 1
+            totals['declared_unused_area'] += area
+
+        stats = season_stats.get(f['id'])
+        has_sos = f['id'] in sos_ids
+        signals = _unused_signals(stats, has_sos)
+        if signals is None:  # нет данных или их недостаточно
+            continue
+        totals['with_data'] += 1
+
+        if f['is_used'] is not False and signals:
+            row = _unused_row(f, stats, has_sos, signals)
+            row['severity'] = 'high' if 'no_vegetation' in signals else 'medium'
+            totals['suspect_area'] += area
+            suspects.append(row)
+        elif (
+            f['is_used'] is False
+            and not signals
+            and stats['max_ndvi'] >= REACTIVATED_MAX_NDVI
+            and has_sos
+        ):
+            reactivated.append(_unused_row(f, stats, has_sos, signals))
+
+    suspects.sort(key=lambda r: (r['severity'] != 'high', -(r['area_ha'] or 0)))
+    reactivated.sort(key=lambda r: -(r['area_ha'] or 0))
+
+    totals['declared_unused_area'] = _safe_round(totals['declared_unused_area'], 1)
+    totals['suspect_area'] = _safe_round(totals['suspect_area'], 1)
+    return suspects, reactivated, totals
+
+
 @rate_limit('30/m')
 @cache_page(60 * 10)
 def api_report_unused(request: HttpRequest) -> JsonResponse:
@@ -1372,70 +1448,7 @@ def api_report_unused(request: HttpRequest) -> JsonResponse:
     except (TypeError, ValueError):
         limit = UNUSED_DEFAULT_LIMIT
 
-    season_stats = _farmland_season_stats(district.pk, year)
-    sos_ids = _farmlands_with_sos(district.pk, year)
-
-    farmlands = Farmland.objects.filter(district_id=district.pk).values(
-        'id', 'crop_type', 'area_ha', 'is_used', 'cadastral_number',
-    )
-
-    suspects, reactivated = [], []
-    totals = {
-        'farmlands_total': 0,
-        'declared_unused': 0,
-        'declared_unused_area': 0.0,
-        'with_data': 0,
-        'suspect_area': 0.0,
-    }
-    for f in farmlands:
-        totals['farmlands_total'] += 1
-        area = float(f['area_ha'] or 0)
-        if f['is_used'] is False:
-            totals['declared_unused'] += 1
-            totals['declared_unused_area'] += area
-
-        stats = season_stats.get(f['id'])
-        has_sos = f['id'] in sos_ids
-        signals = _unused_signals(stats, has_sos)
-        if stats is not None and stats['n_obs'] >= UNUSED_MIN_OBS:
-            totals['with_data'] += 1
-        if signals is None:
-            continue
-
-        row = {
-            'farmland_id': f['id'],
-            'crop_type': f['crop_type'],
-            'crop_type_label': (
-                Farmland.CropType(f['crop_type']).label if f['crop_type'] else ''
-            ),
-            'area_ha': _safe_round(area, 2),
-            'is_used': f['is_used'],
-            'cadastral_number': f['cadastral_number'],
-            'max_ndvi': _safe_round(stats['max_ndvi']),
-            'amplitude': _safe_round(stats['max_ndvi'] - stats['min_ndvi']),
-            'n_obs': stats['n_obs'],
-            'has_sos': has_sos,
-            'signals': signals,
-        }
-        if f['is_used'] is not False and signals:
-            row['severity'] = 'high' if 'no_vegetation' in signals else 'medium'
-            totals['suspect_area'] += area
-            suspects.append(row)
-        elif (
-            f['is_used'] is False
-            and not signals
-            and stats['max_ndvi'] >= REACTIVATED_MAX_NDVI
-            and has_sos
-        ):
-            reactivated.append(row)
-
-    suspects.sort(
-        key=lambda r: (r['severity'] != 'high', -(r['area_ha'] or 0)),
-    )
-    reactivated.sort(key=lambda r: -(r['area_ha'] or 0))
-
-    totals['declared_unused_area'] = _safe_round(totals['declared_unused_area'], 1)
-    totals['suspect_area'] = _safe_round(totals['suspect_area'], 1)
+    suspects, reactivated, totals = _classify_district_usage(district.pk, year)
 
     return JsonResponse({
         'ok': True,
