@@ -537,6 +537,12 @@
             opt.textContent = f.properties.name;
             districtSel.appendChild(opt);
           });
+          // Deep-link: восстановить район из URL после перезагрузки списка.
+          if (_pendingDistrict) {
+            districtSel.value = _pendingDistrict;
+            _pendingDistrict = null;
+            if (districtSel.value) districtSel.dispatchEvent(new Event('change'));
+          }
         });
     });
 
@@ -555,7 +561,7 @@
               style: { color: '#E65100', weight: 2.5, fillOpacity: 0.05, dashArray: '6 3' },
               interactive: false
             }).addTo(map);
-            if (districtLayer.getBounds().isValid()) {
+            if (districtLayer.getBounds().isValid() && _autoZoomAllowed()) {
               map.fitBounds(districtLayer.getBounds(), { padding: [20, 20] });
             }
           });
@@ -614,7 +620,7 @@
                 layer.bindTooltip(f.properties.name, { sticky: true, interactive: false });
               }
             }).addTo(map);
-            if (districtLayer.getBounds().isValid()) {
+            if (districtLayer.getBounds().isValid() && _autoZoomAllowed()) {
               map.fitBounds(districtLayer.getBounds(), { padding: [20, 20] });
             }
           });
@@ -1102,6 +1108,22 @@
     var INITIAL_FARMLAND = '{{ farmland_id|escapejs }}' || null;
     var _activeFarmland = INITIAL_FARMLAND;
 
+    /* ── Deep-link из паспорта поля ───────────────────────────────── */
+    // Параметры читаем до того, как syncNavState перепишет URL:
+    // layers — слои для автовключения, bbox — зум к полю.
+    var _initParams = new URLSearchParams(location.search);
+    var INITIAL_LAYERS = (_initParams.get('layers') || '').split(',').filter(Boolean);
+    var INITIAL_BBOX = (_initParams.get('bbox') || '').split(',').map(Number);
+    if (INITIAL_BBOX.length !== 4 || !INITIAL_BBOX.every(isFinite)) INITIAL_BBOX = null;
+    // Пока применяется deep-link, fitBounds района/границ не должен
+    // перебивать зум к полю.
+    var _zoomLockUntil = INITIAL_BBOX ? Date.now() + 5000 : 0;
+    function _autoZoomAllowed() { return Date.now() >= _zoomLockUntil; }
+    // Выбор района теряется при авто-dispatch'е region change (список
+    // районов перезагружается с сервера) — восстанавливаем его после
+    // загрузки списка (см. коллбэк в regionSel change).
+    var _pendingDistrict = '{{ district_id|escapejs }}' || null;
+
     /* ── URL + tab link state sync (see dashboard.html for rationale) ─ */
     var _tabLinks = document.querySelectorAll('.agro-page-tabs a');
 
@@ -1161,6 +1183,30 @@
         synth.click();
         document.body.removeChild(synth);
       }, 400);
+    }
+
+    /* ── Deep-link из паспорта поля: зум к полю + автослои ── */
+    if (INITIAL_BBOX) {
+      map.fitBounds(
+        [[INITIAL_BBOX[1], INITIAL_BBOX[0]], [INITIAL_BBOX[3], INITIAL_BBOX[2]]],
+        { padding: [40, 40], maxZoom: 16 }
+      );
+    }
+    if (INITIAL_LAYERS.length) {
+      setTimeout(function () {
+        if (INITIAL_LAYERS.indexOf('borders') !== -1) {
+          var tb = document.getElementById('agro-toggle-borders');
+          if (tb && !tb.checked) { tb.checked = true; tb.dispatchEvent(new Event('change')); }
+        }
+        if (INITIAL_LAYERS.indexOf('farmlands') !== -1) {
+          var tf = document.getElementById('agro-toggle-farmlands');
+          if (tf && !tf.checked) { tf.checked = true; tf.dispatchEvent(new Event('change')); }
+        }
+        if (INITIAL_LAYERS.indexOf('raster') !== -1 && !rasterToggle.checked) {
+          rasterToggle.checked = true;
+          rasterToggle.dispatchEvent(new Event('change'));
+        }
+      }, 300);
     }
 
     /* ── Sidebar collapse ──────────────────────── */

@@ -91,6 +91,14 @@
     .pp-minimap { text-align: center; }
     .pp-minimap svg { width: 100%; max-width: 220px; height: auto; }
     .pp-minimap .mm-caption { font-size: 11px; color: #888; margin-top: 6px; }
+    .pp-minimap a#pp-map-link { display: block; cursor: pointer; border-radius: 6px; transition: background .15s; }
+    .pp-minimap a#pp-map-link:hover { background: #f1f8f1; }
+    .pp-minimap a#pp-map-link:hover svg polygon { fill: rgba(139,195,74,0.55); }
+    .pp-minimap .mm-open-hint {
+      display: inline-flex; align-items: center; gap: 3px; margin-top: 4px;
+      font-size: 11px; color: #1565C0; font-weight: 600;
+    }
+    .pp-minimap .mm-open-hint i { font-size: 14px; }
 
     .assessment-badge {
       display: inline-block; padding: 4px 14px; border-radius: 14px;
@@ -192,7 +200,10 @@
     <div class="passport-grid">
       <div class="pp-section pp-minimap" style="margin-bottom:0;">
         <h2><i class="material-icons">map</i> Контур</h2>
-        <div id="pp-svg-map"></div>
+        <a id="pp-map-link" href="#" title="Открыть на большой карте с NDVI-растром">
+          <div id="pp-svg-map"></div>
+          <span class="mm-open-hint"><i class="material-icons">open_in_new</i> Открыть на карте</span>
+        </a>
         <div class="mm-caption" id="pp-map-caption"></div>
       </div>
       <div class="pp-section" style="margin-bottom:0;">
@@ -276,12 +287,13 @@
     return 'badge-low';
   }
 
-  /* ── Inline-SVG контур поля из GeoJSON MultiPolygon ── */
+  /* ── Inline-SVG контур поля из GeoJSON MultiPolygon.
+     Возвращает bbox [minX, minY, maxX, maxY] для ссылки на карту. ── */
   function renderContourSvg(geometry) {
     var el = document.getElementById('pp-svg-map');
     if (!geometry || !geometry.coordinates || !geometry.coordinates.length) {
       el.innerHTML = '<div class="empty-note">Нет геометрии</div>';
-      return;
+      return null;
     }
     // Собираем все кольца всех полигонов, находим bbox
     var rings = [];
@@ -314,6 +326,7 @@
       return '<polygon points="' + ring.map(px).join(' ') + '" fill="rgba(139,195,74,0.35)" stroke="#2e7d32" stroke-width="1.5"/>';
     });
     el.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" aria-hidden="true">' + paths.join('') + '</svg>';
+    return [minX, minY, maxX, maxY].map(function (v) { return Math.round(v * 1e5) / 1e5; });
   }
 
   /* ── Основной график NDVI ── */
@@ -589,11 +602,23 @@
       + '<div class="summary-card"><div class="val" style="font-size:13px; padding-top:3px;"><span class="assessment-badge ' + ndviBadgeClass(latest.mean_ndvi) + '">' + esc(latest.assessment || 'Нет данных') + '</span></div><div class="lbl">Оценка</div></div>'
       + '<div class="summary-card"><div class="val" style="font-size:14px;">' + usedStr + '</div><div class="lbl">Факт использования</div></div>';
 
-    renderContourSvg(f.geometry);
+    var bbox = renderContourSvg(f.geometry);
     var cap = [];
     if (f.cadastral_number) cap.push('Кадастр: ' + f.cadastral_number);
     cap.push('ID: ' + f.id);
     document.getElementById('pp-map-caption').textContent = cap.join(' · ');
+
+    // Ссылка на большую карту: NDVI-растр + границы угодий и региона,
+    // зум к полю через bbox (обрабатывается в raster_dashboard).
+    var mapLink = document.getElementById('pp-map-link');
+    var mp = new URLSearchParams();
+    if (f.region) mp.set('region', f.region.id);
+    if (f.district) mp.set('district', f.district.id);
+    mp.set('year', resp.year);
+    mp.set('farmland', f.id);
+    mp.set('layers', 'raster,farmlands,borders');
+    if (bbox) mp.set('bbox', bbox.join(','));
+    mapLink.href = '/agrocosmos/raster/?' + mp.toString();
 
     renderNdviChart(resp);
     renderHistChart(resp);
