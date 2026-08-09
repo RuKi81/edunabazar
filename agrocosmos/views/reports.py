@@ -1095,3 +1095,178 @@ def api_report_screening(request: HttpRequest) -> JsonResponse:
         'farmlands_with_data': with_data,
         'farmlands': top,
     })
+
+
+# --- api_report_district_detailed (district detailed-monitoring summary) ------
+
+def _district_detailed_series(district_id, year):
+    """Детальные (S2/L8/fused) area-weighted ряды района: общий + по культурам.
+
+    Один проход по VI района за год с аккумуляцией (date) и (crop, date) —
+    как ``_region_series_accumulators``, но по сырым детальным записям
+    (пре-агрегата для raster-источников нет).
+    """
+    rows = (
+        VegetationIndex.objects.filter(
+            farmland__district_id=district_id,
+            index_type='ndvi', is_outlier=False,
+            mean__gte=-1, mean__lte=1,
+            acquired_date__year=year,
+            scene__satellite__in=_DETAILED_SATELLITES,
+            farmland__area_ha__gt=0,
+        )
+        .values_list('acquired_date', 'mean', 'farmland__crop_type', 'farmland__area_ha')
+    )
+    per_date = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0})
+    per_crop_date = defaultdict(lambda: {'sum_ndvi_area': 0.0, 'sum_area': 0.0})
+    for acq_date, mean, crop, area in rows.iterator(chunk_size=5000):
+        area = float(area)
+        overall = per_date[acq_date]
+        overall['sum_ndvi_area'] += mean * area
+        overall['sum_area'] += area
+        cd = per_crop_date[(crop, acq_date)]
+        cd['sum_ndvi_area'] += mean * area
+        cd['sum_area'] += area
+
+    per_crop = defaultdict(dict)
+    for (crop, acq_date), acc in per_crop_date.items():
+        per_crop[crop][acq_date] = acc
+    return (
+        _weighted_series(per_date),
+        {crop: _weighted_series(dates) for crop, dates in per_crop.items()},
+    )
+
+
+def _district_alerts_summary(district_id, year):
+    """Неразрешённые алерты района за сезон: всего + разбивка по типам."""
+    qs = (
+        VegetationAlert.objects.filter(
+            Q(farmland__district_id=district_id) | Q(district_id=district_id),
+            detected_on__year=year,
+        )
+        .exclude(status=VegetationAlert.Status.RESOLVED)
+    )
+    by_type = [
+        {
+            'alert_type': r['alert_type'],
+            'alert_type_label': VegetationAlert.AlertType(r['alert_type']).label,
+            'count': r['n'],
+        }
+        for r in qs.values('alert_type').annotate(n=Count('id')).order_by('-n')
+    ]
+    return {'active_total': sum(t['count'] for t in by_type), 'by_type': by_type}
+
+
+@rate_limit('30/m')
+@cache_page(60 * 10)
+def api_report_district_detailed(request: HttpRequest) -> JsonResponse:
+    """District summary over detailed (S2/L8/fused) monitoring data.
+
+    Complements the MODIS district report with: coverage of the detailed
+    monitoring, category distribution of fields (screening rules), the
+    area-weighted district series with per-crop split and an unresolved
+    alerts summary.
+
+    Query params:
+        district (required): district id
+        year (required): year
+    """
+    district_id, year, error = _parse_report_params(request, 'district')
+    if error:
+        return error
+
+    try:
+        district = District.objects.select_related('region').get(pk=district_id)
+    except District.DoesNotExist:
+        return JsonResponse({'ok': False, 'error': 'district not found'}, status=404)
+
+    bl_lookup = _district_crop_baselines(district.pk)
+    alert_counts = _active_alert_counts(district.pk, year)
+
+    # Per-farmland latest observation → категории и агрегаты по культурам.
+    categories = {
+        key: {'count': 0, 'area_ha': 0.0}
+        for key in ('anomaly', 'below', 'normal', 'nodata')
+    }
+    crop_agg = defaultdict(lambda: {
+        'farmlands': 0, 'area_ha': 0.0, 'problem_count': 0,
+        'sum_ndvi_area': 0.0, 'sum_area': 0.0, 'latest_date': None,
+    })
+    with_data = 0
+    area_with_data = 0.0
+    seen_ids = []
+    for r in _latest_detailed_per_farmland(district.pk, year):
+        with_data += 1
+        seen_ids.append(r['farmland_id'])
+        area = float(r['farmland__area_ha'] or 0)
+        area_with_data += area
+
+        doy = r['acquired_date'].timetuple().tm_yday
+        crop = r['farmland__crop_type']
+        crop_bl = bl_lookup.get(crop) or bl_lookup.get('') or {}
+        bl_mean, bl_std = crop_bl.get(doy, (None, None))
+        z = compute_z_score(r['mean'], bl_mean, bl_std)
+        low_pct = _histogram_low_pct(r['histogram'])
+        alerts = alert_counts.get(r['farmland_id'], 0)
+        category = _screening_category(z, low_pct, alerts)
+
+        categories[category]['count'] += 1
+        categories[category]['area_ha'] += area
+
+        ca = crop_agg[crop]
+        ca['farmlands'] += 1
+        ca['area_ha'] += area
+        if category != 'normal':
+            ca['problem_count'] += 1
+        ca['sum_ndvi_area'] += r['mean'] * area
+        ca['sum_area'] += area
+        if ca['latest_date'] is None or r['acquired_date'] > ca['latest_date']:
+            ca['latest_date'] = r['acquired_date']
+
+    # Поля без детальных данных за год.
+    nodata_agg = (
+        Farmland.objects.filter(district_id=district.pk)
+        .exclude(pk__in=seen_ids)
+        .aggregate(n=Count('id'), area=Sum('area_ha'))
+    )
+    categories['nodata']['count'] = nodata_agg['n'] or 0
+    categories['nodata']['area_ha'] = float(nodata_agg['area'] or 0)
+    for cat in categories.values():
+        cat['area_ha'] = _safe_round(cat['area_ha'], 1)
+
+    overall_series, crop_series = _district_detailed_series(district.pk, year)
+
+    crops = []
+    for crop, ca in crop_agg.items():
+        crops.append({
+            'crop_type': crop,
+            'crop_type_label': Farmland.CropType(crop).label if crop else '',
+            'farmlands': ca['farmlands'],
+            'area_ha': _safe_round(ca['area_ha'], 1),
+            'problem_count': ca['problem_count'],
+            'latest_ndvi': _safe_round(
+                weighted_mean(ca['sum_ndvi_area'], ca['sum_area']),
+            ),
+            'latest_date': str(ca['latest_date']) if ca['latest_date'] else None,
+            'series': crop_series.get(crop, []),
+        })
+    crops.sort(key=lambda c: -c['area_ha'])
+
+    farmlands_total = Farmland.objects.filter(district_id=district.pk).count()
+
+    return JsonResponse({
+        'ok': True,
+        'district': {'id': district.pk, 'name': district.name},
+        'region': {'id': district.region.pk, 'name': district.region.name},
+        'year': year,
+        'coverage': {
+            'farmlands_total': farmlands_total,
+            'farmlands_with_data': with_data,
+            'area_with_data_ha': _safe_round(area_with_data, 1),
+        },
+        'categories': categories,
+        'overall_series': overall_series,
+        'baseline': _bl_to_series(bl_lookup.get('') or {}, year),
+        'crops': crops,
+        'alerts_summary': _district_alerts_summary(district.pk, year),
+    })
