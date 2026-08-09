@@ -15,8 +15,11 @@ Redis на 5 минут (`cache_page`).
 |---|---|---|---|---|
 | `/` | GET | — | — | HTML: главный дашборд |
 | `/raster/` | GET | — | — | HTML: растровый дашборд |
-| `/report/region/` | GET | — | — | HTML: отчёт по региону |
-| `/report/district/` | GET | — | — | HTML: отчёт по району |
+| `/report/region/` | GET | — | — | HTML: отчёт по региону/району (MODIS) |
+| `/report/district-detailed/` | GET | — | — | HTML: свод по району (S2/L8) |
+| `/report/screening/` | GET | — | — | HTML: проблемные поля района |
+| `/report/unused/` | GET | — | — | HTML: неиспользуемые земли (ЗСН) |
+| `/report/farmland/` | GET | — | — | HTML: паспорт поля |
 | `/api/regions/` | GET | — | — | GeoJSON регионов |
 | `/api/districts/` | GET | — | — | GeoJSON районов в регионе |
 | `/api/farmlands/` | GET | **60/m** | — | GeoJSON полей в районе |
@@ -26,8 +29,13 @@ Redis на 5 минут (`cache_page`).
 | `/api/farmland/ndvi/` | GET | **60/m** | — | NDVI time series одного поля |
 | `/api/ndvi-stats/` | GET | **30/m** | **5 мин** | Агрегированная NDVI-статистика по региону/району |
 | `/api/phenology/` | GET | **30/m** | — | Фенологические метрики (SOS/POS/EOS/LOS) |
+| `/api/report/country/` | GET | **30/m** | **15 мин** | Данные для странового отчёта |
 | `/api/report/region/` | GET | **30/m** | **5 мин** | Данные для региональной страницы отчёта |
 | `/api/report/district/` | GET | **30/m** | **5 мин** | Данные для районной страницы отчёта |
+| `/api/report/district-detailed/` | GET | **30/m** | **10 мин** | Свод района по детальному мониторингу |
+| `/api/report/screening/` | GET | **30/m** | **10 мин** | Рейтинг проблемных полей района |
+| `/api/report/unused/` | GET | **30/m** | **10 мин** | Скрининг неиспользуемых земель |
+| `/api/report/farmland/` | GET | **30/m** | **5 мин** | Данные паспорта поля |
 
 ---
 
@@ -157,7 +165,19 @@ NDVI time series одного поля.
 
 ## Report API
 
-Используется фронтендом `/report/region/` и `/report/district/`.
+Линейка отчётов (сквозная навигация от страны до поля):
+страновой/региональный MODIS-отчёт → свод района (S2/L8) →
+проблемные поля → неиспользуемые земли → паспорт поля.
+
+### `GET /api/report/country/?year=<y>`
+
+Данные для странового отчёта (читает пре-агрегат `DistrictNdviSeries`,
+просуммированный до `(region, date)`):
+
+- `regions[]` — для каждого региона: series, latest_ndvi, z-score, baseline, assessment
+- `country_overall_series`, `country_baseline`, `last_period_end`
+
+**Лимит:** 30 req/min / IP. **Cache:** 15 мин Redis.
 
 ### `GET /api/report/region/?region=<id>&year=<y>`
 
@@ -178,6 +198,73 @@ NDVI time series одного поля.
 - `overall_series` — общая по району
 - `overall_baseline`, `region_overall_series`
 - `last_period_end`
+
+**Лимит:** 30 req/min / IP. **Cache:** 5 мин Redis.
+
+### `GET /api/report/district-detailed/?district=<id>&year=<y>`
+
+Свод района по детальному мониторингу (S2/L8/fused):
+
+- `coverage` — всего угодий / с детальными данными / площадь с данными
+- `categories` — распределение полей по правилам скрининга
+  (`anomaly` / `below` / `normal` / `nodata`), с количеством и площадью
+- `overall_series` — area-weighted NDVI района, `baseline` — полоса нормы
+- `crops[]` — по культурам: полей, площадь, взвешенный NDVI последних
+  наблюдений, число проблемных, series
+- `alerts_summary` — неразрешённые алерты за сезон по типам
+
+**Лимит:** 30 req/min / IP. **Cache:** 10 мин Redis.
+
+### `GET /api/report/screening/?district=<id>&year=<y>[&limit=<n>]`
+
+Рейтинг угодий района по неблагополучию (детальный мониторинг).
+Берётся **последнее** детальное наблюдение каждого поля
+(`DISTINCT ON (farmland_id)`), балл = глубина провала под baseline
+(`max(0, −z)`) + 2 × доля пикселей < 0.4 в гистограмме + неразрешённые
+алерты (потолок 3).
+
+- `farmlands[]` — топ-N худших: NDVI, z-score, low_pct, alerts, score,
+  category (`anomaly`/`below`/`normal`), series для sparkline
+- `farmlands_total`, `farmlands_with_data` — покрытие
+
+**Параметры:** `limit` — размер топа, default 20, max 100.
+**Лимит:** 30 req/min / IP. **Cache:** 10 мин Redis.
+
+### `GET /api/report/unused/?district=<id>&year=<y>[&limit=<n>]`
+
+Скрининг неиспользуемых земель (контроль ЗСН). Сверка заявленного
+`is_used` со спутниковыми сигналами сезона по **всем** источникам
+(вкл. MODIS, чтобы отсутствие безоблачных S2-сцен не давало ложных
+срабатываний):
+
+- `no_vegetation` — max NDVI сезона < 0.35
+- `no_cycle` — амплитуда < 0.15 без детектированного SOS
+- минимум 3 наблюдения, иначе поле вне анализа
+
+Ответ:
+
+- `suspects[]` — заявлено используемым/неизвестно, но есть сигналы
+  (severity `high`/`medium`, сортировка high → площадь)
+- `reactivated[]` — заявлено неиспользуемым, но max NDVI ≥ 0.5 + SOS
+- `totals` — счётчики и площади, `thresholds` — использованные пороги
+
+**Параметры:** `limit` — max строк на список, default 50, max 200.
+**Лимит:** 30 req/min / IP. **Cache:** 10 мин Redis.
+
+### `GET /api/report/farmland/?farmland=<id>&year=<y>`
+
+Данные паспорта поля:
+
+- `farmland` — атрибуты угодья (культура, площадь, кадастр, район)
+- `detailed_series` — fused HLS если есть, иначе сырые S2/L8
+  (`detailed_source` указывает источник); точки содержат по-пиксельные
+  NDVI-гистограммы
+- `modis_series` — референсный MODIS-ряд, `last_period_end`
+- `baseline` — норма района для культуры поля
+- `latest` — последнее наблюдение: NDVI, z-score, assessment
+- `phenology` / `district_phenology` — SOS/POS/EOS/LOS поля против
+  среднего по району
+- `alerts[]` — алерты сезона
 
 **Лимит:** 30 req/min / IP. **Cache:** 5 мин Redis.
 
@@ -207,8 +294,9 @@ NDVI time series одного поля.
 так что `?region=37&year=2025` и `?region=37&year=2024` кешируются отдельно.
 
 TTL:
-- `api_ndvi_stats`, `api_report_region`, `api_report_district`: **5 минут**
-- `api_tile`: **10 минут**
+- `api_ndvi_stats`, `api_report_region`, `api_report_district`, `api_report_farmland`: **5 минут**
+- `api_report_screening`, `api_report_district_detailed`, `api_report_unused`, `api_tile`: **10 минут**
+- `api_report_country`: **15 минут**
 
 **Инвалидация** после обновления NDVI-данных (MODIS pipeline):
 
