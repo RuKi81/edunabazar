@@ -4,7 +4,7 @@ import json
 from collections import defaultdict
 from datetime import date
 
-from django.db.models import Avg, Count, Q, Sum
+from django.db.models import Avg, Count, Max, Min, Q, Sum
 from django.db.models.functions import Extract
 from django.http import HttpRequest, JsonResponse
 from django.views.decorators.cache import cache_page
@@ -1269,4 +1269,185 @@ def api_report_district_detailed(request: HttpRequest) -> JsonResponse:
         'baseline': _bl_to_series(bl_lookup.get('') or {}, year),
         'crops': crops,
         'alerts_summary': _district_alerts_summary(district.pk, year),
+    })
+
+
+# --- api_report_unused (unused-lands screening) --------------------------------
+
+# Пороги эвристик неиспользования. Обоснование:
+# возделываемое поле в пике сезона даёт NDVI ≥ 0.5–0.6; максимум ниже
+# 0.35 за весь год означает отсутствие сомкнутого растительного
+# покрова (голая почва/деградация). Амплитуда < 0.15 без
+# детектированного SOS — нет вегетационного цикла (залежь с
+# постоянным покровом либо пустырь).
+UNUSED_MAX_NDVI = 0.35
+UNUSED_MIN_AMPLITUDE = 0.15
+REACTIVATED_MAX_NDVI = 0.5
+UNUSED_MIN_OBS = 3
+UNUSED_DEFAULT_LIMIT = 50
+UNUSED_MAX_LIMIT = 200
+
+
+def _farmland_season_stats(district_id, year):
+    """farmland_id → {max, min, n_obs} по всем источникам (вкл. MODIS).
+
+    Для детекции неиспользования важна полнота покрытия, а не
+    разрешение — берём все спутники, чтобы не пометить «подозрительным»
+    поле, у которого просто нет безоблачных S2-сцен в пик сезона.
+    """
+    rows = (
+        VegetationIndex.objects.filter(
+            farmland__district_id=district_id,
+            index_type='ndvi', is_outlier=False,
+            mean__gte=-1, mean__lte=1,
+            acquired_date__year=year,
+        )
+        .values('farmland_id')
+        .annotate(
+            max_ndvi=Max('mean'), min_ndvi=Min('mean'), n_obs=Count('id'),
+        )
+    )
+    return {r['farmland_id']: r for r in rows}
+
+
+def _farmlands_with_sos(district_id, year):
+    """Множество farmland_id с детектированным началом сезона за год."""
+    return set(
+        FarmlandPhenology.objects.filter(
+            farmland__district_id=district_id, year=year,
+            sos_date__isnull=False,
+        ).values_list('farmland_id', flat=True)
+    )
+
+
+def _unused_signals(stats, has_sos):
+    """Список сигналов неиспользования для поля (пустой = чисто).
+
+    stats — агрегат сезона {max_ndvi, min_ndvi, n_obs}; None или
+    n_obs < UNUSED_MIN_OBS → данных недостаточно (возвращаем None).
+    """
+    if stats is None or stats['n_obs'] < UNUSED_MIN_OBS:
+        return None
+    signals = []
+    if stats['max_ndvi'] < UNUSED_MAX_NDVI:
+        signals.append('no_vegetation')
+    amplitude = stats['max_ndvi'] - stats['min_ndvi']
+    if amplitude < UNUSED_MIN_AMPLITUDE and not has_sos:
+        signals.append('no_cycle')
+    return signals
+
+
+@rate_limit('30/m')
+@cache_page(60 * 10)
+def api_report_unused(request: HttpRequest) -> JsonResponse:
+    """Unused-lands screening for a district (ЗСН control).
+
+    Cross-checks the declared ``is_used`` flag against satellite
+    signals of the season (max NDVI, amplitude, detected SOS):
+
+    - suspects: declared used (or unknown) but no vegetation signal —
+      candidates for ЗСН non-use inspection;
+    - reactivated: declared unused but a clear crop cycle is present —
+      likely returned to cultivation.
+
+    Query params:
+        district (required): district id
+        year (required): year
+        limit (optional): max rows per list, default 50, max 200
+    """
+    district_id, year, error = _parse_report_params(request, 'district')
+    if error:
+        return error
+
+    try:
+        district = District.objects.select_related('region').get(pk=district_id)
+    except District.DoesNotExist:
+        return JsonResponse({'ok': False, 'error': 'district not found'}, status=404)
+
+    try:
+        limit = min(
+            max(int(request.GET.get('limit', UNUSED_DEFAULT_LIMIT)), 1),
+            UNUSED_MAX_LIMIT,
+        )
+    except (TypeError, ValueError):
+        limit = UNUSED_DEFAULT_LIMIT
+
+    season_stats = _farmland_season_stats(district.pk, year)
+    sos_ids = _farmlands_with_sos(district.pk, year)
+
+    farmlands = Farmland.objects.filter(district_id=district.pk).values(
+        'id', 'crop_type', 'area_ha', 'is_used', 'cadastral_number',
+    )
+
+    suspects, reactivated = [], []
+    totals = {
+        'farmlands_total': 0,
+        'declared_unused': 0,
+        'declared_unused_area': 0.0,
+        'with_data': 0,
+        'suspect_area': 0.0,
+    }
+    for f in farmlands:
+        totals['farmlands_total'] += 1
+        area = float(f['area_ha'] or 0)
+        if f['is_used'] is False:
+            totals['declared_unused'] += 1
+            totals['declared_unused_area'] += area
+
+        stats = season_stats.get(f['id'])
+        has_sos = f['id'] in sos_ids
+        signals = _unused_signals(stats, has_sos)
+        if stats is not None and stats['n_obs'] >= UNUSED_MIN_OBS:
+            totals['with_data'] += 1
+        if signals is None:
+            continue
+
+        row = {
+            'farmland_id': f['id'],
+            'crop_type': f['crop_type'],
+            'crop_type_label': (
+                Farmland.CropType(f['crop_type']).label if f['crop_type'] else ''
+            ),
+            'area_ha': _safe_round(area, 2),
+            'is_used': f['is_used'],
+            'cadastral_number': f['cadastral_number'],
+            'max_ndvi': _safe_round(stats['max_ndvi']),
+            'amplitude': _safe_round(stats['max_ndvi'] - stats['min_ndvi']),
+            'n_obs': stats['n_obs'],
+            'has_sos': has_sos,
+            'signals': signals,
+        }
+        if f['is_used'] is not False and signals:
+            row['severity'] = 'high' if 'no_vegetation' in signals else 'medium'
+            totals['suspect_area'] += area
+            suspects.append(row)
+        elif (
+            f['is_used'] is False
+            and not signals
+            and stats['max_ndvi'] >= REACTIVATED_MAX_NDVI
+            and has_sos
+        ):
+            reactivated.append(row)
+
+    suspects.sort(
+        key=lambda r: (r['severity'] != 'high', -(r['area_ha'] or 0)),
+    )
+    reactivated.sort(key=lambda r: -(r['area_ha'] or 0))
+
+    totals['declared_unused_area'] = _safe_round(totals['declared_unused_area'], 1)
+    totals['suspect_area'] = _safe_round(totals['suspect_area'], 1)
+
+    return JsonResponse({
+        'ok': True,
+        'district': {'id': district.pk, 'name': district.name},
+        'region': {'id': district.region.pk, 'name': district.region.name},
+        'year': year,
+        'totals': {**totals, 'suspects': len(suspects), 'reactivated': len(reactivated)},
+        'thresholds': {
+            'max_ndvi': UNUSED_MAX_NDVI,
+            'min_amplitude': UNUSED_MIN_AMPLITUDE,
+            'min_obs': UNUSED_MIN_OBS,
+        },
+        'suspects': suspects[:limit],
+        'reactivated': reactivated[:limit],
     })

@@ -411,3 +411,31 @@ def report_district_detailed(request: HttpRequest) -> HttpResponse:
         'years': years,
         'active_page': 'report_district_detailed',
     })
+
+
+def report_unused(request: HttpRequest) -> HttpResponse:
+    """Unused-lands screening report page (ЗСН control).
+
+    Сверка заявленного факта использования (is_used) со спутниковыми
+    сигналами сезона. Data comes from ``/agrocosmos/api/report/unused/``.
+    """
+    regions = Region.objects.only('id', 'name', 'code')
+    region_id = request.GET.get('region')
+    district_id = request.GET.get('district')
+    year = request.GET.get('year')
+
+    current_year = date.today().year
+    years = _available_ndvi_years(current_year)
+
+    districts = _districts_for_region(region_id)
+
+    return render(request, 'agrocosmos/report_unused.html', {
+        'legacy_user': _get_legacy_user(request),
+        'regions': regions,
+        'districts': districts,
+        'region_id': region_id or '',
+        'district_id': district_id or '',
+        'year': year or str(current_year),
+        'years': years,
+        'active_page': 'report_unused',
+    })

@@ -10,6 +10,7 @@ urlpatterns = [
     path('report/farmland/', views.report_farmland, name='report_farmland'),
     path('report/screening/', views.report_screening, name='report_screening'),
     path('report/district-detailed/', views.report_district_detailed, name='report_district_detailed'),
+    path('report/unused/', views.report_unused, name='report_unused'),
     path('api/regions/', views.api_regions, name='api_regions'),
     path('api/districts/', views.api_districts, name='api_districts'),
     path('api/districts/status/', views.api_districts_status, name='api_districts_status'),
@@ -29,6 +30,7 @@ urlpatterns = [
     path('api/report/farmland/', views.api_report_farmland, name='api_report_farmland'),
     path('api/report/screening/', views.api_report_screening, name='api_report_screening'),
     path('api/report/district-detailed/', views.api_report_district_detailed, name='api_report_district_detailed'),
+    path('api/report/unused/', views.api_report_unused, name='api_report_unused'),
     path('api/yield/forecast/', views.api_yield_forecast, name='api_yield_forecast'),
     path(
         'api/yield/forecast/region/<int:region_id>/',

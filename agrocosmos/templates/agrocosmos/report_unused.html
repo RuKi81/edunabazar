@@ -1,12 +1,12 @@
 {% extends 'legacy/base.html' %}
 {% load static %}
 
-{% block title %}Проблемные поля района — Агрокосмос{% endblock %}
-{% block meta_description %}Скрининг угодий района по неблагополучию: z-score NDVI против нормы, неоднородность поля, алерты вегетации.{% endblock %}
-{% block og_title %}Проблемные поля района — Агрокосмос{% endblock %}
-{% block og_description %}Рейтинг сельхозугодий района по спутниковым признакам неблагополучия: отклонение NDVI от нормы, доля деградировавших пикселей, алерты.{% endblock %}
+{% block title %}Неиспользуемые земли — Агрокосмос{% endblock %}
+{% block meta_description %}Скрининг неиспользуемых сельхозземель района: сверка заявленного факта использования со спутниковыми сигналами сезона (NDVI, вегетационный цикл).{% endblock %}
+{% block og_title %}Неиспользуемые земли — Агрокосмос{% endblock %}
+{% block og_description %}Контроль ЗСН по спутниковым данным: поля без вегетационного цикла, кандидаты на проверку неиспользования, земли, возвращённые в оборот.{% endblock %}
 {% block og_image %}https://edunabazar.ru{% static 'legacy/images/og-agrocosmos.jpg' %}?v=2{% endblock %}
-{% block og_image_alt %}Агрокосмос — скрининг проблемных полей{% endblock %}
+{% block og_image_alt %}Агрокосмос — скрининг неиспользуемых земель{% endblock %}
 
 {% block head %}
   <style>
@@ -77,33 +77,35 @@
     .summary-card .val { font-size: 17px; font-weight: 700; color: #1b5e20; }
     .summary-card .lbl { font-size: 11px; color: #888; margin-top: 3px; }
 
-    .screening-table { width: 100%; border-collapse: collapse; font-size: 12px; background: #fff; }
-    .screening-table th, .screening-table td {
-      padding: 7px 10px; border-bottom: 1px solid #f0f0f0; text-align: center; vertical-align: middle;
-    }
-    .screening-table th { background: #f5f9f5; font-weight: 600; font-size: 11px; }
-    .screening-table td:nth-child(2), .screening-table th:nth-child(2) { text-align: left; }
-    .screening-table tr:hover td { background: #f9fbf9; }
-    .screening-table a.fl-link { color: #1565C0; font-weight: 700; text-decoration: none; }
-    .screening-table a.fl-link:hover { text-decoration: underline; }
-    .screening-table svg { display: block; width: 120px; height: 32px; margin: 0 auto; }
-
-    .cat-dot {
-      display: inline-block; width: 10px; height: 10px; border-radius: 50%;
-      vertical-align: -1px;
-    }
-    .cat-dot.anomaly { background: #D32F2F; }
-    .cat-dot.below { background: #F9A825; }
-    .cat-dot.normal { background: #2e7d32; }
-    .neg { color: #D32F2F; font-weight: 700; }
-    .warn { color: #F57C00; font-weight: 700; }
-
     .pp-section {
       background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px 18px;
       margin-bottom: 20px; page-break-inside: avoid;
     }
     .pp-section h2 { font-size: 15px; font-weight: 700; color: #1b5e20; margin: 0 0 12px 0; }
-    .pp-section h2 i { font-size: 18px; vertical-align: -3px; color: #2e7d32; }
+    .pp-section h2 i { font-size: 18px; vertical-align: -3px; }
+
+    .unused-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .unused-table th, .unused-table td {
+      padding: 7px 10px; border-bottom: 1px solid #f0f0f0; text-align: center;
+    }
+    .unused-table th { background: #f5f9f5; font-weight: 600; font-size: 11px; }
+    .unused-table td:nth-child(2), .unused-table th:nth-child(2) { text-align: left; }
+    .unused-table tr:hover td { background: #f9fbf9; }
+    .unused-table a.fl-link { color: #1565C0; font-weight: 700; text-decoration: none; }
+    .unused-table a.fl-link:hover { text-decoration: underline; }
+
+    .sig-badge {
+      display: inline-block; padding: 2px 8px; border-radius: 10px;
+      font-size: 10px; font-weight: 700; color: #fff; margin: 1px;
+    }
+    .sig-no_vegetation { background: #D32F2F; }
+    .sig-no_cycle { background: #F57C00; }
+    .sev-dot {
+      display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+      vertical-align: -1px;
+    }
+    .sev-dot.high { background: #D32F2F; }
+    .sev-dot.medium { background: #F57C00; }
 
     .report-loader { text-align: center; padding: 40px; font-size: 15px; color: #777; }
     .report-loader.hidden { display: none; }
@@ -122,19 +124,16 @@
 {% block content %}
 <div class="report-wrap">
   <div class="report-nav">
-    <a href="{% url 'agrocosmos:raster_dashboard' %}">
-      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">satellite</i> Sentinel / Landsat
-    </a>
     <a href="{% url 'agrocosmos:report_region' %}">
       <i class="material-icons" style="font-size:14px; vertical-align:-2px;">assessment</i> Отчёт NDVI
     </a>
     <a href="{% url 'agrocosmos:report_district_detailed' %}">
       <i class="material-icons" style="font-size:14px; vertical-align:-2px;">summarize</i> Свод района
     </a>
-    <a href="{% url 'agrocosmos:report_screening' %}" class="active">
+    <a href="{% url 'agrocosmos:report_screening' %}">
       <i class="material-icons" style="font-size:14px; vertical-align:-2px;">rule</i> Проблемные поля
     </a>
-    <a href="{% url 'agrocosmos:report_unused' %}">
+    <a href="{% url 'agrocosmos:report_unused' %}" class="active">
       <i class="material-icons" style="font-size:14px; vertical-align:-2px;">block</i> Неиспользуемые
     </a>
     <a href="{% url 'agrocosmos:report_farmland' %}">
@@ -143,8 +142,8 @@
   </div>
 
   <div class="report-header">
-    <h1><i class="material-icons" style="font-size:24px; vertical-align:-4px; color:#2e7d32;">rule</i> <span id="rpt-title">Проблемные поля района</span></h1>
-    <div class="subtitle" id="rpt-subtitle">Рейтинг угодий по признакам неблагополучия (Sentinel-2 / Landsat)</div>
+    <h1><i class="material-icons" style="font-size:24px; vertical-align:-4px; color:#2e7d32;">block</i> <span id="rpt-title">Неиспользуемые земли</span></h1>
+    <div class="subtitle" id="rpt-subtitle">Сверка заявленного использования со спутниковыми сигналами сезона</div>
   </div>
 
   <div class="report-controls">
@@ -171,13 +170,6 @@
       {% endfor %}
     </select>
 
-    <label>Топ:</label>
-    <select id="rpt-limit" class="browser-default">
-      <option value="20">20</option>
-      <option value="50">50</option>
-      <option value="100">100</option>
-    </select>
-
     <button class="btn-generate" id="btn-generate">Сформировать</button>
     <div class="report-actions">
       <button class="action-btn" onclick="window.print()" title="Печать"><i class="material-icons">print</i></button>
@@ -188,7 +180,7 @@
 
   <div class="report-loader hidden" id="rpt-loader">
     <i class="material-icons" style="font-size:36px; color:#2e7d32; animation: spin 1s linear infinite;">autorenew</i>
-    <div style="margin-top:8px;">Скрининг угодий…</div>
+    <div style="margin-top:8px;">Скрининг использования земель…</div>
     <style>@keyframes spin { 100% { transform: rotate(360deg); } }</style>
   </div>
 
@@ -196,25 +188,39 @@
     <div class="report-summary" id="rpt-summary"></div>
 
     <div class="pp-section">
-      <h2><i class="material-icons">rule</i> Рейтинг неблагополучия <span id="tbl-caption" style="font-weight:400; font-size:12px; color:#888;"></span></h2>
+      <h2 style="color:#b71c1c;"><i class="material-icons" style="color:#D32F2F;">report_problem</i> Подозрение на неиспользование <span id="suspects-caption" style="font-weight:400; font-size:12px; color:#888;"></span></h2>
       <div style="overflow-x:auto;">
-        <table class="screening-table">
+        <table class="unused-table">
           <thead>
             <tr>
-              <th>#</th><th>Угодье</th><th>Площадь, га</th><th>Дата</th>
-              <th>NDVI</th><th>z-score</th><th>&lt; 0.4, %</th><th>Алерты</th>
-              <th>Балл</th><th>Динамика за сезон</th>
+              <th>#</th><th>Угодье</th><th>Кадастр</th><th>Площадь, га</th>
+              <th>Макс. NDVI</th><th>Амплитуда</th><th>SOS</th><th>Набл.</th><th>Сигналы</th>
             </tr>
           </thead>
-          <tbody id="screening-body"></tbody>
+          <tbody id="suspects-body"></tbody>
         </table>
       </div>
-      <div class="empty-note" id="screening-empty" style="display:none;">
-        Нет детальных наблюдений (Sentinel-2 / Landsat) по угодьям района за выбранный год.
+      <div class="empty-note" id="suspects-empty" style="display:none;">
+        Полей с признаками неиспользования не выявлено.
       </div>
-      <div class="empty-note" style="margin-top:10px;">
-        Балл = глубина провала под норму (|z|) + 2 × доля пикселей &lt; 0.4 + алерты (макс. 3).
-        <span class="cat-dot anomaly"></span> аномалия · <span class="cat-dot below"></span> ниже нормы · <span class="cat-dot normal"></span> норма.
+      <div class="empty-note" id="thresholds-note" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="pp-section" id="reactivated-section" style="display:none;">
+      <h2 style="color:#1b5e20;"><i class="material-icons" style="color:#2e7d32;">restart_alt</i> Возможно возвращены в оборот <span id="react-caption" style="font-weight:400; font-size:12px; color:#888;"></span></h2>
+      <div style="overflow-x:auto;">
+        <table class="unused-table">
+          <thead>
+            <tr>
+              <th>#</th><th>Угодье</th><th>Кадастр</th><th>Площадь, га</th>
+              <th>Макс. NDVI</th><th>Амплитуда</th><th>Набл.</th>
+            </tr>
+          </thead>
+          <tbody id="reactivated-body"></tbody>
+        </table>
+      </div>
+      <div class="empty-note">
+        Поля, заявленные как неиспользуемые, по которым спутник видит полноценный вегетационный цикл.
       </div>
     </div>
   </div>
@@ -229,7 +235,6 @@
   var regionSel = document.getElementById('rpt-region');
   var districtSel = document.getElementById('rpt-district');
   var yearSel = document.getElementById('rpt-year');
-  var limitSel = document.getElementById('rpt-limit');
   var btnGen = document.getElementById('btn-generate');
   var loader = document.getElementById('rpt-loader');
   var content = document.getElementById('report-content');
@@ -257,7 +262,6 @@
     });
   });
 
-  /* Подгрузка районов при смене региона (как в report_region). */
   regionSel.addEventListener('change', function () {
     var rid = this.value;
     districtSel.innerHTML = '<option value="">— Выберите район —</option>';
@@ -278,77 +282,87 @@
       });
   });
 
-  var CAT_COLORS = { anomaly: '#D32F2F', below: '#F9A825', normal: '#2e7d32' };
+  var SIG_LABELS = {
+    no_vegetation: 'Нет вегетации',
+    no_cycle: 'Нет цикла'
+  };
 
-  function sparklineSvg(series, color) {
-    var pts = (series || []).filter(function (s) { return s.mean_ndvi !== null && s.mean_ndvi !== undefined; });
-    if (!pts.length) return '';
-    var w = 120, h = 32, n = pts.length;
-    var coords = pts.map(function (s, i) {
-      var x = n > 1 ? 2 + (i / (n - 1)) * (w - 4) : w / 2;
-      var v = Math.max(0, Math.min(1, s.mean_ndvi));
-      var y = h - 2 - v * (h - 4);
-      return x.toFixed(1) + ',' + y.toFixed(1);
-    });
-    return '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" aria-hidden="true">'
-      + '<polyline fill="none" stroke="' + color + '" stroke-width="1.5" points="' + coords.join(' ') + '"/>'
-      + '</svg>';
+  function signalsHtml(signals) {
+    return (signals || []).map(function (s) {
+      return '<span class="sig-badge sig-' + esc(s) + '">' + esc(SIG_LABELS[s] || s) + '</span>';
+    }).join('');
+  }
+
+  function passportUrl(fid, year) {
+    return '/agrocosmos/report/farmland/?farmland=' + fid + '&year=' + year;
   }
 
   function render(resp) {
+    var t = resp.totals;
     document.getElementById('rpt-title').textContent =
-      'Проблемные поля — ' + resp.district.name;
+      'Неиспользуемые земли — ' + resp.district.name;
     document.getElementById('rpt-subtitle').textContent =
-      resp.region.name + ' · ' + resp.year + ' г. · детальный мониторинг Sentinel-2 / Landsat';
+      resp.region.name + ' · ' + resp.year + ' г.';
 
-    var covPct = resp.farmlands_total
-      ? Math.round(resp.farmlands_with_data / resp.farmlands_total * 100) : 0;
-    var nAnomaly = resp.farmlands.filter(function (f) { return f.category === 'anomaly'; }).length;
-    var nBelow = resp.farmlands.filter(function (f) { return f.category === 'below'; }).length;
     document.getElementById('rpt-summary').innerHTML =
-      '<div class="summary-card"><div class="val">' + resp.farmlands_total.toLocaleString('ru') + '</div><div class="lbl">Угодий в районе</div></div>'
-      + '<div class="summary-card"><div class="val">' + resp.farmlands_with_data.toLocaleString('ru') + ' (' + covPct + '%)</div><div class="lbl">С детальными данными</div></div>'
-      + '<div class="summary-card"><div class="val" style="color:#D32F2F;">' + nAnomaly + '</div><div class="lbl">Аномалий в топе</div></div>'
-      + '<div class="summary-card"><div class="val" style="color:#F57C00;">' + nBelow + '</div><div class="lbl">Ниже нормы в топе</div></div>';
+      '<div class="summary-card"><div class="val">' + t.farmlands_total.toLocaleString('ru') + '</div><div class="lbl">Угодий в районе</div></div>'
+      + '<div class="summary-card"><div class="val">' + t.declared_unused.toLocaleString('ru') + '</div><div class="lbl">Заявлено неиспользуемых (' + t.declared_unused_area.toLocaleString('ru', {maximumFractionDigits:0}) + ' га)</div></div>'
+      + '<div class="summary-card"><div class="val">' + t.with_data.toLocaleString('ru') + '</div><div class="lbl">С достаточными данными</div></div>'
+      + '<div class="summary-card"><div class="val" style="color:#D32F2F;">' + t.suspects.toLocaleString('ru') + '</div><div class="lbl">Подозрений (' + t.suspect_area.toLocaleString('ru', {maximumFractionDigits:0}) + ' га)</div></div>'
+      + '<div class="summary-card"><div class="val" style="color:#2e7d32;">' + t.reactivated.toLocaleString('ru') + '</div><div class="lbl">Возвращено в оборот</div></div>';
 
-    var body = document.getElementById('screening-body');
-    var emptyEl = document.getElementById('screening-empty');
-    if (!resp.farmlands.length) {
+    var th = resp.thresholds;
+    document.getElementById('thresholds-note').textContent =
+      'Критерии: макс. NDVI сезона < ' + th.max_ndvi + ' — нет вегетации; амплитуда < '
+      + th.min_amplitude + ' без детектированного начала сезона — нет вегетационного цикла. '
+      + 'Минимум наблюдений: ' + th.min_obs + '. Все источники (MODIS + Sentinel/Landsat).';
+
+    // Подозрения
+    var body = document.getElementById('suspects-body');
+    var emptyEl = document.getElementById('suspects-empty');
+    if (!resp.suspects.length) {
       body.innerHTML = '';
       emptyEl.style.display = 'block';
-      document.getElementById('tbl-caption').textContent = '';
-      return;
+      document.getElementById('suspects-caption').textContent = '';
+    } else {
+      emptyEl.style.display = 'none';
+      document.getElementById('suspects-caption').textContent =
+        '(' + resp.suspects.length + ' полей, ' + t.suspect_area.toLocaleString('ru', {maximumFractionDigits:0}) + ' га)';
+      body.innerHTML = resp.suspects.map(function (f, i) {
+        return '<tr>'
+          + '<td><span class="sev-dot ' + esc(f.severity) + '"></span> ' + (i + 1) + '</td>'
+          + '<td><a class="fl-link" href="' + passportUrl(f.farmland_id, resp.year) + '" target="_blank">#' + f.farmland_id + '</a> ' + esc(f.crop_type_label) + '</td>'
+          + '<td>' + esc(f.cadastral_number || '—') + '</td>'
+          + '<td>' + f.area_ha.toLocaleString('ru', {maximumFractionDigits:1}) + '</td>'
+          + '<td>' + f.max_ndvi.toFixed(3) + '</td>'
+          + '<td>' + f.amplitude.toFixed(3) + '</td>'
+          + '<td>' + (f.has_sos ? '✔' : '—') + '</td>'
+          + '<td>' + f.n_obs + '</td>'
+          + '<td>' + signalsHtml(f.signals) + '</td>'
+          + '</tr>';
+      }).join('');
     }
-    emptyEl.style.display = 'none';
-    document.getElementById('tbl-caption').textContent =
-      '(топ-' + resp.farmlands.length + ' худших из ' + resp.farmlands_with_data + ' полей с данными)';
 
-    body.innerHTML = resp.farmlands.map(function (f, i) {
-      var color = CAT_COLORS[f.category] || '#9E9E9E';
-      var zCell = '—';
-      if (f.z_score !== null && f.z_score !== undefined) {
-        var zCls = f.z_score <= -1.5 ? 'neg' : f.z_score <= -0.5 ? 'warn' : '';
-        zCell = '<span class="' + zCls + '">' + (f.z_score >= 0 ? '+' : '') + f.z_score.toFixed(2) + '</span>';
-      }
-      var lowCell = '—';
-      if (f.low_pct !== null && f.low_pct !== undefined) {
-        var lowCls = f.low_pct >= 50 ? 'neg' : f.low_pct >= 30 ? 'warn' : '';
-        lowCell = '<span class="' + lowCls + '">' + f.low_pct + '%</span>';
-      }
-      var passportUrl = '/agrocosmos/report/farmland/?farmland=' + f.farmland_id + '&year=' + resp.year;
-      return '<tr>'
-        + '<td><span class="cat-dot ' + esc(f.category) + '"></span> ' + (i + 1) + '</td>'
-        + '<td><a class="fl-link" href="' + passportUrl + '" target="_blank">#' + f.farmland_id + '</a> ' + esc(f.crop_type_label) + '</td>'
-        + '<td>' + f.area_ha.toLocaleString('ru', {maximumFractionDigits:1}) + '</td>'
-        + '<td>' + esc(f.latest_date) + '</td>'
-        + '<td>' + f.latest_ndvi.toFixed(3) + '</td>'
-        + '<td>' + zCell + '</td>'
-        + '<td>' + lowCell + '</td>'
-        + '<td>' + (f.active_alerts || '—') + '</td>'
-        + '<td><b>' + f.score.toFixed(2) + '</b></td>'
-        + '<td>' + sparklineSvg(f.series, color) + '</td>'
-        + '</tr>';
-    }).join('');
+    // Возвращённые в оборот
+    var reactSection = document.getElementById('reactivated-section');
+    if (!resp.reactivated.length) {
+      reactSection.style.display = 'none';
+    } else {
+      reactSection.style.display = 'block';
+      document.getElementById('react-caption').textContent =
+        '(' + resp.reactivated.length + ' полей)';
+      document.getElementById('reactivated-body').innerHTML = resp.reactivated.map(function (f, i) {
+        return '<tr>'
+          + '<td>' + (i + 1) + '</td>'
+          + '<td><a class="fl-link" href="' + passportUrl(f.farmland_id, resp.year) + '" target="_blank">#' + f.farmland_id + '</a> ' + esc(f.crop_type_label) + '</td>'
+          + '<td>' + esc(f.cadastral_number || '—') + '</td>'
+          + '<td>' + f.area_ha.toLocaleString('ru', {maximumFractionDigits:1}) + '</td>'
+          + '<td>' + f.max_ndvi.toFixed(3) + '</td>'
+          + '<td>' + f.amplitude.toFixed(3) + '</td>'
+          + '<td>' + f.n_obs + '</td>'
+          + '</tr>';
+      }).join('');
+    }
   }
 
   function generate() {
@@ -359,9 +373,8 @@
     loader.classList.remove('hidden');
     content.classList.add('hidden');
 
-    fetch('/agrocosmos/api/report/screening/?district=' + encodeURIComponent(did)
-        + '&year=' + encodeURIComponent(yearSel.value)
-        + '&limit=' + encodeURIComponent(limitSel.value))
+    fetch('/agrocosmos/api/report/unused/?district=' + encodeURIComponent(did)
+        + '&year=' + encodeURIComponent(yearSel.value))
       .then(function (r) { return r.json(); })
       .then(function (resp) {
         loader.classList.add('hidden');
