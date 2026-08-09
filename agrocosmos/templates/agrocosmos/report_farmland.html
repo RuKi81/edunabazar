@@ -642,7 +642,7 @@
     renderRasterFrames(f.id, resp.year);
   }
 
-  /* ── Последние 5 фреймов NDVI-растра с датами съемки ── */
+  /* ── Последние 6 фреймов NDVI-растра с датами съемки ── */
   function fmtDate(iso) {
     if (!iso) return '';
     var p = iso.split('-');
@@ -659,15 +659,19 @@
     note.style.display = 'none';
 
     fetch('/agrocosmos/api/farmland/raster-frames/?farmland=' + encodeURIComponent(farmlandId)
-          + '&year=' + encodeURIComponent(year || '') + '&limit=5')
+          + '&year=' + encodeURIComponent(year || '') + '&limit=6')
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (!data.ok || !data.frames || !data.frames.length) return;
         section.style.display = '';
-        srcEl.textContent = data.sensor === 'l8' ? '· Landsat 8/9' : '· Sentinel-2';
+        var sensors = data.sensors || [data.sensor];
+        var mixed = sensors.length > 1;
+        srcEl.textContent = mixed ? '· Sentinel-2 + Landsat 8/9'
+          : (sensors[0] === 'l8' ? '· Landsat 8/9' : '· Sentinel-2');
         data.frames.forEach(function (fr) {
+          var sensor = fr.sensor || data.sensor;
           var url = '/agrocosmos/api/raster-preview/?farmland=' + encodeURIComponent(farmlandId)
-            + '&sensor=' + encodeURIComponent(data.sensor)
+            + '&sensor=' + encodeURIComponent(sensor)
             + '&scope=' + encodeURIComponent(data.scope)
             + '&date=' + encodeURIComponent(fr.date);
           var div = document.createElement('div');
@@ -681,9 +685,10 @@
           img.src = url;
           var dt = document.createElement('div');
           dt.className = 'dt';
-          dt.textContent = fr.date_from === fr.date_to
+          dt.textContent = (fr.date_from === fr.date_to
             ? fmtDate(fr.date_from)
-            : fmtDate(fr.date_from) + ' – ' + fmtDate(fr.date_to);
+            : fmtDate(fr.date_from) + ' – ' + fmtDate(fr.date_to))
+            + (mixed ? (sensor === 'l8' ? ' · L8' : ' · S2') : '');
           div.appendChild(img);
           div.appendChild(dt);
           wrap.appendChild(div);

@@ -682,9 +682,13 @@ def api_raster_composites(request: HttpRequest) -> JsonResponse:
 
 
 def _resolve_composites(farmland, year):
-    """Композиты, покрывающие угодье: скоуп район → регион, сенсор S2 → L8.
+    """Композиты, покрывающие угодье: скоуп район → регион.
 
-    Returns ``(composites, sensor, scope)``; пустой список — данных нет.
+    S2 и L8 объединяются в один ряд: если за период есть оба —
+    предпочитается Sentinel-2, пропуски закрываются Landsat.
+    Каждый элемент несёт свой ``sensor``.
+
+    Returns ``(composites, scope)``; пустой список — данных нет.
     """
     from ..services.raster_tiles import list_available_composites
 
@@ -698,11 +702,14 @@ def _resolve_composites(farmland, year):
         scopes.append(str(region_id))
 
     for scope in scopes:
-        for sensor in ('s2', 'l8'):
-            found = list_available_composites(sensor, scope, year)
-            if found:
-                return found, sensor, scope
-    return [], None, None
+        merged = {}
+        # S2 последним — перекрывает L8 при совпадении периода.
+        for sensor in ('l8', 's2'):
+            for c in list_available_composites(sensor, scope, year):
+                merged[(c['date_from'], c['date_to'])] = dict(c, sensor=sensor)
+        if merged:
+            return [merged[k] for k in sorted(merged)], scope
+    return [], None
 
 
 @rate_limit('60/m')
@@ -715,7 +722,8 @@ def api_farmland_raster_frames(request: HttpRequest) -> JsonResponse:
         limit: max frames, 1..12 (default 5)
 
     Scope resolution: district composites first ('d<id>'), then region
-    ('<id>'); sensors — S2 first, L8 as fallback. Frames are returned
+    ('<id>'). S2 and L8 are merged per period (S2 preferred, L8 fills
+    gaps); each frame carries its own 'sensor'. Frames are returned
     latest-first with ready-made preview query params.
     """
     fid = request.GET.get('farmland', '')
@@ -735,21 +743,26 @@ def api_farmland_raster_frames(request: HttpRequest) -> JsonResponse:
     except ValueError:
         limit = 5
 
-    composites, sensor_used, scope_used = _resolve_composites(farmland, year)
+    composites, scope_used = _resolve_composites(farmland, year)
 
     frames = [
         {
             'date_from': c['date_from'],
             'date_to': c['date_to'],
             'date': c['date_from'] + '_' + c['date_to'],
+            'sensor': c['sensor'],
         }
         for c in reversed(composites[-limit:])  # latest first
     ]
+    sensors = sorted({f['sensor'] for f in frames})
     return JsonResponse({
         'ok': True,
         'farmland_id': farmland.pk,
         'year': year,
-        'sensor': sensor_used,
+        # Основной сенсор — для обратной совместимости; у каждого
+        # фрейма есть свой 'sensor'.
+        'sensor': ('s2' if 's2' in sensors else (sensors[0] if sensors else None)),
+        'sensors': sensors,
         'scope': scope_used,
         'frames': frames,
     })

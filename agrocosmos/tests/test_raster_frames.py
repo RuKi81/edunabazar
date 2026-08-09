@@ -89,6 +89,7 @@ class FarmlandRasterFramesApiTests(TestCase):
         self.assertEqual(data['frames'][0]['date_from'], '2025-07-01')
         self.assertEqual(data['frames'][-1]['date_from'], '2025-03-01')
         self.assertEqual(data['frames'][0]['date'], '2025-07-01_2025-07-05')
+        self.assertEqual(data['frames'][0]['sensor'], 's2')
 
     def test_falls_back_to_region_scope_and_l8(self):
         dates = [('2025-06-01', '2025-06-16')]
@@ -103,6 +104,28 @@ class FarmlandRasterFramesApiTests(TestCase):
         self.assertEqual(data['sensor'], 'l8')
         self.assertEqual(data['scope'], str(self.region.pk))
         self.assertEqual(len(data['frames']), 1)
+        self.assertEqual(data['frames'][0]['sensor'], 'l8')
+
+    def test_merges_s2_and_l8_preferring_s2(self):
+        scope = f'd{self.district.pk}'
+        with tempfile.TemporaryDirectory() as tmp:
+            # S2: июнь; L8: тот же июнь (дубль) + июль (закрывает пропуск).
+            _touch_composites(tmp, scope, [('2025-06-01', '2025-06-05')])
+            _touch_composites(tmp, scope, [('2025-06-01', '2025-06-05'),
+                                           ('2025-07-01', '2025-07-05')],
+                              prefix='landsat_ndvi')
+            with mock.patch.dict(os.environ, {'S2_RASTER_DIR': tmp,
+                                              'LANDSAT_RASTER_DIR': tmp}):
+                resp = self._get(farmland=self.farmland.pk, year=YEAR)
+        data = resp.json()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['sensors'], ['l8', 's2'])
+        self.assertEqual(len(data['frames']), 2)
+        # Июльский период есть только у L8, июньский дубль — за S2.
+        self.assertEqual(data['frames'][0]['sensor'], 'l8')
+        self.assertEqual(data['frames'][0]['date_from'], '2025-07-01')
+        self.assertEqual(data['frames'][1]['sensor'], 's2')
+        self.assertEqual(data['frames'][1]['date_from'], '2025-06-01')
 
     def test_limit_param(self):
         dates = [(f'2025-0{m}-01', f'2025-0{m}-05') for m in range(1, 8)]
