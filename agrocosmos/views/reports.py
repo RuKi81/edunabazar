@@ -893,3 +893,205 @@ def api_report_farmland(request: HttpRequest) -> JsonResponse:
         'alerts': alerts,
         'last_period_end': modis_last_period_end(modis),
     })
+
+
+# --- api_report_screening (problem-fields screening) --------------------------
+
+# Детальные источники скрининга: сырые S2/L8 + fused-композит.
+_DETAILED_SATELLITES = RASTER_SATELLITES + FUSED_SATELLITES
+
+SCREENING_DEFAULT_LIMIT = 20
+SCREENING_MAX_LIMIT = 100
+
+
+def _district_crop_baselines(district_id):
+    """crop_type → {doy: (mean, std)}; '' — общерайонный fallback."""
+    lookup = {}
+    rows = NdviBaseline.objects.filter(district_id=district_id).values(
+        'crop_type', 'day_of_year', 'mean_ndvi', 'std_ndvi',
+    )
+    for b in rows:
+        lookup.setdefault(b['crop_type'], {})[b['day_of_year']] = (
+            b['mean_ndvi'], b['std_ndvi'],
+        )
+    return lookup
+
+
+def _latest_detailed_per_farmland(district_id, year):
+    """Последнее детальное (S2/L8/fused) наблюдение по каждому угодью района.
+
+    Postgres ``DISTINCT ON (farmland_id)`` по частичному индексу
+    ``vi_ndvi_active_idx`` (farmland, acquired_date DESC) — один проход
+    вместо N подзапросов.
+    """
+    return (
+        VegetationIndex.objects.filter(
+            farmland__district_id=district_id,
+            index_type='ndvi', is_outlier=False,
+            mean__gte=-1, mean__lte=1,
+            acquired_date__year=year,
+            scene__satellite__in=_DETAILED_SATELLITES,
+        )
+        .order_by('farmland_id', '-acquired_date')
+        .distinct('farmland_id')
+        .values(
+            'farmland_id', 'acquired_date', 'mean', 'histogram',
+            'farmland__crop_type', 'farmland__area_ha',
+        )
+    )
+
+
+def _active_alert_counts(district_id, year):
+    """farmland_id → число неразрешённых per-farmland алертов за сезон."""
+    rows = (
+        VegetationAlert.objects.filter(
+            farmland__district_id=district_id,
+            detected_on__year=year,
+        )
+        .exclude(status=VegetationAlert.Status.RESOLVED)
+        .values('farmland_id')
+        .annotate(n=Count('id'))
+    )
+    return {r['farmland_id']: r['n'] for r in rows}
+
+
+def _histogram_low_pct(histogram):
+    """Доля пикселей с NDVI < 0.4 (бины 0-0.2 и 0.2-0.4), % или None."""
+    if not histogram or len(histogram) != 5:
+        return None
+    total = sum(histogram)
+    if not total:
+        return None
+    return round((histogram[0] + histogram[1]) / total * 100, 1)
+
+
+def _screening_score(z_score, low_pct, alerts):
+    """Эвристический балл неблагополучия (больше = хуже).
+
+    Компоненты:
+    - глубина провала под норму: ``max(0, -z)`` — z-score симметричен,
+      но выше нормы не проблема;
+    - неоднородность/деградация: доля пикселей < 0.4 с весом 2
+      (0..2 балла) — ловит частичную гибель, невидимую в среднем;
+    - алерты: по баллу за каждый, с потолком 3, чтобы серия дублей
+      одного события не выдавила остальные поля из топа.
+    """
+    score = 0.0
+    if z_score is not None and z_score < 0:
+        score += -z_score
+    if low_pct is not None:
+        score += (low_pct / 100.0) * 2
+    score += min(alerts, 3)
+    return round(score, 2)
+
+
+def _screening_category(z_score, low_pct, alerts):
+    """Категория поля для группировки в отчёте."""
+    z = z_score if z_score is not None else 0
+    lp = low_pct if low_pct is not None else 0
+    if z <= -1.5 or lp >= 50 or alerts >= 2:
+        return 'anomaly'
+    if z <= -0.5 or lp >= 30 or alerts == 1:
+        return 'below'
+    return 'normal'
+
+
+def _farmland_year_series(farmland_ids, year):
+    """farmland_id → детальный NDVI-ряд за год (для sparkline топ-N полей)."""
+    rows = (
+        VegetationIndex.objects.filter(
+            farmland_id__in=farmland_ids,
+            index_type='ndvi', is_outlier=False,
+            mean__gte=-1, mean__lte=1,
+            acquired_date__year=year,
+            scene__satellite__in=_DETAILED_SATELLITES,
+        )
+        .order_by('acquired_date')
+        .values('farmland_id', 'acquired_date', 'mean')
+    )
+    series = defaultdict(list)
+    for r in rows:
+        series[r['farmland_id']].append({
+            'date': str(r['acquired_date']),
+            'mean_ndvi': _safe_round(r['mean']),
+        })
+    return series
+
+
+@rate_limit('30/m')
+@cache_page(60 * 10)
+def api_report_screening(request: HttpRequest) -> JsonResponse:
+    """Problem-fields screening for a district (detailed monitoring).
+
+    Ranks the district's farmlands by a distress score combining the
+    z-score of the latest detailed (S2/L8/fused) NDVI vs the district
+    baseline, the share of low-NDVI pixels in the latest histogram and
+    the number of unresolved alerts. Returns the top-N worst fields
+    with sparkline series and links suitable for the field passport.
+
+    Query params:
+        district (required): district id
+        year (required): year
+        limit (optional): top-N size, default 20, max 100
+    """
+    district_id, year, error = _parse_report_params(request, 'district')
+    if error:
+        return error
+
+    try:
+        district = District.objects.select_related('region').get(pk=district_id)
+    except District.DoesNotExist:
+        return JsonResponse({'ok': False, 'error': 'district not found'}, status=404)
+
+    try:
+        limit = min(
+            max(int(request.GET.get('limit', SCREENING_DEFAULT_LIMIT)), 1),
+            SCREENING_MAX_LIMIT,
+        )
+    except (TypeError, ValueError):
+        limit = SCREENING_DEFAULT_LIMIT
+
+    bl_lookup = _district_crop_baselines(district.pk)
+    alert_counts = _active_alert_counts(district.pk, year)
+
+    rows = []
+    with_data = 0
+    for r in _latest_detailed_per_farmland(district.pk, year):
+        with_data += 1
+        doy = r['acquired_date'].timetuple().tm_yday
+        crop = r['farmland__crop_type']
+        crop_bl = bl_lookup.get(crop) or bl_lookup.get('') or {}
+        bl_mean, bl_std = crop_bl.get(doy, (None, None))
+        z = compute_z_score(r['mean'], bl_mean, bl_std)
+        low_pct = _histogram_low_pct(r['histogram'])
+        alerts = alert_counts.get(r['farmland_id'], 0)
+        rows.append({
+            'farmland_id': r['farmland_id'],
+            'crop_type': crop,
+            'crop_type_label': Farmland.CropType(crop).label if crop else '',
+            'area_ha': _safe_round(r['farmland__area_ha'], 2),
+            'latest_date': str(r['acquired_date']),
+            'latest_ndvi': _safe_round(r['mean']),
+            'z_score': z,
+            'low_pct': low_pct,
+            'active_alerts': alerts,
+            'score': _screening_score(z, low_pct, alerts),
+            'category': _screening_category(z, low_pct, alerts),
+        })
+
+    rows.sort(key=lambda x: -x['score'])
+    top = rows[:limit]
+
+    spark = _farmland_year_series([r['farmland_id'] for r in top], year)
+    for r in top:
+        r['series'] = spark.get(r['farmland_id'], [])
+
+    return JsonResponse({
+        'ok': True,
+        'district': {'id': district.pk, 'name': district.name},
+        'region': {'id': district.region.pk, 'name': district.region.name},
+        'year': year,
+        'farmlands_total': Farmland.objects.filter(district_id=district.pk).count(),
+        'farmlands_with_data': with_data,
+        'farmlands': top,
+    })

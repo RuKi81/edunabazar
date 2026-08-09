@@ -1,0 +1,381 @@
+{% extends 'legacy/base.html' %}
+{% load static %}
+
+{% block title %}Проблемные поля района — Агрокосмос{% endblock %}
+{% block meta_description %}Скрининг угодий района по неблагополучию: z-score NDVI против нормы, неоднородность поля, алерты вегетации.{% endblock %}
+{% block og_title %}Проблемные поля района — Агрокосмос{% endblock %}
+{% block og_description %}Рейтинг сельхозугодий района по спутниковым признакам неблагополучия: отклонение NDVI от нормы, доля деградировавших пикселей, алерты.{% endblock %}
+{% block og_image %}https://edunabazar.ru{% static 'legacy/images/og-agrocosmos.jpg' %}?v=2{% endblock %}
+{% block og_image_alt %}Агрокосмос — скрининг проблемных полей{% endblock %}
+
+{% block head %}
+  <style>
+    .brand-logo, .brand-logo__img, .sidenav-logo { display: none !important; }
+
+    .report-wrap {
+      max-width: 1100px; margin: 24px auto; padding: 0 20px;
+      font-family: 'Segoe UI', Roboto, Arial, sans-serif;
+    }
+    .report-header {
+      text-align: center; margin-bottom: 28px; padding-bottom: 16px;
+      border-bottom: 2px solid #2e7d32;
+    }
+    .report-header h1 { font-size: 22px; font-weight: 700; color: #1b5e20; margin: 0 0 6px 0; }
+    .report-header .subtitle { font-size: 14px; color: #555; }
+
+    .report-nav {
+      display: flex; gap: 0; margin-bottom: 16px;
+      border: 1px solid rgba(0,0,0,.12); border-radius: 6px; overflow: hidden;
+    }
+    .report-nav a {
+      flex: 1; text-align: center; padding: 8px 4px; font-size: 12px; font-weight: 600;
+      color: #555; text-decoration: none; background: #fafafa;
+      transition: background .15s, color .15s;
+    }
+    .report-nav a:hover { background: #e8f5e9; }
+    .report-nav a.active { background: #2e7d32; color: #fff; }
+
+    .report-controls {
+      display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+      margin-bottom: 20px; padding: 12px 16px;
+      background: #f5f9f5; border-radius: 8px; border: 1px solid #c8e6c9;
+    }
+    .report-controls label { font-size: 13px; font-weight: 600; color: #333; }
+    .report-controls select {
+      height: 34px; padding: 0 8px; border: 1px solid #ccc; border-radius: 4px;
+      font-size: 13px; background: #fff; width: auto; max-width: 260px;
+    }
+    .report-controls .btn-generate {
+      padding: 7px 20px; background: #2e7d32; color: #fff; border: none;
+      border-radius: 4px; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .report-controls .btn-generate:hover { background: #1b5e20; }
+    .report-actions { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+    .action-btn {
+      width: 34px; height: 34px; border-radius: 4px; border: 1px solid #ccc;
+      background: #fff; cursor: pointer; display: inline-flex;
+      align-items: center; justify-content: center; color: #555;
+      text-decoration: none; transition: background .15s; padding: 0;
+    }
+    .action-btn:hover { background: #e8f5e9; }
+    .action-btn i { font-size: 18px; }
+    .copied-toast {
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+      background: #333; color: #fff; padding: 8px 18px; border-radius: 20px;
+      font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .3s; z-index: 9999;
+    }
+    .copied-toast.show { opacity: 1; }
+
+    .report-summary {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px; margin-bottom: 20px;
+    }
+    .summary-card {
+      background: #fff; border: 1px solid #e0e0e0; border-radius: 8px;
+      padding: 12px 14px; text-align: center;
+    }
+    .summary-card .val { font-size: 17px; font-weight: 700; color: #1b5e20; }
+    .summary-card .lbl { font-size: 11px; color: #888; margin-top: 3px; }
+
+    .screening-table { width: 100%; border-collapse: collapse; font-size: 12px; background: #fff; }
+    .screening-table th, .screening-table td {
+      padding: 7px 10px; border-bottom: 1px solid #f0f0f0; text-align: center; vertical-align: middle;
+    }
+    .screening-table th { background: #f5f9f5; font-weight: 600; font-size: 11px; }
+    .screening-table td:nth-child(2), .screening-table th:nth-child(2) { text-align: left; }
+    .screening-table tr:hover td { background: #f9fbf9; }
+    .screening-table a.fl-link { color: #1565C0; font-weight: 700; text-decoration: none; }
+    .screening-table a.fl-link:hover { text-decoration: underline; }
+    .screening-table svg { display: block; width: 120px; height: 32px; margin: 0 auto; }
+
+    .cat-dot {
+      display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+      vertical-align: -1px;
+    }
+    .cat-dot.anomaly { background: #D32F2F; }
+    .cat-dot.below { background: #F9A825; }
+    .cat-dot.normal { background: #2e7d32; }
+    .neg { color: #D32F2F; font-weight: 700; }
+    .warn { color: #F57C00; font-weight: 700; }
+
+    .pp-section {
+      background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px 18px;
+      margin-bottom: 20px; page-break-inside: avoid;
+    }
+    .pp-section h2 { font-size: 15px; font-weight: 700; color: #1b5e20; margin: 0 0 12px 0; }
+    .pp-section h2 i { font-size: 18px; vertical-align: -3px; color: #2e7d32; }
+
+    .report-loader { text-align: center; padding: 40px; font-size: 15px; color: #777; }
+    .report-loader.hidden { display: none; }
+    #report-content.hidden { display: none; }
+    .empty-note { color: #999; font-size: 13px; padding: 8px 0; }
+
+    @media print {
+      .report-controls, .report-actions, .copied-toast, .report-nav, nav, footer,
+      .hide-on-med-and-down, .hide-on-large-only { display: none !important; }
+      .report-wrap { max-width: 100%; margin: 0; padding: 0 10px; }
+      .pp-section { break-inside: avoid; }
+    }
+  </style>
+{% endblock %}
+
+{% block content %}
+<div class="report-wrap">
+  <div class="report-nav">
+    <a href="{% url 'agrocosmos:raster_dashboard' %}">
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">satellite</i> Sentinel / Landsat
+    </a>
+    <a href="{% url 'agrocosmos:report_region' %}">
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">assessment</i> Отчёт NDVI
+    </a>
+    <a href="{% url 'agrocosmos:report_screening' %}" class="active">
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">rule</i> Проблемные поля
+    </a>
+    <a href="{% url 'agrocosmos:report_farmland' %}">
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">description</i> Паспорт поля
+    </a>
+  </div>
+
+  <div class="report-header">
+    <h1><i class="material-icons" style="font-size:24px; vertical-align:-4px; color:#2e7d32;">rule</i> <span id="rpt-title">Проблемные поля района</span></h1>
+    <div class="subtitle" id="rpt-subtitle">Рейтинг угодий по признакам неблагополучия (Sentinel-2 / Landsat)</div>
+  </div>
+
+  <div class="report-controls">
+    <label>Регион:</label>
+    <select id="rpt-region" class="browser-default">
+      <option value="">— Выберите регион —</option>
+      {% for r in regions %}
+        <option value="{{ r.id }}" {% if region_id|stringformat:'s' == r.id|stringformat:'s' %}selected{% endif %}>{{ r.name }}</option>
+      {% endfor %}
+    </select>
+
+    <label>Район:</label>
+    <select id="rpt-district" class="browser-default">
+      <option value="">— Выберите район —</option>
+      {% for d in districts %}
+        <option value="{{ d.id }}" {% if district_id|stringformat:'s' == d.id|stringformat:'s' %}selected{% endif %}>{{ d.name }}</option>
+      {% endfor %}
+    </select>
+
+    <label>Год:</label>
+    <select id="rpt-year" class="browser-default">
+      {% for y in years %}
+        <option value="{{ y }}" {% if year|stringformat:'s' == y|stringformat:'s' %}selected{% endif %}>{{ y }}</option>
+      {% endfor %}
+    </select>
+
+    <label>Топ:</label>
+    <select id="rpt-limit" class="browser-default">
+      <option value="20">20</option>
+      <option value="50">50</option>
+      <option value="100">100</option>
+    </select>
+
+    <button class="btn-generate" id="btn-generate">Сформировать</button>
+    <div class="report-actions">
+      <button class="action-btn" onclick="window.print()" title="Печать"><i class="material-icons">print</i></button>
+      <button class="action-btn" id="btn-copy" title="Скопировать ссылку"><i class="material-icons">content_copy</i></button>
+    </div>
+  </div>
+  <div class="copied-toast" id="copied-toast">Ссылка скопирована!</div>
+
+  <div class="report-loader hidden" id="rpt-loader">
+    <i class="material-icons" style="font-size:36px; color:#2e7d32; animation: spin 1s linear infinite;">autorenew</i>
+    <div style="margin-top:8px;">Скрининг угодий…</div>
+    <style>@keyframes spin { 100% { transform: rotate(360deg); } }</style>
+  </div>
+
+  <div id="report-content" class="hidden">
+    <div class="report-summary" id="rpt-summary"></div>
+
+    <div class="pp-section">
+      <h2><i class="material-icons">rule</i> Рейтинг неблагополучия <span id="tbl-caption" style="font-weight:400; font-size:12px; color:#888;"></span></h2>
+      <div style="overflow-x:auto;">
+        <table class="screening-table">
+          <thead>
+            <tr>
+              <th>#</th><th>Угодье</th><th>Площадь, га</th><th>Дата</th>
+              <th>NDVI</th><th>z-score</th><th>&lt; 0.4, %</th><th>Алерты</th>
+              <th>Балл</th><th>Динамика за сезон</th>
+            </tr>
+          </thead>
+          <tbody id="screening-body"></tbody>
+        </table>
+      </div>
+      <div class="empty-note" id="screening-empty" style="display:none;">
+        Нет детальных наблюдений (Sentinel-2 / Landsat) по угодьям района за выбранный год.
+      </div>
+      <div class="empty-note" style="margin-top:10px;">
+        Балл = глубина провала под норму (|z|) + 2 × доля пикселей &lt; 0.4 + алерты (макс. 3).
+        <span class="cat-dot anomaly"></span> аномалия · <span class="cat-dot below"></span> ниже нормы · <span class="cat-dot normal"></span> норма.
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block site_footer %}{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var regionSel = document.getElementById('rpt-region');
+  var districtSel = document.getElementById('rpt-district');
+  var yearSel = document.getElementById('rpt-year');
+  var limitSel = document.getElementById('rpt-limit');
+  var btnGen = document.getElementById('btn-generate');
+  var loader = document.getElementById('rpt-loader');
+  var content = document.getElementById('report-content');
+
+  function esc(s) { return (s || '').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  function updateUrl() {
+    var params = new URLSearchParams();
+    if (regionSel.value) params.set('region', regionSel.value);
+    if (districtSel.value) params.set('district', districtSel.value);
+    if (yearSel.value) params.set('year', yearSel.value);
+    var qs = params.toString();
+    history.replaceState(null, '', location.pathname + (qs ? '?' + qs : ''));
+  }
+  regionSel.addEventListener('change', updateUrl);
+  districtSel.addEventListener('change', updateUrl);
+  yearSel.addEventListener('change', updateUrl);
+  updateUrl();
+
+  document.getElementById('btn-copy').addEventListener('click', function () {
+    navigator.clipboard.writeText(location.href).then(function () {
+      var toast = document.getElementById('copied-toast');
+      toast.classList.add('show');
+      setTimeout(function () { toast.classList.remove('show'); }, 2000);
+    });
+  });
+
+  /* Подгрузка районов при смене региона (как в report_region). */
+  regionSel.addEventListener('change', function () {
+    var rid = this.value;
+    districtSel.innerHTML = '<option value="">— Выберите район —</option>';
+    if (!rid) return;
+    fetch('/agrocosmos/api/districts/?region=' + rid)
+      .then(function (r) { return r.json(); })
+      .then(function (geojson) {
+        if (!geojson.features) return;
+        geojson.features
+          .map(function (f) { return { id: f.properties.id, name: f.properties.name }; })
+          .sort(function (a, b) { return a.name.localeCompare(b.name, 'ru'); })
+          .forEach(function (d) {
+            var opt = document.createElement('option');
+            opt.value = d.id;
+            opt.textContent = d.name;
+            districtSel.appendChild(opt);
+          });
+      });
+  });
+
+  var CAT_COLORS = { anomaly: '#D32F2F', below: '#F9A825', normal: '#2e7d32' };
+
+  function sparklineSvg(series, color) {
+    var pts = (series || []).filter(function (s) { return s.mean_ndvi !== null && s.mean_ndvi !== undefined; });
+    if (!pts.length) return '';
+    var w = 120, h = 32, n = pts.length;
+    var coords = pts.map(function (s, i) {
+      var x = n > 1 ? 2 + (i / (n - 1)) * (w - 4) : w / 2;
+      var v = Math.max(0, Math.min(1, s.mean_ndvi));
+      var y = h - 2 - v * (h - 4);
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    });
+    return '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" aria-hidden="true">'
+      + '<polyline fill="none" stroke="' + color + '" stroke-width="1.5" points="' + coords.join(' ') + '"/>'
+      + '</svg>';
+  }
+
+  function render(resp) {
+    document.getElementById('rpt-title').textContent =
+      'Проблемные поля — ' + resp.district.name;
+    document.getElementById('rpt-subtitle').textContent =
+      resp.region.name + ' · ' + resp.year + ' г. · детальный мониторинг Sentinel-2 / Landsat';
+
+    var covPct = resp.farmlands_total
+      ? Math.round(resp.farmlands_with_data / resp.farmlands_total * 100) : 0;
+    var nAnomaly = resp.farmlands.filter(function (f) { return f.category === 'anomaly'; }).length;
+    var nBelow = resp.farmlands.filter(function (f) { return f.category === 'below'; }).length;
+    document.getElementById('rpt-summary').innerHTML =
+      '<div class="summary-card"><div class="val">' + resp.farmlands_total.toLocaleString('ru') + '</div><div class="lbl">Угодий в районе</div></div>'
+      + '<div class="summary-card"><div class="val">' + resp.farmlands_with_data.toLocaleString('ru') + ' (' + covPct + '%)</div><div class="lbl">С детальными данными</div></div>'
+      + '<div class="summary-card"><div class="val" style="color:#D32F2F;">' + nAnomaly + '</div><div class="lbl">Аномалий в топе</div></div>'
+      + '<div class="summary-card"><div class="val" style="color:#F57C00;">' + nBelow + '</div><div class="lbl">Ниже нормы в топе</div></div>';
+
+    var body = document.getElementById('screening-body');
+    var emptyEl = document.getElementById('screening-empty');
+    if (!resp.farmlands.length) {
+      body.innerHTML = '';
+      emptyEl.style.display = 'block';
+      document.getElementById('tbl-caption').textContent = '';
+      return;
+    }
+    emptyEl.style.display = 'none';
+    document.getElementById('tbl-caption').textContent =
+      '(топ-' + resp.farmlands.length + ' худших из ' + resp.farmlands_with_data + ' полей с данными)';
+
+    body.innerHTML = resp.farmlands.map(function (f, i) {
+      var color = CAT_COLORS[f.category] || '#9E9E9E';
+      var zCell = '—';
+      if (f.z_score !== null && f.z_score !== undefined) {
+        var zCls = f.z_score <= -1.5 ? 'neg' : f.z_score <= -0.5 ? 'warn' : '';
+        zCell = '<span class="' + zCls + '">' + (f.z_score >= 0 ? '+' : '') + f.z_score.toFixed(2) + '</span>';
+      }
+      var lowCell = '—';
+      if (f.low_pct !== null && f.low_pct !== undefined) {
+        var lowCls = f.low_pct >= 50 ? 'neg' : f.low_pct >= 30 ? 'warn' : '';
+        lowCell = '<span class="' + lowCls + '">' + f.low_pct + '%</span>';
+      }
+      var passportUrl = '/agrocosmos/report/farmland/?farmland=' + f.farmland_id + '&year=' + resp.year;
+      return '<tr>'
+        + '<td><span class="cat-dot ' + esc(f.category) + '"></span> ' + (i + 1) + '</td>'
+        + '<td><a class="fl-link" href="' + passportUrl + '" target="_blank">#' + f.farmland_id + '</a> ' + esc(f.crop_type_label) + '</td>'
+        + '<td>' + f.area_ha.toLocaleString('ru', {maximumFractionDigits:1}) + '</td>'
+        + '<td>' + esc(f.latest_date) + '</td>'
+        + '<td>' + f.latest_ndvi.toFixed(3) + '</td>'
+        + '<td>' + zCell + '</td>'
+        + '<td>' + lowCell + '</td>'
+        + '<td>' + (f.active_alerts || '—') + '</td>'
+        + '<td><b>' + f.score.toFixed(2) + '</b></td>'
+        + '<td>' + sparklineSvg(f.series, color) + '</td>'
+        + '</tr>';
+    }).join('');
+  }
+
+  function generate() {
+    var did = districtSel.value;
+    if (!did) { alert('Выберите район'); return; }
+    updateUrl();
+
+    loader.classList.remove('hidden');
+    content.classList.add('hidden');
+
+    fetch('/agrocosmos/api/report/screening/?district=' + encodeURIComponent(did)
+        + '&year=' + encodeURIComponent(yearSel.value)
+        + '&limit=' + encodeURIComponent(limitSel.value))
+      .then(function (r) { return r.json(); })
+      .then(function (resp) {
+        loader.classList.add('hidden');
+        if (!resp.ok) {
+          alert('Ошибка: ' + (resp.error || 'неизвестная'));
+          return;
+        }
+        content.classList.remove('hidden');
+        render(resp);
+      })
+      .catch(function (err) {
+        loader.classList.add('hidden');
+        console.error(err);
+        alert('Ошибка загрузки данных');
+      });
+  }
+
+  btnGen.addEventListener('click', generate);
+
+  if (districtSel.value) generate();
+})();
+</script>
+{% endblock %}

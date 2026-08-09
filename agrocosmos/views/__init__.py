@@ -16,6 +16,7 @@ from .pages import (
     raster_dashboard,
     report_region,
     report_farmland,
+    report_screening,
     _get_legacy_user,
 )
 from .geojson import (
@@ -45,6 +46,7 @@ from .reports import (
     api_report_district,
     api_report_country,
     api_report_farmland,
+    api_report_screening,
     _ndvi_assessment,
 )
 from .yield_forecast import (
@@ -59,6 +61,7 @@ __all__ = [
     'MODIS_SATELLITES', 'RASTER_SATELLITES',
     # pages
     'dashboard', 'raster_dashboard', 'report_region', 'report_farmland',
+    'report_screening',
     # GeoJSON
     'api_regions', 'api_districts', 'api_districts_status',
     'api_districts_status_timeline', 'api_farmlands',
@@ -71,7 +74,7 @@ __all__ = [
     'api_raster_composites',
     # reports
     'api_report_region', 'api_report_district', 'api_report_country',
-    'api_report_farmland',
+    'api_report_farmland', 'api_report_screening',
     # yield forecast
     'api_yield_forecast', 'api_yield_forecast_region', 'api_yield_models',
     # cabinet
