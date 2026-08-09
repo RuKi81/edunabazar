@@ -31,6 +31,7 @@ from .geojson import (
 from .tiles import (
     api_tile,
     api_raster_tile,
+    api_raster_preview,
     _tile_bbox,
 )
 from .farmland_edit import (
@@ -42,6 +43,7 @@ from .ndvi import (
     api_ndvi_stats,
     api_phenology,
     api_raster_composites,
+    api_farmland_raster_frames,
 )
 from .reports import (
     api_report_region,
@@ -70,12 +72,12 @@ __all__ = [
     'api_regions', 'api_districts', 'api_districts_status',
     'api_districts_status_timeline', 'api_farmlands',
     # tiles
-    'api_tile', 'api_raster_tile',
+    'api_tile', 'api_raster_tile', 'api_raster_preview',
     # farmland editor (my_fields)
     'api_farmland_collection', 'api_farmland_detail',
     # NDVI data APIs
     'api_farmland_ndvi', 'api_ndvi_stats', 'api_phenology',
-    'api_raster_composites',
+    'api_raster_composites', 'api_farmland_raster_frames',
     # reports
     'api_report_region', 'api_report_district', 'api_report_country',
     'api_report_farmland', 'api_report_screening',

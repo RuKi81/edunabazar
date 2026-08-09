@@ -100,6 +100,15 @@
     }
     .pp-minimap .mm-open-hint i { font-size: 14px; }
 
+    .pp-frames { display: flex; gap: 14px; flex-wrap: wrap; }
+    .pp-frames .frame { text-align: center; flex: 0 0 auto; }
+    .pp-frames .frame img {
+      width: 148px; height: 136px; object-fit: contain;
+      border: 1px solid #e0e0e0; border-radius: 6px; background: #fafafa;
+      display: block;
+    }
+    .pp-frames .frame .dt { font-size: 11px; color: #555; margin-top: 4px; font-weight: 600; }
+
     .assessment-badge {
       display: inline-block; padding: 4px 14px; border-radius: 14px;
       font-size: 12px; font-weight: 700; color: #fff;
@@ -211,6 +220,12 @@
         <div style="height:260px; position:relative;"><canvas id="chart-ndvi"></canvas></div>
         <div class="empty-note" id="pp-chart-empty" style="display:none;">Нет данных NDVI за выбранный год.</div>
       </div>
+    </div>
+
+    <div class="pp-section" id="pp-frames-section" style="display:none;">
+      <h2><i class="material-icons">satellite_alt</i> Снимки NDVI <span id="pp-frames-src" style="font-weight:400; font-size:12px; color:#888;"></span></h2>
+      <div class="pp-frames" id="pp-frames"></div>
+      <div class="empty-note" id="pp-frames-note" style="display:none;"></div>
     </div>
 
     <div class="pp-section" id="pp-hist-section" style="display:none;">
@@ -624,6 +639,63 @@
     renderHistChart(resp);
     renderPhenology(resp);
     renderAlerts(resp);
+    renderRasterFrames(f.id, resp.year);
+  }
+
+  /* ── Последние 5 фреймов NDVI-растра с датами съемки ── */
+  function fmtDate(iso) {
+    if (!iso) return '';
+    var p = iso.split('-');
+    return p.length === 3 ? p[2] + '.' + p[1] + '.' + p[0] : iso;
+  }
+
+  function renderRasterFrames(farmlandId, year) {
+    var section = document.getElementById('pp-frames-section');
+    var wrap = document.getElementById('pp-frames');
+    var note = document.getElementById('pp-frames-note');
+    var srcEl = document.getElementById('pp-frames-src');
+    section.style.display = 'none';
+    wrap.innerHTML = '';
+    note.style.display = 'none';
+
+    fetch('/agrocosmos/api/farmland/raster-frames/?farmland=' + encodeURIComponent(farmlandId)
+          + '&year=' + encodeURIComponent(year || '') + '&limit=5')
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data.ok || !data.frames || !data.frames.length) return;
+        section.style.display = '';
+        srcEl.textContent = data.sensor === 'l8' ? '· Landsat 8/9' : '· Sentinel-2';
+        data.frames.forEach(function (fr) {
+          var url = '/agrocosmos/api/raster-preview/?farmland=' + encodeURIComponent(farmlandId)
+            + '&sensor=' + encodeURIComponent(data.sensor)
+            + '&scope=' + encodeURIComponent(data.scope)
+            + '&date=' + encodeURIComponent(fr.date);
+          var div = document.createElement('div');
+          div.className = 'frame';
+          var img = document.createElement('img');
+          img.loading = 'lazy';
+          img.alt = 'NDVI ' + fr.date_from;
+          // 204 (нет данных в bbox поля) — прячем фрейм целиком.
+          img.onload = function () { if (!img.naturalWidth) div.remove(); };
+          img.onerror = function () { div.remove(); };
+          img.src = url;
+          var dt = document.createElement('div');
+          dt.className = 'dt';
+          dt.textContent = fr.date_from === fr.date_to
+            ? fmtDate(fr.date_from)
+            : fmtDate(fr.date_from) + ' – ' + fmtDate(fr.date_to);
+          div.appendChild(img);
+          div.appendChild(dt);
+          wrap.appendChild(div);
+        });
+        setTimeout(function () {
+          if (!wrap.children.length) {
+            note.textContent = 'Нет растровых данных по контуру поля за выбранный год.';
+            note.style.display = '';
+          }
+        }, 4000);
+      })
+      .catch(function () { /* секция просто не показывается */ });
   }
 
   btnGen.addEventListener('click', generate);

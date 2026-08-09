@@ -197,3 +197,72 @@ def api_raster_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpRespons
     resp = HttpResponse(png_bytes, content_type='image/png')
     resp['Cache-Control'] = 'public, max-age=3600'
     return resp
+
+
+def _farmland_outline(farmland) -> list | None:
+    """Simplified rings ([[lon, lat], ...]) of a farmland for previews."""
+    geom = farmland.geom
+    if geom is None:
+        return None
+    try:
+        simplified = geom.simplify(0.0001, preserve_topology=True)
+        if not simplified.empty:
+            geom = simplified
+        coords = geom.coords
+        if geom.geom_type == 'Polygon':
+            coords = (coords,)
+        rings = []
+        for poly in coords:
+            for ring in poly:
+                rings.append([list(pt) for pt in ring])
+        return rings or None
+    except Exception:
+        return None
+
+
+@rate_limit('120/m', binary=True)
+def api_raster_preview(request: HttpRequest) -> HttpResponse:
+    """Small pseudocolor NDVI thumbnail of a composite clipped to a farmland.
+
+    Used by the farmland passport «Снимки NDVI» frames.
+
+    Query params:
+        farmland: farmland id (defines bbox + outline)
+        sensor: 's2' or 'l8'
+        scope: raster scope ID, e.g. 'd1' or '37'
+        date: 'YYYY-MM-DD_YYYY-MM-DD'
+    """
+    from ..models import Farmland
+    from ..services.raster_tiles import find_raster_path, render_preview
+
+    sensor = request.GET.get('sensor', 's2')
+    scope = request.GET.get('scope', '')
+    date_range = request.GET.get('date', '')
+    fid = request.GET.get('farmland', '')
+
+    if not scope or not date_range or not fid.isdigit():
+        return HttpResponse(b'', content_type='image/png', status=204)
+
+    farmland = Farmland.objects.filter(pk=int(fid)).only('geom').first()
+    if farmland is None or farmland.geom is None:
+        return HttpResponse(b'', content_type='image/png', status=204)
+
+    # Bbox of the field padded by 25% (min ~10 m) for visual context.
+    xmin, ymin, xmax, ymax = farmland.geom.extent
+    pad_x = max((xmax - xmin) * 0.25, 1e-4)
+    pad_y = max((ymax - ymin) * 0.25, 1e-4)
+    bbox = (xmin - pad_x, ymin - pad_y, xmax + pad_x, ymax + pad_y)
+
+    tif_path = find_raster_path(sensor, scope, date_range)
+    if not tif_path:
+        return HttpResponse(b'', content_type='image/png', status=204)
+
+    png_bytes = render_preview(
+        tif_path, bbox, max_size=256, outline=_farmland_outline(farmland),
+    )
+    if not png_bytes:
+        return HttpResponse(b'', content_type='image/png', status=204)
+
+    resp = HttpResponse(png_bytes, content_type='image/png')
+    resp['Cache-Control'] = 'public, max-age=3600'
+    return resp

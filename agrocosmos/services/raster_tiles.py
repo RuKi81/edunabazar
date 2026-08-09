@@ -154,6 +154,107 @@ def render_tile(tif_path: str, z: int, x: int, y: int) -> bytes | None:
     return buf.getvalue()
 
 
+def _ndvi_rgba(data, nodata):
+    """Pseudocolor RGBA array from an NDVI window; None when no valid data."""
+    if nodata is not None and not np.isnan(nodata):
+        valid = data != nodata
+    else:
+        valid = ~np.isnan(data)
+    if not valid.any():
+        return None
+    indices = (np.clip(data, 0, 1) * 255).astype(np.uint8)
+    indices[~valid] = 0
+    rgba = _LUT[indices].copy()
+    rgba[..., 3][valid & (indices > 0)] = 255  # thumbnails are opaque
+    return rgba
+
+
+def _draw_outline(img: 'Image.Image', outline: list, bbox: tuple) -> None:
+    """Draw polygon rings ([[lon, lat], ...]) on top of a preview image."""
+    from PIL import ImageDraw
+
+    xmin, ymin, xmax, ymax = bbox
+    out_w, out_h = img.size
+    span_x = xmax - xmin
+    span_y = ymax - ymin
+    draw = ImageDraw.Draw(img)
+    for ring in outline:
+        pts = [
+            ((lon - xmin) / span_x * (out_w - 1),
+             (ymax - lat) / span_y * (out_h - 1))
+            for lon, lat in ring
+        ]
+        if len(pts) >= 2:
+            draw.line(pts + [pts[0]], fill=(27, 94, 32, 255), width=2)
+
+
+def render_preview(tif_path: str, bbox: tuple, max_size: int = 256,
+                   outline: list | None = None) -> bytes | None:
+    """
+    Render a small pseudocolor NDVI preview clipped to a WGS84 bbox.
+
+    Used by the farmland passport to show the last composites as thumbnails.
+
+    Args:
+        tif_path: GeoTIFF composite path
+        bbox: (xmin, ymin, xmax, ymax) in EPSG:4326
+        max_size: longest output side, px
+        outline: optional list of rings ([[lon, lat], ...]) drawn on top
+
+    Returns:
+        PNG bytes, or None when bbox is outside the raster / has no data.
+    """
+    import rasterio
+    from rasterio.windows import from_bounds
+
+    if not tif_path or not os.path.exists(tif_path):
+        return None
+    xmin, ymin, xmax, ymax = bbox
+    if xmax <= xmin or ymax <= ymin:
+        return None
+
+    # Output aspect with longitude compression at mid-latitude.
+    k = math.cos(math.radians((ymin + ymax) / 2.0))
+    w_deg = (xmax - xmin) * k
+    h_deg = ymax - ymin
+    if w_deg >= h_deg:
+        out_w = max_size
+        out_h = max(int(round(max_size * h_deg / w_deg)), 1)
+    else:
+        out_h = max_size
+        out_w = max(int(round(max_size * w_deg / h_deg)), 1)
+
+    try:
+        with rasterio.open(tif_path) as ds:
+            rb = ds.bounds
+            if (xmax <= rb.left or xmin >= rb.right or
+                    ymax <= rb.bottom or ymin >= rb.top):
+                return None
+            window = from_bounds(xmin, ymin, xmax, ymax, transform=ds.transform)
+            data = ds.read(
+                1, window=window,
+                out_shape=(out_h, out_w),
+                resampling=rasterio.enums.Resampling.bilinear,
+                boundless=True,
+            )
+            nodata = ds.nodata
+    except Exception as e:
+        logger.warning('Raster preview error %s: %s', tif_path, e)
+        return None
+
+    rgba = _ndvi_rgba(data, nodata)
+    if rgba is None:
+        return None
+
+    img = Image.fromarray(rgba, 'RGBA')
+    if outline:
+        _draw_outline(img, outline, bbox)
+
+    buf = io.BytesIO()
+    img.save(buf, format='PNG', optimize=True)
+    return buf.getvalue()
+
+
 def find_raster_path(sensor: str, scope_id: str, date_range: str) -> str | None:
     """
     Find a raster file path given sensor, scope (region/district ID), and date range.

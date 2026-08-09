@@ -679,3 +679,77 @@ def api_raster_composites(request: HttpRequest) -> JsonResponse:
 
     composites = list_available_composites(sensor, scope, year)
     return JsonResponse({'ok': True, 'composites': composites})
+
+
+def _resolve_composites(farmland, year):
+    """Композиты, покрывающие угодье: скоуп район → регион, сенсор S2 → L8.
+
+    Returns ``(composites, sensor, scope)``; пустой список — данных нет.
+    """
+    from ..services.raster_tiles import list_available_composites
+
+    scopes = []
+    if farmland.district_id:
+        scopes.append(f'd{farmland.district_id}')
+    region_id = farmland.region_id or (
+        farmland.district.region_id if farmland.district_id else None
+    )
+    if region_id:
+        scopes.append(str(region_id))
+
+    for scope in scopes:
+        for sensor in ('s2', 'l8'):
+            found = list_available_composites(sensor, scope, year)
+            if found:
+                return found, sensor, scope
+    return [], None, None
+
+
+@rate_limit('60/m')
+def api_farmland_raster_frames(request: HttpRequest) -> JsonResponse:
+    """Last N raster composites covering a farmland — passport «Снимки NDVI».
+
+    Query params:
+        farmland: farmland id (required)
+        year: '2025' (default — current year)
+        limit: max frames, 1..12 (default 5)
+
+    Scope resolution: district composites first ('d<id>'), then region
+    ('<id>'); sensors — S2 first, L8 as fallback. Frames are returned
+    latest-first with ready-made preview query params.
+    """
+    fid = request.GET.get('farmland', '')
+    if not fid.isdigit():
+        return JsonResponse({'ok': False, 'error': 'farmland required'}, status=400)
+
+    farmland = (
+        Farmland.objects.filter(pk=int(fid))
+        .only('id', 'district', 'region').first()
+    )
+    if farmland is None:
+        return JsonResponse({'ok': False, 'error': 'farmland not found'}, status=404)
+
+    year = request.GET.get('year') or str(date.today().year)
+    try:
+        limit = max(1, min(int(request.GET.get('limit', 5)), 12))
+    except ValueError:
+        limit = 5
+
+    composites, sensor_used, scope_used = _resolve_composites(farmland, year)
+
+    frames = [
+        {
+            'date_from': c['date_from'],
+            'date_to': c['date_to'],
+            'date': c['date_from'] + '_' + c['date_to'],
+        }
+        for c in reversed(composites[-limit:])  # latest first
+    ]
+    return JsonResponse({
+        'ok': True,
+        'farmland_id': farmland.pk,
+        'year': year,
+        'sensor': sensor_used,
+        'scope': scope_used,
+        'frames': frames,
+    })

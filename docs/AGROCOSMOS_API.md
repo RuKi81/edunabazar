@@ -26,6 +26,8 @@ Redis на 5 минут (`cache_page`).
 | `/api/tiles/{z}/{x}/{y}.pbf` | GET | **300/m** | 10 мин | Mapbox Vector Tiles полей |
 | `/api/raster-tile/{z}/{x}/{y}.png` | GET | **300/m** | — | NDVI PNG-тайлы из GeoTIFF |
 | `/api/raster-composites/` | GET | — | — | Список доступных растровых композитов |
+| `/api/raster-preview/` | GET | **120/m** | — | PNG-превью композита по bbox поля |
+| `/api/farmland/raster-frames/` | GET | **60/m** | — | Последние N композитов, покрывающих поле |
 | `/api/farmland/ndvi/` | GET | **60/m** | — | NDVI time series одного поля |
 | `/api/ndvi-stats/` | GET | **30/m** | **5 мин** | Агрегированная NDVI-статистика по региону/району |
 | `/api/phenology/` | GET | **30/m** | — | Фенологические метрики (SOS/POS/EOS/LOS) |
@@ -85,6 +87,34 @@ NDVI псевдоцветная PNG-подложка, склеенная из Ge
 ### `GET /api/raster-composites/`
 
 Список доступных растровых композитов (NDVI GeoTIFF) с метаданными.
+
+### `GET /api/raster-preview/?farmland=<id>&sensor=s2|l8&scope=<scope>&date=<from>_<to>`
+
+Мини-превью (PNG, псевдоцвет NDVI) композита, обрезанное по bbox поля
+(+25% паддинг) с контуром угодья поверх. Используется во фреймах «Снимки
+NDVI» паспорта поля. Пустой ответ 204 — bbox вне растра или нет данных.
+
+**Лимит:** 120 req/min / IP.
+
+### `GET /api/farmland/raster-frames/?farmland=<id>[&year=<y>][&limit=<n>]`
+
+Последние N (по умолчанию 5, максимум 12) растровых композитов,
+покрывающих угодье, для превью в паспорте поля. Скоуп подбирается
+автоматически: район (`d<id>`) → регион; сенсор: S2 → L8.
+
+**Ответ:**
+```json
+{
+  "ok": true,
+  "farmland_id": 17,
+  "year": "2025",
+  "sensor": "s2",
+  "scope": "d5",
+  "frames": [
+    {"date_from": "2025-07-01", "date_to": "2025-07-05", "date": "2025-07-01_2025-07-05"}
+  ]
+}
+```
 
 ---
 
