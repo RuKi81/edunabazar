@@ -255,6 +255,137 @@ def render_preview(tif_path: str, bbox: tuple, max_size: int = 256,
     return buf.getvalue()
 
 
+# Zone classification vs field median: <75% — problem, 75–90% — warning.
+ZONE_PROBLEM_RATIO = 0.75
+ZONE_WARN_RATIO = 0.9
+_ZONE_RGBA = {
+    'problem': (211, 47, 47, 235),
+    'warn': (249, 168, 37, 220),
+    'ok': (76, 175, 80, 150),
+}
+
+
+def _preview_dims(bbox: tuple, max_size: int) -> tuple[int, int]:
+    """(out_w, out_h) for a WGS84 bbox with mid-latitude lon compression."""
+    xmin, ymin, xmax, ymax = bbox
+    k = math.cos(math.radians((ymin + ymax) / 2.0))
+    w_deg = (xmax - xmin) * k
+    h_deg = ymax - ymin
+    if w_deg >= h_deg:
+        return max_size, max(int(round(max_size * h_deg / w_deg)), 1)
+    return max(int(round(max_size * w_deg / h_deg)), 1), max_size
+
+
+def _polygon_mask(outline: list, bbox: tuple, out_w: int, out_h: int):
+    """Boolean array (out_h, out_w): True inside the field polygon rings."""
+    from PIL import ImageDraw
+
+    xmin, ymin, xmax, ymax = bbox
+    span_x = xmax - xmin
+    span_y = ymax - ymin
+    mask_img = Image.new('L', (out_w, out_h), 0)
+    draw = ImageDraw.Draw(mask_img)
+    for ring in outline:
+        pts = [
+            ((lon - xmin) / span_x * (out_w - 1),
+             (ymax - lat) / span_y * (out_h - 1))
+            for lon, lat in ring
+        ]
+        if len(pts) >= 3:
+            draw.polygon(pts, fill=255)
+    return np.asarray(mask_img) > 0
+
+
+def render_zones(tif_path: str, bbox: tuple, outline: list,
+                 max_size: int = 384) -> tuple[bytes | None, dict | None]:
+    """
+    Render a within-field heterogeneity zone map from an NDVI composite.
+
+    Pixels inside the field polygon are classified relative to the field
+    median NDVI: <75% — problem (red), 75–90% — warning (yellow),
+    >=90% — ok (green). Pixels outside the polygon stay transparent.
+
+    Used by the farmland passport «Зоны неоднородности» section.
+
+    Args:
+        tif_path: GeoTIFF composite path
+        bbox: (xmin, ymin, xmax, ymax) in EPSG:4326
+        outline: field polygon rings ([[lon, lat], ...])
+        max_size: longest output side, px
+
+    Returns:
+        (png_bytes, stats) or (None, None) when there is no usable data.
+        stats: {'median', 'problem_pct', 'warn_pct', 'ok_pct', 'pixels'}
+    """
+    import rasterio
+    from rasterio.windows import from_bounds
+
+    if not tif_path or not os.path.exists(tif_path) or not outline:
+        return None, None
+    xmin, ymin, xmax, ymax = bbox
+    if xmax <= xmin or ymax <= ymin:
+        return None, None
+
+    out_w, out_h = _preview_dims(bbox, max_size)
+
+    try:
+        with rasterio.open(tif_path) as ds:
+            rb = ds.bounds
+            if (xmax <= rb.left or xmin >= rb.right or
+                    ymax <= rb.bottom or ymin >= rb.top):
+                return None, None
+            window = from_bounds(xmin, ymin, xmax, ymax, transform=ds.transform)
+            data = ds.read(
+                1, window=window,
+                out_shape=(out_h, out_w),
+                resampling=rasterio.enums.Resampling.bilinear,
+                boundless=True,
+            )
+            nodata = ds.nodata
+    except Exception as e:
+        logger.warning('Raster zones error %s: %s', tif_path, e)
+        return None, None
+
+    if nodata is not None and not np.isnan(nodata):
+        valid = data != nodata
+    else:
+        valid = ~np.isnan(data)
+
+    field = valid & _polygon_mask(outline, bbox, out_w, out_h)
+    n_field = int(field.sum())
+    if n_field < 4:
+        return None, None
+
+    median = float(np.median(data[field]))
+    if median <= 0:
+        return None, None
+
+    ratio = np.zeros_like(data, dtype='float32')
+    ratio[field] = data[field] / median
+    problem = field & (ratio < ZONE_PROBLEM_RATIO)
+    warn = field & (ratio >= ZONE_PROBLEM_RATIO) & (ratio < ZONE_WARN_RATIO)
+    ok = field & (ratio >= ZONE_WARN_RATIO)
+
+    rgba = np.zeros((out_h, out_w, 4), dtype=np.uint8)
+    rgba[problem] = _ZONE_RGBA['problem']
+    rgba[warn] = _ZONE_RGBA['warn']
+    rgba[ok] = _ZONE_RGBA['ok']
+
+    img = Image.fromarray(rgba, 'RGBA')
+    _draw_outline(img, outline, bbox)
+
+    buf = io.BytesIO()
+    img.save(buf, format='PNG', optimize=True)
+    stats = {
+        'median': round(median, 3),
+        'problem_pct': round(int(problem.sum()) / n_field * 100, 1),
+        'warn_pct': round(int(warn.sum()) / n_field * 100, 1),
+        'ok_pct': round(int(ok.sum()) / n_field * 100, 1),
+        'pixels': n_field,
+    }
+    return buf.getvalue(), stats
+
+
 def find_raster_path(sensor: str, scope_id: str, date_range: str) -> str | None:
     """
     Find a raster file path given sensor, scope (region/district ID), and date range.

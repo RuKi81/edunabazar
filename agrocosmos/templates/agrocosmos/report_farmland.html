@@ -109,6 +109,23 @@
     }
     .pp-frames .frame .dt { font-size: 11px; color: #555; margin-top: 4px; font-weight: 600; }
 
+    .pp-zones-wrap { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; }
+    .pp-zones-wrap img {
+      max-width: 384px; width: 100%; height: auto;
+      border: 1px solid #e0e0e0; border-radius: 6px; background: #fafafa;
+      flex: 0 1 384px;
+    }
+    .pp-zones-info { flex: 1 1 240px; min-width: 220px; font-size: 13px; }
+    .pp-zones-legend { margin: 0 0 12px; }
+    .pp-zones-legend div { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .pp-zones-legend .sw {
+      width: 16px; height: 16px; border-radius: 4px; flex: 0 0 auto;
+      border: 1px solid rgba(0,0,0,0.15);
+    }
+    .pp-zones-stats { color: #444; }
+    .pp-zones-stats b { font-size: 15px; }
+    .pp-zones-caption { font-size: 11px; color: #888; margin-top: 8px; }
+
     .assessment-badge {
       display: inline-block; padding: 4px 14px; border-radius: 14px;
       font-size: 12px; font-weight: 700; color: #fff;
@@ -226,6 +243,22 @@
       <h2><i class="material-icons">satellite_alt</i> Снимки NDVI <span id="pp-frames-src" style="font-weight:400; font-size:12px; color:#888;"></span></h2>
       <div class="pp-frames" id="pp-frames"></div>
       <div class="empty-note" id="pp-frames-note" style="display:none;"></div>
+    </div>
+
+    <div class="pp-section" id="pp-zones-section" style="display:none;">
+      <h2><i class="material-icons">grid_on</i> Зоны неоднородности внутри поля <span id="pp-zones-src" style="font-weight:400; font-size:12px; color:#888;"></span></h2>
+      <div class="pp-zones-wrap">
+        <img id="pp-zones-img" alt="Карта зон NDVI">
+        <div class="pp-zones-info">
+          <div class="pp-zones-legend">
+            <div><span class="sw" style="background:#d32f2f;"></span> Проблемные зоны — NDVI &lt; 75% медианы поля</div>
+            <div><span class="sw" style="background:#f9a825;"></span> Ниже нормы — 75–90% медианы</div>
+            <div><span class="sw" style="background:#4caf50;"></span> Норма — &ge; 90% медианы</div>
+          </div>
+          <div class="pp-zones-stats" id="pp-zones-stats"></div>
+          <div class="pp-zones-caption" id="pp-zones-caption"></div>
+        </div>
+      </div>
     </div>
 
     <div class="pp-section" id="pp-hist-section" style="display:none;">
@@ -640,6 +673,38 @@
     renderPhenology(resp);
     renderAlerts(resp);
     renderRasterFrames(f.id, resp.year);
+    renderZones(f.id, resp.year);
+  }
+
+  /* ── Зоны неоднородности внутри поля ── */
+  function renderZones(farmlandId, year) {
+    var section = document.getElementById('pp-zones-section');
+    section.style.display = 'none';
+
+    fetch('/agrocosmos/api/farmland/zones/?farmland=' + encodeURIComponent(farmlandId)
+          + '&year=' + encodeURIComponent(year || ''))
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data.ok || !data.zones) return;
+        var z = data.zones;
+        document.getElementById('pp-zones-img').src = z.image;
+        document.getElementById('pp-zones-src').textContent =
+          '· ' + (z.sensor === 'l8' ? 'Landsat 8/9' : 'Sentinel-2');
+        var s = z.stats || {};
+        var statsEl = document.getElementById('pp-zones-stats');
+        var problem = s.problem_pct || 0;
+        var warn = s.warn_pct || 0;
+        statsEl.innerHTML =
+          'Проблемные зоны: <b style="color:' + (problem >= 15 ? '#D32F2F' : '#2e7d32') + ';">'
+          + problem.toFixed(1) + '%</b> площади поля<br>'
+          + 'Ниже нормы: <b>' + warn.toFixed(1) + '%</b><br>'
+          + 'Медиана NDVI поля: <b>' + (s.median != null ? s.median.toFixed(2) : '—') + '</b>';
+        document.getElementById('pp-zones-caption').textContent =
+          'Композит ' + fmtDate(z.date_from) + ' – ' + fmtDate(z.date_to)
+          + ' · классификация относительно медианы NDVI самого поля';
+        section.style.display = '';
+      })
+      .catch(function () { /* секция просто не показывается */ });
   }
 
   /* ── Последние 6 фреймов NDVI-растра с датами съемки ── */

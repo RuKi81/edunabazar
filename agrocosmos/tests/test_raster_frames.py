@@ -1,9 +1,10 @@
 """
-Тесты «Снимков NDVI» паспорта поля:
+Тесты «Снимков NDVI» и «Зон неоднородности» паспорта поля:
 
 * ``/agrocosmos/api/farmland/raster-frames/`` — последние N композитов,
   покрывающих угодье (скоуп: район → регион, сенсор: S2 → L8);
-* ``/agrocosmos/api/raster-preview/`` — PNG-превью растра по bbox поля.
+* ``/agrocosmos/api/raster-preview/`` — PNG-превью растра по bbox поля;
+* ``/agrocosmos/api/farmland/zones/`` — карта зон внутри поля vs медиана.
 """
 import os
 import tempfile
@@ -225,3 +226,97 @@ class RasterPreviewApiTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp['Content-Type'], 'image/png')
         self.assertTrue(resp.content.startswith(b'\x89PNG'))
+
+
+@override_settings(CACHES={
+    'default': {'BACKEND': 'django.core.cache.backends.dummy.DummyCache'},
+})
+class FarmlandZonesApiTests(TestCase):
+    URL = '/agrocosmos/api/farmland/zones/'
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.region = Region.objects.create(
+            name='Регион', code='r-zones', geom=_square(30, 50),
+        )
+        cls.district = District.objects.create(
+            region=cls.region, name='Район', geom=_square(30, 50),
+        )
+        cls.farmland = Farmland.objects.create(
+            region=cls.region, district=cls.district,
+            crop_type=Farmland.CropType.ARABLE, area_ha=100,
+            geom=_square(30.1, 50.1, 0.05),
+        )
+
+    def _get(self, **params):
+        return self.client.get(self.URL, params)
+
+    def test_requires_farmland(self):
+        self.assertEqual(self._get().status_code, 400)
+
+    def test_unknown_farmland_404(self):
+        self.assertEqual(self._get(farmland='999999').status_code, 404)
+
+    def test_no_rasters_zones_null(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {'S2_RASTER_DIR': tmp,
+                                              'LANDSAT_RASTER_DIR': tmp}):
+                resp = self._get(farmland=self.farmland.pk, year=YEAR)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['ok'])
+        self.assertIsNone(data['zones'])
+
+    def test_zone_map_and_stats(self):
+        try:
+            import numpy as np
+            import rasterio
+            from rasterio.transform import from_bounds as tf_from_bounds
+        except ImportError:  # pragma: no cover
+            self.skipTest('rasterio не установлен')
+
+        proj_env = {}
+        proj_data = os.path.join(os.path.dirname(rasterio.__file__), 'proj_data')
+        if os.path.isdir(proj_data):
+            proj_env = {'PROJ_LIB': proj_data, 'PROJ_DATA': proj_data}
+
+        scope = f'd{self.district.pk}'
+        with tempfile.TemporaryDirectory() as tmp:
+            d = os.path.join(tmp, scope, YEAR)
+            os.makedirs(d)
+            tif = os.path.join(
+                d, f's2_ndvi_{scope}_2025-06-01_2025-06-05.tif',
+            )
+            # Левая половина растра NDVI=0.8, правая — 0.3: внутри поля
+            # (30.1..30.15) появятся и «норма», и «проблемные» зоны.
+            data = np.full((64, 64), 0.8, dtype='float32')
+            data[:, 27:] = 0.3
+            transform = tf_from_bounds(30.0, 50.0, 30.3, 50.3, 64, 64)
+            try:
+                with mock.patch.dict(os.environ, proj_env), rasterio.Env():
+                    with rasterio.open(
+                        tif, 'w', driver='GTiff', height=64, width=64, count=1,
+                        dtype='float32', crs='EPSG:4326', transform=transform,
+                        nodata=-9999.0,
+                    ) as ds:
+                        ds.write(data, 1)
+            except rasterio.errors.CRSError:  # pragma: no cover
+                self.skipTest('несовместимый proj.db в окружении')
+
+            with mock.patch.dict(os.environ, {'S2_RASTER_DIR': tmp,
+                                              'LANDSAT_RASTER_DIR': tmp}):
+                resp = self._get(farmland=self.farmland.pk, year=YEAR)
+
+        self.assertEqual(resp.status_code, 200)
+        zones = resp.json()['zones']
+        self.assertIsNotNone(zones)
+        self.assertEqual(zones['sensor'], 's2')
+        self.assertEqual(zones['date_from'], '2025-06-01')
+        self.assertTrue(zones['image'].startswith('data:image/png;base64,'))
+        stats = zones['stats']
+        self.assertGreater(stats['pixels'], 0)
+        # Обе зоны присутствуют, доли в сумме ~100%.
+        self.assertGreater(stats['problem_pct'], 5)
+        self.assertGreater(stats['ok_pct'], 5)
+        total = stats['problem_pct'] + stats['warn_pct'] + stats['ok_pct']
+        self.assertAlmostEqual(total, 100.0, delta=1.0)
