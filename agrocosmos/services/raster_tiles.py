@@ -258,10 +258,17 @@ def render_preview(tif_path: str, bbox: tuple, max_size: int = 256,
 # Zone classification vs field median: <75% — problem, 75–90% — warning.
 ZONE_PROBLEM_RATIO = 0.75
 ZONE_WARN_RATIO = 0.9
+# Zone dynamics: |Δ(NDVI/median)| >= 0.10 — significant change.
+ZONE_DYNAMICS_DELTA = 0.10
 _ZONE_RGBA = {
     'problem': (211, 47, 47, 235),
     'warn': (249, 168, 37, 220),
     'ok': (76, 175, 80, 150),
+}
+_DYN_RGBA = {
+    'degraded': (211, 47, 47, 235),
+    'improved': (25, 118, 210, 220),
+    'stable': (158, 158, 158, 110),
 }
 
 
@@ -296,6 +303,43 @@ def _polygon_mask(outline: list, bbox: tuple, out_w: int, out_h: int):
     return np.asarray(mask_img) > 0
 
 
+def _read_field_ndvi(tif_path: str, bbox: tuple, out_w: int, out_h: int):
+    """Read an NDVI window resampled to (out_h, out_w); (data, valid) or None."""
+    import rasterio
+    from rasterio.windows import from_bounds
+
+    xmin, ymin, xmax, ymax = bbox
+    try:
+        with rasterio.open(tif_path) as ds:
+            rb = ds.bounds
+            if (xmax <= rb.left or xmin >= rb.right or
+                    ymax <= rb.bottom or ymin >= rb.top):
+                return None
+            window = from_bounds(xmin, ymin, xmax, ymax, transform=ds.transform)
+            data = ds.read(
+                1, window=window,
+                out_shape=(out_h, out_w),
+                resampling=rasterio.enums.Resampling.bilinear,
+                boundless=True,
+            )
+            nodata = ds.nodata
+    except Exception as e:
+        logger.warning('Raster zones error %s: %s', tif_path, e)
+        return None
+
+    if nodata is not None and not np.isnan(nodata):
+        valid = data != nodata
+    else:
+        valid = ~np.isnan(data)
+    return data, valid
+
+
+def _save_png(img: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    img.save(buf, format='PNG', optimize=True)
+    return buf.getvalue()
+
+
 def render_zones(tif_path: str, bbox: tuple, outline: list,
                  max_size: int = 384) -> tuple[bytes | None, dict | None]:
     """
@@ -317,9 +361,6 @@ def render_zones(tif_path: str, bbox: tuple, outline: list,
         (png_bytes, stats) or (None, None) when there is no usable data.
         stats: {'median', 'problem_pct', 'warn_pct', 'ok_pct', 'pixels'}
     """
-    import rasterio
-    from rasterio.windows import from_bounds
-
     if not tif_path or not os.path.exists(tif_path) or not outline:
         return None, None
     xmin, ymin, xmax, ymax = bbox
@@ -328,28 +369,10 @@ def render_zones(tif_path: str, bbox: tuple, outline: list,
 
     out_w, out_h = _preview_dims(bbox, max_size)
 
-    try:
-        with rasterio.open(tif_path) as ds:
-            rb = ds.bounds
-            if (xmax <= rb.left or xmin >= rb.right or
-                    ymax <= rb.bottom or ymin >= rb.top):
-                return None, None
-            window = from_bounds(xmin, ymin, xmax, ymax, transform=ds.transform)
-            data = ds.read(
-                1, window=window,
-                out_shape=(out_h, out_w),
-                resampling=rasterio.enums.Resampling.bilinear,
-                boundless=True,
-            )
-            nodata = ds.nodata
-    except Exception as e:
-        logger.warning('Raster zones error %s: %s', tif_path, e)
+    read = _read_field_ndvi(tif_path, bbox, out_w, out_h)
+    if read is None:
         return None, None
-
-    if nodata is not None and not np.isnan(nodata):
-        valid = data != nodata
-    else:
-        valid = ~np.isnan(data)
+    data, valid = read
 
     field = valid & _polygon_mask(outline, bbox, out_w, out_h)
     n_field = int(field.sum())
@@ -374,8 +397,6 @@ def render_zones(tif_path: str, bbox: tuple, outline: list,
     img = Image.fromarray(rgba, 'RGBA')
     _draw_outline(img, outline, bbox)
 
-    buf = io.BytesIO()
-    img.save(buf, format='PNG', optimize=True)
     stats = {
         'median': round(median, 3),
         'problem_pct': round(int(problem.sum()) / n_field * 100, 1),
@@ -383,7 +404,82 @@ def render_zones(tif_path: str, bbox: tuple, outline: list,
         'ok_pct': round(int(ok.sum()) / n_field * 100, 1),
         'pixels': n_field,
     }
-    return buf.getvalue(), stats
+    return _save_png(img), stats
+
+
+def render_zone_dynamics(tif_now: str, tif_prev: str, bbox: tuple,
+                         outline: list, max_size: int = 384,
+                         ) -> tuple[bytes | None, dict | None]:
+    """
+    Render a zone-change map between two NDVI composites of the same field.
+
+    Each composite is normalised by its own field median (removes seasonal
+    trend), then per-pixel Δ = ratio_now − ratio_prev is classified:
+    Δ <= −0.10 — degraded (red), Δ >= +0.10 — improved (blue),
+    otherwise — stable (grey). Outside-field pixels stay transparent.
+
+    Used by the farmland passport «Динамика зон» sub-section.
+
+    Args:
+        tif_now: newer GeoTIFF composite path
+        tif_prev: older GeoTIFF composite path
+        bbox: (xmin, ymin, xmax, ymax) in EPSG:4326
+        outline: field polygon rings ([[lon, lat], ...])
+        max_size: longest output side, px
+
+    Returns:
+        (png_bytes, stats) or (None, None) when data is unusable.
+        stats: {'degraded_pct', 'improved_pct', 'stable_pct', 'pixels'}
+    """
+    if (not tif_now or not tif_prev or not os.path.exists(tif_now)
+            or not os.path.exists(tif_prev) or not outline):
+        return None, None
+    xmin, ymin, xmax, ymax = bbox
+    if xmax <= xmin or ymax <= ymin:
+        return None, None
+
+    out_w, out_h = _preview_dims(bbox, max_size)
+
+    read_now = _read_field_ndvi(tif_now, bbox, out_w, out_h)
+    read_prev = _read_field_ndvi(tif_prev, bbox, out_w, out_h)
+    if read_now is None or read_prev is None:
+        return None, None
+    data_now, valid_now = read_now
+    data_prev, valid_prev = read_prev
+
+    mask = _polygon_mask(outline, bbox, out_w, out_h)
+    field = valid_now & valid_prev & mask
+    n_field = int(field.sum())
+    if n_field < 4:
+        return None, None
+
+    median_now = float(np.median(data_now[field]))
+    median_prev = float(np.median(data_prev[field]))
+    if median_now <= 0 or median_prev <= 0:
+        return None, None
+
+    delta = np.zeros_like(data_now, dtype='float32')
+    delta[field] = (data_now[field] / median_now
+                    - data_prev[field] / median_prev)
+    degraded = field & (delta <= -ZONE_DYNAMICS_DELTA)
+    improved = field & (delta >= ZONE_DYNAMICS_DELTA)
+    stable = field & ~degraded & ~improved
+
+    rgba = np.zeros((out_h, out_w, 4), dtype=np.uint8)
+    rgba[degraded] = _DYN_RGBA['degraded']
+    rgba[improved] = _DYN_RGBA['improved']
+    rgba[stable] = _DYN_RGBA['stable']
+
+    img = Image.fromarray(rgba, 'RGBA')
+    _draw_outline(img, outline, bbox)
+
+    stats = {
+        'degraded_pct': round(int(degraded.sum()) / n_field * 100, 1),
+        'improved_pct': round(int(improved.sum()) / n_field * 100, 1),
+        'stable_pct': round(int(stable.sum()) / n_field * 100, 1),
+        'pixels': n_field,
+    }
+    return _save_png(img), stats
 
 
 def find_raster_path(sensor: str, scope_id: str, date_range: str) -> str | None:

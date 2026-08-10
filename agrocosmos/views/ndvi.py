@@ -720,6 +720,9 @@ def api_farmland_zones(request: HttpRequest) -> JsonResponse:
     ``date``/``sensor``), пиксели внутри контура классифицируются
     относительно медианы поля: <75% — проблема, 75–90% — ниже нормы.
 
+    Дополнительно считается динамика к предыдущему композиту
+    (``dynamics``): пиксели деградации/восстановления по Δ(NDVI/медиана).
+
     Query params:
         farmland: farmland id (required)
         year: '2025' (default — current year)
@@ -727,10 +730,9 @@ def api_farmland_zones(request: HttpRequest) -> JsonResponse:
         sensor: 's2' | 'l8' (optional)
 
     Response: ``zones`` = null, когда растровых данных нет; иначе
-    {sensor, scope, date_from, date_to, stats, image(base64 data-URI)}.
+    {sensor, scope, date_from, date_to, stats, image(base64 data-URI),
+     dynamics: null | {prev_sensor, prev_date_from, prev_date_to, stats, image}}.
     """
-    import base64
-
     from ..services.raster_tiles import find_raster_path, render_zones
     from .tiles import _farmland_outline
 
@@ -749,20 +751,22 @@ def api_farmland_zones(request: HttpRequest) -> JsonResponse:
 
     year = request.GET.get('year') or str(date.today().year)
 
-    # Явный композит или последний доступный.
+    composites, scope = _resolve_composites(farmland, year)
+    if not composites or not scope:
+        return JsonResponse({'ok': True, 'zones': None})
+
+    # Явный композит: считаем его «текущим», более свежие отбрасываем.
     sensor = request.GET.get('sensor', '')
     date_range = request.GET.get('date', '')
     if sensor and date_range:
-        composites = [{
-            'sensor': sensor,
-            'date_from': date_range.split('_')[0],
-            'date_to': date_range.split('_')[-1],
-        }]
-        _, scope = _resolve_composites(farmland, year)
-    else:
-        composites, scope = _resolve_composites(farmland, year)
-    if not composites or not scope:
-        return JsonResponse({'ok': True, 'zones': None})
+        target_from = date_range.split('_')[0]
+        composites = [
+            c for c in composites
+            if c['date_from'] < target_from
+            or (c['date_from'] == target_from and c['sensor'] == sensor)
+        ]
+        if not composites or composites[-1]['date_from'] != target_from:
+            return JsonResponse({'ok': True, 'zones': None})
 
     xmin, ymin, xmax, ymax = farmland.geom.extent
     pad_x = max((xmax - xmin) * 0.15, 1e-4)
@@ -771,13 +775,14 @@ def api_farmland_zones(request: HttpRequest) -> JsonResponse:
     outline = _farmland_outline(farmland)
 
     # Идём от свежих композитов к старым — первый с данными по полю.
-    for comp in reversed(composites):
+    for i, comp in enumerate(reversed(composites)):
         rng = comp['date_from'] + '_' + comp['date_to']
         tif_path = find_raster_path(comp['sensor'], scope, rng)
         if not tif_path:
             continue
         png_bytes, stats = render_zones(tif_path, bbox, outline)
         if png_bytes:
+            older = composites[:len(composites) - 1 - i]
             return JsonResponse({
                 'ok': True,
                 'zones': {
@@ -786,11 +791,40 @@ def api_farmland_zones(request: HttpRequest) -> JsonResponse:
                     'date_from': comp['date_from'],
                     'date_to': comp['date_to'],
                     'stats': stats,
-                    'image': 'data:image/png;base64,'
-                             + base64.b64encode(png_bytes).decode(),
+                    'image': _png_data_uri(png_bytes),
+                    'dynamics': _zones_dynamics(
+                        tif_path, older, scope, bbox, outline,
+                    ),
                 },
             })
     return JsonResponse({'ok': True, 'zones': None})
+
+
+def _png_data_uri(png_bytes: bytes) -> str:
+    import base64
+    return 'data:image/png;base64,' + base64.b64encode(png_bytes).decode()
+
+
+def _zones_dynamics(tif_now: str, older: list, scope: str,
+                    bbox: tuple, outline: list) -> dict | None:
+    """Карта динамики к ближайшему предыдущему композиту с данными."""
+    from ..services.raster_tiles import find_raster_path, render_zone_dynamics
+
+    for comp in reversed(older):
+        rng = comp['date_from'] + '_' + comp['date_to']
+        tif_prev = find_raster_path(comp['sensor'], scope, rng)
+        if not tif_prev:
+            continue
+        png_bytes, stats = render_zone_dynamics(tif_now, tif_prev, bbox, outline)
+        if png_bytes:
+            return {
+                'prev_sensor': comp['sensor'],
+                'prev_date_from': comp['date_from'],
+                'prev_date_to': comp['date_to'],
+                'stats': stats,
+                'image': _png_data_uri(png_bytes),
+            }
+    return None
 
 
 @rate_limit('60/m')
