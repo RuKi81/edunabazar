@@ -45,6 +45,7 @@ from .ndvi import (
     api_raster_composites,
     api_farmland_raster_frames,
     api_farmland_zones,
+    api_farmland_zones_kml,
 )
 from .reports import (
     api_report_region,
@@ -79,7 +80,7 @@ __all__ = [
     # NDVI data APIs
     'api_farmland_ndvi', 'api_ndvi_stats', 'api_phenology',
     'api_raster_composites', 'api_farmland_raster_frames',
-    'api_farmland_zones',
+    'api_farmland_zones', 'api_farmland_zones_kml',
     # reports
     'api_report_region', 'api_report_district', 'api_report_country',
     'api_report_farmland', 'api_report_screening',

@@ -366,6 +366,50 @@ class FarmlandZonesApiTests(TestCase):
                  + stats['stable_pct'])
         self.assertAlmostEqual(total, 100.0, delta=1.0)
 
+    KML_URL = '/agrocosmos/api/farmland/zones/kml/'
+
+    def test_kml_requires_farmland(self):
+        self.assertEqual(self.client.get(self.KML_URL).status_code, 400)
+
+    def test_kml_no_rasters_404(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {'S2_RASTER_DIR': tmp,
+                                              'LANDSAT_RASTER_DIR': tmp}):
+                resp = self.client.get(self.KML_URL, {
+                    'farmland': self.farmland.pk, 'year': YEAR,
+                })
+        self.assertEqual(resp.status_code, 404)
+
+    def test_kml_export_zones(self):
+        scope = f'd{self.district.pk}'
+        with tempfile.TemporaryDirectory() as tmp:
+            d = os.path.join(tmp, scope, YEAR)
+            os.makedirs(d)
+            # Правая половина 0.3 — гарантирует «проблемные» полигоны.
+            self._write_tif(
+                os.path.join(d, f's2_ndvi_{scope}_2025-06-01_2025-06-05.tif'),
+                fill=0.8, right_half=0.3,
+            )
+
+            with mock.patch.dict(os.environ, {'S2_RASTER_DIR': tmp,
+                                              'LANDSAT_RASTER_DIR': tmp}):
+                resp = self.client.get(self.KML_URL, {
+                    'farmland': self.farmland.pk, 'year': YEAR,
+                })
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp['Content-Type'],
+                         'application/vnd.google-earth.kml+xml')
+        self.assertIn('attachment', resp['Content-Disposition'])
+        kml = resp.content.decode()
+        self.assertIn('<kml', kml)
+        self.assertIn('Проблемная зона', kml)
+        self.assertIn('Точка осмотра', kml)
+        self.assertIn('<Polygon>', kml)
+        # KML валиден как XML.
+        import xml.etree.ElementTree as ET
+        ET.fromstring(kml)
+
     def test_explicit_date_selects_composite(self):
         scope = f'd{self.district.pk}'
         with tempfile.TemporaryDirectory() as tmp:

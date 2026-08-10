@@ -482,6 +482,124 @@ def render_zone_dynamics(tif_now: str, tif_prev: str, bbox: tuple,
     return _save_png(img), stats
 
 
+def zones_to_features(tif_path: str, bbox: tuple, outline: list,
+                      max_size: int = 384, min_area_ha: float = 0.2,
+                      ) -> list[dict] | None:
+    """
+    Vectorize within-field heterogeneity zones into polygon features.
+
+    Same classification as :func:`render_zones` (vs field median NDVI),
+    but the class grid is polygonized for export to UAV mission planners
+    (KML for DJI Pilot/Fly, prescription maps).
+
+    Args:
+        tif_path: GeoTIFF composite path
+        bbox: (xmin, ymin, xmax, ymax) in EPSG:4326
+        outline: field polygon rings ([[lon, lat], ...])
+        max_size: raster grid resolution used for polygonization
+        min_area_ha: drop polygons smaller than this, ha
+
+    Returns:
+        List of {'zone': 'problem'|'warn'|'ok', 'area_ha': float,
+        'geometry': GeoJSON polygon dict} sorted by zone severity then
+        area desc, or None when there is no usable data.
+    """
+    import rasterio
+    from rasterio import features as rio_features
+    from rasterio.transform import from_bounds as tf_from_bounds
+
+    if not tif_path or not os.path.exists(tif_path) or not outline:
+        return None
+    xmin, ymin, xmax, ymax = bbox
+    if xmax <= xmin or ymax <= ymin:
+        return None
+
+    out_w, out_h = _preview_dims(bbox, max_size)
+
+    read = _read_field_ndvi(tif_path, bbox, out_w, out_h)
+    if read is None:
+        return None
+    data, valid = read
+
+    field = valid & _polygon_mask(outline, bbox, out_w, out_h)
+    n_field = int(field.sum())
+    if n_field < 4:
+        return None
+
+    median = float(np.median(data[field]))
+    if median <= 0:
+        return None
+
+    ratio = np.zeros_like(data, dtype='float32')
+    ratio[field] = data[field] / median
+    cls = np.zeros((out_h, out_w), dtype=np.uint8)
+    cls[field & (ratio < ZONE_PROBLEM_RATIO)] = 1
+    cls[field & (ratio >= ZONE_PROBLEM_RATIO) & (ratio < ZONE_WARN_RATIO)] = 2
+    cls[field & (ratio >= ZONE_WARN_RATIO)] = 3
+
+    transform = tf_from_bounds(xmin, ymin, xmax, ymax, out_w, out_h)
+    # Приблизительный пересчёт deg² → га на средней широте поля.
+    lat_mid = (ymin + ymax) / 2.0
+    deg2_to_ha = 111_320.0 * 111_320.0 * math.cos(math.radians(lat_mid)) / 10_000.0
+    zone_names = {1: 'problem', 2: 'warn', 3: 'ok'}
+    # Упрощение контуров ~1 пиксель, чтобы KML не разбухал.
+    tol = (xmax - xmin) / out_w
+
+    feats = []
+    try:
+        with rasterio.Env():
+            shapes_iter = rio_features.shapes(cls, mask=cls > 0,
+                                              transform=transform)
+            for geom, val in shapes_iter:
+                area_ha = _geojson_polygon_area_deg2(geom) * deg2_to_ha
+                if area_ha < min_area_ha:
+                    continue
+                feats.append({
+                    'zone': zone_names[int(val)],
+                    'area_ha': round(area_ha, 2),
+                    'geometry': _simplify_geojson_polygon(geom, tol),
+                })
+    except Exception as e:
+        logger.warning('Zone vectorize error %s: %s', tif_path, e)
+        return None
+
+    order = {'problem': 0, 'warn': 1, 'ok': 2}
+    feats.sort(key=lambda f: (order[f['zone']], -f['area_ha']))
+    return feats
+
+
+def _geojson_polygon_area_deg2(geom: dict) -> float:
+    """Shoelace area of a GeoJSON polygon (outer minus holes), deg²."""
+    def ring_area(ring):
+        s = 0.0
+        for (x1, y1), (x2, y2) in zip(ring, ring[1:]):
+            s += x1 * y2 - x2 * y1
+        return abs(s) / 2.0
+
+    rings = geom.get('coordinates', [])
+    if not rings:
+        return 0.0
+    area = ring_area(rings[0])
+    for hole in rings[1:]:
+        area -= ring_area(hole)
+    return max(area, 0.0)
+
+
+def _simplify_geojson_polygon(geom: dict, tol: float) -> dict:
+    """Douglas–Peucker simplification via GEOS; falls back to original."""
+    try:
+        import json
+
+        from django.contrib.gis.geos import GEOSGeometry
+
+        g = GEOSGeometry(json.dumps(geom)).simplify(tol, preserve_topology=True)
+        if not g.empty and g.geom_type == 'Polygon':
+            return json.loads(g.geojson)
+    except Exception:  # pragma: no cover
+        pass
+    return geom
+
+
 def find_raster_path(sensor: str, scope_id: str, date_range: str) -> str | None:
     """
     Find a raster file path given sensor, scope (region/district ID), and date range.

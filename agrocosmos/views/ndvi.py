@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from django.db.models import Avg, Count, F, FloatField, Sum, Value, CharField
 from django.db.models.functions import Coalesce, Extract
 from django.db.models.fields.json import KeyTextTransform
-from django.http import HttpRequest, JsonResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.views.decorators.cache import cache_page
 
 from ..models import (
@@ -734,45 +734,12 @@ def api_farmland_zones(request: HttpRequest) -> JsonResponse:
      dynamics: null | {prev_sensor, prev_date_from, prev_date_to, stats, image}}.
     """
     from ..services.raster_tiles import find_raster_path, render_zones
-    from .tiles import _farmland_outline
 
-    fid = request.GET.get('farmland', '')
-    if not fid.isdigit():
-        return JsonResponse({'ok': False, 'error': 'farmland required'}, status=400)
-
-    farmland = (
-        Farmland.objects.filter(pk=int(fid))
-        .only('id', 'geom', 'district', 'region').first()
-    )
-    if farmland is None:
-        return JsonResponse({'ok': False, 'error': 'farmland not found'}, status=404)
-    if farmland.geom is None:
-        return JsonResponse({'ok': True, 'zones': None})
-
-    year = request.GET.get('year') or str(date.today().year)
-
-    composites, scope = _resolve_composites(farmland, year)
-    if not composites or not scope:
-        return JsonResponse({'ok': True, 'zones': None})
-
-    # Явный композит: считаем его «текущим», более свежие отбрасываем.
-    sensor = request.GET.get('sensor', '')
-    date_range = request.GET.get('date', '')
-    if sensor and date_range:
-        target_from = date_range.split('_')[0]
-        composites = [
-            c for c in composites
-            if c['date_from'] < target_from
-            or (c['date_from'] == target_from and c['sensor'] == sensor)
-        ]
-        if not composites or composites[-1]['date_from'] != target_from:
-            return JsonResponse({'ok': True, 'zones': None})
-
-    xmin, ymin, xmax, ymax = farmland.geom.extent
-    pad_x = max((xmax - xmin) * 0.15, 1e-4)
-    pad_y = max((ymax - ymin) * 0.15, 1e-4)
-    bbox = (xmin - pad_x, ymin - pad_y, xmax + pad_x, ymax + pad_y)
-    outline = _farmland_outline(farmland)
+    ctx, err = _zones_request_context(request)
+    if err is not None:
+        return err
+    composites, scope = ctx['composites'], ctx['scope']
+    bbox, outline = ctx['bbox'], ctx['outline']
 
     # Идём от свежих композитов к старым — первый с данными по полю.
     for i, comp in enumerate(reversed(composites)):
@@ -800,9 +767,177 @@ def api_farmland_zones(request: HttpRequest) -> JsonResponse:
     return JsonResponse({'ok': True, 'zones': None})
 
 
+def _zones_request_context(request) -> tuple[dict | None, JsonResponse | None]:
+    """Общая подготовка зонных эндпоинтов: поле, композиты, bbox, контур.
+
+    Returns ``(ctx, None)`` или ``(None, JsonResponse)`` с готовым ответом
+    (ошибка валидации или ``zones: null`` при отсутствии данных).
+    Явный ``date``/``sensor`` делает композит «текущим» — более свежие
+    отбрасываются (динамика считается назад от него).
+    """
+    from .tiles import _farmland_outline
+
+    no_data = JsonResponse({'ok': True, 'zones': None})
+
+    fid = request.GET.get('farmland', '')
+    if not fid.isdigit():
+        return None, JsonResponse(
+            {'ok': False, 'error': 'farmland required'}, status=400)
+
+    farmland = (
+        Farmland.objects.filter(pk=int(fid))
+        .only('id', 'geom', 'district', 'region').first()
+    )
+    if farmland is None:
+        return None, JsonResponse(
+            {'ok': False, 'error': 'farmland not found'}, status=404)
+    if farmland.geom is None:
+        return None, no_data
+
+    year = request.GET.get('year') or str(date.today().year)
+
+    composites, scope = _resolve_composites(farmland, year)
+    if not composites or not scope:
+        return None, no_data
+
+    sensor = request.GET.get('sensor', '')
+    date_range = request.GET.get('date', '')
+    if sensor and date_range:
+        target_from = date_range.split('_')[0]
+        composites = [
+            c for c in composites
+            if c['date_from'] < target_from
+            or (c['date_from'] == target_from and c['sensor'] == sensor)
+        ]
+        if not composites or composites[-1]['date_from'] != target_from:
+            return None, no_data
+
+    xmin, ymin, xmax, ymax = farmland.geom.extent
+    pad_x = max((xmax - xmin) * 0.15, 1e-4)
+    pad_y = max((ymax - ymin) * 0.15, 1e-4)
+    bbox = (xmin - pad_x, ymin - pad_y, xmax + pad_x, ymax + pad_y)
+
+    return {
+        'farmland': farmland,
+        'composites': composites,
+        'scope': scope,
+        'bbox': bbox,
+        'outline': _farmland_outline(farmland),
+    }, None
+
+
 def _png_data_uri(png_bytes: bytes) -> str:
     import base64
     return 'data:image/png;base64,' + base64.b64encode(png_bytes).decode()
+
+
+@rate_limit('10/m')
+def api_farmland_zones_kml(request: HttpRequest) -> HttpResponse:
+    """KML-экспорт зон неоднородности для ПО БПЛА DJI (Pilot 2 / Fly).
+
+    Полигоны проблемных зон и зон «ниже нормы» + точки-центроиды
+    проблемных зон как ориентиры точечного облёта (scouting).
+
+    Query params — те же, что у ``/api/farmland/zones/``
+    (farmland, year, date, sensor). Ответ: attachment .kml или 404,
+    если зон нет.
+    """
+    from ..services.raster_tiles import find_raster_path, zones_to_features
+
+    ctx, err = _zones_request_context(request)
+    if err is not None:
+        if err.status_code == 200:  # zones: null → для файла это 404
+            return JsonResponse(
+                {'ok': False, 'error': 'no raster data'}, status=404)
+        return err
+    composites, scope = ctx['composites'], ctx['scope']
+
+    for comp in reversed(composites):
+        rng = comp['date_from'] + '_' + comp['date_to']
+        tif_path = find_raster_path(comp['sensor'], scope, rng)
+        if not tif_path:
+            continue
+        feats = zones_to_features(tif_path, ctx['bbox'], ctx['outline'])
+        if feats:
+            kml = _zones_kml_document(
+                feats, ctx['farmland'].pk, comp['date_from'], comp['date_to'])
+            resp = HttpResponse(
+                kml, content_type='application/vnd.google-earth.kml+xml')
+            fname = f"zones_f{ctx['farmland'].pk}_{comp['date_from']}.kml"
+            resp['Content-Disposition'] = f'attachment; filename="{fname}"'
+            return resp
+    return JsonResponse({'ok': False, 'error': 'no raster data'}, status=404)
+
+
+# KML-цвета aabbggrr — в тон легенде паспорта (#d32f2f / #f9a825).
+_KML_STYLES = {
+    'problem': ('Проблемная зона', 'b32f2fd3', 'ff2f2fd3'),
+    'warn': ('Ниже нормы', '8025a8f9', 'ff25a8f9'),
+}
+
+
+def _zones_kml_document(feats: list, farmland_id: int,
+                        date_from: str, date_to: str) -> str:
+    """KML: полигоны зон problem/warn + центроиды проблемных (waypoints)."""
+    def coords(ring):
+        return ' '.join(f'{x:.6f},{y:.6f},0' for x, y in ring)
+
+    def centroid(ring):
+        n = max(len(ring) - 1, 1)
+        return (sum(p[0] for p in ring[:n]) / n,
+                sum(p[1] for p in ring[:n]) / n)
+
+    parts = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>',
+        f'<name>Зоны поля {farmland_id} · {date_from} – {date_to}</name>',
+    ]
+    for key, (_, poly_color, line_color) in _KML_STYLES.items():
+        parts.append(
+            f'<Style id="{key}"><LineStyle><color>{line_color}</color>'
+            '<width>2</width></LineStyle>'
+            f'<PolyStyle><color>{poly_color}</color></PolyStyle></Style>'
+        )
+    parts.append(
+        '<Style id="wp"><IconStyle><color>ff2f2fd3</color></IconStyle></Style>'
+    )
+
+    counters = {'problem': 0, 'warn': 0}
+    waypoints = []
+    for f in feats:
+        zone = f['zone']
+        if zone not in _KML_STYLES:
+            continue  # «норма» для облёта не нужна
+        counters[zone] += 1
+        label, _, _ = _KML_STYLES[zone]
+        name = f"{label} {counters[zone]} ({f['area_ha']} га)"
+        rings = f['geometry']['coordinates']
+        boundaries = [
+            f'<outerBoundaryIs><LinearRing><coordinates>{coords(rings[0])}'
+            '</coordinates></LinearRing></outerBoundaryIs>'
+        ]
+        for hole in rings[1:]:
+            boundaries.append(
+                f'<innerBoundaryIs><LinearRing><coordinates>{coords(hole)}'
+                '</coordinates></LinearRing></innerBoundaryIs>'
+            )
+        parts.append(
+            f'<Placemark><name>{name}</name><styleUrl>#{zone}</styleUrl>'
+            f"<Polygon>{''.join(boundaries)}</Polygon></Placemark>"
+        )
+        if zone == 'problem':
+            cx, cy = centroid(rings[0])
+            waypoints.append(
+                f'<Placemark><name>Точка осмотра {counters[zone]}</name>'
+                '<styleUrl>#wp</styleUrl>'
+                f'<Point><coordinates>{cx:.6f},{cy:.6f},0</coordinates></Point>'
+                '</Placemark>'
+            )
+    if waypoints:
+        parts.append('<Folder><name>Точки осмотра</name>'
+                     + ''.join(waypoints) + '</Folder>')
+    parts.append('</Document></kml>')
+    return '\n'.join(parts)
 
 
 def _zones_dynamics(tif_now: str, older: list, scope: str,
