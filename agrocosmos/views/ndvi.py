@@ -842,31 +842,79 @@ def api_farmland_zones_kml(request: HttpRequest) -> HttpResponse:
     (farmland, year, date, sensor). Ответ: attachment .kml или 404,
     если зон нет.
     """
+    ctx, feats, comp, err = _zones_features_for_request(request)
+    if err is not None:
+        return err
+
+    kml = _zones_kml_document(
+        feats, ctx['farmland'].pk, comp['date_from'], comp['date_to'])
+    resp = HttpResponse(
+        kml, content_type='application/vnd.google-earth.kml+xml')
+    fname = f"zones_f{ctx['farmland'].pk}_{comp['date_from']}.kml"
+    resp['Content-Disposition'] = f'attachment; filename="{fname}"'
+    return resp
+
+
+@rate_limit('10/m')
+def api_farmland_zones_shp(request: HttpRequest) -> HttpResponse:
+    """SHP-карта-предписание (VRA) для DJI Agras — zip с shapefile.
+
+    Полигоны всех зон с атрибутами ZONE / RATE / AREA_HA. Нормы
+    внесения задаёт агроном (л/га или кг/га): логика DJI Terra —
+    хуже рост → выше доза, но можно и наоборот. Импорт в пульте
+    Agras: SD-карта → Prescription Map → Map Source: Other, unit: ha.
+
+    Query params — как у ``/api/farmland/zones/`` (farmland, year, date,
+    sensor) плюс нормы: rate_problem, rate_warn, rate_ok (числа, ≥0).
+    Ответ: attachment .zip (shp/shx/dbf/prj) или 404, если зон нет.
+    """
+    from ..services.raster_tiles import zones_to_agras_shp_zip
+
+    rates = {}
+    for zone in ('problem', 'warn', 'ok'):
+        raw = request.GET.get(f'rate_{zone}', '0')
+        try:
+            rates[zone] = max(float(raw), 0.0)
+        except ValueError:
+            return JsonResponse(
+                {'ok': False, 'error': f'invalid rate_{zone}'}, status=400)
+
+    ctx, feats, comp, err = _zones_features_for_request(request)
+    if err is not None:
+        return err
+
+    name = f"prescription_f{ctx['farmland'].pk}_{comp['date_from']}"
+    zip_bytes = zones_to_agras_shp_zip(feats, rates, name)
+    resp = HttpResponse(zip_bytes, content_type='application/zip')
+    resp['Content-Disposition'] = f'attachment; filename="{name}.zip"'
+    return resp
+
+
+def _zones_features_for_request(request):
+    """Векторные зоны для экспортных эндпоинтов (KML/SHP).
+
+    Returns ``(ctx, feats, comp, None)`` или ``(None, None, None, response)``
+    — ошибка валидации либо 404 при отсутствии растровых данных.
+    """
     from ..services.raster_tiles import find_raster_path, zones_to_features
+
+    not_found = JsonResponse(
+        {'ok': False, 'error': 'no raster data'}, status=404)
 
     ctx, err = _zones_request_context(request)
     if err is not None:
-        if err.status_code == 200:  # zones: null → для файла это 404
-            return JsonResponse(
-                {'ok': False, 'error': 'no raster data'}, status=404)
-        return err
-    composites, scope = ctx['composites'], ctx['scope']
+        # zones: null → для файлового экспорта это 404.
+        return None, None, None, (not_found if err.status_code == 200 else err)
 
-    for comp in reversed(composites):
+    for comp in reversed(ctx['composites']):
         rng = comp['date_from'] + '_' + comp['date_to']
-        tif_path = find_raster_path(comp['sensor'], scope, rng)
+        tif_path = find_raster_path(comp['sensor'], ctx['scope'], rng)
         if not tif_path:
             continue
         feats = zones_to_features(tif_path, ctx['bbox'], ctx['outline'])
         if feats:
-            kml = _zones_kml_document(
-                feats, ctx['farmland'].pk, comp['date_from'], comp['date_to'])
-            resp = HttpResponse(
-                kml, content_type='application/vnd.google-earth.kml+xml')
-            fname = f"zones_f{ctx['farmland'].pk}_{comp['date_from']}.kml"
-            resp['Content-Disposition'] = f'attachment; filename="{fname}"'
-            return resp
-    return JsonResponse({'ok': False, 'error': 'no raster data'}, status=404)
+            return ctx, feats, comp, None
+    return None, None, None, not_found
 
 
 # KML-цвета aabbggrr — в тон легенде паспорта (#d32f2f / #f9a825).

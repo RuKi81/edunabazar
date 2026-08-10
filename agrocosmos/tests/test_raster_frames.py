@@ -410,6 +410,62 @@ class FarmlandZonesApiTests(TestCase):
         import xml.etree.ElementTree as ET
         ET.fromstring(kml)
 
+    SHP_URL = '/agrocosmos/api/farmland/zones/shp/'
+
+    def test_shp_invalid_rate_400(self):
+        resp = self.client.get(self.SHP_URL, {
+            'farmland': self.farmland.pk, 'rate_problem': 'abc',
+        })
+        self.assertEqual(resp.status_code, 400)
+
+    def test_shp_prescription_export(self):
+        scope = f'd{self.district.pk}'
+        with tempfile.TemporaryDirectory() as tmp:
+            d = os.path.join(tmp, scope, YEAR)
+            os.makedirs(d)
+            self._write_tif(
+                os.path.join(d, f's2_ndvi_{scope}_2025-06-01_2025-06-05.tif'),
+                fill=0.8, right_half=0.3,
+            )
+
+            with mock.patch.dict(os.environ, {'S2_RASTER_DIR': tmp,
+                                              'LANDSAT_RASTER_DIR': tmp}):
+                resp = self.client.get(self.SHP_URL, {
+                    'farmland': self.farmland.pk, 'year': YEAR,
+                    'rate_problem': '12.5', 'rate_warn': '10',
+                    'rate_ok': '8',
+                })
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp['Content-Type'], 'application/zip')
+        self.assertIn('attachment', resp['Content-Disposition'])
+
+        import io
+        import zipfile
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+            exts = {n.rsplit('.', 1)[-1] for n in z.namelist()}
+            self.assertEqual(exts, {'shp', 'shx', 'dbf', 'prj'})
+            shp_name = [n for n in z.namelist() if n.endswith('.shp')][0]
+            base = shp_name[:-4]
+            # Читаем shapefile обратно и проверяем атрибуты и нормы.
+            import shapefile as pyshp
+            with pyshp.Reader(
+                shp=io.BytesIO(z.read(base + '.shp')),
+                shx=io.BytesIO(z.read(base + '.shx')),
+                dbf=io.BytesIO(z.read(base + '.dbf')),
+            ) as reader:
+                fields = [f[0] for f in reader.fields[1:]]
+                self.assertEqual(fields, ['ZONE', 'RATE', 'AREA_HA'])
+                zone_rates = {}
+                for rec in reader.records():
+                    zone_rates[rec['ZONE']] = rec['RATE']
+                self.assertEqual(zone_rates.get('problem'), 12.5)
+                self.assertEqual(zone_rates.get('ok'), 8.0)
+                # Геометрия в WGS84 внутри bbox поля с запасом.
+                shape = reader.shapes()[0]
+                xs = [p[0] for p in shape.points]
+                self.assertTrue(all(29.9 < x < 30.4 for x in xs))
+
     def test_explicit_date_selects_composite(self):
         scope = f'd{self.district.pk}'
         with tempfile.TemporaryDirectory() as tmp:

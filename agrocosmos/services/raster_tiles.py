@@ -585,6 +585,66 @@ def _geojson_polygon_area_deg2(geom: dict) -> float:
     return max(area, 0.0)
 
 
+# WGS84 .prj for shapefile exports (ESRI WKT).
+_WGS84_PRJ = (
+    'GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",'
+    'SPHEROID["WGS_1984",6378137.0,298.257223563]],'
+    'PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]'
+)
+
+
+def zones_to_agras_shp_zip(feats: list, rates: dict, name: str) -> bytes:
+    """
+    Pack zone polygons into a zipped shapefile prescription map (DJI Agras VRA).
+
+    Each polygon carries ZONE (problem/warn/ok), RATE (application rate,
+    L/ha or kg/ha as entered by the agronomist) and AREA_HA attributes.
+    CRS is EPSG:4326 (WGS84), which the DJI Agras RC expects on import
+    («Map Source: Other», source unit — ha).
+
+    Args:
+        feats: output of :func:`zones_to_features`
+        rates: {'problem': float, 'warn': float, 'ok': float}
+        name: base file name inside the archive (no extension)
+
+    Returns:
+        ZIP bytes with name.shp/.shx/.dbf/.prj.
+    """
+    import zipfile
+
+    import shapefile as pyshp
+
+    shp_buf, shx_buf, dbf_buf = io.BytesIO(), io.BytesIO(), io.BytesIO()
+    with pyshp.Writer(shp=shp_buf, shx=shx_buf, dbf=dbf_buf,
+                      shapeType=pyshp.POLYGON) as w:
+        w.field('ZONE', 'C', size=10)
+        w.field('RATE', 'N', decimal=2)
+        w.field('AREA_HA', 'N', decimal=2)
+        for f in feats:
+            rings = [_orient_ring(r, clockwise=(i == 0))
+                     for i, r in enumerate(f['geometry']['coordinates'])]
+            w.poly(rings)
+            w.record(f['zone'], float(rates.get(f['zone'], 0.0)),
+                     f['area_ha'])
+
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr(f'{name}.shp', shp_buf.getvalue())
+        z.writestr(f'{name}.shx', shx_buf.getvalue())
+        z.writestr(f'{name}.dbf', dbf_buf.getvalue())
+        z.writestr(f'{name}.prj', _WGS84_PRJ)
+    return zip_buf.getvalue()
+
+
+def _orient_ring(ring: list, clockwise: bool) -> list:
+    """Shapefile ring order: outer — clockwise, holes — counter-clockwise."""
+    s = 0.0
+    for (x1, y1), (x2, y2) in zip(ring, ring[1:]):
+        s += (x2 - x1) * (y2 + y1)
+    is_cw = s > 0
+    return list(ring) if is_cw == clockwise else list(reversed(ring))
+
+
 def _simplify_geojson_polygon(geom: dict, tol: float) -> dict:
     """Douglas–Peucker simplification via GEOS; falls back to original."""
     try:

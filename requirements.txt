@@ -16,6 +16,8 @@ numpy>=2.1
 scipy>=1.13
 pandas>=2.2
 rasterio>=1.3
+# Pure-python shapefile writer: DJI Agras prescription map export (VRA).
+pyshp>=2.3
 # Required by `manage.py test --parallel`: serialises exception tracebacks
 # across worker processes (without it, failures raise "can't pickle traceback").
 tblib>=3.0

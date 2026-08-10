@@ -27,6 +27,7 @@ urlpatterns = [
     path('api/farmland/raster-frames/', views.api_farmland_raster_frames, name='api_farmland_raster_frames'),
     path('api/farmland/zones/', views.api_farmland_zones, name='api_farmland_zones'),
     path('api/farmland/zones/kml/', views.api_farmland_zones_kml, name='api_farmland_zones_kml'),
+    path('api/farmland/zones/shp/', views.api_farmland_zones_shp, name='api_farmland_zones_shp'),
     path('api/phenology/', views.api_phenology, name='api_phenology'),
     path('api/report/region/', views.api_report_region, name='api_report_region'),
     path('api/report/district/', views.api_report_district, name='api_report_district'),

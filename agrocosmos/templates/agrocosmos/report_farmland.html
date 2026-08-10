@@ -131,6 +131,15 @@
     .pp-zones-stats b { font-size: 15px; }
     .pp-zones-caption { font-size: 11px; color: #888; margin-top: 8px; }
     .pp-kml-btn { margin-top: 12px; display: inline-flex; align-items: center; }
+    .pp-vra { margin-top: 14px; border-top: 1px dashed #e0e0e0; padding-top: 10px; }
+    .pp-vra-title { font-size: 12px; font-weight: 600; color: #333; margin-bottom: 6px; }
+    .pp-vra-rates { display: flex; gap: 12px; flex-wrap: wrap; }
+    .pp-vra-rates label { font-size: 11px; color: #666; display: flex; flex-direction: column; }
+    .pp-vra-rates input {
+      width: 76px; height: 28px !important; margin: 0 !important;
+      font-size: 13px; text-align: center;
+      border: 1px solid #ccc !important; border-radius: 4px;
+    }
     .pp-dyn-block { margin-top: 18px; border-top: 1px dashed #e0e0e0; padding-top: 14px; }
     .pp-dyn-block h3 { font-size: 14px; font-weight: 600; margin: 0 0 10px; color: #333; }
 
@@ -166,7 +175,7 @@
     @media print {
       .report-controls, .report-actions, .copied-toast, .report-nav, nav, footer,
       .hide-on-med-and-down, .hide-on-large-only, .pp-frames-hint,
-      .pp-kml-btn, .pp-minimap .mm-open-hint { display: none !important; }
+      .pp-kml-btn, .pp-vra, .pp-minimap .mm-open-hint { display: none !important; }
       .report-wrap { max-width: 100%; margin: 0; padding: 0 10px; }
       .pp-section { break-inside: avoid; page-break-inside: avoid; }
       .pp-frames .frame, .pp-zones-wrap img { break-inside: avoid; }
@@ -277,6 +286,18 @@
             <i class="material-icons left" style="font-size:16px;">flight_takeoff</i>KML для БПЛА (DJI)
           </a>
           <div class="pp-zones-caption">Полигоны проблемных зон и точки осмотра — импорт в DJI Pilot 2 / полётные планировщики</div>
+          <div class="pp-vra">
+            <div class="pp-vra-title">Карта-предписание для DJI Agras (VRA)</div>
+            <div class="pp-vra-rates">
+              <label>Проблемные<input type="number" id="pp-rate-problem" min="0" step="0.1" value="12"></label>
+              <label>Ниже нормы<input type="number" id="pp-rate-warn" min="0" step="0.1" value="10"></label>
+              <label>Норма<input type="number" id="pp-rate-ok" min="0" step="0.1" value="8"></label>
+            </div>
+            <a id="pp-zones-shp" class="btn-small blue darken-2 pp-kml-btn" href="#" download>
+              <i class="material-icons left" style="font-size:16px;">agriculture</i>SHP-предписание (Agras)
+            </a>
+            <div class="pp-zones-caption">Нормы в л/га или кг/га. Импорт в пульте Agras: SD-карта → Prescription Map → Map Source: Other, unit: ha</div>
+          </div>
         </div>
       </div>
       <div class="pp-dyn-block" id="pp-dyn-block" style="display:none;">
@@ -745,11 +766,14 @@
         document.getElementById('pp-zones-caption').textContent =
           'Композит ' + fmtDate(z.date_from) + ' – ' + fmtDate(z.date_to)
           + ' · классификация относительно медианы NDVI самого поля';
-        document.getElementById('pp-zones-kml').href =
-          '/agrocosmos/api/farmland/zones/kml/?farmland=' + encodeURIComponent(farmlandId)
+        var expQs = 'farmland=' + encodeURIComponent(farmlandId)
           + '&year=' + encodeURIComponent(year || '')
           + '&date=' + encodeURIComponent(z.date_from + '_' + z.date_to)
           + '&sensor=' + encodeURIComponent(z.sensor);
+        document.getElementById('pp-zones-kml').href =
+          '/agrocosmos/api/farmland/zones/kml/?' + expQs;
+        zonesShpQs = expQs;
+        updateShpHref();
         renderZoneDynamics(z.dynamics, z);
         selectFrame(z.date_from + '_' + z.date_to, z.sensor);
         section.style.display = '';
@@ -777,6 +801,20 @@
       + ' (' + sensorName(z.sensor) + ') · каждый нормирован на свою медиану поля';
     block.style.display = '';
   }
+
+  var zonesShpQs = '';
+  function updateShpHref() {
+    if (!zonesShpQs) return;
+    var r = function (id) { return encodeURIComponent(document.getElementById(id).value || '0'); };
+    document.getElementById('pp-zones-shp').href =
+      '/agrocosmos/api/farmland/zones/shp/?' + zonesShpQs
+      + '&rate_problem=' + r('pp-rate-problem')
+      + '&rate_warn=' + r('pp-rate-warn')
+      + '&rate_ok=' + r('pp-rate-ok');
+  }
+  ['pp-rate-problem', 'pp-rate-warn', 'pp-rate-ok'].forEach(function (id) {
+    document.getElementById(id).addEventListener('input', updateShpHref);
+  });
 
   function selectFrame(dateRange, sensor) {
     var frames = document.querySelectorAll('#pp-frames .frame');
