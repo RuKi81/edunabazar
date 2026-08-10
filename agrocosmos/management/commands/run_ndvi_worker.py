@@ -120,7 +120,10 @@ class Command(BaseCommand):
         return PipelineRun.objects.get(pk=candidate)
 
     def _run_one(self, run: PipelineRun) -> None:
-        args = dict(run.launch_args or {})
+        # Underscore-prefixed keys are service metadata (e.g. ``_requeues``
+        # from pipeline_requeue) — never valid CLI arguments.
+        args = {k: v for k, v in (run.launch_args or {}).items()
+                if not k.startswith('_')}
         args['run_id'] = run.pk
 
         self.stdout.write(self.style.SUCCESS(
@@ -172,6 +175,10 @@ class Command(BaseCommand):
             self._mark_failed(run, traceback.format_exc())
         finally:
             self._close_log_file(log_f)
+            # The pipeline command overrides SIGTERM/SIGINT handlers in this
+            # process; restore ours so a signal to an idle worker doesn't
+            # invoke a stale handler bound to the finished run.
+            self._install_signal_handlers()
 
     def _open_log_file(self, log_file_path: str):
         if not log_file_path:
@@ -226,15 +233,18 @@ class Command(BaseCommand):
 
     # ------------------------------------------------------------------
 
-    def handle(self, *args, **options):
-        poll_sec = max(1, int(options['poll_sec']))
-        run_once = bool(options['once'])
-
+    def _install_signal_handlers(self) -> None:
         for sig in (signal.SIGTERM, signal.SIGINT):
             try:
                 signal.signal(sig, self._on_signal)
             except (ValueError, OSError):
                 pass
+
+    def handle(self, *args, **options):
+        poll_sec = max(1, int(options['poll_sec']))
+        run_once = bool(options['once'])
+
+        self._install_signal_handlers()
 
         self.stdout.write(self.style.SUCCESS(
             f'[worker] started (pid={os.getpid()}, poll={poll_sec}s)'

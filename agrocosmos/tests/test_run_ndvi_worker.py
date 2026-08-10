@@ -49,6 +49,14 @@ class RunNdviWorkerTests(TestCase):
         self.assertIsNotNone(run.pid)
         self.assertIn('picking up run', out)
 
+    def test_service_keys_stripped_from_launch_args(self):
+        run = self._queue(launch_args={'year': 2024, '_requeues': 2})
+        _, _, mock_cc = self._run_worker()
+        kwargs = mock_cc.call_args.kwargs
+        self.assertEqual(kwargs['year'], 2024)
+        self.assertEqual(kwargs['run_id'], run.pk)
+        self.assertNotIn('_requeues', kwargs)
+
     def test_no_queued_jobs_exits_cleanly(self):
         out, _, mock_cc = self._run_worker()
         mock_cc.assert_not_called()

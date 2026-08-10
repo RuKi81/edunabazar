@@ -313,8 +313,16 @@ class Command(BaseCommand):
             self._log_file_path = None
 
     def _install_signal_handlers(self) -> None:
-        """SIGTERM / SIGINT: mark failed so we don't leak running."""
+        """SIGTERM (container restart/deploy): requeue so the worker
+        resumes the run after restart. Otherwise mark failed so we don't
+        leak a phantom ``running`` row."""
         def _on_term(signum, _frame):
+            from agrocosmos.services.pipeline_requeue import try_requeue
+            if signum == signal.SIGTERM and try_requeue(self._run_id):
+                self._log(f'[signal] received signal {signum}, '
+                          f'requeued — worker will resume after restart')
+                self._flush_log_to_db()
+                sys.exit(1)
             self._log(f'[signal] received signal {signum}, marking failed')
             self._flush_log_to_db(final=True)
             self._mark('failed')
