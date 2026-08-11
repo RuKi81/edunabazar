@@ -175,7 +175,12 @@ def merge_tiles(tile_paths, out_path):
             blockxsize=256,
             blockysize=256,
         )
-        with rasterio.open(tmp_out, 'w', **profile) as dst:
+        # Region-wide mosaics (e.g. Moscow oblast S2 = 56297×30088 px,
+        # ~6.8 GB raw) can exceed the classic TIFF 4 GB limit even with
+        # LZW when the composite has little nodata — GDAL then aborts
+        # mid-write with "Write failed". IF_SAFER switches to BigTIFF
+        # only when the estimated size demands it.
+        with rasterio.open(tmp_out, 'w', BIGTIFF='IF_SAFER', **profile) as dst:
             dst.write(mosaic)
         os.replace(tmp_out, out_path)
     finally:

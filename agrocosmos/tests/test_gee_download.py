@@ -72,6 +72,52 @@ class DownloadTileTests(SimpleTestCase):
                 gd.download_tile('composite', 0, 0, 0.01, 0.01, 0.0001)
 
 
+class MergeTilesTests(SimpleTestCase):
+
+    def test_merge_writes_with_bigtiff_if_safer(self):
+        # Региональные мозаики (МО S2 = 56297×30088 px) превышают лимит
+        # классического TIFF 4 ГБ → GDAL падал с "Write failed".
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        tile_paths = []
+        for i in range(2):
+            p = Path(tmp.name) / f'ndvi_tile{i}.tif'
+            p.write_bytes(b'TILE')
+            tile_paths.append(str(p))
+        out_path = str(Path(tmp.name) / 'ndvi.tif')
+
+        mosaic = mock.MagicMock()
+        mosaic.shape = (1, 2, 2)
+
+        rio = mock.MagicMock(name='rasterio_stub')
+
+        def _open(path, mode='r', **kwargs):
+            ds = mock.MagicMock()
+            ds.profile = {'driver': 'GTiff', 'count': 1, 'dtype': 'float32'}
+            if mode == 'w':
+                Path(path).write_bytes(b'MERGED')
+            ds.__enter__ = mock.MagicMock(return_value=ds)
+            ds.__exit__ = mock.MagicMock(return_value=False)
+            return ds
+
+        rio.open.side_effect = _open
+        rio_merge = mock.MagicMock(name='rasterio.merge_stub')
+        rio_merge.merge.return_value = (mosaic, 'transform')
+
+        with mock.patch.dict(sys.modules, {'rasterio': rio,
+                                           'rasterio.merge': rio_merge}):
+            gd.merge_tiles(tile_paths, out_path)
+
+        write_calls = [c for c in rio.open.call_args_list
+                       if 'w' in c.args or c.kwargs.get('mode') == 'w']
+        self.assertEqual(len(write_calls), 1)
+        self.assertEqual(write_calls[0].kwargs.get('BIGTIFF'), 'IF_SAFER')
+        self.assertTrue(Path(out_path).exists())
+        # тайлы подчищены
+        for p in tile_paths:
+            self.assertFalse(Path(p).exists())
+
+
 class DownloadTiledCompositeTests(SimpleTestCase):
 
     def setUp(self):
