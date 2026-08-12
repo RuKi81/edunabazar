@@ -478,6 +478,14 @@
         <span>Добавить поле</span>
       </button>
 
+      <button id="myf-monitor-all-btn" class="myf-fab" type="button"
+              style="margin-top:8px; background:#1565c0;">
+        <i class="material-icons" style="font-size:18px;">satellite_alt</i>
+        <span>Спутниковый мониторинг</span>
+      </button>
+      <div id="myf-monitor-all-status"
+           style="font-size:11px; color:#8a8f98; margin:4px 2px 0; min-height:14px;"></div>
+
       <div class="myf-quota-card">
         <div class="row"><span class="lbl">Тариф:</span><span class="val">{{ plan.name|default:"Бесплатный" }}</span></div>
         <div class="row">
@@ -1703,6 +1711,55 @@
       });
       renderFields(filtered);
     });
+
+    /* ── Спутниковый мониторинг (все угодья) ── */
+    var monitorBtn = document.getElementById('myf-monitor-all-btn');
+    var monitorStatus = document.getElementById('myf-monitor-all-status');
+    var monitorTimer = null;
+
+    function renderMonitorActive(n) {
+      if (n > 0) {
+        monitorStatus.textContent = '🛰 В обработке полей: ' + n;
+        monitorBtn.disabled = true;
+        if (!monitorTimer) monitorTimer = setInterval(pollMonitor, 20000);
+      } else {
+        monitorStatus.textContent = '';
+        monitorBtn.disabled = false;
+        if (monitorTimer) { clearInterval(monitorTimer); monitorTimer = null; }
+      }
+    }
+    function pollMonitor() {
+      fetch('/api/my/fields/monitoring/', { credentials: 'same-origin' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) { if (d) renderMonitorActive(d.active || 0); })
+        .catch(function () { /* тихо: следующий полл повторит */ });
+    }
+    monitorBtn.addEventListener('click', function () {
+      monitorBtn.disabled = true;
+      fetch('/api/my/fields/monitoring/', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'X-CSRFToken': CSRF },
+      }).then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
+        .then(function (res) {
+          if (res.s !== 202 && res.s !== 200) {
+            toast(res.d.detail || res.d.error || 'Ошибка', true);
+            monitorBtn.disabled = false;
+            return;
+          }
+          var d = res.d;
+          if (!d.total_fields) {
+            toast('Нет внесённых угодий', true);
+            monitorBtn.disabled = false;
+            return;
+          }
+          toast(d.created
+            ? 'Мониторинг запущен: полей в очереди — ' + (d.created + d.already_active)
+            : 'Загрузка уже идёт');
+          renderMonitorActive((d.created || 0) + (d.already_active || 0));
+        })
+        .catch(function () { toast('Сетевая ошибка', true); monitorBtn.disabled = false; });
+    });
+    pollMonitor();
 
     loadFields();
   })();
