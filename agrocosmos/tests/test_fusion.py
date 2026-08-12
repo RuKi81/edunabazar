@@ -4,12 +4,16 @@ Tests for the HLS-style S2+Landsat fusion logic in ``compute_fused_ndvi``.
 The fusion rules we verify (see command docstring):
 
 1. S2 and Landsat observations within ±8 days are merged by weighted
-   mean with weights = ``valid_pixel_count``.
+   mean with weights = the clean-coverage fraction
+   ``valid_pixel_count / pixel_count`` of each sensor.
 2. S2 observations without a Landsat pair keep their original value.
 3. Landsat observations that were not paired with any S2 are added as
    standalone fused points (gap-fill).
 4. Output is sorted chronologically.
 5. Repeat runs must not drift — fusion is a pure function of inputs.
+
+Observations are ``(date, mean, n_valid, n_total)`` tuples; the fused
+output rows are ``(date, mean, n_valid)``.
 """
 from datetime import date
 
@@ -25,18 +29,18 @@ class FuseOneTests(SimpleTestCase):
 
     # ── Weighted mean ──────────────────────────────────────────────
 
-    def test_s2_and_l_same_day_weighted_by_n_valid(self):
-        """S2 (400 pix, 0.7) + L (10 pix, 0.5) → ≈0.6951."""
+    def test_s2_and_l_same_day_weighted_by_coverage(self):
+        """S2 (400/400, 0.7) + L (10/40, 0.5) → weights 1.0 vs 0.25."""
         d = date(2025, 7, 10)
         result = self.fuse(
-            s2_obs=[(d, 0.7, 400)],
-            l_obs=[(d, 0.5, 10)],
+            s2_obs=[(d, 0.7, 400, 400)],
+            l_obs=[(d, 0.5, 10, 40)],
         )
         self.assertEqual(len(result), 1)
         fused_date, fused_mean, fused_n = result[0]
         self.assertEqual(fused_date, d)
-        # (0.7*400 + 0.5*10) / 410 = 285 / 410 = 0.6951...
-        self.assertAlmostEqual(fused_mean, 0.6951, places=3)
+        # (0.7*1.0 + 0.5*0.25) / 1.25 = 0.825 / 1.25 = 0.66
+        self.assertAlmostEqual(fused_mean, 0.66, places=3)
         self.assertEqual(fused_n, 410)
 
     def test_l_within_window_is_paired(self):
@@ -44,8 +48,8 @@ class FuseOneTests(SimpleTestCase):
         s2_date = date(2025, 7, 10)
         l_date = date(2025, 7, 15)  # +5 days
         result = self.fuse(
-            s2_obs=[(s2_date, 0.6, 100)],
-            l_obs=[(l_date, 0.4, 100)],
+            s2_obs=[(s2_date, 0.6, 100, 100)],
+            l_obs=[(l_date, 0.4, 100, 100)],
         )
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0][0], s2_date)  # fused kept on S2 date
@@ -56,8 +60,8 @@ class FuseOneTests(SimpleTestCase):
         s2_date = date(2025, 7, 10)
         l_date = date(2025, 7, 25)  # +15 days, outside ±8d
         result = self.fuse(
-            s2_obs=[(s2_date, 0.6, 100)],
-            l_obs=[(l_date, 0.4, 50)],
+            s2_obs=[(s2_date, 0.6, 100, 100)],
+            l_obs=[(l_date, 0.4, 50, 50)],
         )
         self.assertEqual(len(result), 2)
         # S2 untouched
@@ -69,20 +73,20 @@ class FuseOneTests(SimpleTestCase):
 
     def test_s2_only_keeps_all_points(self):
         obs = [
-            (date(2025, 6, 3), 0.4, 200),
-            (date(2025, 6, 8), 0.45, 200),
-            (date(2025, 6, 13), 0.5, 200),
+            (date(2025, 6, 3), 0.4, 200, 200),
+            (date(2025, 6, 8), 0.45, 200, 200),
+            (date(2025, 6, 13), 0.5, 200, 200),
         ]
         result = self.fuse(s2_obs=obs, l_obs=[])
-        self.assertEqual(result, obs)
+        self.assertEqual(result, [(d, m, nv) for d, m, nv, _ in obs])
 
     def test_landsat_only_all_are_orphans(self):
         obs = [
-            (date(2025, 6, 8), 0.55, 50),
-            (date(2025, 6, 24), 0.60, 55),
+            (date(2025, 6, 8), 0.55, 50, 50),
+            (date(2025, 6, 24), 0.60, 55, 55),
         ]
         result = self.fuse(s2_obs=[], l_obs=obs)
-        self.assertEqual(result, obs)
+        self.assertEqual(result, [(d, m, nv) for d, m, nv, _ in obs])
 
     def test_empty_inputs_return_empty(self):
         self.assertEqual(self.fuse([], []), [])
@@ -95,8 +99,8 @@ class FuseOneTests(SimpleTestCase):
         l_near = date(2025, 7, 8)    # 2 days
         l_far = date(2025, 7, 15)    # 5 days
         result = self.fuse(
-            s2_obs=[(s2_date, 0.6, 100)],
-            l_obs=[(l_far, 0.9, 100), (l_near, 0.2, 100)],
+            s2_obs=[(s2_date, 0.6, 100, 100)],
+            l_obs=[(l_far, 0.9, 100, 100), (l_near, 0.2, 100, 100)],
         )
         self.assertEqual(len(result), 2)  # 1 fused + 1 orphan
         fused = next(r for r in result if r[0] == s2_date)
@@ -115,8 +119,8 @@ class FuseOneTests(SimpleTestCase):
         s2a = date(2025, 7, 9)
         s2b = date(2025, 7, 11)
         result = self.fuse(
-            s2_obs=[(s2a, 0.5, 100), (s2b, 0.7, 100)],
-            l_obs=[(l_date, 0.3, 100)],
+            s2_obs=[(s2a, 0.5, 100, 100), (s2b, 0.7, 100, 100)],
+            l_obs=[(l_date, 0.3, 100, 100)],
         )
         # Both S2 get paired with the same L; L is NOT emitted as orphan.
         self.assertEqual(len(result), 2)
@@ -128,10 +132,10 @@ class FuseOneTests(SimpleTestCase):
     def test_output_is_chronologically_sorted(self):
         result = self.fuse(
             s2_obs=[
-                (date(2025, 8, 1), 0.7, 100),
-                (date(2025, 6, 1), 0.4, 100),
+                (date(2025, 8, 1), 0.7, 100, 100),
+                (date(2025, 6, 1), 0.4, 100, 100),
             ],
-            l_obs=[(date(2025, 7, 15), 0.6, 100)],
+            l_obs=[(date(2025, 7, 15), 0.6, 100, 100)],
         )
         dates = [r[0] for r in result]
         self.assertEqual(dates, sorted(dates))
@@ -142,8 +146,8 @@ class FuseOneTests(SimpleTestCase):
         s2_date = date(2025, 7, 10)
         l_date = date(2025, 7, 18)  # exactly 8 days
         result = self.fuse(
-            s2_obs=[(s2_date, 0.6, 100)],
-            l_obs=[(l_date, 0.4, 100)],
+            s2_obs=[(s2_date, 0.6, 100, 100)],
+            l_obs=[(l_date, 0.4, 100, 100)],
         )
         # Paired, not orphaned
         self.assertEqual(len(result), 1)
@@ -153,24 +157,24 @@ class FuseOneTests(SimpleTestCase):
         s2_date = date(2025, 7, 10)
         l_date = date(2025, 7, 19)  # 9 days
         result = self.fuse(
-            s2_obs=[(s2_date, 0.6, 100)],
-            l_obs=[(l_date, 0.4, 100)],
+            s2_obs=[(s2_date, 0.6, 100, 100)],
+            l_obs=[(l_date, 0.4, 100, 100)],
         )
         # Not paired → 2 points
         self.assertEqual(len(result), 2)
 
-    # ── Weighting favours the source with more valid pixels ────────
+    # ── Weighting favours the source with cleaner coverage ─────────
 
-    def test_high_weight_s2_dominates(self):
-        """S2 at 10m has ~9× more pixels per polygon than L at 30m —
-        the fused value is strongly pulled towards S2."""
+    def test_higher_coverage_dominates(self):
+        """S2 saw 100% of the field, L only 25% (clouds) — the fused
+        value is pulled towards S2, regardless of absolute pixel counts."""
         d = date(2025, 7, 10)
         result = self.fuse(
-            s2_obs=[(d, 0.70, 900)],
-            l_obs=[(d, 0.30, 100)],
+            s2_obs=[(d, 0.70, 900, 900)],
+            l_obs=[(d, 0.30, 25, 100)],
         )
         fused_mean = result[0][1]
-        # (0.70*900 + 0.30*100) / 1000 = 0.66
-        self.assertAlmostEqual(fused_mean, 0.66, places=3)
+        # (0.70*1.0 + 0.30*0.25) / 1.25 = 0.62
+        self.assertAlmostEqual(fused_mean, 0.62, places=3)
         # Much closer to S2 than to L
         self.assertGreater(fused_mean, 0.6)
