@@ -16,6 +16,7 @@ urlpatterns = [
     # ── REST API ──
     path('api/my/fields/', api.fields_collection, name='api_fields'),
     path('api/my/fields/<int:pk>/', api.field_detail, name='api_field_detail'),
+    path('api/my/fields/<int:pk>/monitoring/', api.field_monitoring, name='api_field_monitoring'),
     path('api/my/fields/<int:pk>/events/', api.events_collection, name='api_events'),
     path('api/my/fields/<int:pk>/events/<int:eid>/', api.event_detail, name='api_event_detail'),
     path('api/my/fields/<int:pk>/seasons/', api.seasons_collection, name='api_seasons'),

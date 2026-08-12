@@ -81,6 +81,11 @@ SENSOR_CONFIG = {
     },
 }
 
+# Буфер вокруг bbox пользовательского поля (в градусах, ~300 м по широте).
+# Нужен, чтобы края поля не попадали на границу растра при ресемплинге и
+# чтобы зоны/превью в карточке поля имели небольшой контекст вокруг контура.
+MYF_FIELD_BUFFER_DEG = 0.003
+
 
 class Command(BaseCommand):
     help = 'Download NDVI composites from GEE and compute local zonal stats (S2/L8/MODIS)'
@@ -95,6 +100,9 @@ class Command(BaseCommand):
                             help='Sensor: s2 (Sentinel-2), l8 (Landsat 8/9), modis')
         parser.add_argument('--region-id', type=int, help='Region ID')
         parser.add_argument('--district-id', type=int, help='District ID')
+        parser.add_argument('--myf-field-id', type=int,
+                            help='UserField ID (my_fields): download composites '
+                                 'for the field bbox only (scope f<id>, no stats)')
         parser.add_argument('--year', type=int, help='Year (full year)')
         parser.add_argument('--date-from', type=str, help='Start date YYYY-MM-DD')
         parser.add_argument('--date-to', type=str, help='End date YYYY-MM-DD')
@@ -120,10 +128,16 @@ class Command(BaseCommand):
 
         self._install_signal_handler()
 
-        # Resolve region/district
-        region, district = self._resolve_region(options)
-        if not region:
+        # Resolve scope: user field (my_fields) or region/district
+        myf_field = self._resolve_myf_field(options)
+        if options.get('myf_field_id') and myf_field is None:
             return
+        if myf_field is not None:
+            region, district = myf_field.region, myf_field.district
+        else:
+            region, district = self._resolve_region(options)
+            if not region:
+                return
 
         # Date range
         date_from, date_to = self._resolve_dates(options)
@@ -140,8 +154,16 @@ class Command(BaseCommand):
         if min_valid is None:
             min_valid = cfg['default_min_valid']
 
-        # Use district extent when available (much smaller download for S2/L8)
-        if district:
+        # Use the smallest available extent (field ≪ district ≪ region)
+        if myf_field is not None:
+            xmin, ymin, xmax, ymax = myf_field.geom.extent
+            b = MYF_FIELD_BUFFER_DEG
+            download_extent = (xmin - b, ymin - b, xmax + b, ymax + b)
+            scope_id = f'f{myf_field.pk}'
+            # Зональная статистика считается по Farmland-контурам и для
+            # пользовательского поля не имеет смысла — только скачивание.
+            download_only = True
+        elif district:
             download_extent = district.geom.extent
             scope_id = f'd{district.pk}'
         else:
@@ -153,7 +175,8 @@ class Command(BaseCommand):
         self.stdout.write(
             f'═══════════════════════════════════════════════\n'
             f'  Raster NDVI — {cfg["label"]}\n'
-            f'  Region: {region.name} (id={region.pk})\n'
+            f'  Region: {region.name + " (id=" + str(region.pk) + ")" if region else "—"}\n'
+            f'  {"Field: #" + str(myf_field.pk) + " " + myf_field.name + " | " if myf_field else ""}'
             f'  {"District: " + district.name + " | " if district else ""}'
             f'Period: {date_from} → {date_to} ({len(chunks)} composites)\n'
             f'  Cloud ≤{cloud_max or "N/A"}%  |  Valid ≥{min_valid*100:.0f}%'
@@ -229,6 +252,26 @@ class Command(BaseCommand):
                 '\n⚠ Ctrl+C — finishing current step…'
             ))
         signal.signal(signal.SIGINT, _signal_handler)
+
+    def _resolve_myf_field(self, options):
+        """Загрузить UserField для scope ``--myf-field-id`` (или None).
+
+        Ленивый импорт ``my_fields`` — чтобы agrocosmos не зависел от него
+        на уровне модуля (my_fields сам импортирует agrocosmos.models).
+        """
+        field_id = options.get('myf_field_id')
+        if not field_id:
+            return None
+        from my_fields.models import UserField
+        field = (
+            UserField.objects
+            .select_related('region', 'district')
+            .filter(pk=field_id)
+            .first()
+        )
+        if field is None:
+            self.stderr.write(f'UserField id={field_id} not found')
+        return field
 
     def _resolve_region(self, options):
         region = None

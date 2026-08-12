@@ -314,6 +314,45 @@ def _field_patch(request: HttpRequest, field: UserField) -> JsonResponse:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# /api/my/fields/<id>/monitoring/   — спутниковый мониторинг (NDVI S2+L8)
+# ─────────────────────────────────────────────────────────────────────
+
+@csrf_exempt
+@require_http_methods(['GET', 'POST'])
+def field_monitoring(request: HttpRequest, pk: int) -> JsonResponse:
+    """Запуск и статус выкачки NDVI-композитов по полю.
+
+    * ``POST`` — поставить в очередь воркера скачивание S2 (приоритет) и
+      L8/L9 NDVI по bbox поля за текущий год. Если запуск уже активен —
+      возвращаем его же (200), дубликата не будет.
+    * ``GET`` — статус последнего запуска (для поллинга из UI).
+    """
+    from .services.monitoring import (
+        enqueue_field_monitoring, latest_run_for_field, run_to_dict,
+    )
+
+    auth_err = _require_auth(request)
+    if auth_err:
+        return auth_err
+
+    field = get_object_or_404(UserField, pk=pk)
+    if not can_view_field(request.user, field):
+        return JsonResponse({'error': 'forbidden'}, status=403)
+
+    if request.method == 'GET':
+        return JsonResponse({'run': run_to_dict(latest_run_for_field(field))})
+
+    if not can_edit_field(request.user, field):
+        return JsonResponse({'error': 'forbidden'}, status=403)
+
+    run, created = enqueue_field_monitoring(field)
+    return JsonResponse(
+        {'run': run_to_dict(run), 'created': created},
+        status=202 if created else 200,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
 # /api/my/fields/<id>/events/    — list / create
 # /api/my/fields/<id>/events/<eid>/   — patch / delete
 # ─────────────────────────────────────────────────────────────────────

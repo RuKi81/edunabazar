@@ -125,7 +125,9 @@
               {% if field.district %} · {{ field.district.name }}{% endif %}
             </p>
           </div>
-          <div style="display:flex; gap:8px;">
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <span id="myf-monitor-status" style="font-size:12px; color:var(--cab-muted);"></span>
+            <button class="myf-fab" type="button" id="myf-monitor-btn">🛰 Спутниковый мониторинг</button>
             <button class="btn-sec" type="button" id="myf-edit-btn">Редактировать</button>
             <button class="danger" type="button" id="myf-delete-btn">Удалить</button>
           </div>
@@ -364,6 +366,57 @@
         });
     });
 
+    // ── Satellite monitoring (NDVI S2 + L8/L9) ──
+    var monitorBtn = document.getElementById('myf-monitor-btn');
+    var monitorStatus = document.getElementById('myf-monitor-status');
+    var monitorTimer = null;
+
+    function renderMonitorRun(run) {
+      if (!run) {
+        monitorStatus.textContent = '';
+        monitorBtn.disabled = false;
+        return;
+      }
+      var active = run.status === 'queued' || run.status === 'running';
+      monitorBtn.disabled = active;
+      if (run.status === 'queued') {
+        monitorStatus.textContent = '⏳ В очереди…';
+      } else if (run.status === 'running') {
+        monitorStatus.textContent = '🛰 Загрузка снимков…';
+      } else if (run.status === 'completed') {
+        var d = run.finished_at ? new Date(run.finished_at).toLocaleDateString('ru-RU') : '';
+        monitorStatus.textContent = '✅ Снимки загружены' + (d ? ' (' + d + ')' : '');
+      } else if (run.status === 'failed') {
+        monitorStatus.textContent = '⚠ Ошибка загрузки — попробуйте ещё раз';
+      }
+      if (active && !monitorTimer) {
+        monitorTimer = setInterval(pollMonitor, 15000);
+      } else if (!active && monitorTimer) {
+        clearInterval(monitorTimer);
+        monitorTimer = null;
+      }
+    }
+    function pollMonitor() {
+      fetch('/api/my/fields/' + FIELD_ID + '/monitoring/', { credentials: 'same-origin' })
+        .then(function(r){ return r.json(); })
+        .then(function(d){ renderMonitorRun(d.run); })
+        .catch(function(){ /* тихо: следующий полл повторит */ });
+    }
+    monitorBtn.addEventListener('click', function() {
+      monitorBtn.disabled = true;
+      fetch('/api/my/fields/' + FIELD_ID + '/monitoring/', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'X-CSRFToken': CSRF },
+      }).then(function(r){ return r.json().then(function(d){ return {s:r.status, d:d}; }); })
+        .then(function(res){
+          if (res.s === 202) toast('Запрос отправлен: скачиваем NDVI Sentinel-2 и Landsat 8/9');
+          else if (res.s === 200) toast('Загрузка уже идёт');
+          else { toast(res.d.detail || res.d.error || 'Ошибка', true); monitorBtn.disabled = false; return; }
+          renderMonitorRun(res.d.run);
+        })
+        .catch(function(){ toast('Сетевая ошибка', true); monitorBtn.disabled = false; });
+    });
+
     // ── Edit field ──
     document.getElementById('myf-edit-btn').addEventListener('click', function() {
       document.getElementById('myf-field-modal').classList.add('open');
@@ -403,6 +456,7 @@
     });
 
     loadEvents();
+    pollMonitor();
   })();
   </script>
 {% endblock %}

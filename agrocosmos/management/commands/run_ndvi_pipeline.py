@@ -101,6 +101,9 @@ class Command(BaseCommand):
                             help='PipelineRun id to update')
         parser.add_argument('--region-id', type=int, help='Region ID')
         parser.add_argument('--district-id', type=int, help='District ID')
+        parser.add_argument('--myf-field-id', type=int,
+                            help='UserField ID (my_fields): download S2+L8 '
+                                 'composites for the field bbox only')
         parser.add_argument('--year', type=int, required=True, help='Year')
         parser.add_argument('--min-valid', type=float, default=0.7,
                             help='Min valid pixel ratio (default 0.7)')
@@ -230,7 +233,8 @@ class Command(BaseCommand):
     def _stage_raster(self, sensor: str, *, region_id, district_id, year,
                       min_valid, overwrite,
                       date_from: str | None = None,
-                      date_to: str | None = None) -> int:
+                      date_to: str | None = None,
+                      myf_field_id: int | None = None) -> int:
         window = f' {date_from}..{date_to}' if date_from or date_to else ''
         self._log(f'─── stage: fetch_raster_ndvi --sensor {sensor}{window} ───')
         kwargs = {
@@ -245,7 +249,9 @@ class Command(BaseCommand):
                 kwargs['date_to'] = date_to
         else:
             kwargs['year'] = year
-        if district_id:
+        if myf_field_id:
+            kwargs['myf_field_id'] = myf_field_id
+        elif district_id:
             kwargs['district_id'] = district_id
         else:
             kwargs['region_id'] = region_id
@@ -295,7 +301,8 @@ class Command(BaseCommand):
         self._install_signal_handlers()
 
         scope = self._resolve_scope(
-            options.get('region_id'), options.get('district_id'))
+            options.get('region_id'), options.get('district_id'),
+            options.get('myf_field_id'))
         if scope is None:
             return
         region_id, district_id, scope_desc = scope
@@ -358,10 +365,28 @@ class Command(BaseCommand):
             except (ValueError, OSError):
                 pass   # not main thread or unsupported; that's fine
 
-    def _resolve_scope(self, region_id, district_id):
+    def _resolve_scope(self, region_id, district_id, myf_field_id=None):
         """Validate scope → (region_id, district_id, scope_desc); None → abort
         (run already marked failed)."""
         try:
+            if myf_field_id:
+                from my_fields.models import UserField
+                field = (
+                    UserField.objects
+                    .select_related('region')
+                    .filter(pk=myf_field_id)
+                    .first()
+                )
+                if field is None:
+                    self._log(f'scope error: UserField id={myf_field_id} not found')
+                    self._flush_log_to_db(final=True)
+                    self._mark('failed')
+                    return None
+                scope_desc = (
+                    f'поле пользователя #{field.pk} "{field.name}"'
+                    + (f' ({field.region.name})' if field.region_id else '')
+                )
+                return field.region_id, None, scope_desc
             if district_id:
                 dist = District.objects.select_related('region').get(pk=district_id)
                 scope_desc = f'район "{dist.name}" ({dist.region.name})'
@@ -415,19 +440,29 @@ class Command(BaseCommand):
 
     def _execute_stages(self, region_id, district_id, options: dict) -> None:
         year = options['year']
+        myf_field_id = options.get('myf_field_id')
         raster_kwargs = dict(
             region_id=region_id, district_id=district_id,
             year=year, min_valid=options['min_valid'],
             overwrite=options['overwrite'],
             date_from=options.get('date_from'),
             date_to=options.get('date_to'),
+            myf_field_id=myf_field_id,
         )
 
+        # S2 приоритетнее — всегда первым.
         if not options['skip_s2']:
             self._total_records += self._stage_raster('s2', **raster_kwargs)
 
         if not options['skip_l8']:
             self._total_records += self._stage_raster('l8', **raster_kwargs)
+
+        if myf_field_id:
+            # Fusion/postprocess работают над зональной статистикой по
+            # Farmland-контурам — для пользовательского поля этих данных нет.
+            if options['fusion']:
+                self._log('fusion/postprocess пропущены: scope — поле пользователя')
+            return
 
         if options['fusion']:
             self._stage_fusion(
