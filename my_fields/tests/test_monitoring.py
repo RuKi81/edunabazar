@@ -9,7 +9,6 @@
 * run_ndvi_pipeline корректно резолвит scope --myf-field-id и передаёт
   его в стадии fetch_raster_ndvi (S2 первым), пропуская fusion.
 """
-import json
 from datetime import date, timedelta
 from unittest import mock
 
