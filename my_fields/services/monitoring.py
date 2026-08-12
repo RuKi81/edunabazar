@@ -105,6 +105,50 @@ def enqueue_field_monitoring(field):
     return run, True
 
 
+def enqueue_all_fields_monitoring(user) -> dict:
+    """Поставить мониторинг для всех полей пользователя (кнопка в сайдбаре).
+
+    По каждому полю — отдельный PipelineRun (у каждого свой bbox/scope);
+    активные (queued/running) запуски не дублируются.
+    Возвращает сводку для JSON-ответа.
+    """
+    from my_fields.models import UserField
+
+    fields = list(
+        UserField.objects.filter(owner=user).select_related('region'),
+    )
+    created = 0
+    already_active = 0
+    for field in fields:
+        _, was_created = enqueue_field_monitoring(field)
+        if was_created:
+            created += 1
+        else:
+            already_active += 1
+    return {
+        'total_fields': len(fields),
+        'created': created,
+        'already_active': already_active,
+    }
+
+
+def active_runs_count(user) -> int:
+    """Сколько полей пользователя сейчас в обработке (queued/running)."""
+    from agrocosmos.models import PipelineRun
+    from my_fields.models import UserField
+
+    field_ids = list(
+        UserField.objects.filter(owner=user).values_list('pk', flat=True),
+    )
+    if not field_ids:
+        return 0
+    return PipelineRun.objects.filter(
+        task_type=PipelineRun.TaskType.RASTER_NDVI,
+        status__in=[PipelineRun.Status.QUEUED, PipelineRun.Status.RUNNING],
+        launch_args__myf_field_id__in=field_ids,
+    ).count()
+
+
 def run_to_dict(run) -> dict | None:
     """Сериализация PipelineRun для JSON-ответов my_fields API."""
     if run is None:

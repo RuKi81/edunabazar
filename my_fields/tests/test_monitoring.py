@@ -145,6 +145,67 @@ class MonitoringApiTests(MonitoringTestCase):
         self.assertIn('run_id', run_json)
 
 
+class MonitoringCollectionApiTests(MonitoringTestCase):
+    """POST/GET /api/my/fields/monitoring/ — мониторинг всех полей владельца."""
+
+    URL = '/api/my/fields/monitoring/'
+
+    def setUp(self):
+        self.field2 = UserField.objects.create(
+            owner=self.owner, name='Второе поле',
+            geom=_mpoly(34.20, 45.20, 34.22, 45.22),
+            area_ha=120.0, region=self.region,
+        )
+        # Поле другого пользователя не должно попадать в очередь владельца.
+        UserField.objects.create(
+            owner=self.stranger, name='Чужое поле',
+            geom=_mpoly(34.30, 45.30, 34.32, 45.32),
+            area_ha=80.0, region=self.region,
+        )
+
+    def test_anonymous_is_401(self):
+        self.assertEqual(self.client.get(self.URL).status_code, 401)
+        self.assertEqual(self.client.post(self.URL).status_code, 401)
+
+    def test_post_enqueues_all_owner_fields_only(self):
+        self.client.force_login(self.owner)
+        resp = self.client.post(self.URL)
+        self.assertEqual(resp.status_code, 202)
+        data = resp.json()
+        self.assertEqual(data['total_fields'], 2)
+        self.assertEqual(data['created'], 2)
+        self.assertEqual(data['already_active'], 0)
+        queued_ids = {
+            r.launch_args['myf_field_id'] for r in PipelineRun.objects.all()
+        }
+        self.assertEqual(queued_ids, {self.field.pk, self.field2.pk})
+
+    def test_repeat_post_does_not_duplicate(self):
+        self.client.force_login(self.owner)
+        self.client.post(self.URL)
+        resp = self.client.post(self.URL)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data['created'], 0)
+        self.assertEqual(data['already_active'], 2)
+        self.assertEqual(PipelineRun.objects.count(), 2)
+
+    def test_get_returns_active_count(self):
+        self.client.force_login(self.owner)
+        self.assertEqual(self.client.get(self.URL).json()['active'], 0)
+        self.client.post(self.URL)
+        self.assertEqual(self.client.get(self.URL).json()['active'], 2)
+        PipelineRun.objects.update(status=PipelineRun.Status.COMPLETED)
+        self.assertEqual(self.client.get(self.URL).json()['active'], 0)
+
+    def test_active_count_isolated_per_user(self):
+        self.client.force_login(self.owner)
+        self.client.post(self.URL)
+        self.client.logout()
+        self.client.force_login(self.stranger)
+        self.assertEqual(self.client.get(self.URL).json()['active'], 0)
+
+
 class PipelineFieldScopeTests(MonitoringTestCase):
     """run_ndvi_pipeline --myf-field-id: сценарии scope-резолва и стадий."""
 

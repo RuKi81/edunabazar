@@ -314,6 +314,34 @@ def _field_patch(request: HttpRequest, field: UserField) -> JsonResponse:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# /api/my/fields/monitoring/   — мониторинг ВСЕХ полей пользователя
+# ─────────────────────────────────────────────────────────────────────
+
+@csrf_exempt
+@require_http_methods(['GET', 'POST'])
+def monitoring_collection(request: HttpRequest) -> JsonResponse:
+    """Спутниковый мониторинг всех полей пользователя (кнопка в сайдбаре).
+
+    * ``POST`` — ставит в очередь выкачку NDVI S2+L8 по каждому полю
+      владельца; активные запуски не дублируются.
+    * ``GET`` — сводка: сколько полей сейчас в обработке (для поллинга).
+    """
+    from .services.monitoring import (
+        active_runs_count, enqueue_all_fields_monitoring,
+    )
+
+    auth_err = _require_auth(request)
+    if auth_err:
+        return auth_err
+
+    if request.method == 'GET':
+        return JsonResponse({'active': active_runs_count(request.user)})
+
+    summary = enqueue_all_fields_monitoring(request.user)
+    return JsonResponse(summary, status=202 if summary['created'] else 200)
+
+
+# ─────────────────────────────────────────────────────────────────────
 # /api/my/fields/<id>/monitoring/   — спутниковый мониторинг (NDVI S2+L8)
 # ─────────────────────────────────────────────────────────────────────
 
