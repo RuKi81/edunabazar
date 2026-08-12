@@ -87,7 +87,10 @@ class Command(BaseCommand):
     help = 'NDVI post-processing: spike detection + Savitzky-Golay smoothing'
 
     def add_arguments(self, parser):
-        parser.add_argument('--region-id', type=int, required=True)
+        parser.add_argument('--region-id', type=int,
+                            help='Region ID (required unless --district-id given)')
+        parser.add_argument('--district-id', type=int,
+                            help='Limit to a single district (narrower scope than region)')
         parser.add_argument('--year', type=int, help='Year (optional, processes all years if omitted)')
         parser.add_argument('--source', type=str,
                             choices=['modis', 'raster', 'fused'],
@@ -96,17 +99,30 @@ class Command(BaseCommand):
                             help=f'Spike threshold (default: {SPIKE_THRESHOLD})')
 
     def handle(self, *args, **options):
-        region_id = options['region_id']
+        region_id = options.get('region_id')
+        district_id = options.get('district_id')
         year = options.get('year')
         source = options.get('source')
         threshold = options['threshold']
 
-        # Build raw SQL to load all records in ONE query, sorted for groupby
-        where_parts = [
-            "vi.index_type = 'ndvi'",
-            "f.district_id IN (SELECT id FROM agro_district WHERE region_id = %s)",
-        ]
-        params = [region_id]
+        if not region_id and not district_id:
+            self.stderr.write('Specify --region-id or --district-id')
+            return
+
+        # Build raw SQL to load all records in ONE query, sorted for groupby.
+        # A district scope keeps the smoothing pass to just that district
+        # (the pipeline runs district-by-district), instead of re-smoothing
+        # the whole region on every district run.
+        where_parts = ["vi.index_type = 'ndvi'"]
+        params = []
+        if district_id:
+            where_parts.append("f.district_id = %s")
+            params.append(district_id)
+        else:
+            where_parts.append(
+                "f.district_id IN (SELECT id FROM agro_district WHERE region_id = %s)"
+            )
+            params.append(region_id)
 
         if source == 'modis':
             where_parts.append("sc.satellite IN ('modis_terra', 'modis_aqua')")

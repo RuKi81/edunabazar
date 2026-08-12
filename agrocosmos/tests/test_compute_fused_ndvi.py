@@ -23,39 +23,57 @@ def _mpoly():
 
 
 class FuseOneTests(SimpleTestCase):
+    # Observations are (date, mean, n_valid, n_total) tuples. Weighting is
+    # by clean-coverage fraction n_valid/n_total, NOT the absolute count.
 
-    def test_weighted_mean_pairing(self):
-        s2 = [(date(2025, 6, 10), 0.6, 100)]
-        landsat = [(date(2025, 6, 12), 0.8, 50)]
+    def test_equal_coverage_is_simple_mean(self):
+        # Both sensors fully cover the field → equal weight, so the fused
+        # value is the plain average — the 10 m vs 30 m pixel-count gap no
+        # longer biases the result toward S2.
+        s2 = [(date(2025, 6, 10), 0.6, 100, 100)]
+        landsat = [(date(2025, 6, 12), 0.8, 50, 50)]
         fused = Command._fuse_one(s2, landsat)
         self.assertEqual(len(fused), 1)
         d, mean, n = fused[0]
         self.assertEqual(d, date(2025, 6, 10))
-        self.assertAlmostEqual(mean, (0.6 * 100 + 0.8 * 50) / 150, places=4)
+        self.assertAlmostEqual(mean, 0.7, places=4)
+        # Stored pixel count remains the sum of actually-observed valid px.
         self.assertEqual(n, 150)
 
+    def test_coverage_fraction_weighting(self):
+        # S2 only saw 50% of the field (partial cloud), Landsat saw 100%.
+        # Landsat should dominate: weights 0.5 vs 1.0.
+        s2 = [(date(2025, 6, 10), 0.6, 50, 100)]
+        landsat = [(date(2025, 6, 12), 0.8, 50, 50)]
+        fused = Command._fuse_one(s2, landsat)
+        d, mean, n = fused[0]
+        self.assertAlmostEqual(
+            mean, (0.6 * 0.5 + 0.8 * 1.0) / (0.5 + 1.0), places=4,
+        )
+        self.assertEqual(n, 100)
+
     def test_landsat_outside_window_is_orphan(self):
-        s2 = [(date(2025, 6, 10), 0.6, 100)]
-        landsat = [(date(2025, 6, 25), 0.8, 50)]
+        s2 = [(date(2025, 6, 10), 0.6, 100, 100)]
+        landsat = [(date(2025, 6, 25), 0.8, 50, 50)]
         fused = Command._fuse_one(s2, landsat)
         self.assertEqual(len(fused), 2)
         self.assertEqual(fused[0], (date(2025, 6, 10), 0.6, 100))
         self.assertEqual(fused[1], (date(2025, 6, 25), 0.8, 50))
 
     def test_nearest_landsat_wins(self):
-        s2 = [(date(2025, 6, 10), 0.6, 100)]
-        landsat = [(date(2025, 6, 17), 0.9, 50), (date(2025, 6, 11), 0.7, 50)]
+        s2 = [(date(2025, 6, 10), 0.6, 100, 100)]
+        landsat = [(date(2025, 6, 17), 0.9, 50, 50),
+                   (date(2025, 6, 11), 0.7, 50, 50)]
         fused = Command._fuse_one(s2, landsat)
         paired = fused[0]
-        self.assertAlmostEqual(
-            paired[1], (0.6 * 100 + 0.7 * 50) / 150, places=4,
-        )
+        # nearest (d11) fully covers → equal weight → simple mean
+        self.assertAlmostEqual(paired[1], (0.6 + 0.7) / 2, places=4)
         # дальний Landsat остаётся сиротой
         self.assertEqual(len(fused), 2)
 
     def test_sorted_output(self):
-        s2 = [(date(2025, 7, 1), 0.5, 10)]
-        landsat = [(date(2025, 5, 1), 0.4, 10)]
+        s2 = [(date(2025, 7, 1), 0.5, 10, 10)]
+        landsat = [(date(2025, 5, 1), 0.4, 10, 10)]
         fused = Command._fuse_one(s2, landsat)
         self.assertEqual([f[0] for f in fused],
                          [date(2025, 5, 1), date(2025, 7, 1)])
@@ -102,9 +120,9 @@ class FusedCommandTests(TestCase):
         fused = VegetationIndex.objects.filter(scene__satellite='hls_fused')
         self.assertEqual(fused.count(), 1)
         vi = fused.get()
-        self.assertAlmostEqual(
-            float(vi.mean), (0.6 * 100 + 0.8 * 50) / 150, places=4,
-        )
+        # Both source rows fully cover the field (valid == pixel_count) →
+        # equal weight → plain average of 0.6 and 0.8.
+        self.assertAlmostEqual(float(vi.mean), 0.7, places=4)
         self.assertEqual(vi.valid_pixel_count, 150)
         self.assertTrue(vi.scene.scene_id.startswith('hls_'))
         run = PipelineRun.objects.get()

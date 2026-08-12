@@ -4,8 +4,13 @@ Design (see docs/AGROCOSMOS_API.md §HLS and ARCHITECTURE.md §14.3):
 
 Grid       : S2-native 5-day cadence (Landsat records are paired to the
              nearest S2 observation within ±8 days).
-Fusion     : weighted mean by ``valid_pixel_count`` —
-             ``(s2.m * s2.n + l.m * l.n) / (s2.n + l.n)``.
+Fusion     : weighted mean by each sensor's *clean-coverage fraction*
+             ``valid_pixel_count / pixel_count`` — NOT the absolute pixel
+             count. S2 (10 m) yields ~9× more pixels per field than
+             Landsat (30 m), so weighting by the raw count silently drowned
+             the Landsat contribution (fused ≈ 0.9·S2 + 0.1·L regardless of
+             observation quality). The coverage fraction is a genuine,
+             resolution-independent confidence measure.
 Orphan L   : Landsat records that have no S2 neighbour within ±8 days
              are written as standalone fused points (gap-fill during
              heavy-cloud periods).
@@ -36,6 +41,26 @@ from agrocosmos.models import (
 SOURCE_SATS = ('sentinel2', 'landsat8')
 FUSED_SAT = 'hls_fused'
 L_PAIR_WINDOW_DAYS = 8  # ±8 days around S2 midpoint
+
+
+def _coverage_weight(n_valid, n_total):
+    """Clean-coverage fraction ``n_valid / n_total`` used to weight a
+    sensor in the fusion.
+
+    This replaces the old absolute-``valid_pixel_count`` weighting, which
+    was implicitly resolution-biased: S2 (10 m) has ~9× more pixels per
+    field than Landsat (30 m), so the raw count made Landsat almost
+    irrelevant when both sensors observed the same period.
+
+    Falls back to ``1.0`` (equal weight) when the total pixel count is
+    unknown/zero — e.g. older rows without ``pixel_count`` — so the
+    observation still contributes.
+    """
+    if n_total and n_total > 0:
+        frac = n_valid / n_total
+        if frac > 0:
+            return min(frac, 1.0)
+    return 1.0
 
 
 class Command(BaseCommand):
@@ -200,7 +225,7 @@ class Command(BaseCommand):
         return deleted
 
     def _load_observations(self, region, district, year):
-        """Return ``{farmland_id: {'s2': [(date, mean, n), ...], 'l': [...]}}``."""
+        """Return ``{farmland_id: {'s2': [(date, mean, n_valid, n_total), ...], 'l': [...]}}``."""
         qs = VegetationIndex.objects.filter(
             scene__satellite__in=SOURCE_SATS,
             index_type='ndvi',
@@ -215,20 +240,21 @@ class Command(BaseCommand):
 
         rows = qs.values_list(
             'farmland_id', 'acquired_date', 'mean',
-            'valid_pixel_count', 'scene__satellite',
+            'valid_pixel_count', 'pixel_count', 'scene__satellite',
         ).iterator(chunk_size=50_000)
 
         per_fl = defaultdict(lambda: {'s2': [], 'l': []})
-        for fl_id, acq_date, mean_v, n_valid, sat in rows:
+        for fl_id, acq_date, mean_v, n_valid, n_total, sat in rows:
             if mean_v is None or acq_date is None:
                 continue
-            n = int(n_valid or 0)
+            nv = int(n_valid or 0)
+            nt = int(n_total or 0)
             # If valid_pixel_count is zero/missing, fallback to 1 so the
-            # observation still contributes (but equally-weighted).
-            if n <= 0:
-                n = 1
+            # observation still contributes (weight handled in _fuse_one).
+            if nv <= 0:
+                nv = 1
             key = 's2' if sat == 'sentinel2' else 'l'
-            per_fl[fl_id][key].append((acq_date, float(mean_v), n))
+            per_fl[fl_id][key].append((acq_date, float(mean_v), nv, nt))
         return per_fl
 
     def _fuse_all(self, per_fl):
@@ -245,11 +271,22 @@ class Command(BaseCommand):
     def _fuse_one(s2_obs, l_obs):
         """Fuse observations for a single farmland.
 
+        Observations are ``(date, mean, n_valid, n_total)`` tuples, where
+        ``n_total`` is the field's pixel count for that sensor.
+
         Rules:
         - Each S2 observation is kept. If there's a Landsat record within
-          ±8 days, both are merged by weighted mean.
+          ±8 days, both are merged by a weighted mean whose weights are
+          the *clean-coverage fraction* ``n_valid / n_total`` of each
+          sensor — NOT the absolute pixel count (which is ~9× larger for
+          S2 at 10 m than Landsat at 30 m and would otherwise drown the
+          Landsat contribution).
         - Landsat records with no S2 neighbour within ±8 days are added
           as standalone fused points.
+
+        Returns ``(date, fused_mean, n_valid)`` tuples — the stored pixel
+        count is the sum of actually-observed valid pixels (for the UI's
+        confidence display), independent of the fusion weights.
         """
         fused = []
         used_l_dates = set()
@@ -257,27 +294,28 @@ class Command(BaseCommand):
         # Sort L for deterministic "nearest" pick
         l_obs_sorted = sorted(l_obs, key=lambda x: x[0])
 
-        for s2_date, s2_mean, s2_n in s2_obs:
-            best = None  # (delta, ld, lm, ln)
-            for ld, lm, ln in l_obs_sorted:
+        for s2_date, s2_mean, s2_nv, s2_nt in s2_obs:
+            best = None  # (delta, ld, lm, l_nv, l_nt)
+            for ld, lm, l_nv, l_nt in l_obs_sorted:
                 delta = abs((s2_date - ld).days)
                 if delta > L_PAIR_WINDOW_DAYS:
                     continue
                 if best is None or delta < best[0]:
-                    best = (delta, ld, lm, ln)
+                    best = (delta, ld, lm, l_nv, l_nt)
             if best is not None:
-                _, ld, lm, ln = best
-                total_n = s2_n + ln
-                fused_mean = (s2_mean * s2_n + lm * ln) / total_n
-                fused.append((s2_date, round(fused_mean, 4), total_n))
+                _, ld, lm, l_nv, l_nt = best
+                w_s2 = _coverage_weight(s2_nv, s2_nt)
+                w_l = _coverage_weight(l_nv, l_nt)
+                fused_mean = (s2_mean * w_s2 + lm * w_l) / (w_s2 + w_l)
+                fused.append((s2_date, round(fused_mean, 4), s2_nv + l_nv))
                 used_l_dates.add(ld)
             else:
-                fused.append((s2_date, round(s2_mean, 4), s2_n))
+                fused.append((s2_date, round(s2_mean, 4), s2_nv))
 
         # Orphan Landsat points (not paired with any S2)
-        for ld, lm, ln in l_obs_sorted:
+        for ld, lm, l_nv, l_nt in l_obs_sorted:
             if ld not in used_l_dates:
-                fused.append((ld, round(lm, 4), ln))
+                fused.append((ld, round(lm, 4), l_nv))
 
         fused.sort(key=lambda x: x[0])
         return fused

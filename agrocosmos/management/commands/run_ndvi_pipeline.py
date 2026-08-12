@@ -275,12 +275,14 @@ class Command(BaseCommand):
         self._log('─── fusion done ───')
         self._flush_log_to_db()
 
-    def _stage_postprocess(self, *, region_id, year) -> None:
+    def _stage_postprocess(self, *, region_id, district_id, year) -> None:
         self._log('─── stage: ndvi_postprocess --source fused ───')
-        self._run_subcommand(
-            'ndvi_postprocess',
-            region_id=region_id, year=year, source='fused',
-        )
+        kwargs = {'year': year, 'source': 'fused'}
+        if district_id:
+            kwargs['district_id'] = district_id
+        else:
+            kwargs['region_id'] = region_id
+        self._run_subcommand('ndvi_postprocess', **kwargs)
         self._log('─── postprocess done ───')
         self._flush_log_to_db()
 
@@ -431,4 +433,6 @@ class Command(BaseCommand):
             self._stage_fusion(
                 region_id=region_id, district_id=district_id, year=year,
             )
-            self._stage_postprocess(region_id=region_id, year=year)
+            self._stage_postprocess(
+                region_id=region_id, district_id=district_id, year=year,
+            )
