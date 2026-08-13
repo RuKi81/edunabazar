@@ -842,11 +842,13 @@ def api_farmland_zones_kml(request: HttpRequest) -> HttpResponse:
     (farmland, year, date, sensor). Ответ: attachment .kml или 404,
     если зон нет.
     """
+    from ..services.raster_tiles import zones_to_kml_document
+
     ctx, feats, comp, err = _zones_features_for_request(request)
     if err is not None:
         return err
 
-    kml = _zones_kml_document(
+    kml = zones_to_kml_document(
         feats, ctx['farmland'].pk, comp['date_from'], comp['date_to'])
     resp = HttpResponse(
         kml, content_type='application/vnd.google-earth.kml+xml')
@@ -915,77 +917,6 @@ def _zones_features_for_request(request):
         if feats:
             return ctx, feats, comp, None
     return None, None, None, not_found
-
-
-# KML-цвета aabbggrr — в тон легенде паспорта (#d32f2f / #f9a825).
-_KML_STYLES = {
-    'problem': ('Проблемная зона', 'b32f2fd3', 'ff2f2fd3'),
-    'warn': ('Ниже нормы', '8025a8f9', 'ff25a8f9'),
-}
-
-
-def _zones_kml_document(feats: list, farmland_id: int,
-                        date_from: str, date_to: str) -> str:
-    """KML: полигоны зон problem/warn + центроиды проблемных (waypoints)."""
-    def coords(ring):
-        return ' '.join(f'{x:.6f},{y:.6f},0' for x, y in ring)
-
-    def centroid(ring):
-        n = max(len(ring) - 1, 1)
-        return (sum(p[0] for p in ring[:n]) / n,
-                sum(p[1] for p in ring[:n]) / n)
-
-    parts = [
-        '<?xml version="1.0" encoding="UTF-8"?>',
-        '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>',
-        f'<name>Зоны поля {farmland_id} · {date_from} – {date_to}</name>',
-    ]
-    for key, (_, poly_color, line_color) in _KML_STYLES.items():
-        parts.append(
-            f'<Style id="{key}"><LineStyle><color>{line_color}</color>'
-            '<width>2</width></LineStyle>'
-            f'<PolyStyle><color>{poly_color}</color></PolyStyle></Style>'
-        )
-    parts.append(
-        '<Style id="wp"><IconStyle><color>ff2f2fd3</color></IconStyle></Style>'
-    )
-
-    counters = {'problem': 0, 'warn': 0}
-    waypoints = []
-    for f in feats:
-        zone = f['zone']
-        if zone not in _KML_STYLES:
-            continue  # «норма» для облёта не нужна
-        counters[zone] += 1
-        label, _, _ = _KML_STYLES[zone]
-        name = f"{label} {counters[zone]} ({f['area_ha']} га)"
-        rings = f['geometry']['coordinates']
-        boundaries = [
-            f'<outerBoundaryIs><LinearRing><coordinates>{coords(rings[0])}'
-            '</coordinates></LinearRing></outerBoundaryIs>'
-        ]
-        for hole in rings[1:]:
-            boundaries.append(
-                f'<innerBoundaryIs><LinearRing><coordinates>{coords(hole)}'
-                '</coordinates></LinearRing></innerBoundaryIs>'
-            )
-        parts.append(
-            f'<Placemark><name>{name}</name><styleUrl>#{zone}</styleUrl>'
-            f"<Polygon>{''.join(boundaries)}</Polygon></Placemark>"
-        )
-        if zone == 'problem':
-            cx, cy = centroid(rings[0])
-            waypoints.append(
-                f'<Placemark><name>Точка осмотра {counters[zone]}</name>'
-                '<styleUrl>#wp</styleUrl>'
-                f'<Point><coordinates>{cx:.6f},{cy:.6f},0</coordinates></Point>'
-                '</Placemark>'
-            )
-    if waypoints:
-        parts.append('<Folder><name>Точки осмотра</name>'
-                     + ''.join(waypoints) + '</Folder>')
-    parts.append('</Document></kml>')
-    return '\n'.join(parts)
 
 
 def _zones_dynamics(tif_now: str, older: list, scope: str,

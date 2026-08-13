@@ -16,6 +16,8 @@ REST API (``GET/POST/PATCH/DELETE``) живёт в ``my_fields.api``. Здесь
 """
 from __future__ import annotations
 
+from datetime import date
+
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.http import Http404, HttpRequest, HttpResponse
@@ -76,6 +78,30 @@ def field_detail_page(request: HttpRequest, pk: int) -> HttpResponse:
     return render(request, 'my_fields/field_detail.html', {
         'active_section': 'my_fields',
         'field': field,
+    })
+
+
+@login_required(login_url='/login/')
+def field_passport_page(request: HttpRequest, pk: int) -> HttpResponse:
+    """Паспорт поля — NDVI-снимки + зоны неоднородности (+ экспорт KML/SHP).
+
+    Оболочку рендерим на сервере, все данные подгружает JS с
+    ``/api/my/fields/<pk>/passport/...`` (кадры, превью, зоны, экспорт).
+    """
+    field = get_object_or_404(
+        UserField.objects.select_related('region', 'district'), pk=pk,
+    )
+    if not can_view_field(request.user, field):
+        raise Http404
+    current_year = date.today().year
+    plan = get_user_plan(request.user)
+    depth = max(1, getattr(plan, 'ndvi_history_years', 1) or 1)
+    year_options = list(range(current_year, current_year - depth, -1))
+    return render(request, 'my_fields/field_passport.html', {
+        'active_section': 'my_fields',
+        'field': field,
+        'current_year': current_year,
+        'year_options': year_options,
     })
 
 

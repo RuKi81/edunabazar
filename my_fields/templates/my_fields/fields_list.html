@@ -525,6 +525,9 @@
             <input id="myf-detail-name-input" type="text" maxlength="120">
           </div>
           <div class="myf-detail__actions normal">
+            <button id="myf-detail-passport" title="Паспорт поля — NDVI-снимки и зоны">
+              <i class="material-icons" style="font-size:18px;">description</i>
+            </button>
             <button id="myf-detail-edit" title="Редактировать">
               <i class="material-icons" style="font-size:18px;">edit</i>
             </button>
@@ -1260,6 +1263,10 @@
 
       if (ev.target.closest('#myf-add-season')) { openSeasonForCreate(); return; }
       if (ev.target.closest('#myf-add-event')) { openEventForCreate(); return; }
+      if (ev.target.closest('#myf-detail-passport')) {
+        if (currentField) window.location.href = DETAIL_URL + currentField.id + '/passport/';
+        return;
+      }
       if (ev.target.closest('#myf-detail-edit')) { handleEdit(); return; }
       if (ev.target.closest('#myf-detail-archive')) { handleArchive(); return; }
       if (ev.target.closest('#myf-detail-delete')) { handleDelete(); return; }

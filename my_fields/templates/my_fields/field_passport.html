@@ -1,0 +1,404 @@
+{% extends 'legacy/base.html' %}
+{% load static %}
+
+{% block title %}Паспорт поля · {{ field.name }} — Моё поле{% endblock %}
+
+{% block head %}
+  {% include 'legacy/_cabinet_styles.html' %}
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    .ppf-controls {
+      display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+      margin: 12px 0 18px; padding: 10px 14px;
+      background: #f5f9f5; border: 1px solid #c8e6c9; border-radius: 8px;
+    }
+    .ppf-controls label { font-size: 13px; font-weight: 600; color: #333; }
+    .ppf-controls select {
+      height: 34px; padding: 0 8px; border: 1px solid #ccc; border-radius: 4px;
+      font-size: 13px; background: #fff; width: auto;
+    }
+    .ppf-controls .action-btn {
+      width: 34px; height: 34px; border-radius: 4px; border: 1px solid #ccc;
+      background: #fff; cursor: pointer; display: inline-flex;
+      align-items: center; justify-content: center; color: #555;
+      text-decoration: none; margin-left: auto;
+    }
+    .ppf-controls .action-btn:hover { background: #e8f5e9; }
+
+    .ppf-summary {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 10px; margin-bottom: 18px;
+    }
+    .ppf-summary .card {
+      background: #fff; border: 1px solid var(--cab-border); border-radius: 8px;
+      padding: 10px 12px; text-align: center;
+    }
+    .ppf-summary .card .val { font-size: 16px; font-weight: 700; color: #1b5e20; }
+    .ppf-summary .card .lbl { font-size: 11px; color: #888; margin-top: 3px; }
+
+    .ppf-grid { display: grid; grid-template-columns: 260px 1fr; gap: 16px; }
+    @media (max-width: 800px) { .ppf-grid { grid-template-columns: 1fr; } }
+
+    .ppf-section {
+      background: #fff; border: 1px solid var(--cab-border); border-radius: 8px;
+      padding: 16px 18px; margin-bottom: 18px;
+    }
+    .ppf-section h3 {
+      font-size: 15px; font-weight: 700; color: #1b5e20; margin: 0 0 12px 0;
+    }
+    .ppf-section h3 .src { font-weight: 400; font-size: 12px; color: #888; }
+    #ppf-map { height: 190px; border-radius: 8px; overflow: hidden;
+      border: 1px solid var(--cab-border); background: #eef3f7; }
+    .ppf-map-caption { font-size: 11px; color: #888; margin-top: 6px; text-align: center; }
+
+    .ppf-frames { display: flex; gap: 14px; flex-wrap: wrap; }
+    .ppf-frames .frame { text-align: center; flex: 0 0 auto; cursor: pointer; }
+    .ppf-frames .frame img {
+      width: 148px; height: 136px; object-fit: contain;
+      border: 1px solid var(--cab-border); border-radius: 6px; background: #fafafa;
+      display: block;
+    }
+    .ppf-frames .frame:hover img { border-color: #2e7d32; }
+    .ppf-frames .frame.sel img { border: 2px solid #2e7d32; box-shadow: 0 0 0 2px rgba(46,125,50,0.2); }
+    .ppf-frames .frame .dt { font-size: 11px; color: #555; margin-top: 4px; font-weight: 600; }
+    .ppf-frames .frame.sel .dt { color: #2e7d32; }
+    .ppf-frames-hint { font-size: 11px; color: #999; margin-top: 6px; }
+
+    .ppf-zones-wrap { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; }
+    .ppf-zones-wrap img {
+      max-width: 384px; width: 100%; height: auto;
+      border: 1px solid var(--cab-border); border-radius: 6px; background: #fafafa;
+      flex: 0 1 384px;
+    }
+    .ppf-zones-info { flex: 1 1 240px; min-width: 220px; font-size: 13px; }
+    .ppf-zones-legend { margin: 0 0 12px; }
+    .ppf-zones-legend div { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .ppf-zones-legend .sw {
+      width: 16px; height: 16px; border-radius: 4px; flex: 0 0 auto;
+      border: 1px solid rgba(0,0,0,0.15);
+    }
+    .ppf-zones-stats { color: #444; }
+    .ppf-zones-stats b { font-size: 15px; }
+    .ppf-zones-caption { font-size: 11px; color: #888; margin-top: 8px; }
+    .ppf-exp-btn {
+      margin-top: 12px; display: inline-flex; align-items: center; gap: 6px;
+      padding: 7px 12px; border-radius: 6px; font-size: 13px; font-weight: 600;
+      text-decoration: none; color: #fff;
+    }
+    .ppf-exp-btn.kml { background: #2e7d32; }
+    .ppf-exp-btn.shp { background: #1565c0; }
+    .ppf-exp-btn:hover { filter: brightness(0.95); }
+    .ppf-vra { margin-top: 14px; border-top: 1px dashed var(--cab-border); padding-top: 10px; }
+    .ppf-vra-title { font-size: 12px; font-weight: 600; color: #333; margin-bottom: 6px; }
+    .ppf-vra-rates { display: flex; gap: 12px; flex-wrap: wrap; }
+    .ppf-vra-rates label { font-size: 11px; color: #666; display: flex; flex-direction: column; }
+    .ppf-vra-rates input {
+      width: 76px; height: 30px; margin: 0; box-sizing: border-box;
+      font-size: 13px; text-align: center;
+      border: 1px solid #ccc; border-radius: 4px;
+    }
+    .ppf-dyn-block { margin-top: 18px; border-top: 1px dashed var(--cab-border); padding-top: 14px; }
+    .ppf-dyn-block h4 { font-size: 14px; font-weight: 600; margin: 0 0 10px; color: #333; }
+    .ppf-empty { color: #999; font-size: 13px; padding: 8px 0; }
+    .ppf-loader { color: var(--cab-muted); font-size: 13px; padding: 8px 0; }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <h1 style="font-size: 26px; font-weight: 600; margin: 8px 0 4px;">Личный кабинет</h1>
+  <p style="color:var(--cab-muted); margin: 0 0 8px; font-size: 14px;">
+    <a href="{% url 'my_fields:ui_field_detail' field.id %}" style="color: inherit;">← К карточке поля</a>
+    &nbsp;·&nbsp;
+    <a href="{% url 'my_fields:ui_fields_list' %}" style="color: inherit;">Все мои поля</a>
+  </p>
+
+  <div class="cab-layout">
+    {% include 'legacy/_cabinet_sidebar.html' %}
+
+    <div class="cab-main">
+      <section class="cab-section">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+          <div>
+            <h2 style="margin:0;">📋 Паспорт поля · {{ field.name }}</h2>
+            <p class="cab-sub" style="margin:4px 0 0;">
+              {{ field.get_crop_type_display }}
+              {% if field.region %} · {{ field.region.name }}{% endif %}
+              {% if field.district %} · {{ field.district.name }}{% endif %}
+            </p>
+          </div>
+        </div>
+
+        <div class="ppf-controls">
+          <label for="ppf-year">Год:</label>
+          <select id="ppf-year" class="browser-default">
+            {% for y in year_options %}
+              <option value="{{ y }}" {% if y == current_year %}selected{% endif %}>{{ y }}</option>
+            {% endfor %}
+          </select>
+          <button class="action-btn" type="button" onclick="window.print()" title="Печать">
+            <i class="material-icons" style="font-size:18px;">print</i>
+          </button>
+        </div>
+
+        <div class="ppf-summary">
+          <div class="card"><div class="val">{{ field.area_ha|floatformat:2 }} га</div><div class="lbl">Площадь</div></div>
+          <div class="card"><div class="val" style="font-size:13px;">{{ field.get_crop_type_display }}</div><div class="lbl">Тип угодья</div></div>
+          <div class="card"><div class="val" style="font-size:13px;">{{ field.cadastral_number|default:"—" }}</div><div class="lbl">Кадастр</div></div>
+          <div class="card"><div class="val" style="font-size:13px;" id="ppf-frames-count">—</div><div class="lbl">Снимков за год</div></div>
+        </div>
+
+        <div class="ppf-grid" style="margin-bottom:18px;">
+          <div class="ppf-section" style="margin-bottom:0;">
+            <h3><i class="material-icons" style="font-size:18px; vertical-align:-3px; color:#2e7d32;">map</i> Контур</h3>
+            <div id="ppf-map"></div>
+            <div class="ppf-map-caption" id="ppf-map-caption"></div>
+          </div>
+          <div class="ppf-section" style="margin-bottom:0;" id="ppf-frames-section">
+            <h3><i class="material-icons" style="font-size:18px; vertical-align:-3px; color:#2e7d32;">satellite_alt</i>
+              Снимки NDVI <span class="src" id="ppf-frames-src"></span></h3>
+            <div class="ppf-frames" id="ppf-frames">
+              <div class="ppf-loader">Загрузка снимков…</div>
+            </div>
+            <div class="ppf-frames-hint">Клик по снимку — карта зон и динамика пересчитываются на эту дату.</div>
+            <div class="ppf-empty" id="ppf-frames-note" style="display:none;"></div>
+          </div>
+        </div>
+
+        <div class="ppf-section" id="ppf-zones-section" style="display:none;">
+          <h3><i class="material-icons" style="font-size:18px; vertical-align:-3px; color:#2e7d32;">grid_on</i>
+            Зоны неоднородности внутри поля <span class="src" id="ppf-zones-src"></span></h3>
+          <div class="ppf-zones-wrap">
+            <img id="ppf-zones-img" alt="Карта зон NDVI">
+            <div class="ppf-zones-info">
+              <div class="ppf-zones-legend">
+                <div><span class="sw" style="background:#d32f2f;"></span> Проблемные зоны — NDVI &lt; 75% медианы поля</div>
+                <div><span class="sw" style="background:#f9a825;"></span> Ниже нормы — 75–90% медианы</div>
+                <div><span class="sw" style="background:#4caf50;"></span> Норма — &ge; 90% медианы</div>
+              </div>
+              <div class="ppf-zones-stats" id="ppf-zones-stats"></div>
+              <div class="ppf-zones-caption" id="ppf-zones-caption"></div>
+              <a id="ppf-zones-kml" class="ppf-exp-btn kml" href="#" download>
+                <i class="material-icons" style="font-size:16px;">flight_takeoff</i>KML для БПЛА (DJI)
+              </a>
+              <div class="ppf-zones-caption">Полигоны проблемных зон и точки осмотра — импорт в DJI Pilot 2 / полётные планировщики</div>
+              <div class="ppf-vra">
+                <div class="ppf-vra-title">Карта-предписание для DJI Agras (VRA)</div>
+                <div class="ppf-vra-rates">
+                  <label>Проблемные<input type="number" id="ppf-rate-problem" min="0" step="0.1" value="12"></label>
+                  <label>Ниже нормы<input type="number" id="ppf-rate-warn" min="0" step="0.1" value="10"></label>
+                  <label>Норма<input type="number" id="ppf-rate-ok" min="0" step="0.1" value="8"></label>
+                </div>
+                <a id="ppf-zones-shp" class="ppf-exp-btn shp" href="#" download>
+                  <i class="material-icons" style="font-size:16px;">agriculture</i>SHP-предписание (Agras)
+                </a>
+                <div class="ppf-zones-caption">Нормы в л/га или кг/га. Импорт в пульте Agras: SD-карта → Prescription Map → Map Source: Other, unit: ha</div>
+              </div>
+            </div>
+          </div>
+          <div class="ppf-dyn-block" id="ppf-dyn-block" style="display:none;">
+            <h4>Динамика к предыдущему композиту <span class="src" id="ppf-dyn-src"></span></h4>
+            <div class="ppf-zones-wrap">
+              <img id="ppf-dyn-img" alt="Динамика зон NDVI">
+              <div class="ppf-zones-info">
+                <div class="ppf-zones-legend">
+                  <div><span class="sw" style="background:#d32f2f;"></span> Деградация — падение относительного NDVI &ge; 0.10</div>
+                  <div><span class="sw" style="background:#1976d2;"></span> Восстановление — рост &ge; 0.10</div>
+                  <div><span class="sw" style="background:#9e9e9e;"></span> Без значимых изменений</div>
+                </div>
+                <div class="ppf-zones-stats" id="ppf-dyn-stats"></div>
+                <div class="ppf-zones-caption" id="ppf-dyn-caption"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ppf-empty" id="ppf-nodata" style="display:none;">
+          Растровых данных по этому полю пока нет. Запустите «Спутниковый мониторинг»
+          на странице <a href="{% url 'my_fields:ui_fields_list' %}">Мои поля</a> и вернитесь позже —
+          скачивание NDVI-композитов Sentinel-2 / Landsat занимает некоторое время.
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script id="ppf-geom" type="application/json">{{ field.geom.geojson|safe }}</script>
+  <script>
+  (function () {
+    var FIELD_ID = {{ field.id }};
+    var API = '/api/my/fields/' + FIELD_ID + '/passport/';
+    var yearSel = document.getElementById('ppf-year');
+
+    /* ── Контур поля на мини-карте ── */
+    try {
+      var geom = JSON.parse(document.getElementById('ppf-geom').textContent);
+      var map = L.map('ppf-map', { zoomControl: false, attributionControl: false,
+        scrollWheelZoom: false, dragging: false, doubleClickZoom: false });
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+      var layer = L.geoJSON(geom, { style: { color: '#2e7d32', weight: 2, fillOpacity: 0.20 } }).addTo(map);
+      map.fitBounds(layer.getBounds(), { padding: [12, 12], maxZoom: 15 });
+      document.getElementById('ppf-map-caption').textContent =
+        '{{ field.cadastral_number|escapejs }}' ? 'Кадастр: {{ field.cadastral_number|escapejs }} · ID: ' + FIELD_ID : 'ID: ' + FIELD_ID;
+    } catch (e) { /* нет геометрии — карту пропускаем */ }
+
+    function sensorName(s) { return s === 'l8' ? 'Landsat 8/9' : 'Sentinel-2'; }
+    function fmtDate(iso) {
+      if (!iso) return '';
+      var p = iso.split('-');
+      return p.length === 3 ? p[2] + '.' + p[1] + '.' + p[0] : iso;
+    }
+
+    /* ── Кадры NDVI ── */
+    function loadFrames() {
+      var year = yearSel.value;
+      var wrap = document.getElementById('ppf-frames');
+      var note = document.getElementById('ppf-frames-note');
+      var srcEl = document.getElementById('ppf-frames-src');
+      var section = document.getElementById('ppf-frames-section');
+      var nodata = document.getElementById('ppf-nodata');
+      wrap.innerHTML = '<div class="ppf-loader">Загрузка снимков…</div>';
+      note.style.display = 'none';
+      document.getElementById('ppf-zones-section').style.display = 'none';
+      nodata.style.display = 'none';
+
+      fetch(API + 'frames/?year=' + encodeURIComponent(year) + '&limit=6',
+            { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          document.getElementById('ppf-frames-count').textContent =
+            (data.frames ? data.frames.length : 0);
+          if (!data.ok || !data.frames || !data.frames.length) {
+            wrap.innerHTML = '';
+            note.textContent = 'Нет растровых данных по контуру поля за ' + year + ' год.';
+            note.style.display = '';
+            nodata.style.display = '';
+            return;
+          }
+          wrap.innerHTML = '';
+          var sensors = data.sensors || [data.sensor];
+          var mixed = sensors.length > 1;
+          srcEl.textContent = mixed ? '· Sentinel-2 + Landsat 8/9'
+            : (sensors[0] === 'l8' ? '· Landsat 8/9' : '· Sentinel-2');
+          data.frames.forEach(function (fr) {
+            var sensor = fr.sensor || data.sensor;
+            var url = API + 'preview/?sensor=' + encodeURIComponent(sensor)
+              + '&date=' + encodeURIComponent(fr.date);
+            var div = document.createElement('div');
+            div.className = 'frame';
+            div.dataset.date = fr.date;
+            div.dataset.sensor = sensor;
+            div.title = 'Показать зоны на эту дату';
+            div.addEventListener('click', function () {
+              loadZones(fr.date, sensor);
+              var zs = document.getElementById('ppf-zones-section');
+              if (zs.style.display !== 'none') zs.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            });
+            var img = document.createElement('img');
+            img.loading = 'lazy';
+            img.alt = 'NDVI ' + fr.date_from;
+            img.onload = function () { if (!img.naturalWidth) div.remove(); };
+            img.onerror = function () { div.remove(); };
+            img.src = url;
+            var dt = document.createElement('div');
+            dt.className = 'dt';
+            dt.textContent = (fr.date_from === fr.date_to
+              ? fmtDate(fr.date_from)
+              : fmtDate(fr.date_from) + ' – ' + fmtDate(fr.date_to))
+              + (mixed ? (sensor === 'l8' ? ' · L8' : ' · S2') : '');
+            div.appendChild(img);
+            div.appendChild(dt);
+            wrap.appendChild(div);
+          });
+          // Автоматически показать зоны по самому свежему композиту.
+          loadZones('', '');
+        })
+        .catch(function () {
+          wrap.innerHTML = '';
+          note.textContent = 'Не удалось загрузить снимки.';
+          note.style.display = '';
+        });
+    }
+
+    function selectFrame(dateRange, sensor) {
+      document.querySelectorAll('#ppf-frames .frame').forEach(function (el) {
+        el.classList.toggle('sel',
+          el.dataset.date === dateRange && el.dataset.sensor === sensor);
+      });
+    }
+
+    /* ── Зоны неоднородности ── */
+    var zonesExpQs = '';
+    function loadZones(dateRange, sensor) {
+      var year = yearSel.value;
+      var section = document.getElementById('ppf-zones-section');
+      var qs = 'year=' + encodeURIComponent(year);
+      if (dateRange && sensor) {
+        qs += '&date=' + encodeURIComponent(dateRange) + '&sensor=' + encodeURIComponent(sensor);
+      }
+      fetch(API + 'zones/?' + qs, { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (!data.ok || !data.zones) { section.style.display = 'none'; return; }
+          var z = data.zones;
+          document.getElementById('ppf-zones-img').src = z.image;
+          document.getElementById('ppf-zones-src').textContent = '· ' + sensorName(z.sensor);
+          var s = z.stats || {};
+          var problem = s.problem_pct || 0, warn = s.warn_pct || 0;
+          document.getElementById('ppf-zones-stats').innerHTML =
+            'Проблемные зоны: <b style="color:' + (problem >= 15 ? '#D32F2F' : '#2e7d32') + ';">'
+            + problem.toFixed(1) + '%</b> площади поля<br>'
+            + 'Ниже нормы: <b>' + warn.toFixed(1) + '%</b><br>'
+            + 'Медиана NDVI поля: <b>' + (s.median != null ? s.median.toFixed(2) : '—') + '</b>';
+          document.getElementById('ppf-zones-caption').textContent =
+            'Композит ' + fmtDate(z.date_from) + ' – ' + fmtDate(z.date_to)
+            + ' · классификация относительно медианы NDVI самого поля';
+          zonesExpQs = 'year=' + encodeURIComponent(year)
+            + '&date=' + encodeURIComponent(z.date_from + '_' + z.date_to)
+            + '&sensor=' + encodeURIComponent(z.sensor);
+          document.getElementById('ppf-zones-kml').href = API + 'zones/kml/?' + zonesExpQs;
+          updateShpHref();
+          renderDynamics(z.dynamics, z);
+          selectFrame(z.date_from + '_' + z.date_to, z.sensor);
+          section.style.display = '';
+        })
+        .catch(function () { section.style.display = 'none'; });
+    }
+
+    function renderDynamics(dyn, z) {
+      var block = document.getElementById('ppf-dyn-block');
+      if (!dyn) { block.style.display = 'none'; return; }
+      document.getElementById('ppf-dyn-img').src = dyn.image;
+      document.getElementById('ppf-dyn-src').textContent =
+        '· ' + fmtDate(dyn.prev_date_from) + ' → ' + fmtDate(z.date_from);
+      var s = dyn.stats || {};
+      var deg = s.degraded_pct || 0, imp = s.improved_pct || 0;
+      document.getElementById('ppf-dyn-stats').innerHTML =
+        'Деградация: <b style="color:' + (deg >= 15 ? '#D32F2F' : '#444') + ';">'
+        + deg.toFixed(1) + '%</b> площади поля<br>'
+        + 'Восстановление: <b style="color:#1976d2;">' + imp.toFixed(1) + '%</b><br>'
+        + 'Без изменений: <b>' + (s.stable_pct || 0).toFixed(1) + '%</b>';
+      document.getElementById('ppf-dyn-caption').textContent =
+        'Сравнение композитов ' + fmtDate(dyn.prev_date_from) + ' – ' + fmtDate(dyn.prev_date_to)
+        + ' (' + sensorName(dyn.prev_sensor) + ') и ' + fmtDate(z.date_from) + ' – ' + fmtDate(z.date_to)
+        + ' (' + sensorName(z.sensor) + ') · каждый нормирован на свою медиану поля';
+      block.style.display = '';
+    }
+
+    function updateShpHref() {
+      if (!zonesExpQs) return;
+      var r = function (id) { return encodeURIComponent(document.getElementById(id).value || '0'); };
+      document.getElementById('ppf-zones-shp').href =
+        API + 'zones/shp/?' + zonesExpQs
+        + '&rate_problem=' + r('ppf-rate-problem')
+        + '&rate_warn=' + r('ppf-rate-warn')
+        + '&rate_ok=' + r('ppf-rate-ok');
+    }
+    ['ppf-rate-problem', 'ppf-rate-warn', 'ppf-rate-ok'].forEach(function (id) {
+      document.getElementById(id).addEventListener('input', updateShpHref);
+    });
+
+    yearSel.addEventListener('change', loadFrames);
+    loadFrames();
+  })();
+  </script>
+{% endblock %}

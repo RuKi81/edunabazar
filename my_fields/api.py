@@ -23,7 +23,7 @@ import json
 from typing import Any
 
 from django.contrib.gis.geos import GEOSGeometry
-from django.http import HttpRequest, JsonResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
 from django.views.decorators.csrf import csrf_exempt
@@ -582,3 +582,145 @@ def _season_patch(request: HttpRequest, season: FieldSeason) -> JsonResponse:
             setattr(season, f, payload[f])
     season.save()
     return JsonResponse(_season_to_dict(season))
+
+
+# ─────────────────────────────────────────────────────────────────────
+# /api/my/fields/<id>/passport/...   — паспорт поля (NDVI-снимки + зоны)
+# ─────────────────────────────────────────────────────────────────────
+
+def _viewable_field_or_error(request: HttpRequest, pk: int):
+    """(field, None) или (None, JsonResponse) — auth + права на просмотр."""
+    auth_err = _require_auth(request)
+    if auth_err:
+        return None, auth_err
+    field = get_object_or_404(
+        UserField.objects.select_related('region', 'district'), pk=pk,
+    )
+    if not can_view_field(request.user, field):
+        return None, JsonResponse({'error': 'forbidden'}, status=403)
+    return field, None
+
+
+@require_http_methods(['GET'])
+def field_passport_frames(request: HttpRequest, pk: int) -> JsonResponse:
+    """Последние NDVI-композиты по полю (кадры-превью «Снимки NDVI»)."""
+    from .services import passport
+
+    field, err = _viewable_field_or_error(request, pk)
+    if err:
+        return err
+
+    year = request.GET.get('year') or passport.default_year()
+    try:
+        limit = max(1, min(int(request.GET.get('limit', 6)), 12))
+    except (TypeError, ValueError):
+        limit = 6
+
+    data = passport.raster_frames(field, year, limit=limit)
+    return JsonResponse({'ok': True, **data})
+
+
+@require_http_methods(['GET'])
+def field_passport_preview(request: HttpRequest, pk: int) -> HttpResponse:
+    """PNG-превью композита, обрезанное по bbox поля (для кадров NDVI)."""
+    from .services import passport
+
+    field, err = _viewable_field_or_error(request, pk)
+    if err:
+        # для <img> отдаём 204 вместо JSON, чтобы фрейм просто скрылся
+        return HttpResponse(b'', content_type='image/png', status=204)
+
+    sensor = request.GET.get('sensor', 's2')
+    date_range = request.GET.get('date', '')
+    if not date_range:
+        return HttpResponse(b'', content_type='image/png', status=204)
+
+    png_bytes = passport.preview_png(field, sensor, date_range)
+    if not png_bytes:
+        return HttpResponse(b'', content_type='image/png', status=204)
+
+    resp = HttpResponse(png_bytes, content_type='image/png')
+    resp['Cache-Control'] = 'public, max-age=3600'
+    return resp
+
+
+@require_http_methods(['GET'])
+def field_passport_zones(request: HttpRequest, pk: int) -> JsonResponse:
+    """Карта зон неоднородности + динамика к предыдущему композиту."""
+    from .services import passport
+
+    field, err = _viewable_field_or_error(request, pk)
+    if err:
+        return err
+
+    year = request.GET.get('year') or passport.default_year()
+    date_range = request.GET.get('date', '')
+    sensor = request.GET.get('sensor', '')
+    return JsonResponse({
+        'ok': True,
+        'zones': passport.zones(field, year, date_range, sensor),
+    })
+
+
+@require_http_methods(['GET'])
+def field_passport_zones_kml(request: HttpRequest, pk: int) -> HttpResponse:
+    """KML-экспорт зон неоднородности для ПО БПЛА DJI (Pilot 2 / Fly)."""
+    from agrocosmos.services.raster_tiles import zones_to_kml_document
+
+    from .services import passport
+
+    field, err = _viewable_field_or_error(request, pk)
+    if err:
+        return err
+
+    year = request.GET.get('year') or passport.default_year()
+    feats, comp = passport.zone_features(
+        field, year, request.GET.get('date', ''), request.GET.get('sensor', ''),
+    )
+    if not feats:
+        return JsonResponse({'ok': False, 'error': 'no raster data'}, status=404)
+
+    kml = zones_to_kml_document(feats, field.pk, comp['date_from'], comp['date_to'])
+    resp = HttpResponse(kml, content_type='application/vnd.google-earth.kml+xml')
+    fname = f"zones_f{field.pk}_{comp['date_from']}.kml"
+    resp['Content-Disposition'] = f'attachment; filename="{fname}"'
+    return resp
+
+
+@require_http_methods(['GET'])
+def field_passport_zones_shp(request: HttpRequest, pk: int) -> HttpResponse:
+    """SHP-карта-предписание (VRA) для DJI Agras — zip с shapefile.
+
+    Нормы внесения (л/га или кг/га) задаёт агроном через ``rate_problem`` /
+    ``rate_warn`` / ``rate_ok``. Импорт в пульте Agras: SD-карта →
+    Prescription Map → Map Source: Other, unit: ha.
+    """
+    from agrocosmos.services.raster_tiles import zones_to_agras_shp_zip
+
+    from .services import passport
+
+    field, err = _viewable_field_or_error(request, pk)
+    if err:
+        return err
+
+    rates = {}
+    for zone in ('problem', 'warn', 'ok'):
+        raw = request.GET.get(f'rate_{zone}', '0')
+        try:
+            rates[zone] = max(float(raw), 0.0)
+        except (TypeError, ValueError):
+            return JsonResponse(
+                {'ok': False, 'error': f'invalid rate_{zone}'}, status=400)
+
+    year = request.GET.get('year') or passport.default_year()
+    feats, comp = passport.zone_features(
+        field, year, request.GET.get('date', ''), request.GET.get('sensor', ''),
+    )
+    if not feats:
+        return JsonResponse({'ok': False, 'error': 'no raster data'}, status=404)
+
+    name = f"prescription_f{field.pk}_{comp['date_from']}"
+    zip_bytes = zones_to_agras_shp_zip(feats, rates, name)
+    resp = HttpResponse(zip_bytes, content_type='application/zip')
+    resp['Content-Disposition'] = f'attachment; filename="{name}.zip"'
+    return resp
