@@ -214,7 +214,23 @@ jobs:
           script: |
             set -e
             cd /opt/edunabazar
-            git fetch origin
+            # `git fetch` over HTTPS occasionally dies with a transient
+            # "GnuTLS recv error (-54)" — a dropped TLS read on the server
+            # (flaky network / old GnuTLS + HTTP/2). Pin HTTP/1.1 + a bigger
+            # buffer and retry with backoff so one dropped read no longer
+            # aborts the whole deploy.
+            git config http.version HTTP/1.1
+            git config http.postBuffer 524288000
+            for attempt in 1 2 3 4 5; do
+              if git fetch origin; then
+                break
+              fi
+              if [ "$attempt" = 5 ]; then
+                echo "::error::git fetch failed after 5 attempts"; exit 1
+              fi
+              echo "git fetch failed (attempt $attempt) — retrying in $((attempt*5))s"
+              sleep $((attempt * 5))
+            done
             git reset --hard origin/main
             # Build both web and worker — they share the Dockerfile but
             # docker compose maintains them as separate image tags.
