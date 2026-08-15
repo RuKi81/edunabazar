@@ -305,6 +305,77 @@ class FieldEvent(models.Model):
         return f'{self.get_event_type_display()} @ {self.field.name} ({self.event_date})'
 
 
+class GisLayer(models.Model):
+    """Реестр пользовательских ГИС-слоёв, загруженных из SHP (ZIP).
+
+    Каждый ``.shp`` из загруженного архива импортируется в ОТДЕЛЬНУЮ
+    таблицу PostGIS (``table_name``), созданную сырым DDL вне Django-миграций
+    (схема шейп-файла произвольна). Здесь хранится только МЕТА-реестр: как
+    называется таблица, тип геометрии, SRID оригинала, атрибуты, охват — всё,
+    что нужно, чтобы отрисовать слой на карте (universal MVT-эндпоинт по
+    ``table_name``) и управлять им (видимость/зум/удаление).
+
+    При удалении записи соответствующая физическая таблица дропается в
+    сервисе (см. ``services/shp_import.drop_layer``) — на уровне модели связи
+    с ней нет, поэтому чистка идёт через API, а не каскадом БД.
+    """
+
+    class GeomKind(models.TextChoices):
+        POINT = 'point', 'Точки'
+        LINE = 'line', 'Линии'
+        POLYGON = 'polygon', 'Полигоны'
+        OTHER = 'other', 'Прочее'
+
+    title = models.CharField(max_length=200, verbose_name='Название слоя')
+    table_name = models.CharField(
+        max_length=63, unique=True, verbose_name='Таблица PostGIS',
+        help_text='Физическая таблица со всеми объектами слоя (identifier ≤ 63 симв.).',
+    )
+    original_filename = models.CharField(
+        max_length=255, verbose_name='Имя .shp',
+    )
+    source_archive = models.CharField(
+        max_length=255, blank=True, default='', verbose_name='Исходный ZIP',
+    )
+    geom_kind = models.CharField(
+        max_length=10, choices=GeomKind.choices, default=GeomKind.OTHER,
+        verbose_name='Тип геометрии',
+    )
+    geom_type = models.CharField(
+        max_length=40, blank=True, default='',
+        verbose_name='OGR geom type', help_text='Напр. Polygon / MultiPolygon / Point.',
+    )
+    srid_original = models.IntegerField(
+        default=0, verbose_name='Исходный SRID',
+        help_text='0 — проекция не определена (.prj отсутствует), принята как 4326.',
+    )
+    feature_count = models.IntegerField(default=0, verbose_name='Объектов')
+    # [{'name': 'field', 'db': 'field', 'type': 'text'}, ...] — соответствие
+    # исходных атрибутов колонкам таблицы (имена sanitized/dedup'нуты).
+    attributes = models.JSONField(default=list, blank=True, verbose_name='Атрибуты')
+    # [minx, miny, maxx, maxy] в EPSG:4326 — для «зум к слою».
+    extent = models.JSONField(null=True, blank=True, verbose_name='Охват (4326)')
+    color = models.CharField(
+        max_length=7, default='#e91e63', verbose_name='Цвет',
+    )
+
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='gis_layers',
+        verbose_name='Загрузил',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'myf_gis_layer'
+        ordering = ['-created_at']
+        verbose_name = 'ГИС-слой (SHP)'
+        verbose_name_plural = 'ГИС-слои (SHP)'
+
+    def __str__(self):
+        return f'{self.title} ({self.table_name}, {self.feature_count} об.)'
+
+
 class FieldPhoto(models.Model):
     """Фотография поля или события. GPS извлекается из EXIF при загрузке."""
 

@@ -372,6 +372,47 @@
     .gis-attrtable tbody tr.active { background: #ffe0ec; }
     .gis-attrtable tbody tr.active:hover { background: #ffd2e2; }
     .gis-attrtable__empty { padding: 24px; text-align: center; color: #999; font-size: 13px; line-height: 1.5; }
+
+    /* ── Загрузчик SHP (ZIP) ── */
+    .gis-upload-dz {
+      border: 2px dashed #b0bec5; border-radius: 8px; padding: 14px 10px;
+      text-align: center; font-size: 12px; color: #607d8b; background: #fafcfd;
+      transition: border-color .15s, background .15s;
+    }
+    .gis-upload-dz.dragover { border-color: #2e7d32; background: #e8f5e9; color: #2e7d32; }
+    .gis-upload-dz__icon { font-size: 24px; margin-bottom: 4px; }
+    .gis-upload-dz__btn {
+      margin-top: 8px; padding: 5px 12px; font-size: 12px; font-weight: 600;
+      border: 1px solid #2e7d32; color: #2e7d32; background: #fff;
+      border-radius: 6px; cursor: pointer;
+    }
+    .gis-upload-dz__btn:hover { background: #e8f5e9; }
+    .gis-upload-status {
+      margin-top: 8px; font-size: 12px; border-radius: 6px; padding: 8px 10px;
+      background: #fff8e1; color: #795548; border: 1px solid #ffe082;
+    }
+    .gis-upload-status.busy { background: #e3f2fd; color: #1565c0; border-color: #90caf9; }
+    .gis-upload-status.err  { background: #ffebee; color: #c62828; border-color: #ef9a9a; }
+    .gis-upload-status ul { margin: 6px 0 0; padding-left: 18px; }
+    .gis-layer__swatch {
+      width: 12px; height: 12px; border-radius: 3px; flex: 0 0 auto;
+      border: 1px solid rgba(0,0,0,.2);
+    }
+    .gis-layer__btn.danger:hover:not(.disabled) { background: #ffebee; color: #c62828; }
+
+    /* Полноэкранный drop-оверлей поверх всего окна ГИС. */
+    .gis-drop-overlay {
+      position: absolute; inset: 0; z-index: 60;
+      background: rgba(46,125,50,.14); backdrop-filter: blur(1px);
+      display: flex; align-items: center; justify-content: center;
+      pointer-events: none;
+    }
+    .gis-drop-overlay__box {
+      background: #fff; border: 3px dashed #2e7d32; border-radius: 16px;
+      padding: 40px 56px; text-align: center; box-shadow: 0 10px 40px rgba(0,0,0,.2);
+    }
+    .gis-drop-overlay__icon { font-size: 52px; }
+    .gis-drop-overlay__text { margin-top: 10px; font-size: 18px; font-weight: 600; color: #2e7d32; }
   </style>
 {% endblock %}
 
@@ -412,6 +453,16 @@
           <div class="gis-layer__meta" id="gis-userfields-meta">загрузка…</div>
         </div>
       </div>
+
+      <h2 class="gis-h2" style="margin-top:14px;">📥 Загрузка SHP</h2>
+      <div id="gis-upload-dz" class="gis-upload-dz">
+        <div class="gis-upload-dz__icon">🗂️</div>
+        <div>Перетащите <b>.zip</b> с шейп-файлами сюда<br>или в окно карты</div>
+        <button type="button" id="gis-upload-btn" class="gis-upload-dz__btn">Выбрать ZIP…</button>
+        <input type="file" id="gis-upload-input" accept=".zip,application/zip" multiple hidden>
+      </div>
+      <div id="gis-upload-status" class="gis-upload-status" hidden></div>
+      <div id="gis-uploaded-layers" style="margin-top:10px;"></div>
     </aside>
 
     <button class="gis-collapse-btn" id="gis-collapse-left"  type="button" title="Свернуть/развернуть слои">‹</button>
@@ -511,6 +562,13 @@
       </div>
       <div class="gis-attrtable__body" id="gis-attrtable-body"></div>
     </section>
+
+    <div class="gis-drop-overlay" id="gis-drop-overlay" hidden>
+      <div class="gis-drop-overlay__box">
+        <div class="gis-drop-overlay__icon">📥</div>
+        <div class="gis-drop-overlay__text">Отпустите ZIP с шейп-файлами для импорта</div>
+      </div>
+    </div>
 
     <div class="gis-toast" id="gis-toast" role="status" aria-live="polite"></div>
   </div>
@@ -4149,6 +4207,237 @@
         if (!match) return;
         clearTimeout(moveTimer);
         moveTimer = setTimeout(render, 250);
+      });
+    })();
+
+    /* ═══════════════════ ГИС-загрузчик SHP (ZIP) ═══════════════════
+       Drag-n-drop ZIP в окно портала → POST на /me/gis/api/layers/ →
+       каждый .shp импортируется в свою таблицу PostGIS. Загруженные слои
+       рисуются универсальным MVT-эндпоинтом (source-layer = table_name) и
+       управляются в левой панели (видимость / зум / удаление). */
+    (function () {
+      var API = '/me/gis/api/layers/';
+      var dz = document.getElementById('gis-upload-dz');
+      var input = document.getElementById('gis-upload-input');
+      var btn = document.getElementById('gis-upload-btn');
+      var statusEl = document.getElementById('gis-upload-status');
+      var listEl = document.getElementById('gis-uploaded-layers');
+      var overlay = document.getElementById('gis-drop-overlay');
+
+      var uploaded = {};  /* id -> layer meta (+ _layerIds) */
+      var KIND_LABEL = { point: 'Точки', line: 'Линии', polygon: 'Полигоны', other: 'Геометрия' };
+
+      function esc(s) {
+        var d = document.createElement('div');
+        d.textContent = (s == null ? '' : String(s));
+        return d.innerHTML;
+      }
+      function setStatus(html, cls) {
+        if (!html) { statusEl.hidden = true; statusEl.innerHTML = ''; return; }
+        statusEl.hidden = false;
+        statusEl.className = 'gis-upload-status' + (cls ? ' ' + cls : '');
+        statusEl.innerHTML = html;
+      }
+      function srcId(id) { return 'gisup-src-' + id; }
+
+      function fitExtent(ext) {
+        if (!ext || ext.length !== 4) return;
+        try {
+          map.fitBounds([[ext[0], ext[1]], [ext[2], ext[3]]],
+                        { padding: 60, maxZoom: 16, duration: 600 });
+        } catch (_) {}
+      }
+
+      function showAttrs(props, L) {
+        var info = document.getElementById('gis-info');
+        if (!info) return;
+        var rows = (L.attributes || []).map(function (a) {
+          return '<tr><td style="color:#777;padding:2px 6px;vertical-align:top;">' +
+                 esc(a.name) + '</td><td style="padding:2px 6px;">' +
+                 esc(props[a.db]) + '</td></tr>';
+        }).join('');
+        info.innerHTML = '<div class="gis-info-card"><h4>' + esc(L.title) + '</h4>' +
+          '<div style="font-size:11px;color:#999;margin:-4px 0 8px;">' +
+          esc(L.table_name) + '</div>' +
+          '<table style="width:100%;font-size:12px;border-collapse:collapse;">' +
+          (rows || '<tr><td style="color:#999;padding:4px 6px;">без атрибутов</td></tr>') +
+          '</table></div>';
+      }
+
+      function addLayerToMap(L) {
+        var sid = srcId(L.id);
+        if (map.getSource(sid)) return;
+        var promote = {};
+        promote[L.table_name] = 'id';
+        map.addSource(sid, {
+          type: 'vector',
+          tiles: [location.origin + L.tiles_url],
+          minzoom: 0, maxzoom: 22,
+          promoteId: promote,
+        });
+
+        var fill = 'gisup-fill-' + L.id, ol = 'gisup-ol-' + L.id,
+            line = 'gisup-line-' + L.id, pt = 'gisup-pt-' + L.id;
+        var k = L.geom_kind, added = [];
+        if (k === 'polygon' || k === 'other') {
+          map.addLayer({ id: fill, type: 'fill', source: sid, 'source-layer': L.table_name,
+            filter: ['==', '$type', 'Polygon'],
+            paint: { 'fill-color': L.color, 'fill-opacity': 0.35 } });
+          map.addLayer({ id: ol, type: 'line', source: sid, 'source-layer': L.table_name,
+            filter: ['==', '$type', 'Polygon'],
+            paint: { 'line-color': L.color, 'line-width': 1.2 } });
+          added.push(fill, ol);
+        }
+        if (k === 'line' || k === 'other') {
+          map.addLayer({ id: line, type: 'line', source: sid, 'source-layer': L.table_name,
+            filter: ['==', '$type', 'LineString'],
+            paint: { 'line-color': L.color, 'line-width': 2 } });
+          added.push(line);
+        }
+        if (k === 'point' || k === 'other') {
+          map.addLayer({ id: pt, type: 'circle', source: sid, 'source-layer': L.table_name,
+            filter: ['==', '$type', 'Point'],
+            paint: { 'circle-color': L.color, 'circle-radius': 4,
+                     'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
+          added.push(pt);
+        }
+        L._layerIds = added;
+        added.forEach(function (lid) {
+          map.on('click', lid, function (e) {
+            if (e.features && e.features[0]) showAttrs(e.features[0].properties || {}, L);
+          });
+          map.on('mouseenter', lid, function () { map.getCanvas().style.cursor = 'pointer'; });
+          map.on('mouseleave', lid, function () { map.getCanvas().style.cursor = ''; });
+        });
+      }
+
+      function setVisible(L, vis) {
+        (L._layerIds || []).forEach(function (lid) {
+          if (map.getLayer(lid)) map.setLayoutProperty(lid, 'visibility', vis ? 'visible' : 'none');
+        });
+      }
+      function removeFromMap(L) {
+        (L._layerIds || []).forEach(function (lid) { if (map.getLayer(lid)) map.removeLayer(lid); });
+        var sid = srcId(L.id);
+        if (map.getSource(sid)) map.removeSource(sid);
+      }
+
+      function renderRow(L) {
+        var existing = document.getElementById('gisup-row-' + L.id);
+        if (existing) existing.remove();
+        var div = document.createElement('div');
+        div.className = 'gis-layer';
+        div.id = 'gisup-row-' + L.id;
+        div.innerHTML =
+          '<div class="gis-layer__head">' +
+            '<span class="gis-layer__swatch" style="background:' + esc(L.color) + '"></span>' +
+            '<button class="gis-layer__btn active" data-a="vis" type="button" title="Видимость">👁</button>' +
+            '<span class="name" title="' + esc(L.original_filename) + '">' + esc(L.title) + '</span>' +
+            '<button class="gis-layer__btn" data-a="zoom" type="button" title="Приблизить к слою">⤢</button>' +
+            '<button class="gis-layer__btn danger" data-a="del" type="button" title="Удалить слой и таблицу">🗑</button>' +
+          '</div>' +
+          '<div class="gis-layer__meta">' + esc(KIND_LABEL[L.geom_kind] || 'Слой') +
+            ' · ' + L.feature_count + ' об. · ' + esc(L.table_name) + '</div>';
+
+        var visBtn = div.querySelector('[data-a="vis"]');
+        visBtn.addEventListener('click', function () {
+          var on = !visBtn.classList.contains('active');
+          visBtn.classList.toggle('active', on);
+          setVisible(L, on);
+        });
+        div.querySelector('[data-a="zoom"]').addEventListener('click', function () {
+          fitExtent(L.extent);
+        });
+        div.querySelector('[data-a="del"]').addEventListener('click', function () {
+          if (!window.confirm('Удалить слой «' + L.title + '» и его таблицу в БД? Действие необратимо.')) return;
+          fetch(API + L.id + '/', {
+            method: 'DELETE', credentials: 'same-origin',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+          }).then(function (r) {
+            if (r.ok) {
+              removeFromMap(L); div.remove(); delete uploaded[L.id];
+              toast('Слой удалён');
+            } else { toast('Не удалось удалить слой', true); }
+          }).catch(function () { toast('Сетевая ошибка при удалении', true); });
+        });
+        listEl.appendChild(div);
+      }
+
+      function ingest(L) { uploaded[L.id] = L; addLayerToMap(L); renderRow(L); }
+
+      function upload(fileList) {
+        var zips = Array.prototype.filter.call(fileList || [], function (f) {
+          return /\.zip$/i.test(f.name);
+        });
+        if (!zips.length) { setStatus('Нужен .zip архив с шейп-файлами.', 'err'); return; }
+        var fd = new FormData();
+        zips.forEach(function (f) { fd.append('files', f); });
+        setStatus('Загрузка и импорт… для крупных SHP это может занять время.', 'busy');
+        fetch(API, {
+          method: 'POST', body: fd, credentials: 'same-origin',
+          headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        }).then(function (r) {
+          return r.json().then(function (j) { return j; }, function () { return {}; });
+        }).then(function (b) {
+          b = b || {};
+          var created = b.created || [];
+          created.forEach(ingest);
+          var msg = created.length ? ('Импортировано слоёв: ' + created.length + '.') : '';
+          if (created.length && created[0].extent) fitExtent(created[0].extent);
+          if (created.length) toast(msg);
+          if (b.errors && b.errors.length) {
+            var items = b.errors.map(function (e) {
+              return '<li>' + esc(e.file || '') + ': ' + esc(e.error || '') + '</li>';
+            }).join('');
+            setStatus((msg ? msg + ' ' : '') + 'Проблемы:<ul>' + items + '</ul>', created.length ? null : 'err');
+          } else if (created.length) {
+            setStatus(msg, null);
+            setTimeout(function () { setStatus(''); }, 4000);
+          } else {
+            setStatus('Не удалось импортировать: проверьте, что в архиве есть .shp/.dbf/.shx.', 'err');
+          }
+        }).catch(function () {
+          setStatus('Сетевая ошибка при загрузке.', 'err');
+        });
+      }
+
+      /* ── Загрузка существующих слоёв при старте ── */
+      function loadLayers() {
+        fetch(API, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+          .then(function (r) { return r.json(); })
+          .then(function (j) { (j.results || []).forEach(ingest); })
+          .catch(function () {});
+      }
+      if (map.loaded()) loadLayers(); else map.on('load', loadLayers);
+
+      /* ── Кнопка выбора файла + drop на сам dropzone ── */
+      btn.addEventListener('click', function () { input.click(); });
+      input.addEventListener('change', function () {
+        if (input.files && input.files.length) upload(input.files);
+        input.value = '';
+      });
+      dz.addEventListener('dragover', function (e) { e.preventDefault(); dz.classList.add('dragover'); });
+      dz.addEventListener('dragleave', function () { dz.classList.remove('dragover'); });
+      dz.addEventListener('drop', function () { dz.classList.remove('dragover'); });
+
+      /* ── Полноэкранный drag-n-drop на всё окно портала ── */
+      var dragDepth = 0;
+      function hasFiles(e) {
+        return e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') !== -1;
+      }
+      window.addEventListener('dragenter', function (e) {
+        if (!hasFiles(e)) return;
+        e.preventDefault(); dragDepth++; overlay.hidden = false;
+      });
+      window.addEventListener('dragover', function (e) { if (hasFiles(e)) e.preventDefault(); });
+      window.addEventListener('dragleave', function (e) {
+        if (!hasFiles(e)) return;
+        dragDepth--; if (dragDepth <= 0) { dragDepth = 0; overlay.hidden = true; }
+      });
+      window.addEventListener('drop', function (e) {
+        if (!hasFiles(e)) return;
+        e.preventDefault(); dragDepth = 0; overlay.hidden = true;
+        upload(e.dataTransfer.files);
       });
     })();
   })();

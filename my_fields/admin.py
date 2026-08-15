@@ -9,7 +9,7 @@ from __future__ import annotations
 from django.contrib import admin
 
 from .models import (
-    FieldEvent, FieldPhoto, FieldSeason, Plan, UserField, UserPlan,
+    FieldEvent, FieldPhoto, FieldSeason, GisLayer, Plan, UserField, UserPlan,
 )
 
 
@@ -74,3 +74,37 @@ class FieldPhotoAdmin(admin.ModelAdmin):
     list_display = ('id', 'field', 'event', 'taken_at', 'uploaded_at')
     autocomplete_fields = ('field', 'event', 'uploaded_by')
     list_select_related = ('field', 'event')
+
+
+@admin.register(GisLayer)
+class GisLayerAdmin(admin.ModelAdmin):
+    """Реестр загруженных SHP-слоёв.
+
+    Удаление здесь дропает и физическую таблицу PostGIS (через
+    ``services.shp_import.drop_layer``), а не только строку реестра.
+    """
+    list_display = (
+        'id', 'title', 'geom_kind', 'feature_count', 'table_name',
+        'srid_original', 'owner', 'created_at',
+    )
+    list_filter = ('geom_kind', 'created_at')
+    search_fields = ('title', 'table_name', 'original_filename', 'source_archive')
+    readonly_fields = (
+        'table_name', 'original_filename', 'source_archive', 'geom_kind',
+        'geom_type', 'srid_original', 'feature_count', 'attributes',
+        'extent', 'created_at',
+    )
+    list_select_related = ('owner',)
+
+    def has_add_permission(self, request):
+        # Слои появляются только через импорт SHP, не вручную.
+        return False
+
+    def delete_model(self, request, obj):
+        from .services.shp_import import drop_layer
+        drop_layer(obj)
+
+    def delete_queryset(self, request, queryset):
+        from .services.shp_import import drop_layer
+        for obj in queryset:
+            drop_layer(obj)

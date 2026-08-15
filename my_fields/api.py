@@ -29,7 +29,7 @@ from django.utils.dateparse import parse_date
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from .models import FieldEvent, FieldSeason, UserField
+from .models import FieldEvent, FieldSeason, GisLayer, UserField
 from .permissions import can_edit_field, can_view_field
 from .services.geometry import (
     compute_area_ha, ensure_multipolygon, resolve_region_district,
@@ -723,4 +723,162 @@ def field_passport_zones_shp(request: HttpRequest, pk: int) -> HttpResponse:
     zip_bytes = zones_to_agras_shp_zip(feats, rates, name)
     resp = HttpResponse(zip_bytes, content_type='application/zip')
     resp['Content-Disposition'] = f'attachment; filename="{name}.zip"'
+    return resp
+
+
+# ─────────────────────────────────────────────────────────────────────
+# ГИС-слои: загрузка SHP (ZIP) → таблица PostGIS на каждый .shp
+# /me/gis/api/layers/           — GET список / POST загрузка (multipart)
+# /me/gis/api/layers/<id>/      — DELETE (дроп таблицы)
+# /me/gis/api/layers/<id>/tiles/<z>/<x>/<y>.pbf — универсальный MVT
+# Всё gated под admin (как и вся страница /me/gis).
+# ─────────────────────────────────────────────────────────────────────
+
+def _require_gis_admin(request: HttpRequest):
+    """None если админ, иначе JsonResponse 401/403 (как гейт /me/gis)."""
+    from .views import _is_admin_legacy
+    if not request.user.is_authenticated:
+        return JsonResponse(
+            {'error': 'authentication_required'}, status=401)
+    if not _is_admin_legacy(request):
+        return JsonResponse({'error': 'forbidden'}, status=403)
+    return None
+
+
+def _gis_layer_to_dict(layer: GisLayer) -> dict:
+    return {
+        'id': layer.pk,
+        'title': layer.title,
+        'table_name': layer.table_name,
+        'original_filename': layer.original_filename,
+        'source_archive': layer.source_archive,
+        'geom_kind': layer.geom_kind,
+        'geom_type': layer.geom_type,
+        'srid_original': layer.srid_original,
+        'feature_count': layer.feature_count,
+        'attributes': layer.attributes,
+        'extent': layer.extent,
+        'color': layer.color,
+        'created_at': layer.created_at.isoformat(),
+        'tiles_url': f'/me/gis/api/layers/{layer.pk}/tiles/{{z}}/{{x}}/{{y}}.pbf',
+    }
+
+
+@csrf_exempt
+@require_http_methods(['GET', 'POST'])
+def gis_layers_collection(request: HttpRequest) -> JsonResponse:
+    """Список ГИС-слоёв (GET) или загрузка ZIP с шейп-файлами (POST)."""
+    gate = _require_gis_admin(request)
+    if gate:
+        return gate
+
+    if request.method == 'GET':
+        layers = GisLayer.objects.all()
+        return JsonResponse({
+            'ok': True,
+            'count': layers.count(),
+            'results': [_gis_layer_to_dict(x) for x in layers],
+        })
+
+    # POST — приём одного/нескольких ZIP через multipart/form-data.
+    from .services.shp_import import ShapefileImportError, import_zip
+
+    files = request.FILES.getlist('files') or request.FILES.getlist('file')
+    if not files:
+        return JsonResponse(
+            {'ok': False, 'error': 'no_files',
+             'detail': 'Прикрепите ZIP-архив(ы) с шейп-файлами.'},
+            status=400,
+        )
+
+    created, errors = [], []
+    for f in files:
+        if not f.name.lower().endswith('.zip'):
+            errors.append({'file': f.name, 'error': 'Ожидается .zip архив.'})
+            continue
+        try:
+            result = import_zip(f, owner=request.user, archive_name=f.name)
+        except ShapefileImportError as e:
+            errors.append({'file': f.name, 'error': str(e)})
+            continue
+        except Exception as e:  # noqa: BLE001
+            errors.append({'file': f.name, 'error': f'Ошибка импорта: {e}'})
+            continue
+        created.extend(_gis_layer_to_dict(x) for x in result['created'])
+        errors.extend(result['errors'])
+
+    status = 200 if created else (400 if errors else 200)
+    return JsonResponse(
+        {'ok': bool(created), 'created': created, 'errors': errors},
+        status=status,
+    )
+
+
+@csrf_exempt
+@require_http_methods(['DELETE'])
+def gis_layer_detail(request: HttpRequest, pk: int) -> JsonResponse:
+    """Удалить ГИС-слой: дроп физической таблицы + запись реестра."""
+    gate = _require_gis_admin(request)
+    if gate:
+        return gate
+
+    from .services.shp_import import drop_layer
+
+    layer = get_object_or_404(GisLayer, pk=pk)
+    drop_layer(layer)
+    return JsonResponse({'ok': True})
+
+
+@require_http_methods(['GET'])
+def gis_layer_tiles(request: HttpRequest, pk: int, z: int, x: int,
+                    y: int) -> HttpResponse:
+    """Универсальный MVT для загруженного слоя (source-layer = table_name)."""
+    from django.db import connection
+
+    from agrocosmos.views.tiles import _tile_bbox
+    from psycopg import sql
+
+    gate = _require_gis_admin(request)
+    if gate:
+        # для тайлов отдаём пустой protobuf, а не JSON, чтобы MapLibre молчал
+        resp = HttpResponse(b'', content_type='application/x-protobuf',
+                            status=gate.status_code)
+        resp['Cache-Control'] = 'private, no-store'
+        return resp
+
+    layer = get_object_or_404(GisLayer, pk=pk)
+    xmin, ymin, xmax, ymax = _tile_bbox(z, x, y)
+
+    # id + атрибуты (из реестра, идентификаторы уже sanitized) + MVT-геометрия.
+    attr_idents = [sql.Identifier(a['db']) for a in (layer.attributes or [])]
+    select_cols = [sql.Identifier('id')] + attr_idents
+    query = sql.SQL(
+        'WITH bounds AS (SELECT ST_MakeEnvelope(%s, %s, %s, %s, 3857) AS env), '
+        'tile AS ('
+        '  SELECT {cols}, ST_AsMVTGeom('
+        '    ST_Transform(t.geom, 3857), b.env, 4096, 256, true) AS geom '
+        '  FROM {table} t CROSS JOIN bounds b '
+        '  WHERE t.geom && ST_Transform(b.env, 4326)'
+        ') '
+        'SELECT ST_AsMVT(tile, {srclayer}, 4096, \'geom\') '
+        'FROM tile WHERE geom IS NOT NULL'
+    ).format(
+        cols=sql.SQL(', ').join(select_cols),
+        table=sql.Identifier(layer.table_name),
+        srclayer=sql.Literal(layer.table_name),
+    )
+
+    tile_bytes = b''
+    try:
+        with connection.cursor() as cur:
+            cur.execute(query, [xmin, ymin, xmax, ymax])
+            row = cur.fetchone()
+            raw = row[0] if row and row[0] else b''
+            tile_bytes = bytes(raw) if not isinstance(raw, bytes) else raw
+    except Exception:
+        tile_bytes = b''
+
+    resp = HttpResponse(tile_bytes, content_type='application/x-protobuf')
+    resp['Cache-Control'] = 'private, max-age=60'
+    resp['Access-Control-Allow-Origin'] = '*'
     return resp

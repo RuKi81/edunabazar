@@ -30,6 +30,12 @@ urlpatterns = [
     path('api/my/fields/<int:pk>/passport/zones/kml/', api.field_passport_zones_kml, name='api_passport_zones_kml'),
     path('api/my/fields/<int:pk>/passport/zones/shp/', api.field_passport_zones_shp, name='api_passport_zones_shp'),
 
+    # ── ГИС-слои: загрузка SHP (ZIP) → таблица PostGIS на каждый .shp ──
+    path('me/gis/api/layers/', api.gis_layers_collection, name='api_gis_layers'),
+    path('me/gis/api/layers/<int:pk>/', api.gis_layer_detail, name='api_gis_layer_detail'),
+    path('me/gis/api/layers/<int:pk>/tiles/<int:z>/<int:x>/<int:y>.pbf',
+         api.gis_layer_tiles, name='api_gis_layer_tiles'),
+
     # ── UI ──
     path('me/fields/', views.fields_list_page, name='ui_fields_list'),
     path('me/fields/<int:pk>/', views.field_detail_page, name='ui_field_detail'),
