@@ -26,6 +26,7 @@ from django.contrib.gis.gdal.field import (
     OFTDate, OFTDateTime, OFTInteger, OFTInteger64, OFTReal, OFTTime,
 )
 from django.db import connection, transaction
+from django.db.models import Max
 from psycopg import sql
 
 logger = logging.getLogger('my_fields')
@@ -220,6 +221,9 @@ def import_shapefile(shp_path: str, title: str, owner=None,
     columns, attr_meta = _build_columns(layer.fields, layer.field_types)
     table_name = _unique_table_name(title)
     color = LAYER_COLORS[GisLayer.objects.count() % len(LAYER_COLORS)]
+    next_order = (
+        GisLayer.objects.aggregate(m=Max('sort_order'))['m'] or 0
+    ) + 1
 
     _create_table(table_name, columns)
     feature_count = _copy_features(table_name, layer, columns, ct)
@@ -238,6 +242,7 @@ def import_shapefile(shp_path: str, title: str, owner=None,
         attributes=attr_meta,
         extent=extent,
         color=color,
+        sort_order=next_order,
         owner=owner if getattr(owner, 'is_authenticated', False) else None,
     )
 

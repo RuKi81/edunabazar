@@ -12,6 +12,7 @@
 Требуют PostGIS + GDAL (есть в CI). Шейп-файлы генерим на лету через pyshp.
 """
 import io
+import json
 import math
 import os
 import tempfile
@@ -214,3 +215,66 @@ class ListAndTilesTests(GisLayersTestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(GisLayer.objects.count(), 0)
         self.assertFalse(_table_exists(table))
+
+
+class RenameAndReorderTests(GisLayersTestCase):
+    def setUp(self):
+        self._login_admin()
+        self._upload(_make_shp_zip(shp_name='layer_a'))
+        self._upload(_make_shp_zip(shp_name='layer_b'))
+        self.a, self.b = list(GisLayer.objects.order_by('sort_order', 'id'))
+
+    def test_import_assigns_increasing_sort_order(self):
+        self.assertLess(self.a.sort_order, self.b.sort_order)
+
+    def test_patch_renames_layer(self):
+        resp = self.client.patch(
+            f'/me/gis/api/layers/{self.a.pk}/',
+            data=json.dumps({'title': 'Мой слой'}),
+            content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.a.refresh_from_db()
+        self.assertEqual(self.a.title, 'Мой слой')
+
+    def test_patch_empty_title_is_400(self):
+        resp = self.client.patch(
+            f'/me/gis/api/layers/{self.a.pk}/',
+            data=json.dumps({'title': '   '}),
+            content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.a.refresh_from_db()
+        self.assertNotEqual(self.a.title, '')
+
+    def test_reorder_updates_sort_order(self):
+        # Отправляем b первым → b получает sort_order=0, a=1.
+        resp = self.client.post(
+            '/me/gis/api/layers/reorder/',
+            data=json.dumps({'order': [self.b.pk, self.a.pk]}),
+            content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.a.refresh_from_db()
+        self.b.refresh_from_db()
+        self.assertEqual(self.b.sort_order, 0)
+        self.assertEqual(self.a.sort_order, 1)
+
+    def test_reorder_requires_admin(self):
+        self.client.logout()
+        self._login_plain()
+        resp = self.client.post(
+            '/me/gis/api/layers/reorder/',
+            data=json.dumps({'order': [self.b.pk, self.a.pk]}),
+            content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_rename_requires_admin(self):
+        self.client.logout()
+        resp = self.client.patch(
+            f'/me/gis/api/layers/{self.a.pk}/',
+            data=json.dumps({'title': 'X'}),
+            content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 401)

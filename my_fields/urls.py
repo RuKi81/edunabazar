@@ -32,6 +32,7 @@ urlpatterns = [
 
     # ── ГИС-слои: загрузка SHP (ZIP) → таблица PostGIS на каждый .shp ──
     path('me/gis/api/layers/', api.gis_layers_collection, name='api_gis_layers'),
+    path('me/gis/api/layers/reorder/', api.gis_layers_reorder, name='api_gis_layers_reorder'),
     path('me/gis/api/layers/<int:pk>/', api.gis_layer_detail, name='api_gis_layer_detail'),
     path('me/gis/api/layers/<int:pk>/tiles/<int:z>/<int:x>/<int:y>.pbf',
          api.gis_layer_tiles, name='api_gis_layer_tiles'),

@@ -358,6 +358,10 @@ class GisLayer(models.Model):
     color = models.CharField(
         max_length=7, default='#e91e63', verbose_name='Цвет',
     )
+    sort_order = models.IntegerField(
+        default=0, verbose_name='Порядок',
+        help_text='Меньше — выше в списке слоёв и на карте.',
+    )
 
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
@@ -368,7 +372,7 @@ class GisLayer(models.Model):
 
     class Meta:
         db_table = 'myf_gis_layer'
-        ordering = ['-created_at']
+        ordering = ['sort_order', '-created_at']
         verbose_name = 'ГИС-слой (SHP)'
         verbose_name_plural = 'ГИС-слои (SHP)'
 

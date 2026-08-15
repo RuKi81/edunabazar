@@ -759,6 +759,7 @@ def _gis_layer_to_dict(layer: GisLayer) -> dict:
         'attributes': layer.attributes,
         'extent': layer.extent,
         'color': layer.color,
+        'sort_order': layer.sort_order,
         'created_at': layer.created_at.isoformat(),
         'tiles_url': f'/me/gis/api/layers/{layer.pk}/tiles/{{z}}/{{x}}/{{y}}.pbf',
     }
@@ -815,17 +816,72 @@ def gis_layers_collection(request: HttpRequest) -> JsonResponse:
 
 
 @csrf_exempt
-@require_http_methods(['DELETE'])
+@require_http_methods(['PATCH', 'DELETE'])
 def gis_layer_detail(request: HttpRequest, pk: int) -> JsonResponse:
-    """Удалить ГИС-слой: дроп физической таблицы + запись реестра."""
+    """PATCH — переименовать слой; DELETE — дроп таблицы + записи реестра."""
     gate = _require_gis_admin(request)
     if gate:
         return gate
 
-    from .services.shp_import import drop_layer
-
     layer = get_object_or_404(GisLayer, pk=pk)
-    drop_layer(layer)
+
+    if request.method == 'DELETE':
+        from .services.shp_import import drop_layer
+        drop_layer(layer)
+        return JsonResponse({'ok': True})
+
+    # PATCH — пока поддерживаем только переименование (title).
+    try:
+        data = json.loads(request.body or b'{}')
+    except (ValueError, TypeError):
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_json'}, status=400)
+
+    title = str(data.get('title', '')).strip()
+    if not title:
+        return JsonResponse(
+            {'ok': False, 'error': 'empty_title',
+             'detail': 'Название слоя не может быть пустым.'},
+            status=400,
+        )
+    layer.title = title[:200]
+    layer.save(update_fields=['title'])
+    return JsonResponse({'ok': True, 'layer': _gis_layer_to_dict(layer)})
+
+
+@csrf_exempt
+@require_http_methods(['POST'])
+def gis_layers_reorder(request: HttpRequest) -> JsonResponse:
+    """Сохранить порядок слоёв. Тело: ``{"order": [id, id, ...]}`` —
+    сверху вниз (первый = верхний в списке и на карте)."""
+    gate = _require_gis_admin(request)
+    if gate:
+        return gate
+
+    from django.db import transaction
+
+    try:
+        data = json.loads(request.body or b'{}')
+    except (ValueError, TypeError):
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_json'}, status=400)
+
+    order = data.get('order')
+    if not isinstance(order, list):
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_order'}, status=400)
+
+    ids = []
+    for value in order:
+        try:
+            ids.append(int(value))
+        except (TypeError, ValueError):
+            continue
+
+    with transaction.atomic():
+        for idx, lid in enumerate(ids):
+            GisLayer.objects.filter(pk=lid).update(sort_order=idx)
+
     return JsonResponse({'ok': True})
 
 

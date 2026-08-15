@@ -66,7 +66,17 @@
       padding: 8px 10px; margin-bottom: 8px; background: #fff;
     }
     .gis-layer__head { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
-    .gis-layer__head .name { flex: 1; min-width: 0; }
+    .gis-layer__head .name {
+      flex: 1; min-width: 0;
+      white-space: normal; overflow-wrap: anywhere; word-break: break-word;
+      line-height: 1.25;
+    }
+    .gis-layer__head .name[data-editable] { cursor: text; }
+    .gis-layer__name-input {
+      flex: 1; min-width: 0; font: inherit; font-weight: 600;
+      border: 1px solid #a5d6a7; border-radius: 4px; padding: 2px 5px;
+      background: #f1f8e9; color: #1b5e20; outline: none;
+    }
     .gis-layer__meta { font-size: 11px; color: #777; margin-top: 4px; }
     .gis-layer__btn {
       width: 26px; height: 26px; border-radius: 4px; border: 1px solid transparent;
@@ -257,8 +267,8 @@
     .gis-basemap-dock button.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
 
     /* Drag&drop порядка слоёв. */
-    .gis-layer[data-layer] { cursor: grab; user-select: none; }
-    .gis-layer[data-layer]:active { cursor: grabbing; }
+    .gis-layer[data-layer], .gis-layer[data-gisup] { cursor: grab; user-select: none; }
+    .gis-layer[data-layer]:active, .gis-layer[data-gisup]:active { cursor: grabbing; }
     .gis-layer.dragging  { opacity: .45; }
     .gis-layer.drag-over-top    { box-shadow: 0 -2px 0 0 #2e7d32 inset, 0 -2px 0 0 #2e7d32; }
     .gis-layer.drag-over-bottom { box-shadow: 0 2px 0 0 #2e7d32; }
@@ -4323,33 +4333,161 @@
         if (map.getSource(sid)) map.removeSource(sid);
       }
 
-      function renderRow(L) {
+      /* ── Порядок слоёв: DOM ↔ z-order карты ↔ БД ── */
+      function syncUploadedOrderFromDOM() {
+        var rows = listEl.querySelectorAll('.gis-layer[data-gisup]');
+        /* Снизу вверх поднимаем каждый наверх → верх списка = верх карты. */
+        Array.prototype.slice.call(rows).reverse().forEach(function (row) {
+          var L = uploaded[row.getAttribute('data-gisup')];
+          if (!L) return;
+          (L._layerIds || []).forEach(function (lid) {
+            if (map.getLayer(lid)) { try { map.moveLayer(lid); } catch (_) {} }
+          });
+        });
+        if (map.getLayer('snap-indicator')) { try { map.moveLayer('snap-indicator'); } catch (_) {} }
+      }
+      function persistOrder() {
+        var rows = listEl.querySelectorAll('.gis-layer[data-gisup]');
+        var order = Array.prototype.map.call(rows, function (r) {
+          return parseInt(r.getAttribute('data-gisup'), 10);
+        });
+        fetch(API + 'reorder/', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ order: order }),
+        }).catch(function () {});
+      }
+
+      /* ── Drag-n-drop перестановка строк слоёв ── */
+      var upDragSrc = null;
+      function clearDragMarks() {
+        Array.prototype.forEach.call(listEl.querySelectorAll('.gis-layer'), function (r) {
+          r.classList.remove('drag-over-top', 'drag-over-bottom');
+        });
+      }
+      function wireDrag(div) {
+        div.addEventListener('dragstart', function (e) {
+          upDragSrc = div; div.classList.add('dragging');
+          if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = 'move';
+            try { e.dataTransfer.setData('text/plain', div.id); } catch (_) {}
+          }
+        });
+        div.addEventListener('dragend', function () {
+          div.classList.remove('dragging'); clearDragMarks(); upDragSrc = null;
+        });
+        div.addEventListener('dragover', function (e) {
+          if (!upDragSrc || upDragSrc === div) return;
+          e.preventDefault();
+          if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+          var rect = div.getBoundingClientRect();
+          var before = (e.clientY - rect.top) < rect.height / 2;
+          div.classList.toggle('drag-over-top', before);
+          div.classList.toggle('drag-over-bottom', !before);
+        });
+        div.addEventListener('dragleave', function () {
+          div.classList.remove('drag-over-top', 'drag-over-bottom');
+        });
+        div.addEventListener('drop', function (e) {
+          e.preventDefault();
+          if (!upDragSrc || upDragSrc === div) return;
+          var rect = div.getBoundingClientRect();
+          var before = (e.clientY - rect.top) < rect.height / 2;
+          div.classList.remove('drag-over-top', 'drag-over-bottom');
+          if (before) listEl.insertBefore(upDragSrc, div);
+          else listEl.insertBefore(upDragSrc, div.nextSibling);
+          syncUploadedOrderFromDOM();
+          persistOrder();
+        });
+      }
+
+      /* ── Название слоя: двойной клик → инлайн-редактор ── */
+      function makeNameSpan(L) {
+        var span = document.createElement('span');
+        span.className = 'name';
+        span.setAttribute('data-editable', '1');
+        span.title = L.original_filename + ' · двойной клик — переименовать';
+        span.textContent = L.title;
+        span.addEventListener('dblclick', function () { startEditName(L, span); });
+        return span;
+      }
+      function startEditName(L, span) {
+        var row = document.getElementById('gisup-row-' + L.id);
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'gis-layer__name-input';
+        input.value = L.title;
+        input.maxLength = 200;
+        if (row) row.setAttribute('draggable', 'false');
+        span.replaceWith(input);
+        input.focus(); input.select();
+        var done = false;
+        function finish(save) {
+          if (done) return; done = true;
+          if (row) row.setAttribute('draggable', 'true');
+          var val = input.value.trim();
+          var newSpan = makeNameSpan(L);
+          input.replaceWith(newSpan);
+          if (save && val && val !== L.title) {
+            newSpan.textContent = val;
+            fetch(API + L.id + '/', {
+              method: 'PATCH', credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+              body: JSON.stringify({ title: val }),
+            }).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+              .then(function () { L.title = val; toast('Слой переименован'); })
+              .catch(function () { newSpan.textContent = L.title; toast('Не удалось переименовать', true); });
+          }
+        }
+        input.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+          else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+        });
+        input.addEventListener('blur', function () { finish(true); });
+      }
+
+      function renderRow(L, atTop) {
         var existing = document.getElementById('gisup-row-' + L.id);
         if (existing) existing.remove();
         var div = document.createElement('div');
         div.className = 'gis-layer';
         div.id = 'gisup-row-' + L.id;
-        div.innerHTML =
-          '<div class="gis-layer__head">' +
-            '<span class="gis-layer__swatch" style="background:' + esc(L.color) + '"></span>' +
-            '<button class="gis-layer__btn active" data-a="vis" type="button" title="Видимость">👁</button>' +
-            '<span class="name" title="' + esc(L.original_filename) + '">' + esc(L.title) + '</span>' +
-            '<button class="gis-layer__btn" data-a="zoom" type="button" title="Приблизить к слою">⤢</button>' +
-            '<button class="gis-layer__btn danger" data-a="del" type="button" title="Удалить слой и таблицу">🗑</button>' +
-          '</div>' +
-          '<div class="gis-layer__meta">' + esc(KIND_LABEL[L.geom_kind] || 'Слой') +
-            ' · ' + L.feature_count + ' об. · ' + esc(L.table_name) + '</div>';
+        div.setAttribute('data-gisup', L.id);
+        div.setAttribute('draggable', 'true');
 
-        var visBtn = div.querySelector('[data-a="vis"]');
+        var head = document.createElement('div');
+        head.className = 'gis-layer__head';
+        head.innerHTML =
+          '<span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>' +
+          '<span class="gis-layer__swatch" style="background:' + esc(L.color) + '"></span>' +
+          '<button class="gis-layer__btn active" data-a="vis" type="button" title="Видимость">👁</button>';
+        var nameSpan = makeNameSpan(L);
+        head.appendChild(nameSpan);
+        var zoomBtn = document.createElement('button');
+        zoomBtn.className = 'gis-layer__btn'; zoomBtn.type = 'button';
+        zoomBtn.setAttribute('data-a', 'zoom'); zoomBtn.title = 'Приблизить к слою';
+        zoomBtn.textContent = '⤢';
+        var delBtn = document.createElement('button');
+        delBtn.className = 'gis-layer__btn danger'; delBtn.type = 'button';
+        delBtn.setAttribute('data-a', 'del'); delBtn.title = 'Удалить слой и таблицу';
+        delBtn.textContent = '🗑';
+        head.appendChild(zoomBtn); head.appendChild(delBtn);
+
+        var meta = document.createElement('div');
+        meta.className = 'gis-layer__meta';
+        meta.textContent = (KIND_LABEL[L.geom_kind] || 'Слой') + ' · ' +
+          L.feature_count + ' об. · ' + L.table_name;
+
+        div.appendChild(head); div.appendChild(meta);
+
+        var visBtn = head.querySelector('[data-a="vis"]');
         visBtn.addEventListener('click', function () {
           var on = !visBtn.classList.contains('active');
           visBtn.classList.toggle('active', on);
           setVisible(L, on);
         });
-        div.querySelector('[data-a="zoom"]').addEventListener('click', function () {
-          fitExtent(L.extent);
-        });
-        div.querySelector('[data-a="del"]').addEventListener('click', function () {
+        zoomBtn.addEventListener('click', function () { fitExtent(L.extent); });
+        delBtn.addEventListener('click', function () {
           if (!window.confirm('Удалить слой «' + L.title + '» и его таблицу в БД? Действие необратимо.')) return;
           fetch(API + L.id + '/', {
             method: 'DELETE', credentials: 'same-origin',
@@ -4361,10 +4499,13 @@
             } else { toast('Не удалось удалить слой', true); }
           }).catch(function () { toast('Сетевая ошибка при удалении', true); });
         });
-        listEl.appendChild(div);
+
+        wireDrag(div);
+        if (atTop) listEl.insertBefore(div, listEl.firstChild);
+        else listEl.appendChild(div);
       }
 
-      function ingest(L) { uploaded[L.id] = L; addLayerToMap(L); renderRow(L); }
+      function ingest(L, atTop) { uploaded[L.id] = L; addLayerToMap(L); renderRow(L, atTop); }
 
       function upload(fileList) {
         var zips = Array.prototype.filter.call(fileList || [], function (f) {
@@ -4382,7 +4523,8 @@
         }).then(function (b) {
           b = b || {};
           var created = b.created || [];
-          created.forEach(ingest);
+          created.forEach(function (L) { ingest(L, true); });
+          if (created.length) { syncUploadedOrderFromDOM(); persistOrder(); }
           var msg = created.length ? ('Импортировано слоёв: ' + created.length + '.') : '';
           if (created.length && created[0].extent) fitExtent(created[0].extent);
           if (created.length) toast(msg);
@@ -4406,7 +4548,13 @@
       function loadLayers() {
         fetch(API, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
           .then(function (r) { return r.json(); })
-          .then(function (j) { (j.results || []).forEach(ingest); })
+          .then(function (j) {
+            var results = (j.results || []).slice().sort(function (a, b) {
+              return (a.sort_order - b.sort_order) || (a.id - b.id);
+            });
+            results.forEach(function (L) { ingest(L, false); });
+            syncUploadedOrderFromDOM();
+          })
           .catch(function () {});
       }
       if (map.loaded()) loadLayers(); else map.on('load', loadLayers);
