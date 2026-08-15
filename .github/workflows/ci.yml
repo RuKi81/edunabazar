@@ -244,6 +244,13 @@ jobs:
             docker compose -f docker-compose.prod.yml run --rm --no-deps web python manage.py migrate --noinput
             docker compose -f docker-compose.prod.yml run --rm --no-deps web python manage.py collectstatic --noinput
             docker compose -f docker-compose.prod.yml up -d
+            # nginx.conf is bind-mounted as a SINGLE FILE. `git reset --hard`
+            # above rewrites it as a NEW inode, but the running nginx container
+            # keeps the old inode (old content) — so config changes silently
+            # don't apply, and even `nginx -s reload` re-reads the stale mount.
+            # Force-recreate nginx so it re-binds to the current file. Cheap —
+            # a single container swap with a sub-second reconnect.
+            docker compose -f docker-compose.prod.yml up -d --force-recreate nginx
             # Post-deploy smoke gate: wait until the new web container's own
             # healthcheck (GET /healthz inside the container) reports healthy.
             # Without this a deploy that starts a crash-looping web would end
