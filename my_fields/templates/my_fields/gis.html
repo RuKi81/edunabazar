@@ -46,6 +46,22 @@
       font-size: 15px; font-weight: 700; margin: 0 0 12px 0;
       display: flex; align-items: center; gap: 6px;
     }
+    /* Общая плашка над списком слоёв с мастер-переключателем видимости. */
+    .gis-layers-bar {
+      display: flex; align-items: center; gap: 8px;
+      margin: 0 0 12px 0; padding: 6px 8px;
+      background: #f1f8e9; border: 1px solid #dcedc8; border-radius: 8px;
+    }
+    .gis-layers-bar .gis-h2 { margin: 0; flex: 1; }
+    .gis-layers-bar .muted { font-size: 11px; color: #9e9e9e; font-weight: 500; }
+    .gis-master-vis {
+      width: 30px; height: 30px; border-radius: 6px; border: 1px solid transparent;
+      background: transparent; cursor: pointer; display: inline-flex;
+      align-items: center; justify-content: center; font-size: 16px; color: #777;
+      transition: background .15s, color .15s, border-color .15s; flex: 0 0 auto;
+    }
+    .gis-master-vis:hover { background: #e8f5e9; }
+    .gis-master-vis.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
 
     .gis-collapse-btn {
       position: fixed; top: calc(var(--map-header-h) + 12px);
@@ -440,13 +456,18 @@
         <span id="gis-status">подложка: ЗСН (Росреестр-вектор)</span>
       </div>
 
-      <h2 class="gis-h2">🗺️ Слои</h2>
+      <div class="gis-layers-bar">
+        <button id="gis-master-vis" class="gis-master-vis" type="button"
+                aria-pressed="false" title="Показать все слои">🚫</button>
+        <h2 class="gis-h2">🗺️ Слои</h2>
+        <span class="muted">вкл/выкл все</span>
+      </div>
 
       <div id="gis-layers">
         <div class="gis-layer" data-layer="farmlands" draggable="true">
           <div class="gis-layer__head">
             <span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>
-            <button class="gis-layer__btn active" data-action="visibility" type="button" title="Видимость">👁</button>
+            <button class="gis-layer__btn" data-action="visibility" type="button" title="Видимость">🚫</button>
             <span class="name">ЗСН (Росреестр)</span>
             <button class="gis-layer__btn" data-action="edit" type="button"
                     title="Включить редактирование Росреестр-слоя (изменения сохраняются сразу)">✏</button>
@@ -457,7 +478,7 @@
         <div class="gis-layer" data-layer="userfields" draggable="true">
           <div class="gis-layer__head">
             <span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>
-            <button class="gis-layer__btn active" data-action="visibility" type="button" title="Видимость">👁</button>
+            <button class="gis-layer__btn" data-action="visibility" type="button" title="Видимость">🚫</button>
             <span class="name">Мои поля</span>
             <button class="gis-layer__btn" data-action="edit" type="button" title="Включить редактирование">✏</button>
           </div>
@@ -908,10 +929,16 @@
     });
 
     /* ──────────────────────── Layer state + toggles ───────────────────── */
+    /* По умолчанию при загрузке портала ВСЕ слои выключены. */
     var layerState = {
-      farmlands:  { visible: true, editable: false },
-      userfields: { visible: true, editable: false },
+      farmlands:  { visible: false, editable: false },
+      userfields: { visible: false, editable: false },
     };
+    /* Состояние мастер-переключателя (общая плашка) и хук слоёв SHP,
+       который регистрирует модуль загрузки (см. ниже) — чтобы «вкл/выкл
+       все» доставал и до динамически добавленных слоёв. */
+    var masterVisible = false;
+    var uploadedVisibilityHook = null;
 
     function applyLayerVisibility(key) {
       var ids = key === 'farmlands'
@@ -922,6 +949,49 @@
         if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', v);
       });
     }
+
+    /* Синхронизировать кнопку видимости статического слоя с его состоянием. */
+    function syncStaticVisBtn(key) {
+      var btn = document.querySelector(
+        '.gis-layer[data-layer="' + key + '"] .gis-layer__btn[data-action="visibility"]');
+      if (!btn) return;
+      btn.classList.toggle('active', layerState[key].visible);
+      btn.textContent = layerState[key].visible ? '👁' : '🚫';
+    }
+
+    function setStaticLayerVisible(key, vis) {
+      layerState[key].visible = vis;
+      syncStaticVisBtn(key);
+      applyLayerVisibility(key);
+    }
+
+    /* Мастер-переключатель: включить/выключить видимость ВСЕХ слоёв
+       (статические ЗСН/«Мои поля» + все загруженные SHP). */
+    function setAllLayersVisible(vis) {
+      masterVisible = vis;
+      setStaticLayerVisible('farmlands', vis);
+      setStaticLayerVisible('userfields', vis);
+      if (typeof uploadedVisibilityHook === 'function') uploadedVisibilityHook(vis);
+      var mb = document.getElementById('gis-master-vis');
+      if (mb) {
+        mb.classList.toggle('active', vis);
+        mb.textContent = vis ? '👁' : '🚫';
+        mb.setAttribute('aria-pressed', vis ? 'true' : 'false');
+        mb.title = vis ? 'Скрыть все слои' : 'Показать все слои';
+      }
+    }
+
+    (function () {
+      var mb = document.getElementById('gis-master-vis');
+      if (mb) mb.addEventListener('click', function () { setAllLayersVisible(!masterVisible); });
+    })();
+
+    /* Применяем дефолт «всё выключено» к статическим слоям, когда стиль готов. */
+    if (map.loaded()) { applyLayerVisibility('farmlands'); applyLayerVisibility('userfields'); }
+    else map.on('load', function () {
+      applyLayerVisibility('farmlands');
+      applyLayerVisibility('userfields');
+    });
 
     document.querySelectorAll('.gis-layer[data-layer]').forEach(function (row) {
       var key = row.getAttribute('data-layer');
@@ -4446,7 +4516,8 @@
         input.addEventListener('blur', function () { finish(true); });
       }
 
-      function renderRow(L, atTop) {
+      function renderRow(L, atTop, vis) {
+        if (vis === undefined) vis = true;
         var existing = document.getElementById('gisup-row-' + L.id);
         if (existing) existing.remove();
         var div = document.createElement('div');
@@ -4460,7 +4531,7 @@
         head.innerHTML =
           '<span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>' +
           '<span class="gis-layer__swatch" style="background:' + esc(L.color) + '"></span>' +
-          '<button class="gis-layer__btn active" data-a="vis" type="button" title="Видимость">👁</button>';
+          '<button class="gis-layer__btn' + (vis ? ' active' : '') + '" data-a="vis" type="button" title="Видимость">' + (vis ? '👁' : '🚫') + '</button>';
         var nameSpan = makeNameSpan(L);
         head.appendChild(nameSpan);
         var zoomBtn = document.createElement('button');
@@ -4484,6 +4555,7 @@
         visBtn.addEventListener('click', function () {
           var on = !visBtn.classList.contains('active');
           visBtn.classList.toggle('active', on);
+          visBtn.textContent = on ? '👁' : '🚫';
           setVisible(L, on);
         });
         zoomBtn.addEventListener('click', function () { fitExtent(L.extent); });
@@ -4505,7 +4577,24 @@
         else listEl.appendChild(div);
       }
 
-      function ingest(L, atTop) { uploaded[L.id] = L; addLayerToMap(L); renderRow(L, atTop); }
+      function ingest(L, atTop, vis) {
+        if (vis === undefined) vis = true;
+        uploaded[L.id] = L; addLayerToMap(L); setVisible(L, vis); renderRow(L, atTop, vis);
+      }
+
+      /* Регистрируем хук для мастер-переключателя (общая плашка «вкл/выкл
+         все»): показать/скрыть все загруженные SHP-слои и синхронизировать
+         их кнопки видимости. */
+      uploadedVisibilityHook = function (vis) {
+        Object.keys(uploaded).forEach(function (id) {
+          var L = uploaded[id];
+          setVisible(L, vis);
+          var row = document.getElementById('gisup-row-' + id);
+          if (!row) return;
+          var vb = row.querySelector('[data-a="vis"]');
+          if (vb) { vb.classList.toggle('active', vis); vb.textContent = vis ? '👁' : '🚫'; }
+        });
+      };
 
       function upload(fileList) {
         var zips = Array.prototype.filter.call(fileList || [], function (f) {
@@ -4523,7 +4612,9 @@
         }).then(function (b) {
           b = b || {};
           var created = b.created || [];
-          created.forEach(function (L) { ingest(L, true); });
+          /* Только что загруженные слои показываем сразу (пользователь их
+             явно добавил и мы делаем fitExtent к первому). */
+          created.forEach(function (L) { ingest(L, true, true); });
           if (created.length) { syncUploadedOrderFromDOM(); persistOrder(); }
           var msg = created.length ? ('Импортировано слоёв: ' + created.length + '.') : '';
           if (created.length && created[0].extent) fitExtent(created[0].extent);
@@ -4552,7 +4643,9 @@
             var results = (j.results || []).slice().sort(function (a, b) {
               return (a.sort_order - b.sort_order) || (a.id - b.id);
             });
-            results.forEach(function (L) { ingest(L, false); });
+            /* При старте портала слои грузятся согласно мастер-состоянию
+               (по умолчанию всё выключено). */
+            results.forEach(function (L) { ingest(L, false, masterVisible); });
             syncUploadedOrderFromDOM();
           })
           .catch(function () {});
