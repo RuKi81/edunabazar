@@ -1,6 +1,23 @@
+"""Админка гранта доступа + матрица прав к ГИС-слоям.
+
+Матрица (`/admin/access/resourcegrant/matrix/`) — таблица «пользователи ×
+ресурсы»: в шапке колонки «Все ГИС-слои» (whole-class) и каждый загруженный
+слой, под каждым — чекбоксы уровней view/edit/manage. Уровни иерархичны
+(view<edit<manage), поэтому чекбоксы кумулятивны и при сохранении хранится
+единственный ``ResourceGrant`` на пару (пользователь, ресурс) с максимальным
+отмеченным уровнем (unique_together этого требует).
+"""
 from django.contrib import admin
+from django.db.models import Q
+from django.shortcuts import redirect, render
+from django.urls import path, reverse
+
+from legacy.models import LegacyUser
 
 from .models import ResourceGrant
+
+_LEVELS = ('view', 'edit', 'manage')
+_LEVEL_ORDER = {'view': 1, 'edit': 2, 'manage': 3}
 
 
 @admin.register(ResourceGrant)
@@ -17,3 +34,138 @@ class ResourceGrantAdmin(admin.ModelAdmin):
     raw_id_fields = ('legacy_user', 'granted_by')
     readonly_fields = ('created_at',)
     ordering = ('-created_at',)
+    change_list_template = 'admin/access/resourcegrant/change_list.html'
+
+    # ── матрица прав ────────────────────────────────────────────────────
+    def get_urls(self):
+        urls = super().get_urls()
+        custom = [
+            path(
+                'matrix/', self.admin_site.admin_view(self.matrix_view),
+                name='access_resourcegrant_matrix',
+            ),
+        ]
+        return custom + urls
+
+    def _gis_layers(self):
+        from my_fields.models import GisLayer
+        return list(GisLayer.objects.order_by('sort_order', 'id'))
+
+    def _matrix_users(self, extra_query=''):
+        """Строки матрицы: пользователи с ГИС-грантами + найденные по поиску."""
+        uids = set(
+            ResourceGrant.objects.filter(
+                resource_type=ResourceGrant.ResourceType.GIS_LAYER,
+            ).values_list('legacy_user_id', flat=True)
+        )
+        found_ids = set()
+        q = (extra_query or '').strip()
+        if q:
+            qs = LegacyUser.objects.filter(
+                Q(username__icontains=q) | Q(email__icontains=q) | Q(name__icontains=q)
+            )
+            if q.isdigit():
+                qs = LegacyUser.objects.filter(
+                    Q(pk=int(q)) | Q(username__icontains=q) |
+                    Q(email__icontains=q) | Q(name__icontains=q)
+                )
+            found_ids = set(qs.values_list('id', flat=True)[:50])
+        all_ids = uids | found_ids
+        users = list(LegacyUser.objects.filter(id__in=all_ids).order_by('username'))
+        return users
+
+    def _current_levels(self):
+        """{(user_id, scope): level} для gis_layer-грантов, scope='all'|<layer_id>."""
+        out = {}
+        for uid, rid, level in ResourceGrant.objects.filter(
+            resource_type=ResourceGrant.ResourceType.GIS_LAYER,
+        ).values_list('legacy_user_id', 'resource_id', 'level'):
+            scope = 'all' if rid is None else str(rid)
+            out[(uid, scope)] = level
+        return out
+
+    def matrix_view(self, request):
+        if not self.has_change_permission(request):
+            from django.core.exceptions import PermissionDenied
+            raise PermissionDenied
+
+        layers = self._gis_layers()
+        scopes = ['all'] + [str(x.pk) for x in layers]
+
+        if request.method == 'POST':
+            user_ids = [
+                int(x) for x in request.POST.getlist('user_ids') if x.isdigit()
+            ]
+            self._save_matrix(request, user_ids, scopes)
+            self.message_user(request, 'Матрица доступа сохранена.')
+            url = reverse('admin:access_resourcegrant_matrix')
+            return redirect(url)
+
+        query = request.GET.get('u', '')
+        users = self._matrix_users(query)
+        current = self._current_levels()
+
+        # Собираем структуру для шаблона.
+        rows = []
+        for u in users:
+            cells = []
+            for scope in scopes:
+                lvl = current.get((u.id, scope))
+                order = _LEVEL_ORDER.get(lvl, 0)
+                boxes = [{
+                    'level': lv,
+                    'name': f'g_{u.id}_{scope}_{lv}',
+                    'checked': _LEVEL_ORDER[lv] <= order,
+                } for lv in _LEVELS]
+                cells.append({'scope': scope, 'boxes': boxes})
+            rows.append({'user': u, 'cells': cells})
+
+        context = {
+            **self.admin_site.each_context(request),
+            'title': 'Матрица доступа к ГИС-слоям',
+            'opts': self.model._meta,
+            'layers': layers,
+            'level_heads': [
+                {'level': 'view', 'label': 'Просмотр'},
+                {'level': 'edit', 'label': 'Редакт.'},
+                {'level': 'manage', 'label': 'Управл.'},
+            ],
+            'rows': rows,
+            'user_ids': [u.id for u in users],
+            'query': query,
+        }
+        return render(
+            request, 'admin/access/resourcegrant/matrix.html', context)
+
+    def _save_matrix(self, request, user_ids, scopes):
+        """Сверить чекбоксы с БД: upsert максимального уровня или удаление."""
+        granter = getattr(request, 'legacy_user', None)
+        granter_id = getattr(granter, 'id', None)
+        gis = ResourceGrant.ResourceType.GIS_LAYER
+        for uid in user_ids:
+            for scope in scopes:
+                # Максимальный отмеченный уровень для (user, scope).
+                top = 0
+                for lv in _LEVELS:
+                    if request.POST.get(f'g_{uid}_{scope}_{lv}'):
+                        top = max(top, _LEVEL_ORDER[lv])
+                resource_id = None if scope == 'all' else int(scope)
+                existing = ResourceGrant.objects.filter(
+                    legacy_user_id=uid, resource_type=gis,
+                    resource_id=resource_id,
+                ).first()
+                if top == 0:
+                    if existing:
+                        existing.delete()
+                    continue
+                level = next(lv for lv in _LEVELS if _LEVEL_ORDER[lv] == top)
+                if existing:
+                    if existing.level != level:
+                        existing.level = level
+                        existing.save(update_fields=['level'])
+                else:
+                    ResourceGrant.objects.create(
+                        legacy_user_id=uid, resource_type=gis,
+                        resource_id=resource_id, level=level,
+                        granted_by_id=granter_id,
+                    )

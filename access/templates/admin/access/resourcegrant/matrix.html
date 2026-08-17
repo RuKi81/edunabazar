@@ -1,0 +1,93 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block extrastyle %}{{ block.super }}
+<style>
+  .acc-matrix-wrap { overflow-x: auto; margin-top: 12px; }
+  table.acc-matrix { border-collapse: collapse; font-size: 12px; }
+  table.acc-matrix th, table.acc-matrix td {
+    border: 1px solid var(--border-color, #ccc); padding: 4px 6px; text-align: center;
+  }
+  table.acc-matrix th.acc-user, table.acc-matrix td.acc-user {
+    text-align: left; white-space: nowrap; position: sticky; left: 0;
+    background: var(--body-bg, #fff); z-index: 2;
+  }
+  table.acc-matrix thead th { background: var(--darkened-bg, #f5f5f5); }
+  table.acc-matrix th.acc-scope { min-width: 120px; }
+  table.acc-matrix td.acc-scope-sep { border-left: 2px solid #999; }
+  .acc-search { margin: 8px 0; }
+  .acc-hint { color: #666; font-size: 12px; margin: 6px 0 0; }
+</style>
+{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">{% trans 'Home' %}</a>
+  &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+  &rsaquo; <a href="{% url 'admin:access_resourcegrant_changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+  &rsaquo; {{ title }}
+</div>
+{% endblock %}
+
+{% block content %}
+<h1>{{ title }}</h1>
+
+<form method="get" class="acc-search">
+  <input type="text" name="u" value="{{ query }}"
+         placeholder="Добавить пользователя (username / email / имя / id)" size="45">
+  <button type="submit" class="button">Найти</button>
+</form>
+<p class="acc-hint">
+  Уровни кумулятивны: «Управл.» включает «Редакт.» и «Просмотр». Пустой ряд
+  чекбоксов = доступ отозван. Колонка «Все ГИС-слои» = доступ ко всем слоям.
+</p>
+
+<form method="post">
+  {% csrf_token %}
+  {% for uid in user_ids %}<input type="hidden" name="user_ids" value="{{ uid }}">{% endfor %}
+
+  <div class="acc-matrix-wrap">
+    <table class="acc-matrix">
+      <thead>
+        <tr>
+          <th class="acc-user" rowspan="2">Пользователь</th>
+          <th class="acc-scope acc-scope-sep" colspan="3">Все ГИС-слои</th>
+          {% for layer in layers %}
+            <th class="acc-scope acc-scope-sep" colspan="3">{{ layer.title }}</th>
+          {% endfor %}
+        </tr>
+        <tr>
+          {% for lh in level_heads %}
+            <th{% if forloop.first %} class="acc-scope-sep"{% endif %}>{{ lh.label }}</th>
+          {% endfor %}
+          {% for layer in layers %}
+            {% for lh in level_heads %}
+              <th{% if forloop.first %} class="acc-scope-sep"{% endif %}>{{ lh.label }}</th>
+            {% endfor %}
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td class="acc-user">{{ row.user.username }}{% if row.user.email %} <span style="color:#888">({{ row.user.email }})</span>{% endif %}</td>
+            {% for cell in row.cells %}
+              {% for box in cell.boxes %}
+                <td{% if forloop.first %} class="acc-scope-sep"{% endif %}>
+                  <input type="checkbox" name="{{ box.name }}"{% if box.checked %} checked{% endif %}>
+                </td>
+              {% endfor %}
+            {% endfor %}
+          </tr>
+        {% empty %}
+          <tr><td colspan="99">Нет пользователей с ГИС-грантами. Найдите пользователя выше, отметьте доступ и сохраните.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="submit-row" style="margin-top:12px;">
+    <input type="submit" value="Сохранить матрицу" class="default">
+  </div>
+</form>
+{% endblock %}
