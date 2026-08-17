@@ -797,26 +797,25 @@ def _gis_layer_to_dict(layer: GisLayer) -> dict:
     }
 
 
-@csrf_exempt
-@require_http_methods(['GET', 'POST'])
-def gis_layers_collection(request: HttpRequest) -> JsonResponse:
-    """Список ГИС-слоёв (GET) или загрузка ZIP с шейп-файлами (POST)."""
-    if request.method == 'GET':
-        gate = _require_gis_access(request, level='view')
-        if gate:
-            return gate
-        from access.services import accessible_gis_layer_ids
-        layers = GisLayer.objects.all()
-        ids = accessible_gis_layer_ids(getattr(request, 'legacy_user', None))
-        if ids is not None:
-            layers = layers.filter(pk__in=ids)
-        return JsonResponse({
-            'ok': True,
-            'count': layers.count(),
-            'results': [_gis_layer_to_dict(x) for x in layers],
-        })
+def _gis_layers_list(request: HttpRequest) -> JsonResponse:
+    """GET — список слоёв, отфильтрованный по грантам пользователя."""
+    gate = _require_gis_access(request, level='view')
+    if gate:
+        return gate
+    from access.services import accessible_gis_layer_ids
+    layers = GisLayer.objects.all()
+    ids = accessible_gis_layer_ids(getattr(request, 'legacy_user', None))
+    if ids is not None:
+        layers = layers.filter(pk__in=ids)
+    return JsonResponse({
+        'ok': True,
+        'count': layers.count(),
+        'results': [_gis_layer_to_dict(x) for x in layers],
+    })
 
-    # POST — создание новых слоёв (загрузка): нужен whole-class 'manage'.
+
+def _gis_layers_upload(request: HttpRequest) -> JsonResponse:
+    """POST — создание слоёв из ZIP (multipart). Нужен whole-class 'manage'."""
     gate = _require_gis_access(request, level='manage')
     if gate:
         return gate
@@ -853,6 +852,15 @@ def gis_layers_collection(request: HttpRequest) -> JsonResponse:
         {'ok': bool(created), 'created': created, 'errors': errors},
         status=status,
     )
+
+
+@csrf_exempt
+@require_http_methods(['GET', 'POST'])
+def gis_layers_collection(request: HttpRequest) -> JsonResponse:
+    """Список ГИС-слоёв (GET) или загрузка ZIP с шейп-файлами (POST)."""
+    if request.method == 'GET':
+        return _gis_layers_list(request)
+    return _gis_layers_upload(request)
 
 
 @csrf_exempt
