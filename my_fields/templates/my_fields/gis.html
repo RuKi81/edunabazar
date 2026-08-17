@@ -46,14 +46,12 @@
       font-size: 15px; font-weight: 700; margin: 0 0 12px 0;
       display: flex; align-items: center; gap: 6px;
     }
-    /* Общая плашка над списком слоёв с мастер-переключателем видимости. */
+    /* Компактный мастер-переключатель видимости над списком слоёв
+       (без текстовой плашки — только иконка-глаз). */
     .gis-layers-bar {
       display: flex; align-items: center; gap: 8px;
-      margin: 0 0 12px 0; padding: 6px 8px;
-      background: #f1f8e9; border: 1px solid #dcedc8; border-radius: 8px;
+      margin: 0 0 8px 0;
     }
-    .gis-layers-bar .gis-h2 { margin: 0; flex: 1; }
-    .gis-layers-bar .muted { font-size: 11px; color: #9e9e9e; font-weight: 500; }
     .gis-master-vis {
       width: 30px; height: 30px; border-radius: 6px; border: 1px solid transparent;
       background: transparent; cursor: pointer; display: inline-flex;
@@ -400,6 +398,13 @@
     .gis-attrtable__empty { padding: 24px; text-align: center; color: #999; font-size: 13px; line-height: 1.5; }
 
     /* ── Загрузчик SHP (ZIP) ── */
+    /* Подсказка о перетаскивании — закреплена внизу левого сайдбара. */
+    .gis-upload-hint {
+      margin-top: 16px; padding: 10px 12px;
+      border: 1px dashed #b0bec5; border-radius: 8px;
+      background: #fafcfd; color: #607d8b;
+      font-size: 12px; line-height: 1.4; text-align: center;
+    }
     .gis-upload-dz {
       border: 2px dashed #b0bec5; border-radius: 8px; padding: 14px 10px;
       text-align: center; font-size: 12px; color: #607d8b; background: #fafcfd;
@@ -458,9 +463,7 @@
 
       <div class="gis-layers-bar">
         <button id="gis-master-vis" class="gis-master-vis" type="button"
-                aria-pressed="false" title="Показать все слои">🚫</button>
-        <h2 class="gis-h2">🗺️ Слои</h2>
-        <span class="muted">вкл/выкл все</span>
+                aria-pressed="false" title="Показать/скрыть все слои">🚫</button>
       </div>
 
       <div id="gis-layers">
@@ -486,15 +489,12 @@
         </div>
       </div>
 
-      <h2 class="gis-h2" style="margin-top:14px;">📥 Загрузка SHP</h2>
-      <div id="gis-upload-dz" class="gis-upload-dz">
-        <div class="gis-upload-dz__icon">🗂️</div>
-        <div>Перетащите <b>.zip</b> с шейп-файлами сюда<br>или в окно карты</div>
-        <button type="button" id="gis-upload-btn" class="gis-upload-dz__btn">Выбрать ZIP…</button>
-        <input type="file" id="gis-upload-input" accept=".zip,application/zip" multiple hidden>
-      </div>
+      <div id="gis-uploaded-layers"></div>
+
       <div id="gis-upload-status" class="gis-upload-status" hidden></div>
-      <div id="gis-uploaded-layers" style="margin-top:10px;"></div>
+      <div class="gis-upload-hint">
+        Для загрузки данных перетащите ZIP-архив с SHP-файлами в окно карты
+      </div>
     </aside>
 
     <button class="gis-collapse-btn" id="gis-collapse-left"  type="button" title="Свернуть/развернуть слои">‹</button>
@@ -4652,15 +4652,22 @@
       }
       if (map.loaded()) loadLayers(); else map.on('load', loadLayers);
 
-      /* ── Кнопка выбора файла + drop на сам dropzone ── */
-      btn.addEventListener('click', function () { input.click(); });
-      input.addEventListener('change', function () {
-        if (input.files && input.files.length) upload(input.files);
-        input.value = '';
-      });
-      dz.addEventListener('dragover', function (e) { e.preventDefault(); dz.classList.add('dragover'); });
-      dz.addEventListener('dragleave', function () { dz.classList.remove('dragover'); });
-      dz.addEventListener('drop', function () { dz.classList.remove('dragover'); });
+      /* ── Кнопка выбора файла + drop на сам dropzone (опционально) ──
+         Дропзона убрана из сайдбара — загрузка только перетаскиванием ZIP
+         в окно карты (обработчик ниже). Если элементы всё же присутствуют,
+         подключаем их; иначе тихо пропускаем. */
+      if (btn && input) {
+        btn.addEventListener('click', function () { input.click(); });
+        input.addEventListener('change', function () {
+          if (input.files && input.files.length) upload(input.files);
+          input.value = '';
+        });
+      }
+      if (dz) {
+        dz.addEventListener('dragover', function (e) { e.preventDefault(); dz.classList.add('dragover'); });
+        dz.addEventListener('dragleave', function () { dz.classList.remove('dragover'); });
+        dz.addEventListener('drop', function () { dz.classList.remove('dragover'); });
+      }
 
       /* ── Полноэкранный drag-n-drop на всё окно портала ── */
       var dragDepth = 0;
