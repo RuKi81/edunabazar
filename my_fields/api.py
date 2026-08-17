@@ -900,6 +900,75 @@ def gis_layer_detail(request: HttpRequest, pk: int) -> JsonResponse:
 
 
 @csrf_exempt
+@require_http_methods(['GET'])
+def gis_layer_features(request: HttpRequest, pk: int) -> JsonResponse:
+    """GET — постраничный список объектов слоя (id + атрибуты).
+
+    Доступ уровня ``view`` к конкретному слою (или whole-class). Используется
+    атрибутивной таблицей на странице /me/gis.
+    """
+    gate = _require_gis_access(request, level='view', pk=pk)
+    if gate:
+        return gate
+    layer = get_object_or_404(GisLayer, pk=pk)
+
+    from .services.shp_import import list_features
+    try:
+        limit = int(request.GET.get('limit', 1000))
+    except (TypeError, ValueError):
+        limit = 1000
+    limit = max(1, min(limit, 5000))
+    try:
+        offset = int(request.GET.get('offset', 0))
+    except (TypeError, ValueError):
+        offset = 0
+    offset = max(0, offset)
+
+    data = list_features(layer, limit=limit, offset=offset)
+    return JsonResponse({
+        'ok': True,
+        'total': data['total'],
+        'results': data['results'],
+        'attributes': layer.attributes,
+        'limit': limit,
+        'offset': offset,
+    })
+
+
+@csrf_exempt
+@require_http_methods(['PATCH'])
+def gis_layer_feature_detail(request: HttpRequest, pk: int, fid: int) -> JsonResponse:
+    """PATCH — обновить атрибуты одного объекта слоя (уровень ``edit``)."""
+    gate = _require_gis_access(request, level='edit', pk=pk)
+    if gate:
+        return gate
+    layer = get_object_or_404(GisLayer, pk=pk)
+
+    try:
+        data = json.loads(request.body or b'{}')
+    except (ValueError, TypeError):
+        return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
+
+    props = data.get('props')
+    if not isinstance(props, dict) or not props:
+        return JsonResponse(
+            {'ok': False, 'error': 'no_props',
+             'detail': 'Ожидается объект props с изменяемыми атрибутами.'},
+            status=400,
+        )
+
+    from .services.shp_import import update_feature
+    updated = update_feature(layer, fid, props)
+    if not updated:
+        return JsonResponse(
+            {'ok': False, 'error': 'not_found_or_noop',
+             'detail': 'Объект не найден или нет допустимых полей для правки.'},
+            status=404,
+        )
+    return JsonResponse({'ok': True, 'updated': updated})
+
+
+@csrf_exempt
 @require_http_methods(['POST'])
 def gis_layers_reorder(request: HttpRequest) -> JsonResponse:
     """Сохранить порядок слоёв. Тело: ``{"order": [id, id, ...]}`` —

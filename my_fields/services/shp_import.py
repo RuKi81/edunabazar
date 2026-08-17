@@ -323,6 +323,103 @@ def drop_layer(layer) -> None:
     layer.delete()
 
 
+# ── Чтение / правка атрибутов объектов слоя ──────────────────────────────
+
+# Типы колонок, которые мы сами создаём в _pg_type_for — только они
+# допускаются как явный CAST в UPDATE (значения из meta слоя, не из запроса,
+# но список всё равно фиксируем, чтобы не собирать произвольный SQL-тип).
+_ALLOWED_CAST_TYPES = frozenset({
+    'integer', 'bigint', 'double precision', 'date', 'timestamptz',
+    'time', 'text',
+})
+
+
+def _attr_db_types(layer) -> dict:
+    """``{db_column: pg_type}`` из meta слоя (только атрибутивные колонки)."""
+    out = {}
+    for a in (layer.attributes or []):
+        db = a.get('db')
+        if db:
+            out[db] = a.get('type', 'text')
+    return out
+
+
+def _json_safe(value):
+    """Привести значение колонки к JSON-совместимому виду."""
+    import datetime
+    import decimal
+    if isinstance(value, (datetime.date, datetime.datetime, datetime.time)):
+        return value.isoformat()
+    if isinstance(value, decimal.Decimal):
+        return float(value)
+    return value
+
+
+def list_features(layer, limit: int = 1000, offset: int = 0) -> dict:
+    """Постранично прочитать объекты слоя (id + атрибуты, без геометрии).
+
+    Возвращает ``{'total': int, 'results': [{'id': int, 'props': {...}}]}``.
+    Геометрию не отдаём — таблица атрибутов её не показывает, а полигоны
+    могут быть тяжёлыми.
+    """
+    types = _attr_db_types(layer)
+    cols = list(types.keys())
+    table = sql.Identifier(layer.table_name)
+
+    select_cols = sql.SQL(', ').join(
+        [sql.Identifier('id')] + [sql.Identifier(c) for c in cols])
+    query = sql.SQL(
+        'SELECT {cols} FROM {table} ORDER BY id LIMIT %s OFFSET %s'
+    ).format(cols=select_cols, table=table)
+
+    with connection.cursor() as cur:
+        cur.execute(query, [limit, offset])
+        rows = cur.fetchall()
+        colnames = [d[0] for d in cur.description]
+        cur.execute(sql.SQL('SELECT count(*) FROM {}').format(table))
+        total = cur.fetchone()[0]
+
+    results = []
+    for row in rows:
+        d = dict(zip(colnames, row))
+        fid = d.pop('id', None)
+        props = {k: _json_safe(v) for k, v in d.items()}
+        results.append({'id': fid, 'props': props})
+    return {'total': total, 'results': results}
+
+
+def update_feature(layer, fid: int, props: dict) -> int:
+    """Обновить атрибуты одного объекта. Возвращает число затронутых строк.
+
+    Обновляются только колонки, присутствующие в meta слоя (остальные ключи
+    игнорируются). Пустая строка/``None`` для не-текстовых типов → ``NULL``.
+    """
+    types = _attr_db_types(layer)
+    set_parts = []
+    params = []
+    for key, val in (props or {}).items():
+        pg_type = types.get(key)
+        if pg_type is None:
+            continue  # неизвестная/защищённая колонка — молча пропускаем
+        if pg_type not in _ALLOWED_CAST_TYPES:
+            pg_type = 'text'
+        is_blank = val is None or (isinstance(val, str) and val.strip() == '')
+        if is_blank and pg_type != 'text':
+            set_parts.append(sql.SQL('{} = NULL').format(sql.Identifier(key)))
+        else:
+            set_parts.append(sql.SQL('{} = %s::{}').format(
+                sql.Identifier(key), sql.SQL(pg_type)))
+            params.append(val)
+    if not set_parts:
+        return 0
+    params.append(fid)
+    query = sql.SQL('UPDATE {} SET {} WHERE id = %s').format(
+        sql.Identifier(layer.table_name), sql.SQL(', ').join(set_parts))
+    with connection.cursor() as cur:
+        cur.execute(query, params)
+        return cur.rowcount
+
+
 # ── Вспомогательное ─────────────────────────────────────────────────────
 
 def _field_value(feat, ogr_name):

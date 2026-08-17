@@ -60,6 +60,12 @@
     }
     .gis-master-vis:hover { background: #e8f5e9; }
     .gis-master-vis.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
+    /* Массовое удаление выбранных слоёв. */
+    .gis-bulk-del:hover:not(:disabled) { background: #ffebee; color: #c62828; border-color: #ef9a9a; }
+    .gis-bulk-del:disabled { opacity: .4; cursor: default; }
+    .gis-bulk-count { font-size: 12px; color: #777; }
+    /* Чекбокс выбора слоя для удаления (вместо иконки-корзины в строке). */
+    .gis-layer__sel { width: 16px; height: 16px; flex: 0 0 auto; cursor: pointer; accent-color: #c62828; }
 
     .gis-collapse-btn {
       position: fixed; top: calc(var(--map-header-h) + 12px);
@@ -464,6 +470,9 @@
       <div class="gis-layers-bar">
         <button id="gis-master-vis" class="gis-master-vis" type="button"
                 aria-pressed="false" title="Показать/скрыть все слои">🚫</button>
+        <button id="gis-bulk-del" class="gis-master-vis gis-bulk-del" type="button"
+                title="Удалить выбранные слои" disabled>🗑</button>
+        <span id="gis-bulk-count" class="gis-bulk-count"></span>
       </div>
 
       <div id="gis-layers">
@@ -3824,8 +3833,14 @@
       var searchEl = document.getElementById('gis-attrtable-search');
       var filterEl = document.getElementById('gis-attrtable-filter');
       var editHint = document.getElementById('gis-attrtable-edithint');
-      var tabs     = document.querySelectorAll('#gis-attrtable-tabs .gis-attrtable__tab');
+      var tabsWrap = document.getElementById('gis-attrtable-tabs');
       var uiEl     = document.querySelector('.gis-ui');
+
+      /* Динамически регистрируемые слои (загруженные SHP): ключ 'gisup:<id>'.
+         Их колонки кладём прямо в COLUMNS, чтобы весь рендер/сортировка/поиск
+         работали без правок; строки берём из def.rows (подтянуты с сервера),
+         правки сохраняются немедленным PATCH (без общей очереди 💾). */
+      var dynLayers = {};
 
       var state = {
         open: false,
@@ -3842,6 +3857,7 @@
          так метки авто-сбрасываются после сохранения (💾) или отмены (↶),
          которые очищают эти очереди. */
       function isRowDirty(id) {
+        if (dynLayers[state.layer]) return false;
         var sid = String(id);
         if (state.layer === 'farmlands') return flPending.attrUpdates.has(sid);
         return pending.attrUpdates.has(sid);
@@ -3860,6 +3876,7 @@
          наложения отредактированное значение откатывалось бы при каждом
          ре-рендере (moveend/подгрузка тайлов). */
       function overlayPending(layer, id, baseProps) {
+        if (dynLayers[layer]) return baseProps;
         var sid = String(id);
         var ov = (layer === 'farmlands') ? flPending.attrUpdates.get(sid)
                                           : pending.attrUpdates.get(sid);
@@ -3879,6 +3896,12 @@
       /* Сбор строк активного слоя. */
       function collectRows() {
         var rows = [];
+        if (dynLayers[state.layer]) {
+          (dynLayers[state.layer].rows || []).forEach(function (f) {
+            rows.push({ id: f.id, props: f.props || {}, geometry: null });
+          });
+          return filterRows(rows);
+        }
         if (state.layer === 'userfields') {
           (userfieldsFC.features || []).forEach(function (f) {
             var id = (f.id != null) ? f.id : (f.properties && f.properties.id);
@@ -3962,11 +3985,13 @@
           var filtered = (state.query || state.usedFilter) ? ', отфильтровано' : '';
           countEl.textContent = state.rows.length + capped + ' объект(ов)' + suffix + filtered;
         }
-        if (refreshBtn) refreshBtn.style.display = state.layer === 'farmlands' ? '' : 'none';
+        if (refreshBtn) refreshBtn.style.display = (state.layer === 'farmlands' || dynLayers[state.layer]) ? '' : 'none';
         if (filterEl) filterEl.style.display = state.layer === 'farmlands' ? '' : 'none';
 
         if (!state.rows.length) {
-          var base = state.layer === 'farmlands'
+          var base;
+          if (dynLayers[state.layer]) base = 'В слое нет объектов (или они ещё загружаются).';
+          else base = state.layer === 'farmlands'
             ? 'Нет угодий в видимой области.<br>Приблизьте карту (z ≥ 6) к участку с данными ЗСН.'
             : 'Нет полей. Нарисуйте полигон в режиме «Мои поля».';
           if (state.query || state.usedFilter) base = 'Ничего не найдено по текущему фильтру.';
@@ -4099,17 +4124,39 @@
         var prev = row.props[key];
 
         var val = rawVal;
-        if (kind === 'int') val = parseInt(rawVal, 10);
+        if (kind === 'int') { val = parseInt(rawVal, 10); if (isNaN(val)) val = null; }
+        else if (kind === 'num') { val = parseFloat(rawVal); if (isNaN(val)) val = null; }
         else if (kind === 'bool') val = (rawVal === 'true');
         else val = String(rawVal);
 
         ec.td.classList.remove('editing');
 
-        var same = (kind === 'int') ? (Number(prev) === val)
-                                     : (String(prev == null ? '' : prev) === String(val));
+        var same = (kind === 'int' || kind === 'num')
+          ? (Number(prev == null ? NaN : prev) === Number(val == null ? NaN : val))
+          : (String(prev == null ? '' : prev) === String(val));
         if (same) {
           ec.td.innerHTML = esc(cellDisplay(col, row.props));
           ec.td.title = cellDisplay(col, row.props);
+          return;
+        }
+
+        /* Загруженные SHP-слои: правка уходит на сервер сразу (PATCH). */
+        if (dynLayers[state.layer]) {
+          var def = dynLayers[state.layer];
+          var prevVal = row.props[key];
+          row.props[key] = val;
+          ec.td.innerHTML = esc(cellDisplay(col, row.props));
+          ec.td.title = cellDisplay(col, row.props);
+          ec.td.classList.add('editable');
+          def.patch(row.id, key, val, function (ok) {
+            if (ok) { toast('Сохранено'); }
+            else {
+              row.props[key] = prevVal;
+              ec.td.innerHTML = esc(cellDisplay(col, row.props));
+              ec.td.title = cellDisplay(col, row.props);
+              toast('Не удалось сохранить', true);
+            }
+          });
           return;
         }
 
@@ -4146,7 +4193,8 @@
         try { setSelState(state.layer, row.id, true); } catch (_) {}
 
         /* Карточка в правой панели + раскрыть её, если свёрнута. */
-        if (state.layer === 'farmlands') renderFarmlandCard(row.props);
+        if (dynLayers[state.layer]) renderDynCard(state.layer, row.props);
+        else if (state.layer === 'farmlands') renderFarmlandCard(row.props);
         else renderUserfieldCard(row.props);
         var rightAside = document.getElementById('gis-right');
         var rightBtn = document.getElementById('gis-collapse-right');
@@ -4205,8 +4253,9 @@
         state.layer = layer;
         state.sortKey = defaultSortKey(layer);
         state.sortDir = 1;
-        tabs.forEach(function (t) { t.classList.toggle('active', t.getAttribute('data-attr-layer') === layer); });
-        render();
+        syncTabs();
+        if (dynLayers[layer] && !dynLayers[layer].loaded) loadDyn(layer);
+        else render();
       }
 
       function openPanel() {
@@ -4223,6 +4272,76 @@
         if (toggleBtn) toggleBtn.classList.remove('active');
       }
 
+      /* ─── Динамические слои (загруженные SHP) ─── */
+      function syncTabs() {
+        if (!tabsWrap) return;
+        tabsWrap.querySelectorAll('.gis-attrtable__tab').forEach(function (t) {
+          t.classList.toggle('active', t.getAttribute('data-attr-layer') === state.layer);
+        });
+      }
+      function loadDyn(key) {
+        var def = dynLayers[key];
+        if (!def) return;
+        bodyEl.innerHTML = '<div class="gis-attrtable__empty">Загрузка объектов…</div>';
+        def.fetch(function () { if (state.layer === key) render(); });
+      }
+      function renderDynCard(key, props) {
+        var info = document.getElementById('gis-info');
+        if (!info) return;
+        var cols = COLUMNS[key] || [];
+        var def = dynLayers[key];
+        var body = cols.map(function (c) {
+          return '<tr><td style="color:#777;padding:2px 6px;vertical-align:top;">' + esc(c.label) +
+                 '</td><td style="padding:2px 6px;">' + esc(cellDisplay(c, props)) + '</td></tr>';
+        }).join('');
+        info.innerHTML = '<div class="gis-info-card"><h4>' + esc(def ? def.title : 'Объект') + '</h4>' +
+          '<table style="width:100%;font-size:12px;border-collapse:collapse;">' +
+          (body || '<tr><td style="color:#999;padding:4px 6px;">без атрибутов</td></tr>') +
+          '</table></div>';
+      }
+
+      /* API для модуля загрузки SHP: регистрирует/убирает вкладки слоёв и
+         открывает таблицу на нужном слое. Ключ вкладки — 'gisup:<id>'. */
+      window.__gisAttr = {
+        register: function (key, def) {
+          dynLayers[key] = def;
+          COLUMNS[key] = def.columns;
+          if (tabsWrap && !tabsWrap.querySelector('.gis-attrtable__tab[data-attr-layer="' + key + '"]')) {
+            var b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'gis-attrtable__tab';
+            b.setAttribute('data-attr-layer', key);
+            b.textContent = def.title;
+            tabsWrap.appendChild(b);
+          }
+        },
+        unregister: function (key) {
+          delete dynLayers[key];
+          delete COLUMNS[key];
+          if (tabsWrap) {
+            var b = tabsWrap.querySelector('.gis-attrtable__tab[data-attr-layer="' + key + '"]');
+            if (b) b.remove();
+          }
+          if (state.layer === key) setLayer('farmlands');
+        },
+        updateTitle: function (key, title) {
+          if (dynLayers[key]) dynLayers[key].title = title;
+          if (tabsWrap) {
+            var b = tabsWrap.querySelector('.gis-attrtable__tab[data-attr-layer="' + key + '"]');
+            if (b) b.textContent = title;
+          }
+        },
+        open: function (key) {
+          if (!dynLayers[key]) return;
+          openPanel();
+          if (state.layer === key) {
+            if (!dynLayers[key].loaded) loadDyn(key); else render();
+          } else {
+            setLayer(key);
+          }
+        },
+      };
+
       /* ─── Слушатели ─── */
       if (toggleBtn) toggleBtn.addEventListener('click', function () {
         if (state.open) closePanel(); else openPanel();
@@ -4230,9 +4349,11 @@
       if (closeBtn) closeBtn.addEventListener('click', closePanel);
       if (refreshBtn) refreshBtn.addEventListener('click', function () {
         if (state.layer === 'farmlands') render();
+        else if (dynLayers[state.layer]) { dynLayers[state.layer].loaded = false; loadDyn(state.layer); }
       });
-      tabs.forEach(function (t) {
-        t.addEventListener('click', function () { setLayer(t.getAttribute('data-attr-layer')); });
+      if (tabsWrap) tabsWrap.addEventListener('click', function (e) {
+        var t = e.target.closest('.gis-attrtable__tab');
+        if (t) setLayer(t.getAttribute('data-attr-layer'));
       });
 
       /* Поиск (debounce) и фильтр по использованию. */
@@ -4331,6 +4452,94 @@
         statusEl.innerHTML = html;
       }
       function srcId(id) { return 'gisup-src-' + id; }
+
+      var CSRF_HDR = { 'X-Requested-With': 'XMLHttpRequest' };
+      var bulkDelBtn = document.getElementById('gis-bulk-del');
+      var bulkCountEl = document.getElementById('gis-bulk-count');
+
+      /* ── Выбор слоёв чекбоксами + массовое удаление (кнопка 🗑 в плашке) ── */
+      function selectedSelBoxes() {
+        return Array.prototype.slice.call(
+          listEl.querySelectorAll('.gis-layer[data-gisup] .gis-layer__sel:checked'));
+      }
+      function updateBulkDelState() {
+        var n = selectedSelBoxes().length;
+        if (bulkDelBtn) bulkDelBtn.disabled = n === 0;
+        if (bulkCountEl) bulkCountEl.textContent = n ? ('выбрано: ' + n) : '';
+      }
+      function bulkDeleteSelected() {
+        var boxes = selectedSelBoxes();
+        if (!boxes.length) return;
+        var ids = boxes.map(function (b) {
+          return parseInt(b.closest('.gis-layer[data-gisup]').getAttribute('data-gisup'), 10);
+        });
+        if (!window.confirm('Удалить выбранные слои (' + ids.length +
+            ') и их таблицы в БД? Действие необратимо.')) return;
+        var done = 0, failed = 0, pending = ids.length;
+        ids.forEach(function (id) {
+          fetch(API + id + '/', { method: 'DELETE', credentials: 'same-origin', headers: CSRF_HDR })
+            .then(function (r) {
+              if (r.ok) {
+                done++;
+                var L = uploaded[id];
+                if (L) { try { removeFromMap(L); } catch (_) {} }
+                var row = document.getElementById('gisup-row-' + id);
+                if (row) row.remove();
+                if (window.__gisAttr) window.__gisAttr.unregister('gisup:' + id);
+                delete uploaded[id];
+              } else { failed++; }
+            })
+            .catch(function () { failed++; })
+            .then(function () {
+              if (--pending === 0) {
+                updateBulkDelState();
+                if (done) toast('Удалено слоёв: ' + done + (failed ? (', ошибок: ' + failed) : ''));
+                else toast('Не удалось удалить слои', true);
+              }
+            });
+        });
+      }
+      if (bulkDelBtn) bulkDelBtn.addEventListener('click', bulkDeleteSelected);
+
+      /* ── Регистрация слоя в атрибутивной таблице (просмотр/правка) ── */
+      function attrColumnsFor(L) {
+        var cols = [{ key: 'id', label: 'ID', num: true }];
+        (L.attributes || []).forEach(function (a) {
+          var t = a.type || 'text', kind = 'str';
+          if (t === 'integer' || t === 'bigint') kind = 'int';
+          else if (t === 'double precision') kind = 'num';
+          cols.push({
+            key: a.db, label: a.name, num: (kind === 'int' || kind === 'num'),
+            edit: { type: 'text', kind: kind },
+          });
+        });
+        return cols;
+      }
+      function registerAttr(L) {
+        if (!window.__gisAttr) return;
+        var def = {
+          title: L.title,
+          columns: attrColumnsFor(L),
+          rows: [],
+          loaded: false,
+          fetch: function (cb) {
+            fetch(API + L.id + '/features/?limit=5000',
+                  { credentials: 'same-origin', headers: CSRF_HDR })
+              .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+              .then(function (j) { def.rows = (j.results || []); def.loaded = true; cb(true); })
+              .catch(function () { def.rows = []; def.loaded = true; cb(false); });
+          },
+          patch: function (fid, key, val, cb) {
+            var props = {}; props[key] = val;
+            fetch(API + L.id + '/features/' + fid + '/', {
+              method: 'PATCH', credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+              body: JSON.stringify({ props: props }),
+            }).then(function (r) { cb(r.ok); }).catch(function () { cb(false); });
+          },
+        };
+        window.__gisAttr.register('gisup:' + L.id, def);
+      }
 
       function fitExtent(ext) {
         if (!ext || ext.length !== 4) return;
@@ -4516,7 +4725,10 @@
               headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
               body: JSON.stringify({ title: val }),
             }).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
-              .then(function () { L.title = val; toast('Слой переименован'); })
+              .then(function () {
+                L.title = val; toast('Слой переименован');
+                if (window.__gisAttr) window.__gisAttr.updateTitle('gisup:' + L.id, val);
+              })
               .catch(function () { newSpan.textContent = L.title; toast('Не удалось переименовать', true); });
           }
         }
@@ -4541,19 +4753,20 @@
         head.className = 'gis-layer__head';
         head.innerHTML =
           '<span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>' +
+          '<input type="checkbox" class="gis-layer__sel" title="Отметить слой для удаления">' +
           '<span class="gis-layer__swatch" style="background:' + esc(L.color) + '"></span>' +
           '<button class="gis-layer__btn' + (vis ? ' active' : '') + '" data-a="vis" type="button" title="Видимость">' + (vis ? '👁' : '🚫') + '</button>';
         var nameSpan = makeNameSpan(L);
         head.appendChild(nameSpan);
+        var attrBtn = document.createElement('button');
+        attrBtn.className = 'gis-layer__btn'; attrBtn.type = 'button';
+        attrBtn.setAttribute('data-a', 'attrs'); attrBtn.title = 'Таблица атрибутов (просмотр/правка)';
+        attrBtn.textContent = '▤';
         var zoomBtn = document.createElement('button');
         zoomBtn.className = 'gis-layer__btn'; zoomBtn.type = 'button';
         zoomBtn.setAttribute('data-a', 'zoom'); zoomBtn.title = 'Приблизить к слою';
         zoomBtn.textContent = '⤢';
-        var delBtn = document.createElement('button');
-        delBtn.className = 'gis-layer__btn danger'; delBtn.type = 'button';
-        delBtn.setAttribute('data-a', 'del'); delBtn.title = 'Удалить слой и таблицу';
-        delBtn.textContent = '🗑';
-        head.appendChild(zoomBtn); head.appendChild(delBtn);
+        head.appendChild(attrBtn); head.appendChild(zoomBtn);
 
         var meta = document.createElement('div');
         meta.className = 'gis-layer__meta';
@@ -4570,18 +4783,12 @@
           setVisible(L, on);
         });
         zoomBtn.addEventListener('click', function () { fitExtent(L.extent); });
-        delBtn.addEventListener('click', function () {
-          if (!window.confirm('Удалить слой «' + L.title + '» и его таблицу в БД? Действие необратимо.')) return;
-          fetch(API + L.id + '/', {
-            method: 'DELETE', credentials: 'same-origin',
-            headers: { 'X-Requested-With': 'XMLHttpRequest' },
-          }).then(function (r) {
-            if (r.ok) {
-              removeFromMap(L); div.remove(); delete uploaded[L.id];
-              toast('Слой удалён');
-            } else { toast('Не удалось удалить слой', true); }
-          }).catch(function () { toast('Сетевая ошибка при удалении', true); });
+        attrBtn.addEventListener('click', function () {
+          if (window.__gisAttr) window.__gisAttr.open('gisup:' + L.id);
+          else toast('Таблица атрибутов недоступна', true);
         });
+        var selBox = head.querySelector('.gis-layer__sel');
+        if (selBox) selBox.addEventListener('change', updateBulkDelState);
 
         wireDrag(div);
         if (atTop) listEl.insertBefore(div, listEl.firstChild);
@@ -4591,6 +4798,7 @@
       function ingest(L, atTop, vis) {
         if (vis === undefined) vis = true;
         uploaded[L.id] = L;
+        registerAttr(L);
         /* Ошибка добавления одного слоя на карту (битые тайлы/источник) не
            должна прерывать цикл loadLayers и «съедать» строки остальных
            слоёв в сайдбаре — поэтому строка рисуется всегда. */
