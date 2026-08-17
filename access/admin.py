@@ -117,7 +117,9 @@ class ResourceGrantAdmin(admin.ModelAdmin):
 
         # Строки таблицы: «Все ГИС-слои» + каждый слой (вертикально).
         scope_defs = [{'scope': 'all', 'title': 'Все ГИС-слои'}]
-        scope_defs += [{'scope': str(l.pk), 'title': l.title} for l in layers]
+        scope_defs += [
+            {'scope': str(layer.pk), 'title': layer.title} for layer in layers
+        ]
 
         rows = []
         for sd in scope_defs:
