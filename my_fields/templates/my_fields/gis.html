@@ -457,7 +457,7 @@
         <a href="{% url 'legacy_me' %}" title="Назад в кабинет">← Кабинет</a>
         <span class="muted">|</span>
         <strong>ГИС</strong>
-        <span class="pill">admin</span>
+        {% if is_admin_user %}<span class="pill">admin</span>{% endif %}
         <span id="gis-status">подложка: ЗСН (Росреестр-вектор)</span>
       </div>
 

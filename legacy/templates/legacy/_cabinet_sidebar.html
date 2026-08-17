@@ -4,8 +4,10 @@ Requires context var ``active_section`` in
 {credentials|agrocosmos|my_fields|gis|adverts|messages|reviews}.
 Menu items that live on the same page (/me/) use data-tab, so the JS on
 /me/ can switch sections without a full reload. External pages use href.
-The "ГИС" item is admin-only; it's rendered only when ``is_admin_user``
-is set by ``legacy.context_processors.legacy_user``.
+The "ГИС" item is shown to admins and to any user with at least one
+GIS access grant; the ``can_open_gis`` flag is set by
+``legacy.context_processors.legacy_user`` (mirrors
+``access.services.can_open_gis_page``). Admins get an "admin" badge.
 {% endcomment %}
 <aside class="cab-sidebar">
   <div class="cab-side-card">
@@ -43,12 +45,12 @@ is set by ``legacy.context_processors.legacy_user``.
         <span>Мои поля</span>
       </a>
 
-      {% if is_admin_user %}
+      {% if can_open_gis %}
         <a href="{% url 'my_fields:ui_gis' %}"
            class="cab-nav-item {% if active_section == 'gis' %}active{% endif %}">
           <span class="cab-nav-icon">🗺️</span>
           <span>ГИС</span>
-          <span class="cab-nav-badge">admin</span>
+          {% if is_admin_user %}<span class="cab-nav-badge">admin</span>{% endif %}
         </a>
       {% endif %}
 
