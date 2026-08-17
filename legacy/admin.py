@@ -1,6 +1,13 @@
+import secrets
+
+from django import forms
 from django.contrib import admin
+from django.contrib.auth.hashers import make_password
+from django.utils import timezone
 from django.utils.html import format_html
 
+from access.models import ResourceGrant
+from .constants import USER_STATUS_ACTIVE
 from .models import (
     Advert, AdvertPhoto, Catalog, Categories, LegacyUser, Message,
     News, NewsFeedSource, NewsKeyword, Review, Seller,
@@ -57,13 +64,101 @@ class AdvertPhotoAdmin(admin.ModelAdmin):
     ordering = ('-created_at',)
 
 
+class ResourceGrantInline(admin.TabularInline):
+    """Выдача доступа к данным портала прямо на карточке пользователя.
+
+    ``resource_id`` пусто = доступ ко ВСЕМ ресурсам этого типа (напр. все
+    ГИС-слои); иначе — id конкретного слоя. Уровень: view/edit/manage.
+    """
+    model = ResourceGrant
+    fk_name = 'legacy_user'
+    extra = 0
+    fields = ('resource_type', 'resource_id', 'level', 'note')
+    verbose_name = 'Грант доступа'
+    verbose_name_plural = 'Доступ к данным портала'
+
+
+class LegacyUserAdminForm(forms.ModelForm):
+    """Ручное заведение/редактирование пользователя портала.
+
+    Пароль хэшируется Django (``make_password``) — совместимо с логином
+    (``check_password``). Обязательные legacy-колонки (type/status/currency/
+    auth_key/…) заполняются дефолтами в ``save_model``.
+    """
+    new_password = forms.CharField(
+        label='Пароль', required=False,
+        widget=forms.PasswordInput(render_value=False),
+        help_text='При создании задайте пароль. При редактировании оставьте '
+                  'пустым, чтобы не менять.',
+    )
+
+    class Meta:
+        model = LegacyUser
+        fields = (
+            'username', 'email', 'name', 'phone', 'address', 'inn',
+            'currency', 'type', 'status',
+        )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance.pk is None:
+            # Разумные дефолты для формы создания.
+            self.fields['type'].initial = 0
+            self.fields['status'].initial = USER_STATUS_ACTIVE
+            self.fields['currency'].initial = 'RUB'
+
+    def clean_new_password(self):
+        pw = self.cleaned_data.get('new_password') or ''
+        if self.instance.pk is None and not pw:
+            raise forms.ValidationError('Задайте пароль для нового пользователя.')
+        if pw and len(pw) < 4:
+            raise forms.ValidationError('Пароль слишком короткий (мин. 4 символа).')
+        return pw
+
+
 @admin.register(LegacyUser)
 class LegacyUserAdmin(admin.ModelAdmin):
+    form = LegacyUserAdminForm
+    inlines = [ResourceGrantInline]
     list_display = ('id', 'username', 'email', 'phone', 'name', 'status', 'created_at')
     list_filter = ('status', 'type')
     search_fields = ('username', 'email', 'phone', 'name')
-    readonly_fields = ('created_at', 'updated_at', 'auth_key', 'password_hash')
+    readonly_fields = ('created_at', 'updated_at', 'auth_key')
     ordering = ('-created_at',)
+
+    def save_model(self, request, obj, form, change):
+        pw = form.cleaned_data.get('new_password')
+        if pw:
+            obj.password_hash = make_password(pw)
+        now = timezone.now()
+        if not change:
+            # Заполняем обязательные legacy-колонки дефолтами.
+            if obj.type is None:
+                obj.type = 0
+            obj.auth_key = obj.auth_key or secrets.token_hex(16)[:32]
+            obj.currency = obj.currency or 'RUB'
+            obj.address = obj.address or ''
+            obj.inn = obj.inn or ''
+            if not obj.status:
+                obj.status = USER_STATUS_ACTIVE
+            obj.created_at = obj.created_at or now
+            obj.contacts = obj.contacts or ''
+        obj.updated_at = now
+        super().save_model(request, obj, form, change)
+
+    def save_formset(self, request, form, formset, change):
+        """Проставляем «кем выдан» грант = текущий админ (LegacyUser)."""
+        if formset.model is not ResourceGrant:
+            return super().save_formset(request, form, formset, change)
+        instances = formset.save(commit=False)
+        granter = getattr(request, 'legacy_user', None)
+        for inst in instances:
+            if granter is not None and not inst.granted_by_id:
+                inst.granted_by_id = granter.id
+            inst.save()
+        for obj in formset.deleted_objects:
+            obj.delete()
+        formset.save_m2m()
 
 
 @admin.register(Seller)

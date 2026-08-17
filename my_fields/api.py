@@ -734,15 +734,47 @@ def field_passport_zones_shp(request: HttpRequest, pk: int) -> HttpResponse:
 # Всё gated под admin (как и вся страница /me/gis).
 # ─────────────────────────────────────────────────────────────────────
 
-def _require_gis_admin(request: HttpRequest):
-    """None если админ, иначе JsonResponse 401/403 (как гейт /me/gis)."""
-    from .views import _is_admin_legacy
+_GIS_RESOURCE = 'gis_layer'
+
+
+def _require_gis_authenticated(request: HttpRequest):
+    """None если есть Django-сессия, иначе 401 (как раньше)."""
     if not request.user.is_authenticated:
         return JsonResponse(
             {'error': 'authentication_required'}, status=401)
-    if not _is_admin_legacy(request):
-        return JsonResponse({'error': 'forbidden'}, status=403)
     return None
+
+
+def _require_gis_access(request: HttpRequest, *, level: str = 'view',
+                        pk: int | None = None):
+    """Гейт доступа к ГИС-данным на основе грантов (``access.services``).
+
+    Возвращает ``None`` при доступе, иначе ``JsonResponse`` 401/403.
+
+    * ``pk`` задан — проверяем доступ к конкретному слою (или whole-class);
+    * ``pk`` не задан — действие над «всем классом» (загрузка/список/reorder):
+      для ``view`` достаточно доступа к странице (любой ГИС-грант),
+      для ``edit``/``manage`` нужен whole-class грант нужного уровня.
+    """
+    from access.services import (
+        can_open_gis_page, has_resource_access, is_admin_legacy_user,
+    )
+
+    auth = _require_gis_authenticated(request)
+    if auth:
+        return auth
+    user = getattr(request, 'legacy_user', None)
+    if is_admin_legacy_user(user):
+        return None
+
+    if pk is not None:
+        allowed = has_resource_access(user, _GIS_RESOURCE, pk, level)
+    elif level == 'view':
+        allowed = can_open_gis_page(user)
+    else:
+        allowed = has_resource_access(user, _GIS_RESOURCE, None, level)
+
+    return None if allowed else JsonResponse({'error': 'forbidden'}, status=403)
 
 
 def _gis_layer_to_dict(layer: GisLayer) -> dict:
@@ -769,17 +801,25 @@ def _gis_layer_to_dict(layer: GisLayer) -> dict:
 @require_http_methods(['GET', 'POST'])
 def gis_layers_collection(request: HttpRequest) -> JsonResponse:
     """Список ГИС-слоёв (GET) или загрузка ZIP с шейп-файлами (POST)."""
-    gate = _require_gis_admin(request)
-    if gate:
-        return gate
-
     if request.method == 'GET':
+        gate = _require_gis_access(request, level='view')
+        if gate:
+            return gate
+        from access.services import accessible_gis_layer_ids
         layers = GisLayer.objects.all()
+        ids = accessible_gis_layer_ids(getattr(request, 'legacy_user', None))
+        if ids is not None:
+            layers = layers.filter(pk__in=ids)
         return JsonResponse({
             'ok': True,
             'count': layers.count(),
             'results': [_gis_layer_to_dict(x) for x in layers],
         })
+
+    # POST — создание новых слоёв (загрузка): нужен whole-class 'manage'.
+    gate = _require_gis_access(request, level='manage')
+    if gate:
+        return gate
 
     # POST — приём одного/нескольких ZIP через multipart/form-data.
     from .services.shp_import import ShapefileImportError, import_zip
@@ -819,7 +859,9 @@ def gis_layers_collection(request: HttpRequest) -> JsonResponse:
 @require_http_methods(['PATCH', 'DELETE'])
 def gis_layer_detail(request: HttpRequest, pk: int) -> JsonResponse:
     """PATCH — переименовать слой; DELETE — дроп таблицы + записи реестра."""
-    gate = _require_gis_admin(request)
+    # DELETE — удаление (manage); PATCH — переименование (edit) конкретного слоя.
+    level = 'manage' if request.method == 'DELETE' else 'edit'
+    gate = _require_gis_access(request, level=level, pk=pk)
     if gate:
         return gate
 
@@ -854,7 +896,8 @@ def gis_layer_detail(request: HttpRequest, pk: int) -> JsonResponse:
 def gis_layers_reorder(request: HttpRequest) -> JsonResponse:
     """Сохранить порядок слоёв. Тело: ``{"order": [id, id, ...]}`` —
     сверху вниз (первый = верхний в списке и на карте)."""
-    gate = _require_gis_admin(request)
+    # Изменение порядка затрагивает набор слоёв — нужен whole-class 'edit'.
+    gate = _require_gis_access(request, level='edit')
     if gate:
         return gate
 
@@ -894,7 +937,7 @@ def gis_layer_tiles(request: HttpRequest, pk: int, z: int, x: int,
     from agrocosmos.views.tiles import _tile_bbox
     from psycopg import sql
 
-    gate = _require_gis_admin(request)
+    gate = _require_gis_access(request, level='view', pk=pk)
     if gate:
         # для тайлов отдаём пустой protobuf, а не JSON, чтобы MapLibre молчал
         resp = HttpResponse(b'', content_type='application/x-protobuf',

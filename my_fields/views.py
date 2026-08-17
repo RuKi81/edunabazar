@@ -116,12 +116,13 @@ def gis_page(request: HttpRequest) -> HttpResponse:
     GPU-рендера для будущей полноценной замены Leaflet-страницы
     «Мои поля» на массивах в десятки тысяч полигонов.
 
-    Доступ ограничен админом по тем же правилам, что и сам MVT-эндпоинт
-    (см. ``agrocosmos.views.tiles._is_admin_legacy``); 404 вместо 403
-    выбран сознательно — чтобы страница не «светилась» в навигации
-    обычным пользователям, даже если они подберут URL.
+    Доступ: админ ИЛИ наличие хотя бы одного ГИС-гранта у пользователя
+    (см. ``access.services.can_open_gis_page``). 404 вместо 403 выбран
+    сознательно — чтобы страница не «светилась» обычным пользователям,
+    даже если они подберут URL.
     """
-    if not _is_admin_legacy(request):
+    from access.services import can_open_gis_page
+    if not can_open_gis_page(getattr(request, 'legacy_user', None)):
         raise Http404
     return render(request, 'my_fields/gis.html', {
         'active_section': 'gis',

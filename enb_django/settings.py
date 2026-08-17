@@ -74,6 +74,7 @@ INSTALLED_APPS = [
     'legacy',
     'agrocosmos',
     'my_fields',
+    'access',
 ]
 
 REST_FRAMEWORK = {
