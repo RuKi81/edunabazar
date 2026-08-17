@@ -674,6 +674,10 @@
     var FARMLAND_FILL_LAYER = {
       id: 'farmlands-fill',
       type: 'fill', source: 'farmlands', 'source-layer': 'farmlands',
+      /* По умолчанию слой ЗСН выключен (как и в layerState) — иначе тайлы
+         угодий грузятся и мелькают на первой отрисовке ещё до события
+         'load', на котором применяется дефолт видимости. */
+      layout: { visibility: 'none' },
       paint: {
         'fill-color': [
           'case', ['boolean', ['feature-state', 'selected'], false], '#e91e63',
@@ -695,6 +699,7 @@
     var FARMLAND_OUTLINE_LAYER = {
       id: 'farmlands-outline',
       type: 'line', source: 'farmlands', 'source-layer': 'farmlands',
+      layout: { visibility: 'none' },
       paint: { 'line-color': '#37474f', 'line-width': 0.6 },
     };
 
@@ -741,6 +746,7 @@
         {
           id: 'userfields-fill',
           type: 'fill', source: 'userfields',
+          layout: { visibility: 'none' },
           paint: {
             'fill-color': [
               'case', ['boolean', ['feature-state', 'selected'], false], '#e91e63', '#2e7d32',
@@ -753,6 +759,7 @@
         {
           id: 'userfields-outline',
           type: 'line', source: 'userfields',
+          layout: { visibility: 'none' },
           paint: {
             'line-color': [
               'match', ['get', '_dirty'],
@@ -1456,6 +1463,10 @@
       } catch (_) {}
       /* Восстанавливаем фильтр-превью (скрытые pk) после пересоздания слоёв. */
       applyFarmlandFilter();
+      /* Слои пересозданы из дефолта (visibility:'none') — возвращаем текущую
+         видимость из layerState, чтобы включённый ЗСН не «пропал» после
+         жёсткого обновления тайлов. */
+      applyLayerVisibility('farmlands');
     }
 
     function setFarmlandEdit(on) {
@@ -4579,7 +4590,13 @@
 
       function ingest(L, atTop, vis) {
         if (vis === undefined) vis = true;
-        uploaded[L.id] = L; addLayerToMap(L); setVisible(L, vis); renderRow(L, atTop, vis);
+        uploaded[L.id] = L;
+        /* Ошибка добавления одного слоя на карту (битые тайлы/источник) не
+           должна прерывать цикл loadLayers и «съедать» строки остальных
+           слоёв в сайдбаре — поэтому строка рисуется всегда. */
+        try { addLayerToMap(L); setVisible(L, vis); }
+        catch (e) { if (window.console) console.warn('GIS: не удалось добавить слой на карту', L && L.id, e); }
+        renderRow(L, atTop, vis);
       }
 
       /* Регистрируем хук для мастер-переключателя (общая плашка «вкл/выкл
