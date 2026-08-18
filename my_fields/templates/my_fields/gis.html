@@ -64,8 +64,19 @@
     .gis-bulk-del:hover:not(:disabled) { background: #ffebee; color: #c62828; border-color: #ef9a9a; }
     .gis-bulk-del:disabled { opacity: .4; cursor: default; }
     .gis-bulk-count { font-size: 12px; color: #777; }
-    /* Чекбокс выбора слоя для удаления (вместо иконки-корзины в строке). */
-    .gis-layer__sel { width: 16px; height: 16px; flex: 0 0 auto; cursor: pointer; accent-color: #c62828; }
+    /* Чекбокс выбора слоя для удаления (вместо иконки-корзины в строке).
+       Materialize глобально прячет нативные <input type=checkbox>
+       (position:absolute; opacity:0; pointer-events:none) и рисует свой
+       контрол через label span. Наш чекбокс без label — поэтому явно
+       возвращаем нативный контрол, иначе он невидим и не кликается. */
+    input.gis-layer__sel[type="checkbox"] {
+      position: static !important; opacity: 1 !important; pointer-events: auto !important;
+      -webkit-appearance: auto !important; appearance: auto !important;
+      transform: none !important; margin: 0 !important;
+      width: 16px !important; height: 16px !important;
+      min-width: 16px; min-height: 16px;
+      flex: 0 0 auto; cursor: pointer; accent-color: #c62828;
+    }
 
     .gis-collapse-btn {
       position: fixed; top: calc(var(--map-header-h) + 12px);
@@ -107,6 +118,17 @@
     .gis-layer__btn:hover:not(.disabled) { background: #f5f5f5; }
     .gis-layer__btn.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
     .gis-layer__btn.disabled { opacity: 0.35; cursor: not-allowed; }
+    /* Кнопка видимости: всегда глазик. Выключенный слой — приглушённый
+       серый глаз без рамки; активный (видимый) — зелёный глаз в рамке. */
+    .gis-layer__btn[data-a="vis"],
+    .gis-layer__btn[data-action="visibility"] { color: #bdbdbd; }
+    .gis-layer__btn[data-a="vis"]:hover:not(.disabled),
+    .gis-layer__btn[data-action="visibility"]:hover:not(.disabled) { background: #f5f5f5; color: #9e9e9e; }
+    .gis-layer__btn[data-a="vis"].active,
+    .gis-layer__btn[data-action="visibility"].active {
+      color: #2e7d32; background: #fff; border-color: #2e7d32;
+      box-shadow: 0 0 0 1px #2e7d32 inset;
+    }
 
     .gis-info-empty { padding: 20px 8px; font-size: 12px; color: #999; text-align: center; line-height: 1.5; }
     .gis-info-card h4 { margin: 0 0 8px; font-size: 14px; color: #2e7d32; }
@@ -491,7 +513,7 @@
         <div class="gis-layer" data-layer="farmlands" draggable="true">
           <div class="gis-layer__head">
             <span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>
-            <button class="gis-layer__btn" data-action="visibility" type="button" title="Видимость">🚫</button>
+            <button class="gis-layer__btn" data-action="visibility" type="button" title="Видимость">👁</button>
             <span class="name">ЗСН (Росреестр)</span>
             <button class="gis-layer__btn" data-action="edit" type="button"
                     title="Включить редактирование Росреестр-слоя (изменения сохраняются сразу)">✏</button>
@@ -502,7 +524,7 @@
         <div class="gis-layer" data-layer="userfields" draggable="true">
           <div class="gis-layer__head">
             <span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>
-            <button class="gis-layer__btn" data-action="visibility" type="button" title="Видимость">🚫</button>
+            <button class="gis-layer__btn" data-action="visibility" type="button" title="Видимость">👁</button>
             <span class="name">Мои поля</span>
             <button class="gis-layer__btn" data-action="edit" type="button" title="Включить редактирование">✏</button>
           </div>
@@ -984,7 +1006,6 @@
         '.gis-layer[data-layer="' + key + '"] .gis-layer__btn[data-action="visibility"]');
       if (!btn) return;
       btn.classList.toggle('active', layerState[key].visible);
-      btn.textContent = layerState[key].visible ? '👁' : '🚫';
     }
 
     function setStaticLayerVisible(key, vis) {
@@ -1030,7 +1051,6 @@
           if (action === 'visibility') {
             layerState[key].visible = !layerState[key].visible;
             btn.classList.toggle('active', layerState[key].visible);
-            btn.textContent = layerState[key].visible ? '👁' : '🚫';
             applyLayerVisibility(key);
           } else if (action === 'edit') {
             if (key === 'userfields') setEditMode(!layerState[key].editable);
@@ -4778,7 +4798,7 @@
           '<span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>' +
           '<input type="checkbox" class="gis-layer__sel" title="Отметить слой для удаления">' +
           '<input type="color" class="gis-layer__swatch" data-a="color" value="' + esc(L.color) + '" title="Цвет слоя">' +
-          '<button class="gis-layer__btn' + (vis ? ' active' : '') + '" data-a="vis" type="button" title="Видимость">' + (vis ? '👁' : '🚫') + '</button>';
+          '<button class="gis-layer__btn' + (vis ? ' active' : '') + '" data-a="vis" type="button" title="Видимость">👁</button>';
         var nameSpan = makeNameSpan(L);
         head.appendChild(nameSpan);
         var attrBtn = document.createElement('button');
@@ -4802,7 +4822,6 @@
         visBtn.addEventListener('click', function () {
           var on = !visBtn.classList.contains('active');
           visBtn.classList.toggle('active', on);
-          visBtn.textContent = on ? '👁' : '🚫';
           setVisible(L, on);
         });
         zoomBtn.addEventListener('click', function () { fitExtent(L.extent); });
@@ -4884,7 +4903,7 @@
           var row = document.getElementById('gisup-row-' + id);
           if (!row) return;
           var vb = row.querySelector('[data-a="vis"]');
-          if (vb) { vb.classList.toggle('active', vis); vb.textContent = vis ? '👁' : '🚫'; }
+          if (vb) { vb.classList.toggle('active', vis); }
         });
       };
 
