@@ -1316,6 +1316,22 @@ def gis_folder_detail(request: HttpRequest, pk: int) -> JsonResponse:
     return JsonResponse({'ok': True, 'folder': _gis_folder_to_dict(folder)})
 
 
+def _coerce_int(value):
+    """Привести значение к int либо вернуть ``None`` (без исключений)."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_folder_id(raw, valid_folder_ids: set):
+    """ID папки для слоя: невалидная/несуществующая/пустая → ``None`` (корень)."""
+    if raw in (None, '', 'null'):
+        return None
+    fid = _coerce_int(raw)
+    return fid if fid in valid_folder_ids else None
+
+
 def _gis_layout_save(request: HttpRequest, data: dict) -> JsonResponse:
     """Сохранить состав/порядок дерева: папки (порядок) + слои
     (порядок + принадлежность папке). Вызывается из :func:`gis_layers_reorder`
@@ -1328,26 +1344,18 @@ def _gis_layout_save(request: HttpRequest, data: dict) -> JsonResponse:
 
     with transaction.atomic():
         for idx, f in enumerate(folders):
-            try:
-                fid = int(f.get('id'))
-            except (TypeError, ValueError, AttributeError):
-                continue
-            GisFolder.objects.filter(pk=fid).update(sort_order=idx)
+            fid = _coerce_int(f.get('id') if isinstance(f, dict) else None)
+            if fid is not None:
+                GisFolder.objects.filter(pk=fid).update(sort_order=idx)
         for idx, item in enumerate(layers):
-            try:
-                lid = int(item.get('id'))
-            except (TypeError, ValueError, AttributeError):
+            if not isinstance(item, dict):
                 continue
-            raw = item.get('folder')
-            fid = None
-            if raw not in (None, '', 'null'):
-                try:
-                    fid = int(raw)
-                except (TypeError, ValueError):
-                    fid = None
-            if fid is not None and fid not in valid_folder_ids:
-                fid = None
-            GisLayer.objects.filter(pk=lid).update(sort_order=idx, folder_id=fid)
+            lid = _coerce_int(item.get('id'))
+            if lid is None:
+                continue
+            folder_id = _resolve_folder_id(item.get('folder'), valid_folder_ids)
+            GisLayer.objects.filter(pk=lid).update(
+                sort_order=idx, folder_id=folder_id)
 
     return JsonResponse({'ok': True})
 
