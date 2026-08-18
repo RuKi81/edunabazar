@@ -445,14 +445,18 @@ def _geos_from_geojson(geometry: dict):
     """
     import json as _json
 
+    from django.contrib.gis.gdal.error import GDALException
     from django.contrib.gis.geos import GEOSGeometry
     from django.contrib.gis.geos.error import GEOSException
 
     if not isinstance(geometry, dict) or not geometry.get('type'):
         raise ValueError('Ожидается объект геометрии GeoJSON.')
+    # Битый GeoJSON может лететь как GEOSException/ValueError/TypeError, так и
+    # GDALException (GEOSGeometry парсит JSON через OGR) — класс зависит от
+    # версии GDAL; ловим все четыре.
     try:
         geom = GEOSGeometry(_json.dumps(geometry), srid=4326)
-    except (GEOSException, ValueError, TypeError) as exc:
+    except (GEOSException, GDALException, ValueError, TypeError) as exc:
         raise ValueError(f'Некорректная геометрия: {exc}') from exc
     if geom.empty:
         raise ValueError('Пустая геометрия.')
