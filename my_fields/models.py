@@ -305,6 +305,46 @@ class FieldEvent(models.Model):
         return f'{self.get_event_type_display()} @ {self.field.name} ({self.event_date})'
 
 
+class GisFolder(models.Model):
+    """Папка-группа для организации ГИС-слоёв в сайдбаре.
+
+    Чисто организационная сущность: слои ссылаются на папку через
+    ``GisLayer.folder`` (nullable — ``NULL`` = корень списка). Папки не
+    связаны с физическими таблицами PostGIS и не участвуют в грантах
+    доступа — это UI-группировка. При удалении папки слои остаются
+    (``on_delete=SET_NULL`` у ``GisLayer.folder``) и «выпадают» в корень.
+    """
+
+    name = models.CharField(
+        max_length=200, default='Новая папка', verbose_name='Название папки',
+    )
+    sort_order = models.IntegerField(
+        default=0, verbose_name='Порядок',
+        help_text='Меньше — выше в списке слоёв.',
+    )
+    collapsed = models.BooleanField(
+        default=False, verbose_name='Свёрнута',
+    )
+    visible = models.BooleanField(
+        default=True, verbose_name='Видима',
+    )
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='gis_folders',
+        verbose_name='Создал',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'myf_gis_folder'
+        ordering = ['sort_order', 'id']
+        verbose_name = 'ГИС-папка'
+        verbose_name_plural = 'ГИС-папки'
+
+    def __str__(self):
+        return self.name
+
+
 class GisLayer(models.Model):
     """Реестр пользовательских ГИС-слоёв, загруженных из SHP (ZIP).
 
@@ -370,6 +410,11 @@ class GisLayer(models.Model):
     sort_order = models.IntegerField(
         default=0, verbose_name='Порядок',
         help_text='Меньше — выше в списке слоёв и на карте.',
+    )
+    folder = models.ForeignKey(
+        GisFolder, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='layers',
+        verbose_name='Папка',
     )
 
     owner = models.ForeignKey(

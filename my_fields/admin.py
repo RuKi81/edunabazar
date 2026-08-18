@@ -9,7 +9,8 @@ from __future__ import annotations
 from django.contrib import admin
 
 from .models import (
-    FieldEvent, FieldPhoto, FieldSeason, GisLayer, Plan, UserField, UserPlan,
+    FieldEvent, FieldPhoto, FieldSeason, GisFolder, GisLayer, Plan, UserField,
+    UserPlan,
 )
 
 
@@ -74,6 +75,15 @@ class FieldPhotoAdmin(admin.ModelAdmin):
     list_display = ('id', 'field', 'event', 'taken_at', 'uploaded_at')
     autocomplete_fields = ('field', 'event', 'uploaded_by')
     list_select_related = ('field', 'event')
+
+
+@admin.register(GisFolder)
+class GisFolderAdmin(admin.ModelAdmin):
+    """Организационные папки-группы для ГИС-слоёв (UI-группировка)."""
+    list_display = ('id', 'name', 'sort_order', 'collapsed', 'visible', 'owner', 'created_at')
+    list_filter = ('collapsed', 'visible', 'created_at')
+    search_fields = ('name',)
+    list_select_related = ('owner',)
 
 
 @admin.register(GisLayer)

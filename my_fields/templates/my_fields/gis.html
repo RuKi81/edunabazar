@@ -370,6 +370,65 @@
       cursor: grab; margin-right: 2px;
     }
 
+    /* ── Папки-группы слоёв ── */
+    .gis-folder-add { font-size: 13px !important; }
+    .gis-folder {
+      border: 1px solid rgba(0,0,0,.12); border-radius: 6px;
+      margin-bottom: 8px; background: #fafafa; cursor: grab; user-select: none;
+    }
+    .gis-folder:active { cursor: grabbing; }
+    .gis-folder.dragging { opacity: .45; }
+    .gis-folder.drag-over-top    { box-shadow: 0 -2px 0 0 #2e7d32 inset, 0 -2px 0 0 #2e7d32; }
+    .gis-folder.drag-over-bottom { box-shadow: 0 2px 0 0 #2e7d32; }
+    /* Подсветка папки как drop-цели для слоя. */
+    .gis-folder.drag-into > .gis-folder__head { background: #c8e6c9; }
+    .gis-folder.drag-into { border-color: #2e7d32; }
+    .gis-folder__head {
+      display: flex; align-items: center; gap: 6px;
+      padding: 7px 9px; font-size: 13px; font-weight: 600;
+    }
+    .gis-folder__toggle {
+      width: 16px; border: none; background: transparent; cursor: pointer;
+      color: #666; font-size: 11px; padding: 0; line-height: 1;
+    }
+    .gis-folder__icon { font-size: 14px; }
+    .gis-folder__name {
+      flex: 1; min-width: 0; overflow-wrap: anywhere; word-break: break-word;
+      line-height: 1.25; cursor: text;
+    }
+    .gis-folder__name-input {
+      flex: 1; min-width: 0; font: inherit; font-weight: 600;
+      border: 1px solid #a5d6a7; border-radius: 4px; padding: 2px 5px;
+      background: #f1f8e9; color: #1b5e20; outline: none;
+    }
+    .gis-folder__btn {
+      width: 26px; height: 26px; border-radius: 5px; border: 1px solid transparent;
+      background: transparent; cursor: pointer; display: inline-flex;
+      align-items: center; justify-content: center; font-size: 14px; color: #888;
+      flex: 0 0 auto; transition: background .15s, color .15s;
+    }
+    .gis-folder__btn:hover { background: #eee; }
+    .gis-folder__btn.active { background: #c8e6c9; color: #2e7d32; }
+    .gis-folder__btn.gis-folder__del:hover { background: #ffebee; color: #c62828; }
+    input.gis-folder__sel[type="checkbox"] {
+      position: static !important; opacity: 1 !important; pointer-events: auto !important;
+      -webkit-appearance: auto !important; appearance: auto !important;
+      transform: none !important; margin: 0 !important;
+      width: 16px !important; height: 16px !important;
+      min-width: 16px; min-height: 16px; flex: 0 0 auto; cursor: pointer;
+      accent-color: #2e7d32;
+    }
+    .gis-folder__body {
+      padding: 2px 8px 6px 8px; min-height: 8px;
+    }
+    .gis-folder.collapsed > .gis-folder__body { display: none; }
+    /* Слои внутри папки чуть отступают и без нижнего зазора «прилипают». */
+    .gis-folder__body .gis-layer { margin-bottom: 6px; }
+    .gis-folder__body:empty::after {
+      content: 'перетащите слои сюда'; display: block;
+      font-size: 11px; color: #bbb; text-align: center; padding: 6px 0; font-weight: 400;
+    }
+
     /* Info-card action row — Удалить / Узлы. */
     .gis-info-card .actions {
       display: flex; gap: 6px; margin-top: 12px; padding-top: 10px;
@@ -555,6 +614,8 @@
       <div class="gis-layers-bar">
         <button id="gis-master-vis" class="gis-master-vis" type="button"
                 aria-pressed="false" title="Показать/скрыть все слои">🚫</button>
+        <button id="gis-folder-add" class="gis-master-vis gis-folder-add" type="button"
+                title="Добавить папку — перетаскивайте в неё слои">📁+</button>
         <button id="gis-bulk-del" class="gis-master-vis gis-bulk-del" type="button"
                 title="Удалить выбранные слои" disabled>🗑</button>
         <span id="gis-bulk-count" class="gis-bulk-count"></span>
@@ -4930,6 +4991,7 @@
        управляются в левой панели (видимость / зум / удаление). */
     (function () {
       var API = '/me/gis/api/layers/';
+      var FOLDERS_API = '/me/gis/api/folders/';
       var dz = document.getElementById('gis-upload-dz');
       var input = document.getElementById('gis-upload-input');
       var btn = document.getElementById('gis-upload-btn');
@@ -4938,6 +5000,7 @@
       var overlay = document.getElementById('gis-drop-overlay');
 
       var uploaded = {};  /* id -> layer meta (+ _layerIds) */
+      var folders = {};   /* id -> folder meta */
       var KIND_LABEL = { point: 'Точки', line: 'Линии', polygon: 'Полигоны', other: 'Геометрия' };
 
       function esc(s) {
@@ -5330,38 +5393,62 @@
         });
         if (map.getLayer('snap-indicator')) { try { map.moveLayer('snap-indicator'); } catch (_) {} }
       }
-      function persistOrder() {
-        var rows = listEl.querySelectorAll('.gis-layer[data-gisup]');
-        var order = Array.prototype.map.call(rows, function (r) {
-          return parseInt(r.getAttribute('data-gisup'), 10);
+      /* Собрать полный layout дерева (порядок папок + принадлежность/порядок
+         слоёв) из текущего DOM и отправить на сервер. Обратно совместимо:
+         сервер принимает {folders, layers}. Имя persistOrder сохранено,
+         т.к. на него завязаны вызовы из upload()/DnD. */
+      function collectLayoutPayload() {
+        var folderEls = listEl.querySelectorAll('.gis-folder[data-gisfolder]');
+        var folders = Array.prototype.map.call(folderEls, function (f) {
+          return { id: parseInt(f.getAttribute('data-gisfolder'), 10) };
         });
+        var layerEls = listEl.querySelectorAll('.gis-layer[data-gisup]');
+        var layers = Array.prototype.map.call(layerEls, function (r) {
+          var fEl = r.closest('.gis-folder[data-gisfolder]');
+          var L = uploaded[r.getAttribute('data-gisup')];
+          var fid = fEl ? parseInt(fEl.getAttribute('data-gisfolder'), 10) : null;
+          if (L) L.folder = fid;
+          return { id: parseInt(r.getAttribute('data-gisup'), 10), folder: fid };
+        });
+        return { folders: folders, layers: layers };
+      }
+      function persistOrder() {
         fetch(API + 'reorder/', {
           method: 'POST', credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-          body: JSON.stringify({ order: order }),
+          body: JSON.stringify(collectLayoutPayload()),
         }).catch(function () {});
       }
 
-      /* ── Drag-n-drop перестановка строк слоёв ── */
-      var upDragSrc = null;
+      /* ── Drag-n-drop: перестановка слоёв, перенос слоёв в/из папок,
+         перестановка самих папок. upDragSrc — перетаскиваемый элемент;
+         upDragKind — 'layer' | 'folder'. ── */
+      var upDragSrc = null, upDragKind = null;
       function clearDragMarks() {
-        Array.prototype.forEach.call(listEl.querySelectorAll('.gis-layer'), function (r) {
-          r.classList.remove('drag-over-top', 'drag-over-bottom');
-        });
+        Array.prototype.forEach.call(
+          listEl.querySelectorAll('.drag-over-top, .drag-over-bottom, .drag-into'),
+          function (r) { r.classList.remove('drag-over-top', 'drag-over-bottom', 'drag-into'); });
       }
+      function afterDrop() { syncUploadedOrderFromDOM(); persistOrder(); }
+
       function wireDrag(div) {
         div.addEventListener('dragstart', function (e) {
-          upDragSrc = div; div.classList.add('dragging');
+          upDragSrc = div; upDragKind = 'layer'; div.classList.add('dragging');
           if (e.dataTransfer) {
             e.dataTransfer.effectAllowed = 'move';
             try { e.dataTransfer.setData('text/plain', div.id); } catch (_) {}
           }
+          e.stopPropagation();
         });
         div.addEventListener('dragend', function () {
-          div.classList.remove('dragging'); clearDragMarks(); upDragSrc = null;
+          div.classList.remove('dragging'); clearDragMarks();
+          upDragSrc = null; upDragKind = null;
         });
         div.addEventListener('dragover', function (e) {
           if (!upDragSrc || upDragSrc === div) return;
+          /* Слой над слоем — вставка; папка над корневым слоем — вставка папки. */
+          var isRoot = div.parentNode === listEl;
+          if (upDragKind === 'folder' && !isRoot) return;
           e.preventDefault();
           if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
           var rect = div.getBoundingClientRect();
@@ -5373,16 +5460,246 @@
           div.classList.remove('drag-over-top', 'drag-over-bottom');
         });
         div.addEventListener('drop', function (e) {
-          e.preventDefault();
           if (!upDragSrc || upDragSrc === div) return;
+          var isRoot = div.parentNode === listEl;
+          if (upDragKind === 'folder' && !isRoot) return;
+          e.preventDefault(); e.stopPropagation();
           var rect = div.getBoundingClientRect();
           var before = (e.clientY - rect.top) < rect.height / 2;
           div.classList.remove('drag-over-top', 'drag-over-bottom');
-          if (before) listEl.insertBefore(upDragSrc, div);
-          else listEl.insertBefore(upDragSrc, div.nextSibling);
-          syncUploadedOrderFromDOM();
-          persistOrder();
+          var parent = div.parentNode;
+          if (before) parent.insertBefore(upDragSrc, div);
+          else parent.insertBefore(upDragSrc, div.nextSibling);
+          afterDrop();
         });
+      }
+
+      /* Корневой список: сброс слоя/папки на пустое место → в корень (в конец). */
+      listEl.addEventListener('dragover', function (e) {
+        if (!upDragSrc || e.target !== listEl) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      });
+      listEl.addEventListener('drop', function (e) {
+        if (!upDragSrc || e.target !== listEl) return;
+        e.preventDefault();
+        listEl.appendChild(upDragSrc);
+        afterDrop();
+      });
+
+      /* ── Папки-группы слоёв ──────────────────────────────────────────
+         Папка — чисто организационный контейнер: слои переносятся в её
+         тело drag-n-drop-ом, порядок/принадлежность сохраняются общим
+         reorder-эндпоинтом (см. collectLayoutPayload). ── */
+      function folderBodyEl(fid) {
+        var fEl = document.getElementById('gisfolder-' + fid);
+        return fEl ? fEl.querySelector('.gis-folder__body') : null;
+      }
+      /* Куда рисовать строку слоя: в тело папки (если задана и существует)
+         либо в корень списка. */
+      function layerContainer(L) {
+        if (L && L.folder != null) {
+          var body = folderBodyEl(L.folder);
+          if (body) return body;
+        }
+        return listEl;
+      }
+
+      function patchFolder(fid, payload) {
+        return fetch(FOLDERS_API + fid + '/', {
+          method: 'PATCH', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify(payload),
+        });
+      }
+
+      /* Видимость папки = видимость всех вложенных слоёв. */
+      function setFolderVisible(fEl, vis) {
+        var boxes = fEl.querySelectorAll('.gis-layer[data-gisup]');
+        Array.prototype.forEach.call(boxes, function (row) {
+          var L = uploaded[row.getAttribute('data-gisup')];
+          if (!L) return;
+          setVisible(L, vis);
+          var vb = row.querySelector('[data-a="vis"]');
+          if (vb) vb.classList.toggle('active', vis);
+        });
+      }
+
+      function startEditFolderName(f, nameSpan, fEl) {
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'gis-folder__name-input';
+        input.value = f.name;
+        input.maxLength = 200;
+        fEl.setAttribute('draggable', 'false');
+        nameSpan.replaceWith(input);
+        input.focus(); input.select();
+        var done = false;
+        function finish(save) {
+          if (done) return; done = true;
+          fEl.setAttribute('draggable', 'true');
+          var val = input.value.trim();
+          var newSpan = makeFolderNameSpan(f, fEl);
+          input.replaceWith(newSpan);
+          if (save && val && val !== f.name) {
+            newSpan.textContent = val;
+            patchFolder(f.id, { name: val })
+              .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+              .then(function () { f.name = val; toast('Папка переименована'); })
+              .catch(function () { newSpan.textContent = f.name; toast('Не удалось переименовать папку', true); });
+          }
+        }
+        input.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+          else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+        });
+        input.addEventListener('blur', function () { finish(true); });
+      }
+
+      function makeFolderNameSpan(f, fEl) {
+        var span = document.createElement('span');
+        span.className = 'gis-folder__name';
+        span.title = 'Двойной клик — переименовать';
+        span.textContent = f.name;
+        span.addEventListener('dblclick', function () { startEditFolderName(f, span, fEl); });
+        return span;
+      }
+
+      /* DnD для папки: перетаскивание самой папки (reorder в корне) +
+         приём слоёв внутрь (drag-into). */
+      function wireFolderDrag(fEl, body) {
+        fEl.addEventListener('dragstart', function (e) {
+          upDragSrc = fEl; upDragKind = 'folder'; fEl.classList.add('dragging');
+          if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = 'move';
+            try { e.dataTransfer.setData('text/plain', fEl.id); } catch (_) {}
+          }
+        });
+        fEl.addEventListener('dragend', function () {
+          fEl.classList.remove('dragging'); clearDragMarks();
+          upDragSrc = null; upDragKind = null;
+        });
+        fEl.addEventListener('dragover', function (e) {
+          if (!upDragSrc) return;
+          if (upDragKind === 'layer') {
+            e.preventDefault(); e.stopPropagation();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+            fEl.classList.add('drag-into');
+          } else if (upDragKind === 'folder' && upDragSrc !== fEl) {
+            e.preventDefault();
+            var rect = fEl.getBoundingClientRect();
+            var before = (e.clientY - rect.top) < rect.height / 2;
+            fEl.classList.toggle('drag-over-top', before);
+            fEl.classList.toggle('drag-over-bottom', !before);
+          }
+        });
+        fEl.addEventListener('dragleave', function (e) {
+          if (e.target === fEl || !fEl.contains(e.relatedTarget)) {
+            fEl.classList.remove('drag-into', 'drag-over-top', 'drag-over-bottom');
+          }
+        });
+        fEl.addEventListener('drop', function (e) {
+          if (!upDragSrc) return;
+          if (upDragKind === 'layer') {
+            e.preventDefault(); e.stopPropagation();
+            body.appendChild(upDragSrc);
+          } else if (upDragKind === 'folder' && upDragSrc !== fEl) {
+            e.preventDefault(); e.stopPropagation();
+            var rect = fEl.getBoundingClientRect();
+            var before = (e.clientY - rect.top) < rect.height / 2;
+            if (before) listEl.insertBefore(upDragSrc, fEl);
+            else listEl.insertBefore(upDragSrc, fEl.nextSibling);
+          } else { return; }
+          fEl.classList.remove('drag-into', 'drag-over-top', 'drag-over-bottom');
+          afterDrop();
+        });
+      }
+
+      function renderFolder(f, atTop) {
+        folders[f.id] = f;
+        var existing = document.getElementById('gisfolder-' + f.id);
+        if (existing) existing.remove();
+        var fEl = document.createElement('div');
+        fEl.className = 'gis-folder' + (f.collapsed ? ' collapsed' : '');
+        fEl.id = 'gisfolder-' + f.id;
+        fEl.setAttribute('data-gisfolder', f.id);
+        fEl.setAttribute('draggable', 'true');
+
+        var head = document.createElement('div');
+        head.className = 'gis-folder__head';
+
+        var toggle = document.createElement('button');
+        toggle.className = 'gis-folder__toggle'; toggle.type = 'button';
+        toggle.title = 'Свернуть/развернуть';
+        toggle.textContent = f.collapsed ? '▸' : '▾';
+
+        var icon = document.createElement('span');
+        icon.className = 'gis-folder__icon'; icon.textContent = '📁';
+
+        var nameSpan = makeFolderNameSpan(f, fEl);
+
+        var visBox = document.createElement('input');
+        visBox.type = 'checkbox';
+        visBox.className = 'gis-folder__sel';
+        visBox.title = 'Видимость слоёв папки';
+        visBox.checked = !!f.visible;
+
+        var delBtn = document.createElement('button');
+        delBtn.className = 'gis-folder__btn gis-folder__del'; delBtn.type = 'button';
+        delBtn.title = 'Удалить папку (слои останутся)'; delBtn.textContent = '🗑';
+
+        head.appendChild(toggle); head.appendChild(icon);
+        head.appendChild(nameSpan); head.appendChild(visBox); head.appendChild(delBtn);
+
+        var body = document.createElement('div');
+        body.className = 'gis-folder__body';
+
+        fEl.appendChild(head); fEl.appendChild(body);
+
+        toggle.addEventListener('click', function () {
+          var collapsed = !fEl.classList.contains('collapsed');
+          fEl.classList.toggle('collapsed', collapsed);
+          toggle.textContent = collapsed ? '▸' : '▾';
+          f.collapsed = collapsed;
+          patchFolder(f.id, { collapsed: collapsed }).catch(function () {});
+        });
+        visBox.addEventListener('mousedown', function () { fEl.setAttribute('draggable', 'false'); });
+        ['mouseup', 'mouseleave'].forEach(function (ev) {
+          visBox.addEventListener(ev, function () {
+            setTimeout(function () { fEl.setAttribute('draggable', 'true'); }, 0);
+          });
+        });
+        visBox.addEventListener('change', function () {
+          f.visible = visBox.checked;
+          setFolderVisible(fEl, visBox.checked);
+          patchFolder(f.id, { visible: visBox.checked }).catch(function () {});
+        });
+        delBtn.addEventListener('click', function () {
+          if (!window.confirm('Удалить папку «' + f.name + '»? Слои внутри переедут в корень списка.')) return;
+          fetch(FOLDERS_API + f.id + '/', {
+            method: 'DELETE', credentials: 'same-origin',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+          }).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+            .then(function () {
+              /* Слои из тела папки возвращаем в корень (перед папкой). */
+              Array.prototype.slice.call(body.querySelectorAll('.gis-layer[data-gisup]'))
+                .forEach(function (row) {
+                  var L = uploaded[row.getAttribute('data-gisup')];
+                  if (L) L.folder = null;
+                  listEl.insertBefore(row, fEl);
+                });
+              delete folders[f.id];
+              fEl.remove();
+              toast('Папка удалена');
+              persistOrder();
+            })
+            .catch(function () { toast('Не удалось удалить папку', true); });
+        });
+
+        wireFolderDrag(fEl, body);
+        if (atTop) listEl.insertBefore(fEl, listEl.firstChild);
+        else listEl.appendChild(fEl);
+        return fEl;
       }
 
       /* ── Название слоя: двойной клик → инлайн-редактор ── */
@@ -5567,8 +5884,9 @@
         }
 
         wireDrag(div);
-        if (atTop) listEl.insertBefore(div, listEl.firstChild);
-        else listEl.appendChild(div);
+        var container = layerContainer(L);
+        if (atTop && container === listEl) listEl.insertBefore(div, listEl.firstChild);
+        else container.appendChild(div);
       }
 
       function ingest(L, atTop, vis) {
@@ -5594,6 +5912,15 @@
           if (!row) return;
           var vb = row.querySelector('[data-a="vis"]');
           if (vb) { vb.classList.toggle('active', vis); }
+        });
+        /* Синхронизируем чекбоксы видимости папок с мастер-состоянием. */
+        listEl.querySelectorAll('.gis-folder__sel').forEach(function (cb) {
+          cb.checked = vis;
+          var fEl = cb.closest('.gis-folder[data-gisfolder]');
+          if (fEl) {
+            var f = folders[fEl.getAttribute('data-gisfolder')];
+            if (f) f.visible = vis;
+          }
         });
       };
 
@@ -5875,17 +6202,53 @@
         fetch(API, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
           .then(function (r) { return r.json(); })
           .then(function (j) {
+            /* Сначала папки (по sort_order) — чтобы их тела существовали к
+               моменту размещения слоёв. */
+            var flds = (j.folders || []).slice().sort(function (a, b) {
+              return (a.sort_order - b.sort_order) || (a.id - b.id);
+            });
+            flds.forEach(function (f) { renderFolder(f, false); });
             var results = (j.results || []).slice().sort(function (a, b) {
               return (a.sort_order - b.sort_order) || (a.id - b.id);
             });
             /* При старте портала слои грузятся согласно мастер-состоянию
-               (по умолчанию всё выключено). */
+               (по умолчанию всё выключено). Слой с валидной папкой попадает
+               в её тело (layerContainer), иначе в корень. */
             results.forEach(function (L) { ingest(L, false, masterVisible); });
+            /* Применяем видимость папок: скрытая папка гасит вложенные слои. */
+            flds.forEach(function (f) {
+              if (f.visible) return;
+              var fEl = document.getElementById('gisfolder-' + f.id);
+              if (fEl) setFolderVisible(fEl, false);
+            });
             syncUploadedOrderFromDOM();
           })
           .catch(function () {});
       }
       if (map.loaded()) loadLayers(); else map.on('load', loadLayers);
+
+      /* ── Кнопка «Добавить папку»: создаём папку на сервере и рисуем
+         сверху списка. ── */
+      (function () {
+        var addBtn = document.getElementById('gis-folder-add');
+        if (!addBtn) return;
+        addBtn.addEventListener('click', function () {
+          fetch(FOLDERS_API, {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({ name: 'Новая папка' }),
+          }).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+            .then(function (j) {
+              if (!j || !j.folder) return;
+              var fEl = renderFolder(j.folder, true);
+              /* Сразу предлагаем переименовать. */
+              var span = fEl.querySelector('.gis-folder__name');
+              if (span) startEditFolderName(j.folder, span, fEl);
+              persistOrder();
+            })
+            .catch(function () { toast('Не удалось создать папку', true); });
+        });
+      })();
 
       /* ── Кнопка выбора файла + drop на сам dropzone (опционально) ──
          Дропзона убрана из сайдбара — загрузка только перетаскиванием ZIP

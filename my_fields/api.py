@@ -30,7 +30,7 @@ from django.utils.dateparse import parse_date
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from .models import FieldEvent, FieldSeason, GisLayer, UserField
+from .models import FieldEvent, FieldSeason, GisFolder, GisLayer, UserField
 from .permissions import can_edit_field, can_view_field
 from .services.geometry import (
     compute_area_ha, ensure_multipolygon, resolve_region_district,
@@ -873,9 +873,21 @@ def _require_gis_access(request: HttpRequest, *, level: str = 'view',
     return None if allowed else JsonResponse({'error': 'forbidden'}, status=403)
 
 
+def _gis_folder_to_dict(folder) -> dict:
+    return {
+        'id': folder.pk,
+        'name': folder.name,
+        'sort_order': folder.sort_order,
+        'collapsed': folder.collapsed,
+        'visible': folder.visible,
+        'created_at': folder.created_at.isoformat(),
+    }
+
+
 def _gis_layer_to_dict(layer: GisLayer) -> dict:
     return {
         'id': layer.pk,
+        'folder': layer.folder_id,
         'title': layer.title,
         'table_name': layer.table_name,
         'original_filename': layer.original_filename,
@@ -908,6 +920,7 @@ def _gis_layers_list(request: HttpRequest) -> JsonResponse:
         'ok': True,
         'count': layers.count(),
         'results': [_gis_layer_to_dict(x) for x in layers],
+        'folders': [_gis_folder_to_dict(f) for f in GisFolder.objects.all()],
     })
 
 
@@ -1224,10 +1237,130 @@ def _gis_feature_patch(request: HttpRequest, layer: GisLayer,
 
 
 @csrf_exempt
+@require_http_methods(['GET', 'POST'])
+def gis_folders_collection(request: HttpRequest) -> JsonResponse:
+    """GET — список папок; POST — создать папку (по умолчанию «Новая папка»)."""
+    if request.method == 'GET':
+        gate = _require_gis_access(request, level='view')
+        if gate:
+            return gate
+        return JsonResponse({
+            'ok': True,
+            'results': [_gis_folder_to_dict(f) for f in GisFolder.objects.all()],
+        })
+
+    # POST — создание (изменяет набор → whole-class 'edit').
+    gate = _require_gis_access(request, level='edit')
+    if gate:
+        return gate
+    try:
+        data = json.loads(request.body or b'{}')
+    except (ValueError, TypeError):
+        data = {}
+    name = str(data.get('name', '') or '').strip() or 'Новая папка'
+    owner = request.user if getattr(request, 'user', None) \
+        and request.user.is_authenticated else None
+    # Новую папку кладём наверх списка (sort_order меньше всех существующих).
+    top = GisFolder.objects.order_by('sort_order').first()
+    sort_order = (top.sort_order - 1) if top else 0
+    folder = GisFolder.objects.create(
+        name=name[:200], sort_order=sort_order, owner=owner)
+    return JsonResponse(
+        {'ok': True, 'folder': _gis_folder_to_dict(folder)}, status=201)
+
+
+@csrf_exempt
+@require_http_methods(['PATCH', 'DELETE'])
+def gis_folder_detail(request: HttpRequest, pk: int) -> JsonResponse:
+    """PATCH — имя/свёрнутость/видимость папки; DELETE — удалить папку
+    (слои внутри переходят в корень через ``on_delete=SET_NULL``)."""
+    level = 'manage' if request.method == 'DELETE' else 'edit'
+    gate = _require_gis_access(request, level=level)
+    if gate:
+        return gate
+
+    folder = get_object_or_404(GisFolder, pk=pk)
+
+    if request.method == 'DELETE':
+        folder.delete()
+        return JsonResponse({'ok': True})
+
+    try:
+        data = json.loads(request.body or b'{}')
+    except (ValueError, TypeError):
+        return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
+
+    update_fields: list[str] = []
+    if 'name' in data:
+        name = str(data.get('name', '') or '').strip()
+        if not name:
+            return JsonResponse(
+                {'ok': False, 'error': 'empty_name',
+                 'detail': 'Название папки не может быть пустым.'},
+                status=400,
+            )
+        folder.name = name[:200]
+        update_fields.append('name')
+    if 'collapsed' in data:
+        folder.collapsed = bool(data.get('collapsed'))
+        update_fields.append('collapsed')
+    if 'visible' in data:
+        folder.visible = bool(data.get('visible'))
+        update_fields.append('visible')
+
+    if not update_fields:
+        return JsonResponse(
+            {'ok': False, 'error': 'nothing_to_update'}, status=400)
+
+    folder.save(update_fields=update_fields)
+    return JsonResponse({'ok': True, 'folder': _gis_folder_to_dict(folder)})
+
+
+def _gis_layout_save(request: HttpRequest, data: dict) -> JsonResponse:
+    """Сохранить состав/порядок дерева: папки (порядок) + слои
+    (порядок + принадлежность папке). Вызывается из :func:`gis_layers_reorder`
+    при наличии ключей ``folders``/``layers``."""
+    from django.db import transaction
+
+    folders = data.get('folders') or []
+    layers = data.get('layers') or []
+    valid_folder_ids = set(GisFolder.objects.values_list('pk', flat=True))
+
+    with transaction.atomic():
+        for idx, f in enumerate(folders):
+            try:
+                fid = int(f.get('id'))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            GisFolder.objects.filter(pk=fid).update(sort_order=idx)
+        for idx, item in enumerate(layers):
+            try:
+                lid = int(item.get('id'))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            raw = item.get('folder')
+            fid = None
+            if raw not in (None, '', 'null'):
+                try:
+                    fid = int(raw)
+                except (TypeError, ValueError):
+                    fid = None
+            if fid is not None and fid not in valid_folder_ids:
+                fid = None
+            GisLayer.objects.filter(pk=lid).update(sort_order=idx, folder_id=fid)
+
+    return JsonResponse({'ok': True})
+
+
+@csrf_exempt
 @require_http_methods(['POST'])
 def gis_layers_reorder(request: HttpRequest) -> JsonResponse:
     """Сохранить порядок слоёв. Тело: ``{"order": [id, id, ...]}`` —
-    сверху вниз (первый = верхний в списке и на карте)."""
+    сверху вниз (первый = верхний в списке и на карте).
+
+    Расширенный формат (папки): ``{"folders": [{"id":..}, ...],
+    "layers": [{"id":.., "folder": fid|null}, ...]}`` — сохраняет порядок
+    папок и принадлежность/порядок слоёв."""
     # Изменение порядка затрагивает набор слоёв — нужен whole-class 'edit'.
     gate = _require_gis_access(request, level='edit')
     if gate:
@@ -1240,6 +1373,9 @@ def gis_layers_reorder(request: HttpRequest) -> JsonResponse:
     except (ValueError, TypeError):
         return JsonResponse(
             {'ok': False, 'error': 'invalid_json'}, status=400)
+
+    if 'layers' in data or 'folders' in data:
+        return _gis_layout_save(request, data)
 
     order = data.get('order')
     if not isinstance(order, list):

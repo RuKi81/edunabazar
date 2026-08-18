@@ -26,7 +26,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from legacy.models import LegacyUser
-from my_fields.models import GisLayer
+from my_fields.models import GisFolder, GisLayer
 
 User = get_user_model()
 
@@ -277,4 +277,142 @@ class RenameAndReorderTests(GisLayersTestCase):
             data=json.dumps({'title': 'X'}),
             content_type='application/json',
         )
+        self.assertEqual(resp.status_code, 401)
+
+
+class FolderTests(GisLayersTestCase):
+    def setUp(self):
+        self._login_admin()
+        self._upload(_make_shp_zip(shp_name='layer_a'))
+        self._upload(_make_shp_zip(shp_name='layer_b'))
+        self.a, self.b = list(GisLayer.objects.order_by('sort_order', 'id'))
+
+    def test_create_folder(self):
+        resp = self.client.post(
+            '/me/gis/api/folders/',
+            data=json.dumps({'name': 'Поля 2025'}),
+            content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        body = resp.json()
+        self.assertTrue(body['ok'])
+        self.assertEqual(body['folder']['name'], 'Поля 2025')
+        self.assertEqual(GisFolder.objects.count(), 1)
+
+    def test_create_folder_default_name(self):
+        resp = self.client.post(
+            '/me/gis/api/folders/', data='{}',
+            content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.json()['folder']['name'], 'Новая папка')
+
+    def test_folders_listed_in_layers_collection(self):
+        GisFolder.objects.create(name='F1')
+        body = self.client.get('/me/gis/api/layers/').json()
+        self.assertIn('folders', body)
+        self.assertEqual(len(body['folders']), 1)
+        self.assertEqual(body['folders'][0]['name'], 'F1')
+
+    def test_layer_dict_exposes_folder(self):
+        f = GisFolder.objects.create(name='F1')
+        self.a.folder = f
+        self.a.save(update_fields=['folder'])
+        body = self.client.get('/me/gis/api/layers/').json()
+        row = next(x for x in body['results'] if x['id'] == self.a.pk)
+        self.assertEqual(row['folder'], f.pk)
+
+    def test_patch_folder_name(self):
+        f = GisFolder.objects.create(name='old')
+        resp = self.client.patch(
+            f'/me/gis/api/folders/{f.pk}/',
+            data=json.dumps({'name': 'new'}),
+            content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        f.refresh_from_db()
+        self.assertEqual(f.name, 'new')
+
+    def test_patch_folder_empty_name_is_400(self):
+        f = GisFolder.objects.create(name='keep')
+        resp = self.client.patch(
+            f'/me/gis/api/folders/{f.pk}/',
+            data=json.dumps({'name': '  '}),
+            content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        f.refresh_from_db()
+        self.assertEqual(f.name, 'keep')
+
+    def test_patch_folder_collapsed_and_visible(self):
+        f = GisFolder.objects.create(name='F1')
+        resp = self.client.patch(
+            f'/me/gis/api/folders/{f.pk}/',
+            data=json.dumps({'collapsed': True, 'visible': False}),
+            content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        f.refresh_from_db()
+        self.assertTrue(f.collapsed)
+        self.assertFalse(f.visible)
+
+    def test_delete_folder_keeps_layers(self):
+        f = GisFolder.objects.create(name='F1')
+        self.a.folder = f
+        self.a.save(update_fields=['folder'])
+        resp = self.client.delete(f'/me/gis/api/folders/{f.pk}/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(GisFolder.objects.count(), 0)
+        self.a.refresh_from_db()
+        self.assertIsNone(self.a.folder)   # SET_NULL → слой уходит в корень
+        self.assertTrue(GisLayer.objects.filter(pk=self.a.pk).exists())
+
+    def test_layout_save_assigns_folder_and_order(self):
+        f = GisFolder.objects.create(name='F1', sort_order=5)
+        resp = self.client.post(
+            '/me/gis/api/layers/reorder/',
+            data=json.dumps({
+                'folders': [{'id': f.pk}],
+                'layers': [
+                    {'id': self.b.pk, 'folder': f.pk},
+                    {'id': self.a.pk, 'folder': None},
+                ],
+            }),
+            content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        f.refresh_from_db(); self.a.refresh_from_db(); self.b.refresh_from_db()
+        self.assertEqual(f.sort_order, 0)
+        self.assertEqual(self.b.folder_id, f.pk)
+        self.assertIsNone(self.a.folder_id)
+        self.assertEqual(self.b.sort_order, 0)
+        self.assertEqual(self.a.sort_order, 1)
+
+    def test_layout_save_ignores_invalid_folder(self):
+        resp = self.client.post(
+            '/me/gis/api/layers/reorder/',
+            data=json.dumps({
+                'folders': [],
+                'layers': [{'id': self.a.pk, 'folder': 999999}],
+            }),
+            content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.a.refresh_from_db()
+        self.assertIsNone(self.a.folder_id)   # несуществующая папка → NULL
+
+    def test_folder_create_requires_admin(self):
+        self.client.logout()
+        self._login_plain()
+        resp = self.client.post(
+            '/me/gis/api/folders/',
+            data=json.dumps({'name': 'X'}),
+            content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_folder_delete_requires_auth(self):
+        f = GisFolder.objects.create(name='F1')
+        self.client.logout()
+        resp = self.client.delete(f'/me/gis/api/folders/{f.pk}/')
         self.assertEqual(resp.status_code, 401)
