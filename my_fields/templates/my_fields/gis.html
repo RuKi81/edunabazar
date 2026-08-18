@@ -1455,7 +1455,8 @@
        persisted-поле «Мои поля» ИЛИ загруженное угодье ЗСН (fl:<pk>). */
     function isEditableDrawId(sid) {
       sid = String(sid);
-      return persistedDrawIds.has(sid) || flDrawIds.has(sid);
+      return persistedDrawIds.has(sid) || flDrawIds.has(sid) ||
+             (gupEdit.active && (gupIdMap[sid] != null || gupFindCreateIdx(sid) >= 0));
     }
 
     /* Включить/выключить кнопки тулбара (кроме select / save / discard). */
@@ -1594,8 +1595,9 @@
         updateSaveBadge();
       }
 
-      /* Взаимоисключение с режимом «Мои поля». */
+      /* Взаимоисключение с режимом «Мои поля» и загруженным слоем. */
       if (on && layerState.userfields.editable) setEditMode(false);
+      if (on && gupEdit.active && gupEdit.disable) gupEdit.disable();
 
       try { cancelLassoSelect(); clearMassSelection(); } catch (_) {}
       layerState.farmlands.editable = on;
@@ -1957,8 +1959,10 @@
         pending = { creates: [], updates: new Map(), attrUpdates: new Map(), deletes: new Set() };
         updateSaveBadge();
       }
-      /* Режимы редактирования userfields и farmlands — взаимоисключающие. */
+      /* Режимы редактирования userfields / farmlands / загруженный слой —
+         взаимоисключающие. */
       if (on && layerState.farmlands.editable) setFarmlandEdit(false);
+      if (on && gupEdit.active && gupEdit.disable) gupEdit.disable();
 
       try { cancelLassoSelect(); clearMassSelection(); } catch (_) {}
       layerState.userfields.editable = on;
@@ -2000,8 +2004,151 @@
        (внутренний scope). */
     var gupEdit = {
       active: false, layer: null, kind: null,
-      onCreate: null, onUpdate: null, onTrash: null,
+      reload: null,   /* колбэк перезагрузки слоя (ставит внутренний модуль) */
+      disable: null,  /* колбэк выключения режима (для взаимоисключения) */
     };
+    /* Состояние и очередь правок загруженного слоя живут в ВНЕШНЕМ scope,
+       чтобы их видели общий commitPending / discardPending / pendingCount /
+       finishSplit (та же модель «очередь + 💾», что у «Мои поля»/ЗСН).
+       Сами DOM/тайловые операции (gupLoadFeatures, gupRefreshTiles) — во
+       вложенном модуле, вызываются через gupEdit.reload/disable. */
+    var GUP_PREFIX = 'gup_';
+    var gupIdMap = {};          /* drawId (gup_<fid>) → серверный fid */
+    var gupDraftCounter = 0;
+    var gupPending = {
+      creates: [],              // [{ drawId, geometry }]
+      updates: new Map(),       // fid(server) -> geometry
+      deletes: new Set(),       // fid(server)
+    };
+    function gupPendingCount() {
+      return gupPending.creates.length + gupPending.updates.size + gupPending.deletes.size;
+    }
+    function gupResetPending() {
+      gupPending = { creates: [], updates: new Map(), deletes: new Set() };
+    }
+    function gupFindCreateIdx(drawId) {
+      var sid = String(drawId);
+      for (var i = 0; i < gupPending.creates.length; i++) {
+        if (String(gupPending.creates[i].drawId) === sid) return i;
+      }
+      return -1;
+    }
+    function gupDrawTool(kind) {
+      if (kind === 'point') return 'draw_point';
+      if (kind === 'line') return 'draw_line_string';
+      return 'draw_polygon';   /* polygon и other → полигон */
+    }
+    function gupToolLabel(kind) {
+      if (kind === 'point') return '• точка';
+      if (kind === 'line') return '╱ линия';
+      return '⬡ полигон';
+    }
+    /* Новый объект (нарисован пользователем ИЛИ получен из split/выреза) —
+       кладём в очередь создания. Объект УЖЕ добавлен в draw вызывающим кодом. */
+    function gupQueueCreate(drawId, geometry, silent) {
+      gupDraftCounter++;
+      gupPending.creates.push({ drawId: String(drawId), geometry: geometry });
+      updateSaveBadge();
+      if (!silent) toast('Добавлено в очередь. Нажмите 💾 для сохранения.');
+    }
+    function gupQueueUpdate(drawId, geometry) {
+      var sid = String(drawId);
+      var ci = gupFindCreateIdx(sid);
+      if (ci >= 0) { gupPending.creates[ci].geometry = geometry; updateSaveBadge(); return; }
+      var fid = gupIdMap[sid];
+      if (fid != null) { gupPending.updates.set(fid, geometry); updateSaveBadge(); }
+    }
+    function gupQueueDelete(drawId) {
+      var sid = String(drawId);
+      var ci = gupFindCreateIdx(sid);
+      if (ci >= 0) {           /* черновик — просто убираем из очереди и draw */
+        gupPending.creates.splice(ci, 1);
+        try { draw.delete(sid); } catch (_) {}
+        updateSaveBadge();
+        return;
+      }
+      var fid = gupIdMap[sid];
+      if (fid == null) { try { draw.delete(sid); } catch (_) {} return; }
+      gupPending.deletes.add(fid);
+      gupPending.updates.delete(fid);
+      try { draw.delete(sid); } catch (_) {}
+      delete gupIdMap[sid];
+      updateSaveBadge();
+    }
+    /* Разрез/вырез для загруженного слоя — аналог userfields-ветки finishSplit.
+       Кандидатов берём прямо из draw (в gup-режиме там только объекты слоя). */
+    function finishSplitGup(cutFeature, holePoly) {
+      var probe = holePoly || cutFeature;
+      var feats = [];
+      try { feats = (draw.getAll().features || []); } catch (_) {}
+      var targets = findPolygonsHitBy(probe, feats);
+      if (!targets.length) {
+        toast(holePoly ? 'Петля не попала ни в один полигон.'
+                       : 'Линия не пересекла ни один полигон.', true);
+        setTimeout(reenterSplitLineMode, 0);
+        return;
+      }
+      var splitCount = 0, holeCount = 0, partsTotal = 0;
+      targets.forEach(function (t) {
+        var drawId = t.feat.id;
+        var drawnPoly;
+        try { drawnPoly = draw.get(String(drawId)); } catch (_) { drawnPoly = null; }
+        var polyForCut = drawnPoly || t.feat;
+        if (holePoly) {
+          if (applyHoleCutGup(drawId, polyForCut, holePoly)) holeCount++;
+          return;
+        }
+        var parts;
+        try { parts = splitPolygonByLine(polyForCut, cutFeature); }
+        catch (e) { console.error('[gis-split-gup] failed for', drawId, e); return; }
+        if (!parts.length || parts.length < 2) return;
+        try {
+          parts.sort(function (a, b) {
+            var aa = 0, bb = 0;
+            try { aa = turf.area(a); } catch (_) {}
+            try { bb = turf.area(b); } catch (_) {}
+            return bb - aa;
+          });
+        } catch (_) {}
+        /* Больший фрагмент остаётся за исходным объектом, остальные — новые. */
+        gupQueueUpdate(drawId, parts[0].geometry);
+        try { drawAddSilent({ type: 'Feature', id: String(drawId), properties: {}, geometry: parts[0].geometry }); } catch (_) {}
+        parts.slice(1).forEach(function (p) {
+          var added;
+          try { added = drawAddSilent({ type: 'Feature', properties: {}, geometry: p.geometry }); }
+          catch (_) { added = null; }
+          var draftId = (added && added[0]) || ('gtmp_' + Date.now() + '_' + Math.random().toString(36).slice(2));
+          gupQueueCreate(draftId, p.geometry, true);
+        });
+        splitCount++;
+        partsTotal += parts.length;
+      });
+      if (holePoly) {
+        if (holeCount) toast('Кольцо вырезано: ' + holeCount + ' · 💾 для сохранения');
+        else toast('Петля не дала выреза.', true);
+      } else if (splitCount) {
+        toast('Разрезано: ' + splitCount + ' → ' + partsTotal + ' частей · 💾 для сохранения');
+      } else {
+        toast('Линия не дала разреза (не пересекла насквозь).', true);
+      }
+      setTimeout(reenterSplitLineMode, 0);
+    }
+    function applyHoleCutGup(drawId, target, holeFeature) {
+      var res = computeHoleCut(target, holeFeature);
+      if (!res) return false;
+      gupQueueUpdate(drawId, res.donut.geometry);
+      try { drawAddSilent({ type: 'Feature', id: String(drawId), properties: {}, geometry: res.donut.geometry }); } catch (_) {}
+      var keepEl = document.getElementById('gis-keep-cutout');
+      var keepCutout = keepEl ? !!keepEl.checked : true;
+      if (keepCutout && res.inner && res.inner.geometry) {
+        var added;
+        try { added = drawAddSilent({ type: 'Feature', properties: {}, geometry: res.inner.geometry }); }
+        catch (_) { added = null; }
+        var draftId = (added && added[0]) || ('gtmp_' + Date.now() + '_inner');
+        gupQueueCreate(draftId, res.inner.geometry, true);
+      }
+      return true;
+    }
 
     /* ──────────────────────── Toolbar buttons ──────────────────────── */
     function highlightTool(tool) {
@@ -2078,9 +2225,9 @@
         toast('Сначала выделите объект (☞ + клик) или массово (☑ / ▦).', true);
         return;
       }
-      /* Режим правки геометрии загруженного слоя — удаляем из таблицы слоя. */
-      if (gupEdit.active && gupEdit.onTrash) {
-        sel.forEach(function (sid) { gupEdit.onTrash(String(sid)); });
+      /* Загруженный слой — удаление в очередь gupPending (применится по 💾). */
+      if (gupEdit.active) {
+        sel.forEach(function (sid) { gupQueueDelete(String(sid)); });
         return;
       }
       sel.forEach(function (sid) {
@@ -2424,6 +2571,9 @@
          Иначе работаем как обычная разрезающая линия. */
       var holePoly = lassoLineToHolePolygon(cutFeature);
 
+      /* Загруженный слой — своя очередь gupPending. */
+      if (gupEdit.active) { finishSplitGup(cutFeature, holePoly); return; }
+
       /* Режим ЗСН — режем угодья (правки уходят в очередь flPending, 💾). */
       if (layerState.farmlands.editable) {
         finishSplitFarmland(cutFeature, holePoly);
@@ -2513,12 +2663,13 @@
 
     /* Найти все Polygon/MultiPolygon из userfieldsFC, которые пересекает
        пробная геометрия (линия или замкнутая петля-полигон). */
-    function findPolygonsHitBy(probe) {
+    function findPolygonsHitBy(probe, feats) {
       var hits = [];
       var pgeom = probe && probe.geometry;
       if (!pgeom) return hits;
-      for (var i = 0; i < userfieldsFC.features.length; i++) {
-        var f = userfieldsFC.features[i];
+      var list = feats || userfieldsFC.features;
+      for (var i = 0; i < list.length; i++) {
+        var f = list[i];
         if (!f.geometry) continue;
         var t = f.geometry.type;
         if (t !== 'Polygon' && t !== 'MultiPolygon') continue;
@@ -3096,9 +3247,16 @@
       if (f.id != null && persistedDrawIds.has(String(f.id))) return;
       if (f.id != null && findPendingCreateIdx(f.id) >= 0) return;
 
-      /* Режим правки геометрии загруженного слоя — свой поток (POST в таблицу
-         слоя, без snap к угодьям/полям). */
-      if (gupEdit.active && gupEdit.onCreate) { gupEdit.onCreate(f); return; }
+      /* Загруженный слой (gis_up_*): своя очередь gupPending + 💾. Разрез/
+         вырез (✂) и создание — без snap к чужим слоям (userfields/farmland). */
+      if (gupEdit.active) {
+        if (splitState === 'pick-line' && f.geometry.type === 'LineString') { finishSplit(f); return; }
+        if (ringCutState === 'draw-hole' && f.geometry.type === 'Polygon') { finishRingCut(f); return; }
+        gupQueueCreate(f.id, f.geometry);
+        var gnm = gupDrawTool(gupEdit.kind);
+        setTimeout(function () { try { draw.changeMode(gnm); } catch (_) {} highlightTool(gnm); }, 0);
+        return;
+      }
 
       /* Сценарий «массовое выделение лассо» — поглощаем нарисованный полигон
          как область выбора (без snap и без постановки в очередь). */
@@ -3205,9 +3363,9 @@
     map.on('draw.update', function (ev) {
       if (_silentDraw > 0) return;
       (ev.features || []).forEach(function (f) {
-        /* Режим правки геометрии загруженного слоя — PATCH в таблицу слоя
-           (без snap к угодьям/полям). */
-        if (gupEdit.active && gupEdit.onUpdate) { gupEdit.onUpdate(f); return; }
+        /* Загруженный слой — правка узлов/перемещение в очередь gupPending
+           (без snap к чужим слоям, без авто-PATCH). */
+        if (gupEdit.active) { gupQueueUpdate(f.id, f.geometry); return; }
         var snapped = false;
         try { snapped = snapGeometryInPlace(f.geometry); } catch (_) {}
         /* Перезаписываем в draw со snap-нутыми координатами (silent). */
@@ -3302,7 +3460,7 @@
     /* Общий счётчик для бейджа/сохранения — обе очереди (как просили:
        единая логика для всех слоёв). */
     function pendingCount() {
-      return ufPendingCount() + flPendingCount();
+      return ufPendingCount() + flPendingCount() + gupPendingCount();
     }
     function updateSaveBadge() {
       var n = pendingCount();
@@ -3484,6 +3642,29 @@
       });
       var hadFarmland = flPendingCount() > 0;
 
+      /* ── Очередь загруженного слоя (gis_up_*): те же deletes → updates → creates. ── */
+      var gupBase = (gupEdit.active && gupEdit.layer)
+        ? ('/me/gis/api/layers/' + gupEdit.layer.id + '/features/') : null;
+      if (gupBase) {
+        gupPending.deletes.forEach(function (fid) {
+          ops.push(apiFetch(gupBase + encodeURIComponent(fid) + '/', { method: 'DELETE' })
+            .then(function (res) { return { kind: 'gup-delete', res: res }; })
+            .catch(function (e) { return { kind: 'gup-delete', res: { ok: false, error: e } }; }));
+        });
+        gupPending.updates.forEach(function (geom, fid) {
+          ops.push(apiFetch(gupBase + encodeURIComponent(fid) + '/', {
+            method: 'PATCH', body: JSON.stringify({ geometry: geom }),
+          }).then(function (res) { return { kind: 'gup-update', res: res }; })
+            .catch(function (e) { return { kind: 'gup-update', res: { ok: false, error: e } }; }));
+        });
+        gupPending.creates.forEach(function (c) {
+          ops.push(apiFetch(gupBase, { method: 'POST', body: JSON.stringify({ geometry: c.geometry }) })
+            .then(function (res) { return { kind: 'gup-create', res: res }; })
+            .catch(function (e) { return { kind: 'gup-create', res: { ok: false, error: e } }; }));
+        });
+      }
+      var hadGup = gupPendingCount() > 0;
+
       Promise.all(ops).then(function (results) {
         var ok = 0, fail = 0, failMsg = '';
         results.forEach(function (r) {
@@ -3498,6 +3679,7 @@
            ниже всё равно перечитаем с сервера/тайлов. */
         pending = { creates: [], updates: new Map(), attrUpdates: new Map(), deletes: new Set() };
         flPending = { creates: [], updates: new Map(), attrUpdates: new Map(), deletes: new Set() };
+        gupResetPending();
         loadUserFields().then(function () {
           if (drawAdded) {
             try { draw.deleteAll(); } catch (_) {}
@@ -3506,6 +3688,9 @@
             /* persisted-поля возвращаем в draw только в режиме «Мои поля». */
             if (layerState.userfields.editable) userfieldsFC.features.forEach(addPersistedToDraw);
           }
+          /* Загруженный слой: перечитываем точную геометрию с сервера
+             (новые объекты получат реальные id). */
+          if (hadGup && gupEdit.active && gupEdit.reload) gupEdit.reload();
           /* ЗСН: снимаем фильтр-превью и перезапрашиваем тайлы. */
           applyFarmlandFilter();
           if (hadFarmland) refreshFarmlandTiles();
@@ -3529,6 +3714,8 @@
       setUserfieldsData();
       pending = { creates: [], updates: new Map(), attrUpdates: new Map(), deletes: new Set() };
       flPending = { creates: [], updates: new Map(), attrUpdates: new Map(), deletes: new Set() };
+      var hadGup = gupPendingCount() > 0;
+      gupResetPending();
       if (drawAdded) {
         try { draw.deleteAll(); } catch (_) {}
         persistedDrawIds.clear();
@@ -3536,6 +3723,9 @@
         /* persisted-поля возвращаем только в режиме «Мои поля». */
         if (layerState.userfields.editable) userfieldsFC.features.forEach(addPersistedToDraw);
       }
+      /* Загруженный слой: перечитываем геометрию с сервера (она
+         не менялась — правки так и не ушли). */
+      if (hadGup && gupEdit.active && gupEdit.reload) gupEdit.reload();
       /* ЗСН: снимаем фильтр-превью — тайлы снова показывают исходные данные. */
       applyFarmlandFilter();
       try { cancelLassoSelect(); clearMassSelection(); } catch (_) {}
@@ -3755,6 +3945,16 @@
       var draftId = holeFeature.id;
       cancelRingCut();
       try { draw.delete(draftId); } catch (_) {}
+
+      /* Загруженный слой — вырез в очередь gupPending. */
+      if (gupEdit.active) {
+        if (fid != null) {
+          var gdp; try { gdp = draw.get(String(fid)); } catch (_) { gdp = null; }
+          if (gdp) applyHoleCutGup(fid, gdp, holeFeature);
+        }
+        setTimeout(reenterRingCutMode, 0);
+        return;
+      }
 
       /* Режим ЗСН — без выделения: угодье под кольцом находим по геометрии. */
       if (layerState.farmlands.editable) {
@@ -4812,35 +5012,27 @@
       }
 
       /* ══════════════ Правка геометрии загруженного слоя ══════════════
-         Переиспользуем общий редактор draw (mapbox-gl-draw). Объекты слоя
-         грузятся точной геометрией (эндпоинт ?geometry=1), правятся по узлам
-         / перемещением, новые рисуются инструментом по geom_kind слоя.
-         Каждое изменение сразу летит в API (POST/PATCH/DELETE feature).
-         MVT-тайлы слоя на время правки скрыты, после выхода — обновляются. */
-      var GUP_PREFIX = 'gup_';
-      var gupIdMap = {};   /* drawId (gup_<fid>) → серверный fid */
+         Переиспользуем общий редактор draw (mapbox-gl-draw) и ТУ ЖЕ модель
+         «очередь + 💾», что у «Мои поля»/ЗСН (см. gupPending во внешнем scope).
+         Объекты слоя грузятся точной геометрией (эндпоинт ?geometry=1),
+         правятся по узлам, разрезаются (✂) и вырезаются (петля), новые
+         рисуются инструментом по geom_kind. MVT-тайлы слоя на время правки
+         скрыты; после сохранения/выхода — обновляются (cache-bust).
+         gupDrawTool/gupToolLabel/gupIdMap/GUP_PREFIX и вся очередь — во
+         внешнем scope, чтобы их видели commitPending/discardPending/split. */
 
-      function gupDrawTool(kind) {
-        if (kind === 'point') return 'draw_point';
-        if (kind === 'line') return 'draw_line_string';
-        return 'draw_polygon';  /* polygon и other → полигон */
-      }
-      function gupToolLabel(kind) {
-        if (kind === 'point') return '• точка';
-        if (kind === 'line') return '╱ линия';
-        return '⬡ полигон';
-      }
-
-      /* Оставить в тулбаре только select / trash / нужный инструмент рисования
-         (тип определяется geom_kind слоя; для «other» — все три инструмента). */
+      /* Тулбар для загруженного слоя: select/trash/save/discard + инструмент
+         рисования по типу; ✂ (разрез/петля) — только для полигональных слоёв. */
       function gupRestrictToolbar(kind) {
         var allow = gupDrawTool(kind);
         var drawTools = ['draw_polygon', 'draw_line_string', 'draw_point'];
+        var polygonal = (kind === 'polygon' || kind === 'other');
         document.querySelectorAll('.gis-toolbar button[data-tool]').forEach(function (b) {
           var t = b.getAttribute('data-tool');
           if (t === 'save' || t === 'discard') return;
           var isDraw = drawTools.indexOf(t) >= 0;
           var keep = t === 'select' || t === 'trash' ||
+                     (t === 'split' && polygonal) ||
                      (isDraw && (kind === 'other' || t === allow));
           b.disabled = !keep;
           if (!keep) b.classList.remove('active');
@@ -4860,7 +5052,7 @@
               addPersistedToDraw({ type: 'Feature', id: sid, properties: {}, geometry: f.geometry });
             });
             if (feats.length) {
-              toast('Объектов для правки: ' + feats.length + '. Клик — выбрать, двойной клик — узлы.');
+              toast('Объектов: ' + feats.length + '. Клик — узлы · ✂ разрез/петля · 🗑 удалить · 💾 сохранить.');
             } else {
               toast('В слое нет объектов — нарисуйте новый (' + gupToolLabel(L.geom_kind) + ').');
             }
@@ -4878,75 +5070,6 @@
         if (row) { var vb = row.querySelector('[data-a="vis"]'); if (vb) vb.classList.add('active'); }
       }
 
-      function gupOnCreate(f) {
-        var L = gupEdit.layer;
-        if (!L || !f.geometry) return;
-        fetch(API + L.id + '/features/', {
-          method: 'POST', credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-          body: JSON.stringify({ geometry: f.geometry }),
-        }).then(function (r) { return r.json().then(function (b) { return { ok: r.ok, b: b }; }); })
-          .then(function (res) {
-            if (!res.ok) {
-              toast((res.b && res.b.detail) || 'Не удалось создать объект', true);
-              try { draw.delete(f.id); } catch (_) {}
-              return;
-            }
-            /* Превращаем черновик в persisted-объект с серверным id. */
-            var geom = f.geometry;
-            try { draw.delete(f.id); } catch (_) {}
-            var sid = GUP_PREFIX + res.b.id;
-            gupIdMap[sid] = res.b.id;
-            addPersistedToDraw({ type: 'Feature', id: sid, properties: {}, geometry: geom });
-            L.feature_count = (L.feature_count || 0) + 1;
-            toast('Объект создан (#' + res.b.id + ').');
-          })
-          .catch(function () {
-            toast('Сеть недоступна — объект не создан', true);
-            try { draw.delete(f.id); } catch (_) {}
-          });
-        /* Оставляем инструмент рисования активным для следующего объекта. */
-        var nextMode = gupDrawTool(L.geom_kind);
-        setTimeout(function () {
-          try { draw.changeMode(nextMode); } catch (_) {}
-          highlightTool(nextMode);
-        }, 0);
-      }
-
-      function gupOnUpdate(f) {
-        var L = gupEdit.layer;
-        var sid = String(f.id);
-        var fid = gupIdMap[sid];
-        if (!L || fid == null || !f.geometry) return;
-        fetch(API + L.id + '/features/' + fid + '/', {
-          method: 'PATCH', credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-          body: JSON.stringify({ geometry: f.geometry }),
-        }).then(function (r) { return r.json().then(function (b) { return { ok: r.ok, b: b }; }); })
-          .then(function (res) {
-            if (!res.ok) toast((res.b && res.b.detail) || 'Не удалось сохранить геометрию', true);
-          })
-          .catch(function () { toast('Сеть недоступна — правка не сохранена', true); });
-      }
-
-      function gupOnTrash(sid) {
-        var L = gupEdit.layer;
-        var fid = gupIdMap[sid];
-        if (!L) return;
-        if (fid == null) { try { draw.delete(sid); } catch (_) {} return; }
-        fetch(API + L.id + '/features/' + fid + '/', {
-          method: 'DELETE', credentials: 'same-origin',
-          headers: { 'X-Requested-With': 'XMLHttpRequest' },
-        }).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
-          .then(function () {
-            try { draw.delete(sid); } catch (_) {}
-            delete gupIdMap[sid];
-            L.feature_count = Math.max(0, (L.feature_count || 1) - 1);
-            toast('Объект удалён.');
-          })
-          .catch(function () { toast('Не удалось удалить объект', true); });
-      }
-
       /* Включить/выключить режим правки геометрии слоя L. */
       function setGupEdit(L, on) {
         var hint = document.getElementById('gis-toolbar-hint');
@@ -4958,10 +5081,10 @@
             setGupEdit(gupEdit.layer, false);
           }
           gupEdit.active = true; gupEdit.layer = L; gupEdit.kind = L.geom_kind;
-          gupEdit.onCreate = gupOnCreate;
-          gupEdit.onUpdate = gupOnUpdate;
-          gupEdit.onTrash = gupOnTrash;
+          gupEdit.reload = function () { gupIdMap = {}; gupLoadFeatures(L); };
+          gupEdit.disable = function () { setGupEdit(L, false); };
           gupIdMap = {};
+          gupResetPending();
           if (!drawAdded) {
             map.addControl(draw); drawAdded = true;
             if (map.getLayer('snap-indicator')) { try { map.moveLayer('snap-indicator'); } catch (_) {} }
@@ -4976,12 +5099,22 @@
           _gupMarkRow(L, true);
           if (hint) {
             hint.textContent = 'Геометрия «' + (L.title || 'слой') + '»: клик → узлы · ' +
-              gupToolLabel(L.geom_kind) + ' новый · 🗑 удалить. Изменения сохраняются сразу.';
+              gupToolLabel(L.geom_kind) + ' новый · ✂ разрез/петля · 🗑 удалить · 💾 сохранить.';
           }
+          updateSaveBadge();
           gupLoadFeatures(L);
         } else {
+          /* Не теряем несохранённые правки без подтверждения. */
+          if (gupPendingCount() > 0) {
+            if (!window.confirm('Есть несохранённые изменения (' + gupPendingCount() +
+                '). Выключить редактирование и потерять их?')) {
+              return;
+            }
+          }
+          gupResetPending();
           gupEdit.active = false;
-          gupEdit.onCreate = gupEdit.onUpdate = gupEdit.onTrash = null;
+          gupEdit.reload = null;
+          gupEdit.disable = null;
           if (drawAdded && !layerState.userfields.editable && !layerState.farmlands.editable) {
             try { draw.deleteAll(); } catch (_) {}
             try { map.removeControl(draw); } catch (_) {}
@@ -4990,6 +5123,7 @@
           persistedDrawIds.clear();
           gupIdMap = {};
           setToolbarEnabled(false);
+          updateSaveBadge();
           if (L) { _gupMarkRow(L, false); gupRefreshTiles(L); }
           gupEdit.layer = null; gupEdit.kind = null;
           if (hint) hint.textContent = 'Включите редактирование «Мои поля» в левом меню.';
