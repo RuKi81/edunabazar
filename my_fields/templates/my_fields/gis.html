@@ -4788,7 +4788,18 @@
           else toast('Таблица атрибутов недоступна', true);
         });
         var selBox = head.querySelector('.gis-layer__sel');
-        if (selBox) selBox.addEventListener('change', updateBulkDelState);
+        if (selBox) {
+          selBox.addEventListener('change', updateBulkDelState);
+          /* В Chrome нативные <input> внутри draggable-контейнера не
+             переключаются (тот же баг, из-за которого правка имени снимает
+             draggable). На время клика по чекбоксу временно снимаем drag. */
+          selBox.addEventListener('mousedown', function () { div.setAttribute('draggable', 'false'); });
+          ['mouseup', 'mouseleave'].forEach(function (ev) {
+            selBox.addEventListener(ev, function () {
+              setTimeout(function () { div.setAttribute('draggable', 'true'); }, 0);
+            });
+          });
+        }
 
         wireDrag(div);
         if (atTop) listEl.insertBefore(div, listEl.firstChild);
