@@ -216,6 +216,61 @@ class ListAndTilesTests(GisLayersTestCase):
         self.assertEqual(GisLayer.objects.count(), 0)
         self.assertFalse(_table_exists(table))
 
+    def test_geometry_all_without_bbox(self):
+        resp = self.client.get(
+            f'/me/gis/api/layers/{self.layer.pk}/features/?geometry=1')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        feats = resp.json()['featurecollection']['features']
+        self.assertEqual(len(feats), 1)   # единственный полигон слоя
+
+    def test_geometry_bbox_covering_returns_feature(self):
+        # Полигон около (34.1..34.12, 45.1..45.12) — bbox накрывает его.
+        resp = self.client.get(
+            f'/me/gis/api/layers/{self.layer.pk}/features/'
+            '?geometry=1&bbox=34.0,45.0,34.2,45.2')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(len(resp.json()['featurecollection']['features']), 1)
+
+    def test_geometry_bbox_elsewhere_returns_empty(self):
+        # Экстент вдали от полигона — объектов быть не должно.
+        resp = self.client.get(
+            f'/me/gis/api/layers/{self.layer.pk}/features/'
+            '?geometry=1&bbox=0.0,0.0,1.0,1.0')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(len(resp.json()['featurecollection']['features']), 0)
+
+    def test_geometry_malformed_bbox_ignored(self):
+        # Битый bbox → фильтр не применяется, отдаём как без bbox.
+        resp = self.client.get(
+            f'/me/gis/api/layers/{self.layer.pk}/features/'
+            '?geometry=1&bbox=foo,bar')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(len(resp.json()['featurecollection']['features']), 1)
+
+
+class ParseBboxTests(TestCase):
+    def test_valid(self):
+        from my_fields.api import _parse_bbox
+        self.assertEqual(_parse_bbox('1,2,3,4'), (1.0, 2.0, 3.0, 4.0))
+
+    def test_none_and_empty(self):
+        from my_fields.api import _parse_bbox
+        self.assertIsNone(_parse_bbox(None))
+        self.assertIsNone(_parse_bbox(''))
+
+    def test_wrong_count(self):
+        from my_fields.api import _parse_bbox
+        self.assertIsNone(_parse_bbox('1,2,3'))
+
+    def test_non_numeric(self):
+        from my_fields.api import _parse_bbox
+        self.assertIsNone(_parse_bbox('a,b,c,d'))
+
+    def test_degenerate(self):
+        from my_fields.api import _parse_bbox
+        self.assertIsNone(_parse_bbox('3,2,1,4'))   # maxx <= minx
+        self.assertIsNone(_parse_bbox('1,2,3,2'))   # maxy <= miny
+
 
 class RenameAndReorderTests(GisLayersTestCase):
     def setUp(self):

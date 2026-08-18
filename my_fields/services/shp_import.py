@@ -466,22 +466,36 @@ def _geos_from_geojson(geometry: dict):
     return geom
 
 
-def get_features_geojson(layer, limit: int = 5000) -> dict:
+def get_features_geojson(layer, limit: int = 5000, bbox=None) -> dict:
     """FeatureCollection с ``id`` + точной геометрией (для загрузки в редактор).
 
     В отличие от MVT-тайлов (квантованных), отдаёт исходные координаты 4326 —
     их и правит mapbox-gl-draw. Ограничено ``limit`` объектов.
+
+    ``bbox`` — необязательный кортеж ``(minx, miny, maxx, maxy)`` в EPSG:4326.
+    Если задан, отдаются только объекты, пересекающие видимую область карты
+    (``ST_Intersects`` с ``ST_MakeEnvelope``) — так тяжёлые слои грузятся в
+    редактор порциями по экстенту, а не целиком до ``limit``.
     """
     import json as _json
 
     table = sql.Identifier(layer.table_name)
+    params: list = []
+    where = sql.SQL('geom IS NOT NULL')
+    if bbox is not None:
+        minx, miny, maxx, maxy = bbox
+        where = sql.SQL(
+            'geom IS NOT NULL AND ST_Intersects('
+            'geom, ST_MakeEnvelope(%s, %s, %s, %s, 4326))')
+        params.extend([minx, miny, maxx, maxy])
     query = sql.SQL(
         'SELECT id, ST_AsGeoJSON(geom) FROM {table} '
-        'WHERE geom IS NOT NULL ORDER BY id LIMIT %s'
-    ).format(table=table)
+        'WHERE {where} ORDER BY id LIMIT %s'
+    ).format(table=table, where=where)
+    params.append(max(1, min(int(limit), 20000)))
     feats = []
     with connection.cursor() as cur:
-        cur.execute(query, [max(1, min(int(limit), 20000))])
+        cur.execute(query, params)
         for fid, gj in cur.fetchall():
             if not gj:
                 continue

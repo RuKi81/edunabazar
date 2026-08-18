@@ -1046,6 +1046,26 @@ def _gis_layer_patch(request: HttpRequest, layer: GisLayer) -> JsonResponse:
     return JsonResponse({'ok': True, 'layer': _gis_layer_to_dict(layer)})
 
 
+def _parse_bbox(raw):
+    """Разобрать ``bbox=minx,miny,maxx,maxy`` (EPSG:4326) в кортеж float.
+
+    Возвращает ``None``, если параметр отсутствует/некорректен либо вырожден
+    (нулевая площадь) — тогда вызывающий код грузит без фильтра по экстенту.
+    """
+    if not raw:
+        return None
+    parts = str(raw).split(',')
+    if len(parts) != 4:
+        return None
+    try:
+        minx, miny, maxx, maxy = (float(p) for p in parts)
+    except (TypeError, ValueError):
+        return None
+    if maxx <= minx or maxy <= miny:
+        return None
+    return (minx, miny, maxx, maxy)
+
+
 @csrf_exempt
 @require_http_methods(['GET', 'POST'])
 def gis_layer_features(request: HttpRequest, pk: int) -> JsonResponse:
@@ -1067,7 +1087,8 @@ def gis_layer_features(request: HttpRequest, pk: int) -> JsonResponse:
 
     if request.GET.get('geometry') in ('1', 'true', 'yes'):
         from .services.shp_import import get_features_geojson
-        fc = get_features_geojson(layer)
+        bbox = _parse_bbox(request.GET.get('bbox'))
+        fc = get_features_geojson(layer, bbox=bbox)
         return JsonResponse({
             'ok': True,
             'geom_kind': layer.geom_kind,

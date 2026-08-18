@@ -5275,26 +5275,62 @@
         });
       }
 
-      function gupLoadFeatures(L) {
-        fetch(API + L.id + '/features/?geometry=1', {
+      /* Текущий экстент карты как bbox-параметр minx,miny,maxx,maxy (4326). */
+      function gupMapBboxParam() {
+        try {
+          var b = map.getBounds();
+          return b.getWest() + ',' + b.getSouth() + ',' +
+                 b.getEast() + ',' + b.getNorth();
+        } catch (_) { return ''; }
+      }
+
+      /* Загрузка геометрии слоя в редактор ПО ЭКСТЕНТУ карты (а не весь слой
+         до лимита). Аддитивна: подгружает только объекты, которых ещё нет в
+         draw (gupIdMap), и не воскрешает поставленные в очередь на удаление —
+         поэтому безопасно перезапрашивать при каждом сдвиге карты, не теряя
+         несохранённых правок. ``opts.initial`` — первый вызов при входе в
+         режим (показываем подсказку). */
+      function gupLoadFeatures(L, opts) {
+        opts = opts || {};
+        var url = API + L.id + '/features/?geometry=1&bbox=' +
+                  encodeURIComponent(gupMapBboxParam());
+        fetch(url, {
           credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' },
         }).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
           .then(function (j) {
             if (!gupEdit.active || !gupEdit.layer || gupEdit.layer.id !== L.id) return;
             var feats = (j.featurecollection && j.featurecollection.features) || [];
+            var added = 0;
             feats.forEach(function (f) {
               var sid = GUP_PREFIX + f.id;
+              /* Уже загружен (возможно, отредактирован) — не перезатираем. */
+              if (gupIdMap[sid] != null) return;
+              /* Поставлен в очередь на удаление — не возвращаем на карту. */
+              if (gupPending.deletes.has(f.id)) return;
               gupIdMap[sid] = f.id;
               addPersistedToDraw({ type: 'Feature', id: sid, properties: {}, geometry: f.geometry });
+              added++;
             });
+            if (!opts.initial) return;
             if (feats.length) {
-              toast('Объектов: ' + feats.length + '. Клик — узлы · ✂ разрез/петля · 🗑 удалить · 💾 сохранить.');
+              toast('Объектов в области: ' + added + '. Клик — узлы · ✂ разрез/петля · 🗑 удалить · 💾 сохранить. Двигайте карту — подгрузятся ещё.');
             } else {
-              toast('В слое нет объектов — нарисуйте новый (' + gupToolLabel(L.geom_kind) + ').');
+              toast('В этой области нет объектов — приблизьтесь/сдвиньте карту или нарисуйте новый (' + gupToolLabel(L.geom_kind) + ').');
             }
           })
           .catch(function () { toast('Не удалось загрузить геометрию слоя', true); });
       }
+
+      /* Подгрузка по новому экстенту при движении карты (только в режиме
+         правки геометрии слоя), с дебаунсом. */
+      var _gupMoveTimer = null;
+      map.on('moveend', function () {
+        if (!gupEdit.active || !gupEdit.layer) return;
+        if (_gupMoveTimer) clearTimeout(_gupMoveTimer);
+        _gupMoveTimer = setTimeout(function () {
+          if (gupEdit.active && gupEdit.layer) gupLoadFeatures(gupEdit.layer);
+        }, 350);
+      });
 
       /* Обновить MVT-тайлы слоя после правки (cache-bust) и показать его. */
       function gupRefreshTiles(L) {
@@ -5338,7 +5374,7 @@
               gupToolLabel(L.geom_kind) + ' новый · ✂ разрез/петля · 🗑 удалить · 💾 сохранить.';
           }
           updateSaveBadge();
-          gupLoadFeatures(L);
+          gupLoadFeatures(L, { initial: true });
         } else {
           /* Не теряем несохранённые правки без подтверждения. */
           if (gupPendingCount() > 0) {
