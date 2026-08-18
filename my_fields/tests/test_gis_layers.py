@@ -247,6 +247,28 @@ class ListAndTilesTests(GisLayersTestCase):
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertEqual(len(resp.json()['featurecollection']['features']), 1)
 
+    def test_feature_extent_get(self):
+        # id=1 — единственный объект (serial PK). Охват должен накрывать
+        # полигон около (34.1..34.12, 45.1..45.12).
+        resp = self.client.get(
+            f'/me/gis/api/layers/{self.layer.pk}/features/1/')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        ext = resp.json()['extent']
+        self.assertEqual(len(ext), 4)
+        self.assertAlmostEqual(ext[0], 34.10, places=2)
+        self.assertAlmostEqual(ext[3], 45.12, places=2)
+
+    def test_feature_extent_missing_is_404(self):
+        resp = self.client.get(
+            f'/me/gis/api/layers/{self.layer.pk}/features/999999/')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_feature_extent_requires_auth(self):
+        self.client.logout()
+        resp = self.client.get(
+            f'/me/gis/api/layers/{self.layer.pk}/features/1/')
+        self.assertEqual(resp.status_code, 401)
+
 
 class ParseBboxTests(TestCase):
     def test_valid(self):

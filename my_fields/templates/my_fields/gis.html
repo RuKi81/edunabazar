@@ -535,6 +535,18 @@
     .gis-attrtable tbody tr.active:hover { background: #ffd2e2; }
     .gis-attrtable__empty { padding: 24px; text-align: center; color: #999; font-size: 13px; line-height: 1.5; }
 
+    /* Служебный столбец 🔍 (перелёт к объекту). */
+    .gis-attrtable thead th.gis-attrtable__zoomh { width: 34px; cursor: default; padding: 7px 6px; }
+    .gis-attrtable thead th.gis-attrtable__zoomh:hover { background: #f1f8e9; }
+    .gis-attrtable tbody td.gis-attrtable__zoom { padding: 2px 6px; text-align: center; overflow: visible; }
+    .gis-attrtable__zoombtn {
+      border: 1px solid transparent; background: none; cursor: pointer;
+      font-size: 14px; line-height: 1; padding: 3px 4px; border-radius: 5px; opacity: .55;
+      transition: opacity .12s, background .12s, border-color .12s;
+    }
+    .gis-attrtable tbody tr:hover .gis-attrtable__zoombtn { opacity: 1; }
+    .gis-attrtable__zoombtn:hover { background: #e8f5e9; border-color: #a5d6a7; opacity: 1; }
+
     /* ── Загрузчик SHP (ZIP) ── */
     /* Подсказка о перетаскивании — закреплена внизу левого сайдбара. */
     .gis-upload-hint {
@@ -3064,6 +3076,10 @@
           map.setFeatureState(
             { source: 'farmlands', sourceLayer: 'farmlands', id: id },
             { selected: on });
+        } else if (layer && layer.indexOf('gisup:') === 0) {
+          /* Загруженные SHP-слои: подсветка на карте не поддерживается
+             (нет selected-стиля), синхронизируем только строку таблицы. */
+          return;
         } else {
           map.setFeatureState({ source: 'userfields', id: id }, { selected: on });
         }
@@ -4174,6 +4190,22 @@
       }
     });
 
+    /* Правка геометрии SHP-слоя: выбор одного persisted draw-объекта →
+       подсветить его строку в открытой таблице атрибутов. В этом режиме MVT
+       спрятан, кликается именно draw-объект (id = gup_<fid>). Черновики/новые
+       объекты (нет в gupIdMap) пропускаем — строки в таблице для них ещё нет. */
+    map.on('draw.selectionchange', function (e) {
+      if (!gupEdit.active || !gupEdit.layer) return;
+      if (splitState || ringCutState) return;   // не мешаем флоу разреза/выреза
+      var feats = (e && e.features) || [];
+      if (feats.length !== 1) return;
+      var fid = gupIdMap[String(feats[0].id)];
+      if (fid == null) return;
+      if (window.__gisAttr && window.__gisAttr.select) {
+        window.__gisAttr.select(gupEdit.layer.id, fid);
+      }
+    });
+
     function finishRingCut(holeFeature) {
       var fid = ringCutTargetId;
       var draftId = holeFeature.id;
@@ -4560,15 +4592,19 @@
           return;
         }
 
-        var thead = '<thead><tr>' + cols.map(function (c) {
-          var ind = '';
-          if (c.key === state.sortKey) ind = '<span class="sort-ind">' + (state.sortDir === 1 ? '▲' : '▼') + '</span>';
-          return '<th data-key="' + esc(c.key) + '">' + esc(c.label) + ind + '</th>';
-        }).join('') + '</tr></thead>';
+        /* Ведущий служебный столбец 🔍 (перелёт к объекту) — без сортировки. */
+        var thead = '<thead><tr><th class="gis-attrtable__zoomh" title="Приблизить"></th>' +
+          cols.map(function (c) {
+            var ind = '';
+            if (c.key === state.sortKey) ind = '<span class="sort-ind">' + (state.sortDir === 1 ? '▲' : '▼') + '</span>';
+            return '<th data-key="' + esc(c.key) + '">' + esc(c.label) + ind + '</th>';
+          }).join('') + '</tr></thead>';
 
         var tbody = '<tbody>' + state.rows.map(function (r) {
           var cls = (state.sel.layer === state.layer && String(state.sel.id) === String(r.id)) ? ' class="active"' : '';
           var rowDirty = isRowDirty(r.id);
+          var zoomTd = '<td class="gis-attrtable__zoom">' +
+            '<button type="button" class="gis-attrtable__zoombtn" title="Приблизить к объекту">🔍</button></td>';
           var tds = cols.map(function (c) {
             var val = cellDisplay(c, r.props);
             var canEdit = !!c.edit;
@@ -4576,12 +4612,12 @@
             return '<td' + (tdCls ? ' class="' + tdCls + '"' : '') +
               ' data-key="' + esc(c.key) + '" title="' + esc(val) + '">' + esc(val) + '</td>';
           }).join('');
-          return '<tr data-id="' + esc(r.id) + '"' + cls + '>' + tds + '</tr>';
+          return '<tr data-id="' + esc(r.id) + '"' + cls + '>' + zoomTd + tds + '</tr>';
         }).join('') + '</tbody>';
 
         bodyEl.innerHTML = '<table>' + thead + tbody + '</table>';
 
-        bodyEl.querySelectorAll('thead th').forEach(function (th) {
+        bodyEl.querySelectorAll('thead th[data-key]').forEach(function (th) {
           th.addEventListener('click', function () {
             var key = th.getAttribute('data-key');
             if (state.sortKey === key) state.sortDir *= -1;
@@ -4591,6 +4627,12 @@
         });
         bodyEl.querySelectorAll('tbody tr').forEach(function (tr) {
           tr.addEventListener('click', function (e) {
+            /* Клик по 🔍 — только перелёт к объекту (+ выбор строки). */
+            if (e.target.closest('.gis-attrtable__zoombtn')) {
+              e.stopPropagation();
+              onRowClick(tr.getAttribute('data-id'), true);
+              return;
+            }
             /* Клик по редактируемой ячейке открывает инлайн-редактор и не
                должен запускать выбор+перелёт. */
             var td = e.target.closest('td.editable');
@@ -4742,7 +4784,36 @@
         state.sel = { layer: null, id: null };
       }
 
-      function onRowClick(idStr) {
+      /* Перелёт к охвату bbox [minx,miny,maxx,maxy] (EPSG:4326). */
+      function flyToBbox(bb) {
+        if (!bb || !isFinite(bb[0]) || !isFinite(bb[1])) return;
+        try {
+          map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]],
+            { padding: 60, maxZoom: 16, duration: 600 });
+        } catch (_) {}
+      }
+
+      /* Перелёт к объекту строки. У «Моих полей»/ЗСН геометрия есть в памяти
+         (turf.bbox). У загруженных SHP-слоёв геометрия в таблицу не грузится —
+         охват запрашиваем с сервера (GET features/<fid>/). */
+      function zoomToRow(row) {
+        if (row.geometry && window.turf) {
+          try {
+            var bb = turf.bbox(row.geometry);
+            if (bb && isFinite(bb[0])) { flyToBbox(bb); return; }
+          } catch (_) {}
+        }
+        if (dynLayers[state.layer]) {
+          var lid = state.layer.slice('gisup:'.length);
+          fetch('/me/gis/api/layers/' + lid + '/features/' + row.id + '/', {
+            credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' },
+          }).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+            .then(function (j) { if (j && j.extent) flyToBbox(j.extent); })
+            .catch(function () { toast('Не удалось приблизить к объекту', true); });
+        }
+      }
+
+      function onRowClick(idStr, zoom) {
         var row = null;
         for (var i = 0; i < state.rows.length; i++) {
           if (String(state.rows[i].id) === String(idStr)) { row = state.rows[i]; break; }
@@ -4764,16 +4835,10 @@
           if (rightBtn) rightBtn.classList.remove('shifted');
         }
 
-        /* Перелёт к объекту. */
-        if (row.geometry && window.turf) {
-          try {
-            var bb = turf.bbox(row.geometry);
-            if (bb && isFinite(bb[0])) {
-              map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]],
-                { padding: 60, maxZoom: 15, duration: 600 });
-            }
-          } catch (_) {}
-        }
+        /* Перелёт: по клику 🔍 (zoom) — всегда; по клику на строку — только
+           если геометрия уже в памяти (не дёргаем сервер лишний раз). */
+        if (zoom) zoomToRow(row);
+        else if (row.geometry) zoomToRow(row);
 
         highlightRow(idStr, false);
       }
@@ -4797,15 +4862,35 @@
       function selectFromMap(layer, id) {
         if (!state.open || id == null) return;
         if (editingCell) return;  // не рушим открытый редактор ячейки
+        var apply = function () {
+          clearSelHighlight();
+          state.sel = { layer: layer, id: id };
+          try { setSelState(layer, id, true); } catch (_) {}
+          highlightRow(String(id), true);
+        };
         if (layer !== state.layer) {
+          /* Динамический слой мог быть ещё не подгружен — тогда подсветим
+             строку в колбэке загрузки, иначе highlightRow не найдёт tr. */
+          if (dynLayers[layer] && !dynLayers[layer].loaded) {
+            clearSelHighlight();
+            state.layer = layer;
+            state.sortKey = defaultSortKey(layer);
+            state.sortDir = 1;
+            syncTabs();
+            loadDyn(layer, apply);
+            return;
+          }
           setLayer(layer);
         } else {
           render();  // ЗСН: объект мог появиться/исчезнуть из видимой области
         }
-        clearSelHighlight();
-        state.sel = { layer: layer, id: id };
-        try { setSelState(layer, id, true); } catch (_) {}
-        highlightRow(String(id), true);
+        apply();
+      }
+
+      /* Публичный вызов из карты (клик по SHP-полигону / выбор draw-объекта
+         в режиме правки геометрии) — подсветить строку слоя. */
+      function selectDynFromMap(layerId, fid) {
+        selectFromMap('gisup:' + layerId, fid);
       }
 
       function setLayer(layer) {
@@ -4840,11 +4925,15 @@
           t.classList.toggle('active', t.getAttribute('data-attr-layer') === state.layer);
         });
       }
-      function loadDyn(key) {
+      function loadDyn(key, after) {
         var def = dynLayers[key];
         if (!def) return;
         bodyEl.innerHTML = '<div class="gis-attrtable__empty">Загрузка объектов…</div>';
-        def.fetch(function () { if (state.layer === key) render(); });
+        def.fetch(function () {
+          if (state.layer !== key) return;
+          render();
+          if (typeof after === 'function') after();
+        });
       }
       function renderDynCard(key, props) {
         var info = document.getElementById('gis-info');
@@ -4900,6 +4989,14 @@
           } else {
             setLayer(key);
           }
+        },
+        /* Клик по SHP-объекту на карте (или выбор draw-объекта в режиме
+           правки геометрии) → подсветить его строку в таблице. Тихо выходит,
+           если таблица закрыта или слой не зарегистрирован. */
+        select: function (layerId, fid) {
+          if (!state.open) return;
+          if (!dynLayers['gisup:' + layerId]) return;
+          selectDynFromMap(layerId, fid);
         },
       };
 
@@ -5206,7 +5303,15 @@
         L._layerIds = added;
         added.forEach(function (lid) {
           map.on('click', lid, function (e) {
-            if (e.features && e.features[0]) showAttrs(e.features[0].properties || {}, L);
+            var ft = e.features && e.features[0];
+            if (!ft) return;
+            showAttrs(ft.properties || {}, L);
+            /* Синхронизация с таблицей атрибутов: подсветить строку объекта
+               (если таблица открыта на этом слое). */
+            var fid = (ft.id != null) ? ft.id : (ft.properties && ft.properties.id);
+            if (fid != null && window.__gisAttr && window.__gisAttr.select) {
+              window.__gisAttr.select(L.id, fid);
+            }
           });
           map.on('mouseenter', lid, function () { map.getCanvas().style.cursor = 'pointer'; });
           map.on('mouseleave', lid, function () { map.getCanvas().style.cursor = ''; });

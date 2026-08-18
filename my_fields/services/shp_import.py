@@ -506,6 +506,27 @@ def get_features_geojson(layer, limit: int = 5000, bbox=None) -> dict:
     return {'type': 'FeatureCollection', 'features': feats}
 
 
+def feature_extent(layer, fid: int):
+    """Охват одного объекта слоя: ``[minx, miny, maxx, maxy]`` (EPSG:4326).
+
+    Возвращает ``None``, если объект не найден или у него пустая геометрия.
+    Используется для «перелёта» к объекту по клику 🔍 в таблице атрибутов —
+    геометрия объекта в таблицу не грузится, поэтому охват берём с сервера.
+    """
+    table = sql.Identifier(layer.table_name)
+    query = sql.SQL(
+        'SELECT ST_XMin(e), ST_YMin(e), ST_XMax(e), ST_YMax(e) FROM ('
+        'SELECT ST_Extent(geom) AS e FROM {table} WHERE id = %s'
+        ') s'
+    ).format(table=table)
+    with connection.cursor() as cur:
+        cur.execute(query, [fid])
+        row = cur.fetchone()
+    if not row or row[0] is None:
+        return None
+    return [row[0], row[1], row[2], row[3]]
+
+
 def create_feature(layer, geometry: dict) -> int:
     """Создать объект слоя с заданной геометрией (атрибуты — NULL).
 

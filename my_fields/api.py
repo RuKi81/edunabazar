@@ -1182,13 +1182,30 @@ def _gis_feature_create(request: HttpRequest, pk: int) -> JsonResponse:
 
 
 @csrf_exempt
-@require_http_methods(['PATCH', 'DELETE'])
+@require_http_methods(['GET', 'PATCH', 'DELETE'])
 def gis_layer_feature_detail(request: HttpRequest, pk: int, fid: int) -> JsonResponse:
-    """PATCH — обновить атрибуты и/или геометрию объекта; DELETE — удалить.
+    """GET — охват объекта; PATCH — обновить атрибуты/геометрию; DELETE — удалить.
 
-    Оба метода требуют уровень ``edit``. PATCH принимает ``props`` (атрибуты)
-    и/или ``geometry`` (GeoJSON) — хотя бы одно.
+    * ``GET`` (уровень ``view``): ``{ok, extent: [minx,miny,maxx,maxy]}`` —
+      для «перелёта» к объекту по клику 🔍 в таблице атрибутов.
+    * ``PATCH``/``DELETE`` (уровень ``edit``): PATCH принимает ``props``
+      (атрибуты) и/или ``geometry`` (GeoJSON) — хотя бы одно.
     """
+    if request.method == 'GET':
+        gate = _require_gis_access(request, level='view', pk=pk)
+        if gate:
+            return gate
+        layer = get_object_or_404(GisLayer, pk=pk)
+        from .services.shp_import import feature_extent
+        extent = feature_extent(layer, fid)
+        if extent is None:
+            return JsonResponse(
+                {'ok': False, 'error': 'not_found',
+                 'detail': 'Объект не найден или без геометрии.'},
+                status=404,
+            )
+        return JsonResponse({'ok': True, 'extent': extent})
+
     gate = _require_gis_access(request, level='edit', pk=pk)
     if gate:
         return gate
