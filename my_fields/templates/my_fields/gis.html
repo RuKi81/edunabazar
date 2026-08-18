@@ -20,7 +20,8 @@
     .brand-logo, .brand-logo__img, .sidenav-logo { display: none !important; }
     .hide-on-large-only .container { justify-content: flex-end; }
 
-    .gis-ui { position: fixed; left: 0; right: 0; top: 0; bottom: 0; min-height: 600px; }
+    .gis-ui { position: fixed; left: 0; right: 0; top: 0; bottom: 0; min-height: 600px;
+      --gis-left-w: 285px; --gis-attrtable-h: 40vh; }
     #gis-map { position: absolute; left: 0; right: 0; top: 0; bottom: 0; }
     /* Когда активен инструмент рисования/редактирования (на карте класс
        gis-tool-active) — курсор всегда дефолтная стрелка Windows, а не
@@ -38,7 +39,7 @@
       overflow-y: auto; z-index: 1000;
       transition: transform .25s ease;
     }
-    .gis-ui__left  { left: 0;  width: 285px; border-right: 1px solid rgba(0,0,0,.08); }
+    .gis-ui__left  { left: 0;  width: var(--gis-left-w); border-right: 1px solid rgba(0,0,0,.08); }
     .gis-ui__right { right: 0; width: 320px; border-left:  1px solid rgba(0,0,0,.08); }
     .gis-ui__left.collapsed  { transform: translateX(-100%); }
     .gis-ui__right.collapsed { transform: translateX(100%); }
@@ -87,7 +88,16 @@
       transition: left .25s ease, right .25s ease;
     }
     .gis-collapse-btn:hover { background: #f0f0f0; }
-    #gis-collapse-left  { left: 285px; border-radius: 0 4px 4px 0; border-left: none; }
+    #gis-collapse-left  { left: var(--gis-left-w); border-radius: 0 4px 4px 0; border-left: none; }
+
+    /* Ресайзер ширины левого сайдбара — потянуть за правый край. */
+    .gis-left-resize {
+      position: fixed; top: var(--map-header-h); bottom: 0;
+      left: calc(var(--gis-left-w) - 3px); width: 6px;
+      cursor: ew-resize; z-index: 1001;
+    }
+    .gis-left-resize:hover { background: rgba(46,125,50,.25); }
+    .gis-left-resize.hidden { display: none; }
     #gis-collapse-right { right: 320px; border-radius: 4px 0 0 4px; border-right: none; }
     #gis-collapse-left.shifted  { left: 0; }
     #gis-collapse-right.shifted { right: 0; }
@@ -96,7 +106,7 @@
       border: 1px solid rgba(0,0,0,.08); border-radius: 6px;
       padding: 8px 10px; margin-bottom: 8px; background: #fff;
     }
-    .gis-layer__head { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+    .gis-layer__head { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; }
     .gis-layer__head .name {
       flex: 1; min-width: 0;
       white-space: normal; overflow-wrap: anywhere; word-break: break-word;
@@ -328,14 +338,13 @@
 
     @media (max-width: 992px) and (orientation: landscape) {
       :root { --map-header-h: 50px; }
-      .gis-ui__left  { width: 220px; }
+      .gis-ui { --gis-left-w: 220px; }
       .gis-ui__right { width: 220px; }
-      #gis-collapse-left  { left: 220px; }
       #gis-collapse-right { right: 220px; }
     }
     @media (max-width: 992px) and (orientation: portrait) {
       :root { --map-header-h: 56px; }
-      .gis-ui__left { width: 220px; }
+      .gis-ui { --gis-left-w: 220px; }
       .gis-ui__right { display: none; }
     }
 
@@ -376,6 +385,9 @@
       border: 1px solid rgba(0,0,0,.12); border-radius: 6px;
       margin-bottom: 8px; background: #fafafa; cursor: grab; user-select: none;
     }
+    /* Папки, в которые помещены слои, подкрашиваем на ~3 тона темнее. */
+    .gis-folder:has(.gis-folder__body .gis-layer) { background: #dedede; border-color: rgba(0,0,0,.2); }
+    .gis-folder:has(.gis-folder__body .gis-layer) > .gis-folder__head { background: #d0d0d0; border-radius: 6px 6px 0 0; }
     .gis-folder:active { cursor: grabbing; }
     .gis-folder.dragging { opacity: .45; }
     .gis-folder.drag-over-top    { box-shadow: 0 -2px 0 0 #2e7d32 inset, 0 -2px 0 0 #2e7d32; }
@@ -423,7 +435,7 @@
     }
     .gis-folder.collapsed > .gis-folder__body { display: none; }
     /* Слои внутри папки чуть отступают и без нижнего зазора «прилипают». */
-    .gis-folder__body .gis-layer { margin-bottom: 6px; }
+    .gis-folder__body .gis-layer { margin-bottom: 6px; margin-left: 12px; }
     .gis-folder__body:empty::after {
       content: 'перетащите слои сюда'; display: block;
       font-size: 11px; color: #bbb; text-align: center; padding: 6px 0; font-weight: 400;
@@ -457,8 +469,8 @@
     .gis-attrtable-toggle.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
 
     .gis-attrtable {
-      position: fixed; left: 0; right: 0; bottom: 0; height: 40vh;
-      min-height: 180px; z-index: 1050;
+      position: fixed; left: 0; right: 0; bottom: 0; height: var(--gis-attrtable-h);
+      min-height: 140px; z-index: 1050;
       background: #fff; border-top: 1px solid rgba(0,0,0,.14);
       box-shadow: 0 -3px 16px rgba(0,0,0,.16);
       display: flex; flex-direction: column;
@@ -466,22 +478,28 @@
     }
     .gis-attrtable.open { transform: translateY(0); }
 
+    /* Грип изменения высоты таблицы — потянуть за верхний край. */
+    .gis-attrtable__resize {
+      position: absolute; top: -3px; left: 0; right: 0; height: 8px;
+      cursor: ns-resize; z-index: 1060;
+    }
+    .gis-attrtable__resize:hover { background: rgba(46,125,50,.25); }
+
     /* Когда таблица открыта — поднимаем тулбар, массбар и кнопку-тоггл над ней. */
-    .gis-ui.attrtable-open .gis-toolbar { bottom: calc(40vh + 12px); }
-    .gis-ui.attrtable-open .gis-massbar { bottom: calc(40vh + 60px); }
-    .gis-ui.attrtable-open .gis-attrtable-toggle { bottom: calc(40vh + 12px); }
+    .gis-ui.attrtable-open .gis-toolbar { bottom: calc(var(--gis-attrtable-h) + 12px); }
+    .gis-ui.attrtable-open .gis-massbar { bottom: calc(var(--gis-attrtable-h) + 60px); }
+    .gis-ui.attrtable-open .gis-attrtable-toggle { bottom: calc(var(--gis-attrtable-h) + 12px); }
 
     .gis-attrtable__head {
       display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
       padding: 8px 12px; border-bottom: 1px solid #eee; background: #fafafa;
     }
-    .gis-attrtable__tabs { display: flex; gap: 4px; }
-    .gis-attrtable__tab {
-      border: 1px solid rgba(0,0,0,.12); background: #fff; cursor: pointer;
-      padding: 5px 12px; border-radius: 6px; font-size: 12px; color: #444; font-weight: 600;
+    /* Подпись активного слоя (в одну строку) вместо вкладок. */
+    .gis-attrtable__title {
+      font-size: 13px; font-weight: 700; color: #2e7d32;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      max-width: 340px;
     }
-    .gis-attrtable__tab:hover { background: #f0f0f0; }
-    .gis-attrtable__tab.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
     .gis-attrtable__count { font-size: 12px; color: #777; white-space: nowrap; }
     .gis-attrtable__search {
       width: 180px; padding: 5px 8px; border: 1px solid rgba(0,0,0,.18);
@@ -637,10 +655,11 @@
         <div class="gis-layer" data-layer="farmlands" draggable="true">
           <div class="gis-layer__head">
             <span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>
-            <button class="gis-layer__btn" data-action="visibility" type="button" title="Видимость">👁</button>
             <span class="name">ЗСН (Росреестр)</span>
+            <button class="gis-layer__btn" data-action="table" type="button" title="Таблица атрибутов">▤</button>
             <button class="gis-layer__btn" data-action="edit" type="button"
                     title="Включить редактирование Росреестр-слоя (изменения сохраняются сразу)">✏</button>
+            <button class="gis-layer__btn" data-action="visibility" type="button" title="Видимость">👁</button>
           </div>
           <div class="gis-layer__meta">Векторные тайлы · z 6–14 · кеш 10 мин</div>
         </div>
@@ -648,9 +667,10 @@
         <div class="gis-layer" data-layer="userfields" draggable="true">
           <div class="gis-layer__head">
             <span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>
-            <button class="gis-layer__btn" data-action="visibility" type="button" title="Видимость">👁</button>
             <span class="name">Мои поля</span>
+            <button class="gis-layer__btn" data-action="table" type="button" title="Таблица атрибутов">▤</button>
             <button class="gis-layer__btn" data-action="edit" type="button" title="Включить редактирование">✏</button>
+            <button class="gis-layer__btn" data-action="visibility" type="button" title="Видимость">👁</button>
           </div>
           <div class="gis-layer__meta" id="gis-userfields-meta">загрузка…</div>
         </div>
@@ -664,6 +684,7 @@
       </div>
     </aside>
 
+    <div class="gis-left-resize" id="gis-left-resize" title="Потяните, чтобы изменить ширину панели"></div>
     <button class="gis-collapse-btn" id="gis-collapse-left"  type="button" title="Свернуть/развернуть слои">‹</button>
     <button class="gis-collapse-btn" id="gis-collapse-right" type="button" title="Свернуть/развернуть атрибуты">›</button>
 
@@ -781,11 +802,9 @@
             title="Атрибутивная таблица активного слоя">▤ Таблица</button>
 
     <section class="gis-attrtable" id="gis-attrtable" aria-label="Атрибутивная таблица">
+      <div class="gis-attrtable__resize" id="gis-attrtable-resize" title="Потяните, чтобы изменить высоту таблицы"></div>
       <div class="gis-attrtable__head">
-        <div class="gis-attrtable__tabs" id="gis-attrtable-tabs">
-          <button type="button" class="gis-attrtable__tab active" data-attr-layer="farmlands">ЗСН (Росреестр)</button>
-          <button type="button" class="gis-attrtable__tab" data-attr-layer="userfields">Мои поля</button>
-        </div>
+        <span class="gis-attrtable__title" id="gis-attrtable-title">ЗСН (Росреестр)</span>
         <span class="gis-attrtable__count" id="gis-attrtable-count"></span>
         <input type="text" class="gis-attrtable__search" id="gis-attrtable-search"
                placeholder="🔎 поиск по строкам…" autocomplete="off">
@@ -3673,16 +3692,57 @@
     var rightPane = document.getElementById('gis-right');
     var leftBtn   = document.getElementById('gis-collapse-left');
     var rightBtn  = document.getElementById('gis-collapse-right');
+    var leftResize = document.getElementById('gis-left-resize');
     leftBtn.addEventListener('click', function () {
       leftPane.classList.toggle('collapsed');
       leftBtn.classList.toggle('shifted');
       leftBtn.textContent = leftPane.classList.contains('collapsed') ? '›' : '‹';
+      if (leftResize) leftResize.classList.toggle('hidden', leftPane.classList.contains('collapsed'));
     });
     rightBtn.addEventListener('click', function () {
       rightPane.classList.toggle('collapsed');
       rightBtn.classList.toggle('shifted');
       rightBtn.textContent = rightPane.classList.contains('collapsed') ? '‹' : '›';
     });
+
+    /* ─── Ресайз: ширина левого сайдбара и высота атрибутивной таблицы ─── */
+    var gisUiEl = document.querySelector('.gis-ui');
+    (function () {
+      if (!leftResize || !gisUiEl) return;
+      var dragging = false;
+      leftResize.addEventListener('mousedown', function (e) {
+        dragging = true; e.preventDefault();
+        document.body.style.userSelect = 'none';
+      });
+      window.addEventListener('mousemove', function (e) {
+        if (!dragging) return;
+        var w = Math.max(200, Math.min(window.innerWidth * 0.6, e.clientX));
+        gisUiEl.style.setProperty('--gis-left-w', w + 'px');
+      });
+      window.addEventListener('mouseup', function () {
+        if (!dragging) return;
+        dragging = false; document.body.style.userSelect = '';
+      });
+    })();
+    (function () {
+      var grip = document.getElementById('gis-attrtable-resize');
+      if (!grip || !gisUiEl) return;
+      var dragging = false;
+      grip.addEventListener('mousedown', function (e) {
+        dragging = true; e.preventDefault();
+        document.body.style.userSelect = 'none';
+      });
+      window.addEventListener('mousemove', function (e) {
+        if (!dragging) return;
+        var h = window.innerHeight - e.clientY;
+        h = Math.max(140, Math.min(window.innerHeight * 0.85, h));
+        gisUiEl.style.setProperty('--gis-attrtable-h', h + 'px');
+      });
+      window.addEventListener('mouseup', function () {
+        if (!dragging) return;
+        dragging = false; document.body.style.userSelect = '';
+      });
+    })();
 
     /* ════════════════════════════════════════════════════════════════
        Batch-сохранение: pending-очередь изменений.
@@ -4426,8 +4486,16 @@
       var searchEl = document.getElementById('gis-attrtable-search');
       var filterEl = document.getElementById('gis-attrtable-filter');
       var editHint = document.getElementById('gis-attrtable-edithint');
-      var tabsWrap = document.getElementById('gis-attrtable-tabs');
+      var titleEl  = document.getElementById('gis-attrtable-title');
       var uiEl     = document.querySelector('.gis-ui');
+
+      /* Подпись активного слоя (в шапке таблицы, в одну строку). */
+      var STATIC_TITLES = { farmlands: 'ЗСН (Росреестр)', userfields: 'Мои поля' };
+      function layerTitleFor(key) {
+        if (STATIC_TITLES[key]) return STATIC_TITLES[key];
+        if (dynLayers[key]) return dynLayers[key].title || 'Слой';
+        return 'Слой';
+      }
 
       /* Динамически регистрируемые слои (загруженные SHP): ключ 'gisup:<id>'.
          Их колонки кладём прямо в COLUMNS, чтобы весь рендер/сортировка/поиск
@@ -4909,6 +4977,7 @@
         panel.classList.add('open');
         if (uiEl) uiEl.classList.add('attrtable-open');
         if (toggleBtn) toggleBtn.classList.add('active');
+        syncTabs();
         render();
       }
       function closePanel() {
@@ -4920,10 +4989,7 @@
 
       /* ─── Динамические слои (загруженные SHP) ─── */
       function syncTabs() {
-        if (!tabsWrap) return;
-        tabsWrap.querySelectorAll('.gis-attrtable__tab').forEach(function (t) {
-          t.classList.toggle('active', t.getAttribute('data-attr-layer') === state.layer);
-        });
+        if (titleEl) titleEl.textContent = layerTitleFor(state.layer);
       }
       function loadDyn(key, after) {
         var def = dynLayers[key];
@@ -4956,36 +5022,22 @@
         register: function (key, def) {
           dynLayers[key] = def;
           COLUMNS[key] = def.columns;
-          if (tabsWrap && !tabsWrap.querySelector('.gis-attrtable__tab[data-attr-layer="' + key + '"]')) {
-            var b = document.createElement('button');
-            b.type = 'button';
-            b.className = 'gis-attrtable__tab';
-            b.setAttribute('data-attr-layer', key);
-            b.textContent = def.title;
-            tabsWrap.appendChild(b);
-          }
         },
         unregister: function (key) {
           delete dynLayers[key];
           delete COLUMNS[key];
-          if (tabsWrap) {
-            var b = tabsWrap.querySelector('.gis-attrtable__tab[data-attr-layer="' + key + '"]');
-            if (b) b.remove();
-          }
           if (state.layer === key) setLayer('farmlands');
         },
         updateTitle: function (key, title) {
           if (dynLayers[key]) dynLayers[key].title = title;
-          if (tabsWrap) {
-            var b = tabsWrap.querySelector('.gis-attrtable__tab[data-attr-layer="' + key + '"]');
-            if (b) b.textContent = title;
-          }
+          if (state.layer === key) syncTabs();
         },
         open: function (key) {
-          if (!dynLayers[key]) return;
+          var isStatic = !!STATIC_TITLES[key];
+          if (!isStatic && !dynLayers[key]) return;
           openPanel();
           if (state.layer === key) {
-            if (!dynLayers[key].loaded) loadDyn(key); else render();
+            if (dynLayers[key] && !dynLayers[key].loaded) loadDyn(key); else render();
           } else {
             setLayer(key);
           }
@@ -5009,9 +5061,12 @@
         if (state.layer === 'farmlands') render();
         else if (dynLayers[state.layer]) { dynLayers[state.layer].loaded = false; loadDyn(state.layer); }
       });
-      if (tabsWrap) tabsWrap.addEventListener('click', function (e) {
-        var t = e.target.closest('.gis-attrtable__tab');
-        if (t) setLayer(t.getAttribute('data-attr-layer'));
+
+      /* Кнопка ▤ в плашке статического слоя (ЗСН / Мои поля) открывает его
+         таблицу — динамические SHP-слои открываются из своих плашек. */
+      document.querySelectorAll('.gis-layer[data-layer] .gis-layer__btn[data-action="table"]').forEach(function (btn) {
+        var layerKey = btn.closest('.gis-layer[data-layer]').getAttribute('data-layer');
+        btn.addEventListener('click', function () { window.__gisAttr.open(layerKey); });
       });
 
       /* Поиск (debounce) и фильтр по использованию. */
@@ -5905,11 +5960,14 @@
         head.className = 'gis-layer__head';
         head.innerHTML =
           '<span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>' +
-          '<input type="checkbox" class="gis-layer__sel" title="Отметить слой для удаления">' +
-          '<input type="color" class="gis-layer__swatch" data-a="color" value="' + esc(L.color) + '" title="Цвет слоя">' +
-          '<button class="gis-layer__btn' + (vis ? ' active' : '') + '" data-a="vis" type="button" title="Видимость">👁</button>';
+          '<input type="color" class="gis-layer__swatch" data-a="color" value="' + esc(L.color) + '" title="Цвет слоя">';
         var nameSpan = makeNameSpan(L);
         head.appendChild(nameSpan);
+        var tableBtn = document.createElement('button');
+        tableBtn.className = 'gis-layer__btn'; tableBtn.type = 'button';
+        tableBtn.setAttribute('data-a', 'attrs'); tableBtn.title = 'Таблица атрибутов';
+        tableBtn.textContent = '▤';
+        head.appendChild(tableBtn);
         var zoomBtn = document.createElement('button');
         zoomBtn.className = 'gis-layer__btn'; zoomBtn.type = 'button';
         zoomBtn.setAttribute('data-a', 'zoom'); zoomBtn.title = 'Приблизить к слою';
@@ -5930,20 +5988,27 @@
         styleBtn.className = 'gis-layer__menu-item' + (themed ? ' active' : '');
         styleBtn.type = 'button'; styleBtn.setAttribute('data-a', 'style');
         styleBtn.textContent = '🎨 Раскраска';
-        var attrBtn = document.createElement('button');
-        attrBtn.className = 'gis-layer__menu-item'; attrBtn.type = 'button';
-        attrBtn.setAttribute('data-a', 'attrs');
-        attrBtn.textContent = '▤ Таблица атрибутов';
         var geomBtn = document.createElement('button');
         var editingGeom = !!(typeof gupEdit !== 'undefined' && gupEdit.active &&
           gupEdit.layer && gupEdit.layer.id === L.id);
         geomBtn.className = 'gis-layer__menu-item' + (editingGeom ? ' active' : '');
         geomBtn.type = 'button'; geomBtn.setAttribute('data-a', 'geom');
         geomBtn.textContent = '✎ Геометрия';
-        pop.appendChild(styleBtn); pop.appendChild(attrBtn); pop.appendChild(geomBtn);
+        pop.appendChild(styleBtn); pop.appendChild(geomBtn);
         menuWrap.appendChild(kebab); menuWrap.appendChild(pop);
         head.appendChild(menuWrap);
         if (editingGeom) kebab.classList.add('active');
+
+        /* Чекбокс выбора слоя и кнопка видимости — в правой части плашки. */
+        var selEl = document.createElement('input');
+        selEl.type = 'checkbox'; selEl.className = 'gis-layer__sel';
+        selEl.title = 'Отметить слой для удаления';
+        head.appendChild(selEl);
+        var visEl = document.createElement('button');
+        visEl.className = 'gis-layer__btn' + (vis ? ' active' : '');
+        visEl.type = 'button'; visEl.setAttribute('data-a', 'vis');
+        visEl.title = 'Видимость'; visEl.textContent = '👁';
+        head.appendChild(visEl);
 
         kebab.addEventListener('click', function (e) {
           e.stopPropagation();
@@ -5970,7 +6035,7 @@
         });
         zoomBtn.addEventListener('click', function () { fitExtent(L.extent); });
         styleBtn.addEventListener('click', function () { openStyleModal(L); });
-        attrBtn.addEventListener('click', function () {
+        tableBtn.addEventListener('click', function () {
           if (window.__gisAttr) window.__gisAttr.open('gisup:' + L.id);
           else toast('Таблица атрибутов недоступна', true);
         });
