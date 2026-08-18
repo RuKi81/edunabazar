@@ -62,6 +62,11 @@ class GisFeaturesTestCase(TestCase):
                 "INSERT INTO gis_up_feat (id, name, area, cnt) VALUES "
                 "(1, 'Первое', 10.5, 3), (2, 'Второе', 20.0, 7)"
             )
+            # Явные id не сдвигают serial-последовательность — выставляем её
+            # вручную, иначе INSERT ... RETURNING id (create_feature) даст id=1.
+            cur.execute(
+                "SELECT setval(pg_get_serial_sequence('gis_up_feat', 'id'), 2)"
+            )
 
         _, viewer_lu = cls.roles['viewer']
         _, editor_lu = cls.roles['editor']
@@ -307,3 +312,106 @@ class GisFeaturesTestCase(TestCase):
     def test_field_stats_anonymous_401(self):
         r = self.client.get(self._stats_url('name'))
         self.assertEqual(r.status_code, 401)
+
+    # ── правка ГЕОМЕТРИИ объектов ────────────────────────────────────────
+    POLY = {'type': 'Polygon', 'coordinates': [[
+        [34.0, 45.0], [34.1, 45.0], [34.1, 45.1], [34.0, 45.1], [34.0, 45.0]]]}
+    POINT = {'type': 'Point', 'coordinates': [34.05, 45.05]}
+
+    def _post_feature(self, geometry):
+        return self.client.post(
+            self._features_url(), data=json.dumps({'geometry': geometry}),
+            content_type='application/json')
+
+    def _patch_geom(self, fid, geometry):
+        return self.client.patch(
+            self._feature_url(fid), data=json.dumps({'geometry': geometry}),
+            content_type='application/json')
+
+    def _geom_type(self, fid):
+        with connection.cursor() as cur:
+            cur.execute(
+                'SELECT ST_GeometryType(geom) FROM gis_up_feat WHERE id = %s',
+                [fid])
+            row = cur.fetchone()
+            return row[0] if row else None
+
+    def test_editor_creates_feature(self):
+        self._login('editor')
+        r = self._post_feature(self.POLY)
+        self.assertEqual(r.status_code, 201, r.content)
+        new_id = r.json()['id']
+        self.assertEqual(self._geom_type(new_id), 'ST_Polygon')
+        self.layer.refresh_from_db()
+        self.assertEqual(self.layer.feature_count, 3)  # было 2
+
+    def test_editor_updates_geometry(self):
+        self._login('editor')
+        r = self._patch_geom(1, self.POLY)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertTrue(r.json()['geometry_updated'])
+        self.assertEqual(self._geom_type(1), 'ST_Polygon')
+
+    def test_patch_geometry_and_props_together(self):
+        self._login('editor')
+        r = self.client.patch(
+            self._feature_url(1),
+            data=json.dumps({'geometry': self.POLY, 'props': {'name': 'X'}}),
+            content_type='application/json')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(self._db_value(1, 'name'), 'X')
+        self.assertEqual(self._geom_type(1), 'ST_Polygon')
+
+    def test_create_type_mismatch_400(self):
+        self._login('editor')
+        r = self._post_feature(self.POINT)  # слой polygon
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()['error'], 'invalid_geometry')
+
+    def test_update_type_mismatch_400(self):
+        self._login('editor')
+        r = self._patch_geom(1, self.POINT)
+        self.assertEqual(r.status_code, 400)
+
+    def test_create_invalid_geometry_400(self):
+        self._login('editor')
+        r = self._post_feature({'type': 'Polygon', 'coordinates': []})
+        self.assertEqual(r.status_code, 400)
+
+    def test_delete_feature(self):
+        self._login('editor')
+        r = self.client.delete(self._feature_url(1))
+        self.assertEqual(r.status_code, 200, r.content)
+        with connection.cursor() as cur:
+            cur.execute('SELECT count(*) FROM gis_up_feat WHERE id = 1')
+            self.assertEqual(cur.fetchone()[0], 0)
+        self.layer.refresh_from_db()
+        self.assertEqual(self.layer.feature_count, 1)
+
+    def test_delete_missing_404(self):
+        self._login('editor')
+        r = self.client.delete(self._feature_url(999))
+        self.assertEqual(r.status_code, 404)
+
+    def test_features_geojson(self):
+        self._login('editor')
+        self._patch_geom(1, self.POLY)
+        r = self.client.get(self._features_url() + '?geometry=1')
+        self.assertEqual(r.status_code, 200, r.content)
+        body = r.json()
+        self.assertEqual(body['geom_kind'], 'polygon')
+        feats = body['featurecollection']['features']
+        self.assertEqual(len(feats), 1)  # только объект с геометрией
+        self.assertEqual(feats[0]['id'], 1)
+        self.assertEqual(feats[0]['geometry']['type'], 'Polygon')
+
+    def test_viewer_cannot_create_403(self):
+        self._login('viewer')
+        self.assertEqual(self._post_feature(self.POLY).status_code, 403)
+
+    def test_viewer_cannot_delete_403(self):
+        self._login('viewer')
+        self.assertEqual(self.client.delete(self._feature_url(1)).status_code, 403)
+
+    def test_anonymous_create_401(self):
+        self.assertEqual(self._post_feature(self.POLY).status_code, 401)

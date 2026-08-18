@@ -420,6 +420,138 @@ def update_feature(layer, fid: int, props: dict) -> int:
         return cur.rowcount
 
 
+# ── Правка ГЕОМЕТРИИ объектов слоя ──────────────────────────────────────
+
+# Допустимые GeoJSON-типы геометрии для каждого geom_kind слоя. ``other`` —
+# любой тип (в исходном шейпе была смешанная/нестандартная геометрия).
+_GEOM_KIND_TYPES = {
+    'point': frozenset({'Point', 'MultiPoint'}),
+    'line': frozenset({'LineString', 'MultiLineString'}),
+    'polygon': frozenset({'Polygon', 'MultiPolygon'}),
+}
+
+
+def geom_kind_allows(layer, geom_type: str) -> bool:
+    """True, если тип геометрии совместим с ``layer.geom_kind``."""
+    allowed = _GEOM_KIND_TYPES.get(layer.geom_kind)
+    return True if allowed is None else geom_type in allowed
+
+
+def _geos_from_geojson(geometry: dict):
+    """GeoJSON-dict → валидная ``GEOSGeometry`` (SRID 4326) или ``ValueError``.
+
+    Пустая/битая геометрия, а также пустой контур → ``ValueError`` (сообщение
+    пригодно для показа в UI).
+    """
+    import json as _json
+
+    from django.contrib.gis.geos import GEOSGeometry
+    from django.contrib.gis.geos.error import GEOSException
+
+    if not isinstance(geometry, dict) or not geometry.get('type'):
+        raise ValueError('Ожидается объект геометрии GeoJSON.')
+    try:
+        geom = GEOSGeometry(_json.dumps(geometry), srid=4326)
+    except (GEOSException, ValueError, TypeError) as exc:
+        raise ValueError(f'Некорректная геометрия: {exc}') from exc
+    if geom.empty:
+        raise ValueError('Пустая геометрия.')
+    if not geom.valid:
+        # Пытаемся «починить» самопересечения и т.п. (ST_MakeValid-аналог).
+        raise ValueError(f'Невалидная геометрия: {geom.valid_reason}')
+    return geom
+
+
+def get_features_geojson(layer, limit: int = 5000) -> dict:
+    """FeatureCollection с ``id`` + точной геометрией (для загрузки в редактор).
+
+    В отличие от MVT-тайлов (квантованных), отдаёт исходные координаты 4326 —
+    их и правит mapbox-gl-draw. Ограничено ``limit`` объектов.
+    """
+    import json as _json
+
+    table = sql.Identifier(layer.table_name)
+    query = sql.SQL(
+        'SELECT id, ST_AsGeoJSON(geom) FROM {table} '
+        'WHERE geom IS NOT NULL ORDER BY id LIMIT %s'
+    ).format(table=table)
+    feats = []
+    with connection.cursor() as cur:
+        cur.execute(query, [max(1, min(int(limit), 20000))])
+        for fid, gj in cur.fetchall():
+            if not gj:
+                continue
+            feats.append({
+                'type': 'Feature', 'id': fid,
+                'geometry': _json.loads(gj), 'properties': {},
+            })
+    return {'type': 'FeatureCollection', 'features': feats}
+
+
+def create_feature(layer, geometry: dict) -> int:
+    """Создать объект слоя с заданной геометрией (атрибуты — NULL).
+
+    Возвращает ``id`` новой строки. Обновляет ``extent``/``feature_count``
+    реестра. ``ValueError`` — если геометрия битая или не совпадает с типом слоя.
+    """
+    geom = _geos_from_geojson(geometry)
+    if not geom_kind_allows(layer, geom.geom_type):
+        raise ValueError(
+            f'Тип {geom.geom_type} не подходит для слоя ({layer.geom_kind}).')
+    query = sql.SQL(
+        'INSERT INTO {table} (geom) VALUES (ST_GeomFromText(%s, 4326)) '
+        'RETURNING id'
+    ).format(table=sql.Identifier(layer.table_name))
+    with connection.cursor() as cur:
+        cur.execute(query, [geom.wkt])
+        fid = cur.fetchone()[0]
+    recompute_layer_meta(layer)
+    return int(fid)
+
+
+def update_feature_geom(layer, fid: int, geometry: dict) -> int:
+    """Обновить геометрию объекта. Возвращает число затронутых строк.
+
+    ``ValueError`` — битая геометрия или несовместимый с типом слоя тип.
+    """
+    geom = _geos_from_geojson(geometry)
+    if not geom_kind_allows(layer, geom.geom_type):
+        raise ValueError(
+            f'Тип {geom.geom_type} не подходит для слоя ({layer.geom_kind}).')
+    query = sql.SQL(
+        'UPDATE {table} SET geom = ST_GeomFromText(%s, 4326) WHERE id = %s'
+    ).format(table=sql.Identifier(layer.table_name))
+    with connection.cursor() as cur:
+        cur.execute(query, [geom.wkt, fid])
+        rowcount = cur.rowcount
+    if rowcount:
+        recompute_layer_meta(layer)
+    return rowcount
+
+
+def delete_feature(layer, fid: int) -> int:
+    """Удалить объект слоя. Возвращает число удалённых строк."""
+    query = sql.SQL('DELETE FROM {table} WHERE id = %s').format(
+        table=sql.Identifier(layer.table_name))
+    with connection.cursor() as cur:
+        cur.execute(query, [fid])
+        rowcount = cur.rowcount
+    if rowcount:
+        recompute_layer_meta(layer)
+    return rowcount
+
+
+def recompute_layer_meta(layer) -> None:
+    """Пересчитать ``extent`` и ``feature_count`` слоя после правки геометрии."""
+    with connection.cursor() as cur:
+        cur.execute(sql.SQL('SELECT count(*) FROM {}').format(
+            sql.Identifier(layer.table_name)))
+        count = cur.fetchone()[0]
+    layer.extent = _table_extent(layer.table_name)
+    layer.feature_count = int(count or 0)
+    layer.save(update_fields=['extent', 'feature_count'])
+
+
 _NUMERIC_PG_TYPES = frozenset({'integer', 'bigint', 'double precision'})
 
 

@@ -1034,17 +1034,32 @@ def _gis_layer_patch(request: HttpRequest, layer: GisLayer) -> JsonResponse:
 
 
 @csrf_exempt
-@require_http_methods(['GET'])
+@require_http_methods(['GET', 'POST'])
 def gis_layer_features(request: HttpRequest, pk: int) -> JsonResponse:
-    """GET — постраничный список объектов слоя (id + атрибуты).
+    """GET — список объектов слоя; POST — создать объект по геометрии.
 
-    Доступ уровня ``view`` к конкретному слою (или whole-class). Используется
-    атрибутивной таблицей на странице /me/gis.
+    * ``GET`` (уровень ``view``): постранично id + атрибуты для таблицы. С
+      ``?geometry=1`` — GeoJSON FeatureCollection (id + точная геометрия) для
+      загрузки в редактор draw.
+    * ``POST`` (уровень ``edit``): создать новый объект с переданной
+      геометрией (атрибуты — NULL). Тело: ``{"geometry": <GeoJSON>}``.
     """
+    if request.method == 'POST':
+        return _gis_feature_create(request, pk)
+
     gate = _require_gis_access(request, level='view', pk=pk)
     if gate:
         return gate
     layer = get_object_or_404(GisLayer, pk=pk)
+
+    if request.GET.get('geometry') in ('1', 'true', 'yes'):
+        from .services.shp_import import get_features_geojson
+        fc = get_features_geojson(layer)
+        return JsonResponse({
+            'ok': True,
+            'geom_kind': layer.geom_kind,
+            'featurecollection': fc,
+        })
 
     from .services.shp_import import list_features
     try:
@@ -1101,10 +1116,8 @@ def gis_layer_field_stats(request: HttpRequest, pk: int) -> JsonResponse:
     return JsonResponse({'ok': True, 'stats': stats})
 
 
-@csrf_exempt
-@require_http_methods(['PATCH'])
-def gis_layer_feature_detail(request: HttpRequest, pk: int, fid: int) -> JsonResponse:
-    """PATCH — обновить атрибуты одного объекта слоя (уровень ``edit``)."""
+def _gis_feature_create(request: HttpRequest, pk: int) -> JsonResponse:
+    """POST — создать объект слоя по геометрии (уровень ``edit``)."""
     gate = _require_gis_access(request, level='edit', pk=pk)
     if gate:
         return gate
@@ -1115,23 +1128,99 @@ def gis_layer_feature_detail(request: HttpRequest, pk: int, fid: int) -> JsonRes
     except (ValueError, TypeError):
         return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
 
-    props = data.get('props')
-    if not isinstance(props, dict) or not props:
+    geometry = data.get('geometry')
+    if not isinstance(geometry, dict):
         return JsonResponse(
-            {'ok': False, 'error': 'no_props',
-             'detail': 'Ожидается объект props с изменяемыми атрибутами.'},
+            {'ok': False, 'error': 'no_geometry',
+             'detail': 'Ожидается объект geometry (GeoJSON).'},
             status=400,
         )
 
-    from .services.shp_import import update_feature
-    updated = update_feature(layer, fid, props)
-    if not updated:
+    from .services.shp_import import create_feature
+    try:
+        new_id = create_feature(layer, geometry)
+    except ValueError as exc:
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_geometry', 'detail': str(exc)},
+            status=400,
+        )
+    return JsonResponse({'ok': True, 'id': new_id}, status=201)
+
+
+@csrf_exempt
+@require_http_methods(['PATCH', 'DELETE'])
+def gis_layer_feature_detail(request: HttpRequest, pk: int, fid: int) -> JsonResponse:
+    """PATCH — обновить атрибуты и/или геометрию объекта; DELETE — удалить.
+
+    Оба метода требуют уровень ``edit``. PATCH принимает ``props`` (атрибуты)
+    и/или ``geometry`` (GeoJSON) — хотя бы одно.
+    """
+    gate = _require_gis_access(request, level='edit', pk=pk)
+    if gate:
+        return gate
+    layer = get_object_or_404(GisLayer, pk=pk)
+
+    if request.method == 'DELETE':
+        from .services.shp_import import delete_feature
+        if not delete_feature(layer, fid):
+            return JsonResponse(
+                {'ok': False, 'error': 'not_found',
+                 'detail': 'Объект не найден.'},
+                status=404,
+            )
+        return JsonResponse({'ok': True, 'deleted': 1})
+
+    return _gis_feature_patch(request, layer, fid)
+
+
+def _gis_feature_patch(request: HttpRequest, layer: GisLayer,
+                       fid: int) -> JsonResponse:
+    """PATCH-часть :func:`gis_layer_feature_detail`: props и/или geometry."""
+    try:
+        data = json.loads(request.body or b'{}')
+    except (ValueError, TypeError):
+        return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
+
+    props = data.get('props')
+    geometry = data.get('geometry')
+    has_props = isinstance(props, dict) and bool(props)
+    if not has_props and not isinstance(geometry, dict):
+        return JsonResponse(
+            {'ok': False, 'error': 'nothing_to_update',
+             'detail': 'Ожидается props и/или geometry.'},
+            status=400,
+        )
+
+    from .services.shp_import import update_feature, update_feature_geom
+
+    geom_updated = None
+    if isinstance(geometry, dict):
+        try:
+            geom_updated = update_feature_geom(layer, fid, geometry)
+        except ValueError as exc:
+            return JsonResponse(
+                {'ok': False, 'error': 'invalid_geometry', 'detail': str(exc)},
+                status=400,
+            )
+        if not geom_updated:
+            return JsonResponse(
+                {'ok': False, 'error': 'not_found', 'detail': 'Объект не найден.'},
+                status=404,
+            )
+
+    attr_updated = update_feature(layer, fid, props) if has_props else 0
+    if has_props and not attr_updated and geom_updated is None:
         return JsonResponse(
             {'ok': False, 'error': 'not_found_or_noop',
              'detail': 'Объект не найден или нет допустимых полей для правки.'},
             status=404,
         )
-    return JsonResponse({'ok': True, 'updated': updated})
+
+    return JsonResponse({
+        'ok': True,
+        'updated': attr_updated or 0,
+        'geometry_updated': bool(geom_updated),
+    })
 
 
 @csrf_exempt

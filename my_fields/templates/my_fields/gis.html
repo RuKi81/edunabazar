@@ -1992,6 +1992,17 @@
       }
     }
 
+    /* ─────────── Режим правки геометрии загруженного слоя (gis_up_*) ───────────
+       Состояние живёт во ВНЕШНЕМ IIFE, чтобы его читали обработчики draw.*
+       (draw.create/update и handleTrash ниже). Сами функции реализованы во
+       вложенном модуле загруженных слоёв и подвешены сюда как колбэки —
+       так они видят и draw/тулбар (внешний scope), и setVisible/addLayerToMap
+       (внутренний scope). */
+    var gupEdit = {
+      active: false, layer: null, kind: null,
+      onCreate: null, onUpdate: null, onTrash: null,
+    };
+
     /* ──────────────────────── Toolbar buttons ──────────────────────── */
     function highlightTool(tool) {
       document.querySelectorAll('.gis-toolbar button[data-tool]').forEach(function (b) {
@@ -2065,6 +2076,11 @@
       try { sel = draw.getSelectedIds(); } catch (_) { sel = []; }
       if (!sel || !sel.length) {
         toast('Сначала выделите объект (☞ + клик) или массово (☑ / ▦).', true);
+        return;
+      }
+      /* Режим правки геометрии загруженного слоя — удаляем из таблицы слоя. */
+      if (gupEdit.active && gupEdit.onTrash) {
+        sel.forEach(function (sid) { gupEdit.onTrash(String(sid)); });
         return;
       }
       sel.forEach(function (sid) {
@@ -3080,6 +3096,10 @@
       if (f.id != null && persistedDrawIds.has(String(f.id))) return;
       if (f.id != null && findPendingCreateIdx(f.id) >= 0) return;
 
+      /* Режим правки геометрии загруженного слоя — свой поток (POST в таблицу
+         слоя, без snap к угодьям/полям). */
+      if (gupEdit.active && gupEdit.onCreate) { gupEdit.onCreate(f); return; }
+
       /* Сценарий «массовое выделение лассо» — поглощаем нарисованный полигон
          как область выбора (без snap и без постановки в очередь). */
       if (lassoSelectState && f.geometry.type === 'Polygon') {
@@ -3185,6 +3205,9 @@
     map.on('draw.update', function (ev) {
       if (_silentDraw > 0) return;
       (ev.features || []).forEach(function (f) {
+        /* Режим правки геометрии загруженного слоя — PATCH в таблицу слоя
+           (без snap к угодьям/полям). */
+        if (gupEdit.active && gupEdit.onUpdate) { gupEdit.onUpdate(f); return; }
         var snapped = false;
         try { snapped = snapGeometryInPlace(f.geometry); } catch (_) {}
         /* Перезаписываем в draw со snap-нутыми координатами (silent). */
@@ -4708,7 +4731,9 @@
         promote[L.table_name] = 'id';
         map.addSource(sid, {
           type: 'vector',
-          tiles: [location.origin + L.tiles_url],
+          /* ?v=<token> сбрасывает кэш тайлов после правки геометрии
+             (см. gupRefreshTiles) — иначе MapLibre/браузер покажут старьё. */
+          tiles: [location.origin + L.tiles_url + (L._ver ? ('?v=' + L._ver) : '')],
           minzoom: 0, maxzoom: 22,
           promoteId: promote,
         });
@@ -4784,6 +4809,204 @@
         (L._layerIds || []).forEach(function (lid) { if (map.getLayer(lid)) map.removeLayer(lid); });
         var sid = srcId(L.id);
         if (map.getSource(sid)) map.removeSource(sid);
+      }
+
+      /* ══════════════ Правка геометрии загруженного слоя ══════════════
+         Переиспользуем общий редактор draw (mapbox-gl-draw). Объекты слоя
+         грузятся точной геометрией (эндпоинт ?geometry=1), правятся по узлам
+         / перемещением, новые рисуются инструментом по geom_kind слоя.
+         Каждое изменение сразу летит в API (POST/PATCH/DELETE feature).
+         MVT-тайлы слоя на время правки скрыты, после выхода — обновляются. */
+      var GUP_PREFIX = 'gup_';
+      var gupIdMap = {};   /* drawId (gup_<fid>) → серверный fid */
+
+      function gupDrawTool(kind) {
+        if (kind === 'point') return 'draw_point';
+        if (kind === 'line') return 'draw_line_string';
+        return 'draw_polygon';  /* polygon и other → полигон */
+      }
+      function gupToolLabel(kind) {
+        if (kind === 'point') return '• точка';
+        if (kind === 'line') return '╱ линия';
+        return '⬡ полигон';
+      }
+
+      /* Оставить в тулбаре только select / trash / нужный инструмент рисования
+         (тип определяется geom_kind слоя; для «other» — все три инструмента). */
+      function gupRestrictToolbar(kind) {
+        var allow = gupDrawTool(kind);
+        var drawTools = ['draw_polygon', 'draw_line_string', 'draw_point'];
+        document.querySelectorAll('.gis-toolbar button[data-tool]').forEach(function (b) {
+          var t = b.getAttribute('data-tool');
+          if (t === 'save' || t === 'discard') return;
+          var isDraw = drawTools.indexOf(t) >= 0;
+          var keep = t === 'select' || t === 'trash' ||
+                     (isDraw && (kind === 'other' || t === allow));
+          b.disabled = !keep;
+          if (!keep) b.classList.remove('active');
+        });
+      }
+
+      function gupLoadFeatures(L) {
+        fetch(API + L.id + '/features/?geometry=1', {
+          credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        }).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+          .then(function (j) {
+            if (!gupEdit.active || !gupEdit.layer || gupEdit.layer.id !== L.id) return;
+            var feats = (j.featurecollection && j.featurecollection.features) || [];
+            feats.forEach(function (f) {
+              var sid = GUP_PREFIX + f.id;
+              gupIdMap[sid] = f.id;
+              addPersistedToDraw({ type: 'Feature', id: sid, properties: {}, geometry: f.geometry });
+            });
+            if (feats.length) {
+              toast('Объектов для правки: ' + feats.length + '. Клик — выбрать, двойной клик — узлы.');
+            } else {
+              toast('В слое нет объектов — нарисуйте новый (' + gupToolLabel(L.geom_kind) + ').');
+            }
+          })
+          .catch(function () { toast('Не удалось загрузить геометрию слоя', true); });
+      }
+
+      /* Обновить MVT-тайлы слоя после правки (cache-bust) и показать его. */
+      function gupRefreshTiles(L) {
+        L._ver = Date.now();
+        try { removeFromMap(L); } catch (_) {}
+        try { addLayerToMap(L); } catch (_) {}
+        setVisible(L, true);
+        var row = document.getElementById('gisup-row-' + L.id);
+        if (row) { var vb = row.querySelector('[data-a="vis"]'); if (vb) vb.classList.add('active'); }
+      }
+
+      function gupOnCreate(f) {
+        var L = gupEdit.layer;
+        if (!L || !f.geometry) return;
+        fetch(API + L.id + '/features/', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ geometry: f.geometry }),
+        }).then(function (r) { return r.json().then(function (b) { return { ok: r.ok, b: b }; }); })
+          .then(function (res) {
+            if (!res.ok) {
+              toast((res.b && res.b.detail) || 'Не удалось создать объект', true);
+              try { draw.delete(f.id); } catch (_) {}
+              return;
+            }
+            /* Превращаем черновик в persisted-объект с серверным id. */
+            var geom = f.geometry;
+            try { draw.delete(f.id); } catch (_) {}
+            var sid = GUP_PREFIX + res.b.id;
+            gupIdMap[sid] = res.b.id;
+            addPersistedToDraw({ type: 'Feature', id: sid, properties: {}, geometry: geom });
+            L.feature_count = (L.feature_count || 0) + 1;
+            toast('Объект создан (#' + res.b.id + ').');
+          })
+          .catch(function () {
+            toast('Сеть недоступна — объект не создан', true);
+            try { draw.delete(f.id); } catch (_) {}
+          });
+        /* Оставляем инструмент рисования активным для следующего объекта. */
+        var nextMode = gupDrawTool(L.geom_kind);
+        setTimeout(function () {
+          try { draw.changeMode(nextMode); } catch (_) {}
+          highlightTool(nextMode);
+        }, 0);
+      }
+
+      function gupOnUpdate(f) {
+        var L = gupEdit.layer;
+        var sid = String(f.id);
+        var fid = gupIdMap[sid];
+        if (!L || fid == null || !f.geometry) return;
+        fetch(API + L.id + '/features/' + fid + '/', {
+          method: 'PATCH', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ geometry: f.geometry }),
+        }).then(function (r) { return r.json().then(function (b) { return { ok: r.ok, b: b }; }); })
+          .then(function (res) {
+            if (!res.ok) toast((res.b && res.b.detail) || 'Не удалось сохранить геометрию', true);
+          })
+          .catch(function () { toast('Сеть недоступна — правка не сохранена', true); });
+      }
+
+      function gupOnTrash(sid) {
+        var L = gupEdit.layer;
+        var fid = gupIdMap[sid];
+        if (!L) return;
+        if (fid == null) { try { draw.delete(sid); } catch (_) {} return; }
+        fetch(API + L.id + '/features/' + fid + '/', {
+          method: 'DELETE', credentials: 'same-origin',
+          headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        }).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+          .then(function () {
+            try { draw.delete(sid); } catch (_) {}
+            delete gupIdMap[sid];
+            L.feature_count = Math.max(0, (L.feature_count || 1) - 1);
+            toast('Объект удалён.');
+          })
+          .catch(function () { toast('Не удалось удалить объект', true); });
+      }
+
+      /* Включить/выключить режим правки геометрии слоя L. */
+      function setGupEdit(L, on) {
+        var hint = document.getElementById('gis-toolbar-hint');
+        if (on) {
+          /* Взаимоисключение с прочими режимами редактирования. */
+          if (layerState.userfields.editable) setEditMode(false);
+          if (layerState.farmlands.editable) setFarmlandEdit(false);
+          if (gupEdit.active && gupEdit.layer && gupEdit.layer.id !== L.id) {
+            setGupEdit(gupEdit.layer, false);
+          }
+          gupEdit.active = true; gupEdit.layer = L; gupEdit.kind = L.geom_kind;
+          gupEdit.onCreate = gupOnCreate;
+          gupEdit.onUpdate = gupOnUpdate;
+          gupEdit.onTrash = gupOnTrash;
+          gupIdMap = {};
+          if (!drawAdded) {
+            map.addControl(draw); drawAdded = true;
+            if (map.getLayer('snap-indicator')) { try { map.moveLayer('snap-indicator'); } catch (_) {} }
+          }
+          persistedDrawIds.clear();
+          try { draw.deleteAll(); } catch (_) {}
+          setVisible(L, false);   /* прячем MVT — правим точную геометрию в draw */
+          setToolbarEnabled(true);
+          gupRestrictToolbar(L.geom_kind);
+          try { draw.changeMode('simple_select'); } catch (_) {}
+          highlightTool('select');
+          _gupMarkRow(L, true);
+          if (hint) {
+            hint.textContent = 'Геометрия «' + (L.title || 'слой') + '»: клик → узлы · ' +
+              gupToolLabel(L.geom_kind) + ' новый · 🗑 удалить. Изменения сохраняются сразу.';
+          }
+          gupLoadFeatures(L);
+        } else {
+          gupEdit.active = false;
+          gupEdit.onCreate = gupEdit.onUpdate = gupEdit.onTrash = null;
+          if (drawAdded && !layerState.userfields.editable && !layerState.farmlands.editable) {
+            try { draw.deleteAll(); } catch (_) {}
+            try { map.removeControl(draw); } catch (_) {}
+            drawAdded = false;
+          }
+          persistedDrawIds.clear();
+          gupIdMap = {};
+          setToolbarEnabled(false);
+          if (L) { _gupMarkRow(L, false); gupRefreshTiles(L); }
+          gupEdit.layer = null; gupEdit.kind = null;
+          if (hint) hint.textContent = 'Включите редактирование «Мои поля» в левом меню.';
+        }
+      }
+
+      /* Подсветка кнопки «Геометрия» и kebab в строке слоя. */
+      function _gupMarkRow(L, on) {
+        var row = document.getElementById('gisup-row-' + L.id);
+        if (!row) return;
+        var gb = row.querySelector('[data-a="geom"]');
+        if (gb) gb.classList.toggle('active', on);
+        var kb = row.querySelector('.gis-layer__kebab');
+        if (kb) {
+          var themed = !!(L.style && L.style.mode && L.style.mode !== 'single');
+          kb.classList.toggle('active', on || themed);
+        }
       }
 
       /* ── Порядок слоёв: DOM ↔ z-order карты ↔ БД ── */
@@ -4945,9 +5168,16 @@
         attrBtn.className = 'gis-layer__menu-item'; attrBtn.type = 'button';
         attrBtn.setAttribute('data-a', 'attrs');
         attrBtn.textContent = '▤ Таблица атрибутов';
-        pop.appendChild(styleBtn); pop.appendChild(attrBtn);
+        var geomBtn = document.createElement('button');
+        var editingGeom = !!(typeof gupEdit !== 'undefined' && gupEdit.active &&
+          gupEdit.layer && gupEdit.layer.id === L.id);
+        geomBtn.className = 'gis-layer__menu-item' + (editingGeom ? ' active' : '');
+        geomBtn.type = 'button'; geomBtn.setAttribute('data-a', 'geom');
+        geomBtn.textContent = '✎ Геометрия';
+        pop.appendChild(styleBtn); pop.appendChild(attrBtn); pop.appendChild(geomBtn);
         menuWrap.appendChild(kebab); menuWrap.appendChild(pop);
         head.appendChild(menuWrap);
+        if (editingGeom) kebab.classList.add('active');
 
         kebab.addEventListener('click', function (e) {
           e.stopPropagation();
@@ -4977,6 +5207,10 @@
         attrBtn.addEventListener('click', function () {
           if (window.__gisAttr) window.__gisAttr.open('gisup:' + L.id);
           else toast('Таблица атрибутов недоступна', true);
+        });
+        geomBtn.addEventListener('click', function () {
+          var active = gupEdit.active && gupEdit.layer && gupEdit.layer.id === L.id;
+          setGupEdit(L, !active);
         });
         var colorInput = head.querySelector('[data-a="color"]');
         if (colorInput) {
