@@ -219,6 +219,15 @@
       -webkit-appearance: auto !important; appearance: auto !important;
       margin: 0 !important; width: 12px !important; height: 12px !important;
       min-width: 12px !important; min-height: 12px !important; transform: none !important; }
+    /* Числовое поле (буфер в метрах) в тулбаре — компактно, в стиле chk. */
+    .gis-toolbar label.gis-toolbar__num { display: inline-flex; align-items: center; gap: 4px;
+      font-size: 10px; color: #666; padding: 0 4px; user-select: none; line-height: 0.85; }
+    .gis-toolbar label.gis-toolbar__num > span { font-size: 10px; white-space: nowrap; }
+    .gis-toolbar label.gis-toolbar__num input[type="number"] {
+      width: 46px !important; height: 22px !important; box-sizing: border-box !important;
+      padding: 0 4px !important; margin: 0 !important; font-size: 11px !important;
+      border: 1px solid #cfcfcf !important; border-radius: 4px !important;
+      -webkit-appearance: auto !important; appearance: auto !important; background: #fff !important; }
     /* Бейдж счётчика pending-изменений на кнопке "сохранить". */
     .gis-toolbar button[data-tool="save"] { position: relative; }
     .gis-toolbar button[data-tool="save"]:not(:disabled) { color: #2e7d32; }
@@ -621,6 +630,18 @@
              title="Если включено — внутренний кусок выреза становится новым полем. Если выключено — удаляется.">
         <input type="checkbox" id="gis-keep-cutout" checked>
         <span>Сохранять вырез</span>
+      </label>
+      <span class="sep"></span>
+      <button data-tool="buffer_line" type="button" title="Полилиния с буфером: нарисуйте линию — вокруг неё строится коридор заданной ширины. Его можно вырезать из полигонов или сохранить как новый полигон." disabled>〰</button>
+      <label class="gis-toolbar__num" id="gis-buffer-m-wrap"
+             title="Полуширина буфера в метрах — расстояние по каждую сторону линии (полная ширина коридора = 2×).">
+        <span>Буфер, м</span>
+        <input type="number" id="gis-buffer-m" min="0.5" step="0.5" value="10">
+      </label>
+      <label class="gis-toolbar__chk" id="gis-buffer-cut-wrap"
+             title="Вкл — коридор буфера вычитается из полигонов, которые он пересекает. Выкл — коридор сохраняется как новый полигон.">
+        <input type="checkbox" id="gis-buffer-cut" checked>
+        <span>Вырезать из полигонов</span>
       </label>
       <span class="sep"></span>
       <button data-tool="trash" type="button" title="Удалить выбранное (Del)" disabled>🗑</button>
@@ -1623,6 +1644,7 @@
       } else {
         cancelSplit();
         cancelRingCut();
+        cancelBuffer();
         clearFarmlandDrawAll();
         flProps = {};
         flPending = { creates: [], updates: new Map(), attrUpdates: new Map(), deletes: new Set() };
@@ -1989,6 +2011,7 @@
       } else {
         cancelSplit();
         cancelRingCut();
+        cancelBuffer();
         if (drawAdded) { try { draw.deleteAll(); } catch (_) {} try { map.removeControl(draw); } catch (_) {} drawAdded = false; }
         persistedDrawIds.clear();
         if (hint) hint.textContent = 'Включите редактирование «Мои поля» в левом меню.';
@@ -2188,12 +2211,17 @@
           return;
         }
         if (tool === 'split') {
-          cancelRingCut();
+          cancelRingCut(); cancelBuffer();
           startSplitFlow();
           return;
         }
+        if (tool === 'buffer_line') {
+          cancelSplit(); cancelRingCut();
+          startBufferFlow();
+          return;
+        }
         if (tool === 'ring_cut') {
-          cancelSplit();
+          cancelSplit(); cancelBuffer();
           startRingCutFlow();
           return;
         }
@@ -2204,7 +2232,7 @@
           draw_point: 'draw_point',
         };
         var mode = modeMap[tool];
-        if (mode) { cancelSplit(); cancelRingCut(); try { draw.changeMode(mode); } catch (_) {} }
+        if (mode) { cancelSplit(); cancelRingCut(); cancelBuffer(); try { draw.changeMode(mode); } catch (_) {} }
       });
     });
 
@@ -2712,43 +2740,54 @@
       return false;
     }
 
-    /* Обрезка нового полигона по границам соседних полей (userfieldsFC).
-       Для каждого пересекаемого соседа вычитаем его из создаваемого
-       полигона (turf.difference). Возвращает { geometry, clipped }.
-       geometry === null означает, что новый полигон полностью накрыт
-       соседями и сохранять нечего. */
-    function clipPolygonByNeighbors(geometry, excludeId) {
-      if (!geometry || typeof turf.difference !== 'function') {
+    /* Вычесть из geometry все полигоны-соседи (turf.difference).
+       ── Единое ядро обрезки для «Мои поля» / ЗСН / загруженных слоёв. ──
+       Раньше обрезка «молча не срабатывала», потому что была завязана на
+       turf.booleanIntersects как гейт — он даёт ложноотрицательные для
+       MultiPolygon и касающихся полигонов. Теперь считаем difference
+       напрямую и определяем факт обрезки по РЕАЛЬНОМУ уменьшению площади.
+       turf@7 difference принимает FeatureCollection; v6 — два аргумента —
+       поддерживаем оба. Возвращает { geometry, clipped }; geometry === null
+       означает полное перекрытие (сохранять нечего). */
+    function subtractNeighbors(geometry, neighbors, excludeId) {
+      if (!geometry || typeof turf.difference !== 'function' || !neighbors) {
         return { geometry: geometry, clipped: false };
       }
       var current = { type: 'Feature', properties: {}, geometry: geometry };
       var clipped = false;
-      for (var i = 0; i < userfieldsFC.features.length; i++) {
-        var nb = userfieldsFC.features[i];
+      for (var i = 0; i < neighbors.length; i++) {
+        var nb = neighbors[i];
         if (!nb || !nb.geometry) continue;
         var t = nb.geometry.type;
         if (t !== 'Polygon' && t !== 'MultiPolygon') continue;
-        if (excludeId != null && String(nb.id) === String(excludeId)) continue;
+        if (excludeId != null && nb.id != null && String(nb.id) === String(excludeId)) continue;
 
-        var overlaps = true;
-        try {
-          if (typeof turf.booleanIntersects === 'function') {
-            overlaps = !!turf.booleanIntersects(current, nb);
-          }
-        } catch (eo) { overlaps = true; }
-        if (!overlaps) continue;
+        var beforeA = 0;
+        try { beforeA = turf.area(current); } catch (_) {}
 
-        var diff, ok = false;
-        try { diff = turf.difference(turf.featureCollection([current, nb])); ok = true; }
+        var diff, threw = false;
+        try { diff = turf.difference(turf.featureCollection([current, nb])); }
         catch (e1) {
-          try { diff = turf.difference(current, nb); ok = true; }
-          catch (e2) { ok = false; }
+          try { diff = turf.difference(current, nb); }
+          catch (e2) { threw = true; }
         }
-        if (!ok) continue;
+        if (threw) continue;                 /* обе сигнатуры упали — пропуск */
         if (diff === null) { return { geometry: null, clipped: true }; }
-        if (diff && diff.geometry) { current = diff; clipped = true; }
+        if (!diff || !diff.geometry) continue;
+
+        var afterA = beforeA;
+        try { afterA = turf.area(diff); } catch (_) {}
+        /* Реальная обрезка только если площадь заметно уменьшилась
+           (иначе полигоны лишь касаются — не трогаем, чтобы не плодить
+           ложный тост «обрезано» и не портить топологию). */
+        if (afterA < beforeA - 0.01) { current = diff; clipped = true; }
       }
       return { geometry: current.geometry, clipped: clipped };
+    }
+
+    /* Обрезка нового полигона по границам соседних полей (userfieldsFC). */
+    function clipPolygonByNeighbors(geometry, excludeId) {
+      return subtractNeighbors(geometry, userfieldsFC.features, excludeId);
     }
 
     /* Обрезка нового полигона ЗСН по соседним угодьям. В отличие от «Мои
@@ -2784,33 +2823,7 @@
         createNbs.forEach(function (c) {
           nbs.push({ type: 'Feature', properties: {}, geometry: c.geometry });
         });
-
-        var current = { type: 'Feature', properties: {}, geometry: geometry };
-        var clipped = false;
-        for (var i = 0; i < nbs.length; i++) {
-          var nb = nbs[i];
-          var tp = nb.geometry.type;
-          if (tp !== 'Polygon' && tp !== 'MultiPolygon') continue;
-
-          var overlaps = true;
-          try {
-            if (typeof turf.booleanIntersects === 'function') {
-              overlaps = !!turf.booleanIntersects(current, nb);
-            }
-          } catch (_) { overlaps = true; }
-          if (!overlaps) continue;
-
-          var diff, ok = false;
-          try { diff = turf.difference(turf.featureCollection([current, nb])); ok = true; }
-          catch (e1) {
-            try { diff = turf.difference(current, nb); ok = true; }
-            catch (e2) { ok = false; }
-          }
-          if (!ok) continue;
-          if (diff === null) { return { geometry: null, clipped: true }; }
-          if (diff && diff.geometry) { current = diff; clipped = true; }
-        }
-        return { geometry: current.geometry, clipped: clipped };
+        return subtractNeighbors(geometry, nbs, null);
       });
     }
 
@@ -2821,6 +2834,135 @@
       highlightTool('split');
       var h = document.getElementById('gis-toolbar-hint');
       if (h) h.textContent = '✂ Рисуй ещё · линия = разрез · петля = кольцо · ☞ для выхода.';
+    }
+
+    /* ─────────────────── Buffer-line tool (turf.buffer) ───────────────────
+       Пользователь рисует полилинию → вокруг неё строим буфер заданной
+       ширины (в метрах — полуширина по каждую сторону линии) → полигон.
+       Режим определяется чекбоксом «Вырезать из полигонов»:
+         • вкл  — коридор вычитается из полигонов активного слоя, которые он
+                  пересекает (переиспользуем applyHoleCut / applyHoleCutGup /
+                  runFarmlandCut — тот же конвейер, что и у ✂-выреза кольца;
+                  «Сохранять вырез» управляет тем, станет ли сам коридор
+                  новым объектом);
+         • выкл — коридор сохраняется как новый полигон-объект слоя.
+       Работает во всех режимах: «Мои поля», ЗСН, загруженный слой. */
+    var bufferState = null;   /* null | 'pick-line' */
+
+    function readBufferMeters() {
+      var el = document.getElementById('gis-buffer-m');
+      var v = el ? parseFloat(el.value) : NaN;
+      return (isFinite(v) && v > 0) ? v : NaN;
+    }
+    function startBufferFlow() {
+      if (typeof turf === 'undefined' || typeof turf.buffer !== 'function') {
+        toast('Не загружен turf.js — обновите страницу.', true);
+        return;
+      }
+      if (!(readBufferMeters() > 0)) { toast('Укажите ширину буфера в метрах (> 0).', true); return; }
+      bufferState = 'pick-line';
+      try { draw.changeMode('draw_line_string'); } catch (_) {}
+      highlightTool('buffer_line');
+      var hint = document.getElementById('gis-toolbar-hint');
+      if (hint) hint.textContent = '〰 Нарисуйте линию (2× клик — закончить). Буфер ' + readBufferMeters() + ' м.';
+    }
+    function cancelBuffer() { bufferState = null; }
+    function reenterBufferMode() {
+      bufferState = 'pick-line';
+      try { draw.changeMode('draw_line_string'); } catch (_) {}
+      highlightTool('buffer_line');
+      var h = document.getElementById('gis-toolbar-hint');
+      if (h) h.textContent = '〰 Рисуй ещё · буфер ' + (readBufferMeters() || '?') + ' м · ☞ для выхода.';
+    }
+
+    /* Построить буфер-полигон вокруг линии; Polygon/MultiPolygon или null. */
+    function buildLineBuffer(lineFeature, meters) {
+      var poly = null;
+      try { poly = turf.buffer(lineFeature, meters / 1000, { units: 'kilometers' }); }
+      catch (e) { console.error('[gis-buffer] buffer failed', e); return null; }
+      if (!poly || !poly.geometry) return null;
+      return poly;
+    }
+
+    /* Вырезать буфер-коридор из полигонов активного слоя (per-target
+       конвейер ✂). Возвращает число затронутых полигонов; -1 для ЗСН
+       (там вырез асинхронный). */
+    function applyBufferCut(bufPoly) {
+      if (gupEdit.active) {
+        var feats = [];
+        try { feats = (draw.getAll().features || []); } catch (_) {}
+        var gt = findPolygonsHitBy(bufPoly, feats);
+        var gn = 0;
+        gt.forEach(function (t) {
+          var did = t.feat.id, dp;
+          try { dp = draw.get(String(did)); } catch (_) { dp = null; }
+          if (applyHoleCutGup(did, dp || t.feat, bufPoly)) gn++;
+        });
+        return gn;
+      }
+      if (layerState.farmlands.editable) {
+        runFarmlandCut(bufPoly, null, bufPoly, false);
+        return -1;
+      }
+      var targets = findPolygonsHitBy(bufPoly);
+      var n = 0;
+      targets.forEach(function (t) {
+        var dp;
+        try { dp = draw.get(String(t.feat.id)); } catch (_) { dp = null; }
+        if (applyHoleCut(t.feat.id, t.idx, dp || t.feat, bufPoly)) n++;
+      });
+      return n;
+    }
+
+    /* Сохранить буфер как новый полигон-объект активного слоя. */
+    function createBufferObject(bufPoly) {
+      var polys = [];
+      try { polys = turf.flatten(bufPoly).features; } catch (_) { polys = [bufPoly]; }
+      var made = 0;
+      polys.forEach(function (p) {
+        if (!p || !p.geometry) return;
+        var added;
+        try { added = drawAddSilent({ type: 'Feature', properties: {}, geometry: p.geometry }); }
+        catch (_) { added = null; }
+        var id = (added && added[0]);
+        if (id == null) return;
+        if (gupEdit.active) { gupQueueCreate(id, p.geometry, true); }
+        else if (layerState.farmlands.editable) { queueFarmlandCreate(p.geometry, { crop_type: 'arable' }, id); }
+        else { queueCreate(id, p.geometry); }
+        made++;
+      });
+      return made;
+    }
+
+    function finishBufferLine(lineFeature) {
+      var draftId = lineFeature.id;
+      cancelBuffer();
+      try { draw.delete(draftId); } catch (_) {}
+
+      var meters = readBufferMeters();
+      if (!(meters > 0)) { toast('Укажите ширину буфера в метрах (> 0).', true); setTimeout(reenterBufferMode, 0); return; }
+
+      var bufPoly = buildLineBuffer(lineFeature, meters);
+      if (!bufPoly) { toast('Не удалось построить буфер по линии.', true); setTimeout(reenterBufferMode, 0); return; }
+
+      var cutEl = document.getElementById('gis-buffer-cut');
+      var cutOn = !!(cutEl && cutEl.checked);
+
+      if (cutOn) {
+        var cut = applyBufferCut(bufPoly);
+        if (cut === -1) {
+          toast('Коридор буфера (' + meters + ' м) вырезается из угодий · 💾 для сохранения');
+        } else if (cut > 0) {
+          toast('Коридор буфера (' + meters + ' м) вырезан из ' + cut + ' полигон(ов) · 💾 для сохранения');
+        } else {
+          toast('Буфер не пересёк полигоны. Снимите «Вырезать из полигонов», чтобы сохранить его как объект.', true);
+        }
+      } else {
+        var made = createBufferObject(bufPoly);
+        if (made) toast('Буфер-полигон (' + meters + ' м) добавлен в очередь · 💾 для сохранения');
+        else toast('Не удалось создать буфер-полигон.', true);
+      }
+      setTimeout(reenterBufferMode, 0);
     }
 
     /* ──────────────────────── Approx area for hint ──────────────────────── */
@@ -2922,6 +3064,7 @@
       if (!layer) { toast('Включите редактирование слоя для выделения.', true); return; }
       cancelSplit();
       cancelRingCut();
+      cancelBuffer();
       pickSelectState = false;
       lassoSelectState = true;
       try { draw.changeMode('draw_polygon'); } catch (_) {}
@@ -2936,6 +3079,7 @@
       if (!layer) { toast('Включите редактирование слоя для выделения.', true); return; }
       cancelSplit();
       cancelRingCut();
+      cancelBuffer();
       lassoSelectState = false;
       pickSelectState = true;
       try { draw.changeMode('simple_select'); } catch (_) {}
@@ -3251,9 +3395,33 @@
          вырез (✂) и создание — без snap к чужим слоям (userfields/farmland). */
       if (gupEdit.active) {
         if (splitState === 'pick-line' && f.geometry.type === 'LineString') { finishSplit(f); return; }
+        if (bufferState === 'pick-line' && f.geometry.type === 'LineString') { finishBufferLine(f); return; }
         if (ringCutState === 'draw-hole' && f.geometry.type === 'Polygon') { finishRingCut(f); return; }
-        gupQueueCreate(f.id, f.geometry);
         var gnm = gupDrawTool(gupEdit.kind);
+        /* «Обрезать по границе»: вычитаем прочие объекты этого же слоя
+           (соседи лежат в draw — берём все, кроме создаваемого). */
+        var gClipEl = document.getElementById('gis-clip-overlap');
+        if (gClipEl && gClipEl.checked && f.geometry.type === 'Polygon') {
+          var others = [];
+          try {
+            others = (draw.getAll().features || []).filter(function (df) {
+              return String(df.id) !== String(f.id);
+            });
+          } catch (_) {}
+          var gres = subtractNeighbors(f.geometry, others, f.id);
+          if (gres.geometry === null) {
+            toast('Полигон полностью перекрыт объектами слоя — нечего сохранять.', true);
+            try { draw.delete(f.id); } catch (_) {}
+            setTimeout(function () { try { draw.changeMode(gnm); } catch (_) {} highlightTool(gnm); }, 0);
+            return;
+          }
+          if (gres.clipped) {
+            f.geometry = gres.geometry;
+            try { drawAddSilent({ type: 'Feature', id: String(f.id), properties: {}, geometry: f.geometry }); } catch (_) {}
+            toast('Полигон обрезан по границе объектов слоя.');
+          }
+        }
+        gupQueueCreate(f.id, f.geometry);
         setTimeout(function () { try { draw.changeMode(gnm); } catch (_) {} highlightTool(gnm); }, 0);
         return;
       }
@@ -3271,6 +3439,11 @@
       /* Сценарий «разрезка» — поглощаем линию, нарисованную в режиме split. */
       if (splitState === 'pick-line' && f.geometry.type === 'LineString') {
         finishSplit(f);
+        return;
+      }
+      /* Сценарий «буфер-линия» — поглощаем линию, строим буфер-коридор. */
+      if (bufferState === 'pick-line' && f.geometry.type === 'LineString') {
+        finishBufferLine(f);
         return;
       }
       /* Сценарий «вырезать кольцо» — поглощаем нарисованный полигон. */
@@ -5032,7 +5205,7 @@
           if (t === 'save' || t === 'discard') return;
           var isDraw = drawTools.indexOf(t) >= 0;
           var keep = t === 'select' || t === 'trash' ||
-                     (t === 'split' && polygonal) ||
+                     ((t === 'split' || t === 'buffer_line') && polygonal) ||
                      (isDraw && (kind === 'other' || t === allow));
           b.disabled = !keep;
           if (!keep) b.classList.remove('active');
@@ -5111,6 +5284,7 @@
               return;
             }
           }
+          cancelSplit(); cancelRingCut(); cancelBuffer();
           gupResetPending();
           gupEdit.active = false;
           gupEdit.reload = null;
