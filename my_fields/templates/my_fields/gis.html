@@ -130,6 +130,23 @@
       box-shadow: 0 0 0 1px #2e7d32 inset;
     }
 
+    /* Kebab-меню слоя (⋮): «Раскраска» и «Таблица атрибутов». */
+    .gis-layer__menu { position: relative; display: inline-flex; margin-left: auto; }
+    .gis-layer__kebab { font-size: 18px; line-height: 1; }
+    .gis-layer__menu-pop {
+      position: absolute; top: calc(100% + 4px); right: 0; z-index: 40;
+      background: #fff; border: 1px solid #e0e0e0; border-radius: 6px;
+      box-shadow: 0 4px 16px rgba(0,0,0,.15); padding: 4px; min-width: 180px;
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    .gis-layer__menu-pop[hidden] { display: none; }
+    .gis-layer__menu-item {
+      display: block; width: 100%; text-align: left; border: none; background: transparent;
+      padding: 7px 10px; border-radius: 4px; font-size: 13px; color: #333; cursor: pointer;
+    }
+    .gis-layer__menu-item:hover { background: #f1f8e9; color: #1b5e20; }
+    .gis-layer__menu-item.active { background: #e8f5e9; color: #2e7d32; font-weight: 600; }
+
     .gis-info-empty { padding: 20px 8px; font-size: 12px; color: #999; text-align: center; line-height: 1.5; }
     .gis-info-card h4 { margin: 0 0 8px; font-size: 14px; color: #2e7d32; }
     .gis-info-card dl { margin: 0; display: grid; grid-template-columns: 110px 1fr; gap: 4px 8px; font-size: 12px; }
@@ -4698,7 +4715,10 @@
 
         var fill = 'gisup-fill-' + L.id, ol = 'gisup-ol-' + L.id,
             line = 'gisup-line-' + L.id, pt = 'gisup-pt-' + L.id;
-        var col = styleColorExpr(L);
+        /* Слои всегда добавляем со СПЛОШНЫМ цветом (гарантированно валидный
+           paint) — тематическую раскраску накатываем следом через applyStyle,
+           чтобы битое style-выражение не «съедало» весь слой. */
+        var col = L.color;
         var k = L.geom_kind, added = [];
         if (k === 'polygon' || k === 'other') {
           map.addLayer({ id: fill, type: 'fill', source: sid, 'source-layer': L.table_name,
@@ -4730,6 +4750,7 @@
           map.on('mouseenter', lid, function () { map.getCanvas().style.cursor = 'pointer'; });
           map.on('mouseleave', lid, function () { map.getCanvas().style.cursor = ''; });
         });
+        applyStyle(L);  /* best-effort тематическая раскраска (см. applyStyle) */
       }
 
       function setVisible(L, vis) {
@@ -4745,12 +4766,18 @@
         if (overrideStyle !== undefined) L.style = overrideStyle;
         var col = styleColorExpr(L);
         if (overrideStyle !== undefined) L.style = saved;
+        var prop = { fill: 'fill-color', line: 'line-color', circle: 'circle-color' };
         (L._layerIds || []).forEach(function (lid) {
           var lyr = map.getLayer(lid);
-          if (!lyr) return;
-          if (lyr.type === 'fill') map.setPaintProperty(lid, 'fill-color', col);
-          else if (lyr.type === 'line') map.setPaintProperty(lid, 'line-color', col);
-          else if (lyr.type === 'circle') map.setPaintProperty(lid, 'circle-color', col);
+          if (!lyr || !prop[lyr.type]) return;
+          try {
+            map.setPaintProperty(lid, prop[lyr.type], col);
+          } catch (e) {
+            /* Невалидное style-выражение не должно ронять слой — откат на
+               сплошной цвет. */
+            if (window.console) console.warn('GIS: некорректный стиль слоя', L && L.id, e);
+            try { map.setPaintProperty(lid, prop[lyr.type], L.color); } catch (_) {}
+          }
         });
       }
       function removeFromMap(L) {
@@ -4894,20 +4921,43 @@
           '<button class="gis-layer__btn' + (vis ? ' active' : '') + '" data-a="vis" type="button" title="Видимость">👁</button>';
         var nameSpan = makeNameSpan(L);
         head.appendChild(nameSpan);
-        var styleBtn = document.createElement('button');
-        styleBtn.className = 'gis-layer__btn'; styleBtn.type = 'button';
-        styleBtn.setAttribute('data-a', 'style'); styleBtn.title = 'Раскраска слоя по атрибуту';
-        styleBtn.textContent = '🎨';
-        if (L.style && L.style.mode && L.style.mode !== 'single') styleBtn.classList.add('active');
-        var attrBtn = document.createElement('button');
-        attrBtn.className = 'gis-layer__btn'; attrBtn.type = 'button';
-        attrBtn.setAttribute('data-a', 'attrs'); attrBtn.title = 'Таблица атрибутов (просмотр/правка)';
-        attrBtn.textContent = '▤';
         var zoomBtn = document.createElement('button');
         zoomBtn.className = 'gis-layer__btn'; zoomBtn.type = 'button';
         zoomBtn.setAttribute('data-a', 'zoom'); zoomBtn.title = 'Приблизить к слою';
         zoomBtn.textContent = '⤢';
-        head.appendChild(styleBtn); head.appendChild(attrBtn); head.appendChild(zoomBtn);
+        head.appendChild(zoomBtn);
+
+        /* «Раскраска» и «Таблица атрибутов» спрятаны в kebab-меню (⋮)
+           в правой части плашки слоя, чтобы не загромождать строку. */
+        var themed = !!(L.style && L.style.mode && L.style.mode !== 'single');
+        var menuWrap = document.createElement('div');
+        menuWrap.className = 'gis-layer__menu';
+        var kebab = document.createElement('button');
+        kebab.className = 'gis-layer__btn gis-layer__kebab' + (themed ? ' active' : '');
+        kebab.type = 'button'; kebab.title = 'Ещё'; kebab.textContent = '⋮';
+        var pop = document.createElement('div');
+        pop.className = 'gis-layer__menu-pop'; pop.hidden = true;
+        var styleBtn = document.createElement('button');
+        styleBtn.className = 'gis-layer__menu-item' + (themed ? ' active' : '');
+        styleBtn.type = 'button'; styleBtn.setAttribute('data-a', 'style');
+        styleBtn.textContent = '🎨 Раскраска';
+        var attrBtn = document.createElement('button');
+        attrBtn.className = 'gis-layer__menu-item'; attrBtn.type = 'button';
+        attrBtn.setAttribute('data-a', 'attrs');
+        attrBtn.textContent = '▤ Таблица атрибутов';
+        pop.appendChild(styleBtn); pop.appendChild(attrBtn);
+        menuWrap.appendChild(kebab); menuWrap.appendChild(pop);
+        head.appendChild(menuWrap);
+
+        kebab.addEventListener('click', function (e) {
+          e.stopPropagation();
+          /* Закрыть остальные открытые меню. */
+          listEl.querySelectorAll('.gis-layer__menu-pop').forEach(function (p) {
+            if (p !== pop) p.hidden = true;
+          });
+          pop.hidden = !pop.hidden;
+        });
+        pop.addEventListener('click', function () { pop.hidden = true; });
 
         var meta = document.createElement('div');
         meta.className = 'gis-layer__meta';
@@ -5257,13 +5307,25 @@
           .then(function (j) {
             L.style = (j.layer && j.layer.style) || s;
             applyStyle(L);
-            var btn = document.querySelector('#gisup-row-' + L.id + ' [data-a="style"]');
-            if (btn) btn.classList.toggle('active', L.style.mode && L.style.mode !== 'single');
+            var themed = !!(L.style.mode && L.style.mode !== 'single');
+            var row = document.getElementById('gisup-row-' + L.id);
+            if (row) {
+              var sb = row.querySelector('[data-a="style"]');
+              var kb = row.querySelector('.gis-layer__kebab');
+              if (sb) sb.classList.toggle('active', themed);
+              if (kb) kb.classList.toggle('active', themed);
+            }
             toast('Раскраска сохранена');
             closeStyleModal(false);
           })
           .catch(function (e) { toast((e && e.detail) || 'Не удалось сохранить раскраску', true); })
           .then(function () { styleApplyBtn.disabled = false; });
+      });
+
+      /* Закрыть все kebab-меню слоёв при клике вне их. */
+      document.addEventListener('click', function (e) {
+        if (e.target.closest && e.target.closest('.gis-layer__menu')) return;
+        listEl.querySelectorAll('.gis-layer__menu-pop').forEach(function (p) { p.hidden = true; });
       });
 
       /* ── Загрузка существующих слоёв при старте ── */
