@@ -358,6 +358,15 @@ class GisLayer(models.Model):
     color = models.CharField(
         max_length=7, default='#e91e63', verbose_name='Цвет',
     )
+    # Тематическая раскраска слоя. Пусто / {'mode': 'single'} — единый
+    # ``color``. Иначе:
+    #   {'mode': 'categorical', 'field': <db>, 'categories': [{value, color}],
+    #    'other_color': '#rrggbb'}
+    #   {'mode': 'graduated', 'field': <db>, 'stops': [{value, color}, ...]}
+    # Значения полей — из ``attributes[*].db``; цвета — ``#rrggbb``.
+    style = models.JSONField(
+        default=dict, blank=True, verbose_name='Стиль (раскраска)',
+    )
     sort_order = models.IntegerField(
         default=0, verbose_name='Порядок',
         help_text='Меньше — выше в списке слоёв и на карте.',

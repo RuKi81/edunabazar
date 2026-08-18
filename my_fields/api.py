@@ -755,6 +755,84 @@ def _normalize_hex_color(value: Any) -> str | None:
     return None
 
 
+# Режимы тематической раскраски и лимиты (защита от «тяжёлых» стилей).
+_STYLE_MODES = frozenset({'single', 'categorical', 'graduated'})
+_MAX_CATEGORIES = 60
+_MAX_STOPS = 12
+
+
+def _normalize_categorical(value: Any, field: str):
+    """Ветка ``categorical`` для :func:`_normalize_style`."""
+    raw = value.get('categories')
+    if not isinstance(raw, list) or not raw:
+        return None, 'categories пуст'
+    if len(raw) > _MAX_CATEGORIES:
+        return None, f'слишком много категорий (>{_MAX_CATEGORIES})'
+    cats = []
+    for item in raw:
+        if not isinstance(item, dict):
+            return None, 'категория должна быть объектом'
+        color = _normalize_hex_color(item.get('color'))
+        if color is None:
+            return None, 'некорректный цвет категории'
+        # value приводим к строке (сопоставление в MVT — по строке).
+        cats.append({'value': str(item.get('value', '')), 'color': color})
+    other = _normalize_hex_color(value.get('other_color')) or '#cccccc'
+    return {'mode': 'categorical', 'field': field,
+            'categories': cats, 'other_color': other}, None
+
+
+def _normalize_graduated(value: Any, field: str):
+    """Ветка ``graduated`` для :func:`_normalize_style`."""
+    raw = value.get('stops')
+    if not isinstance(raw, list) or len(raw) < 2:
+        return None, 'нужно минимум 2 stops'
+    if len(raw) > _MAX_STOPS:
+        return None, f'слишком много stops (>{_MAX_STOPS})'
+    stops = []
+    for item in raw:
+        if not isinstance(item, dict):
+            return None, 'stop должен быть объектом'
+        try:
+            num = float(item.get('value'))
+        except (TypeError, ValueError):
+            return None, 'value stop должен быть числом'
+        color = _normalize_hex_color(item.get('color'))
+        if color is None:
+            return None, 'некорректный цвет stop'
+        stops.append({'value': num, 'color': color})
+    stops.sort(key=lambda s: s['value'])
+    return {'mode': 'graduated', 'field': field, 'stops': stops}, None
+
+
+def _normalize_style(value: Any, layer: GisLayer):
+    """Валидировать и нормализовать style-конфиг раскраски слоя.
+
+    Возвращает ``(style_dict, None)`` при успехе или ``(None, error_msg)``.
+    ``single`` (или пустой) → ``{'mode': 'single'}``. Для categorical/graduated
+    поле должно присутствовать в ``layer.attributes``.
+    """
+    if value in (None, '', {}):
+        return {'mode': 'single'}, None
+    if not isinstance(value, dict):
+        return None, 'style должен быть объектом'
+
+    mode = value.get('mode', 'single')
+    if mode not in _STYLE_MODES:
+        return None, 'неизвестный mode'
+    if mode == 'single':
+        return {'mode': 'single'}, None
+
+    field = value.get('field')
+    valid_fields = {a.get('db') for a in (layer.attributes or [])}
+    if not isinstance(field, str) or field not in valid_fields:
+        return None, 'field не найден среди атрибутов слоя'
+
+    if mode == 'categorical':
+        return _normalize_categorical(value, field)
+    return _normalize_graduated(value, field)
+
+
 def _require_gis_authenticated(request: HttpRequest):
     """None если есть Django-сессия, иначе 401 (как раньше)."""
     if not request.user.is_authenticated:
@@ -809,6 +887,7 @@ def _gis_layer_to_dict(layer: GisLayer) -> dict:
         'attributes': layer.attributes,
         'extent': layer.extent,
         'color': layer.color,
+        'style': layer.style or {},
         'sort_order': layer.sort_order,
         'created_at': layer.created_at.isoformat(),
         'tiles_url': f'/me/gis/api/layers/{layer.pk}/tiles/{{z}}/{{x}}/{{y}}.pbf',
@@ -929,10 +1008,20 @@ def gis_layer_detail(request: HttpRequest, pk: int) -> JsonResponse:
         layer.color = color
         update_fields.append('color')
 
+    if 'style' in data:
+        style, err = _normalize_style(data.get('style'), layer)
+        if err:
+            return JsonResponse(
+                {'ok': False, 'error': 'invalid_style', 'detail': err},
+                status=400,
+            )
+        layer.style = style
+        update_fields.append('style')
+
     if not update_fields:
         return JsonResponse(
             {'ok': False, 'error': 'nothing_to_update',
-             'detail': 'Не передано ни title, ни color.'},
+             'detail': 'Не передано ни title, ни color, ни style.'},
             status=400,
         )
 
@@ -974,6 +1063,38 @@ def gis_layer_features(request: HttpRequest, pk: int) -> JsonResponse:
         'limit': limit,
         'offset': offset,
     })
+
+
+@csrf_exempt
+@require_http_methods(['GET'])
+def gis_layer_field_stats(request: HttpRequest, pk: int) -> JsonResponse:
+    """GET — статистика по колонке слоя для построения раскраски.
+
+    ``?field=<db>`` — обязателен. Для числовых полей вернёт min/max, для
+    остальных — уникальные значения (по частоте). Уровень доступа ``view``.
+    """
+    gate = _require_gis_access(request, level='view', pk=pk)
+    if gate:
+        return gate
+    layer = get_object_or_404(GisLayer, pk=pk)
+
+    field = request.GET.get('field', '')
+    if not field:
+        return JsonResponse(
+            {'ok': False, 'error': 'no_field',
+             'detail': 'Укажите параметр field.'},
+            status=400,
+        )
+
+    from .services.shp_import import field_stats
+    stats = field_stats(layer, field)
+    if stats is None:
+        return JsonResponse(
+            {'ok': False, 'error': 'unknown_field',
+             'detail': 'Поле не найдено среди атрибутов слоя.'},
+            status=404,
+        )
+    return JsonResponse({'ok': True, 'stats': stats})
 
 
 @csrf_exempt

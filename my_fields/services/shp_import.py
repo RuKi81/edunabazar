@@ -420,6 +420,54 @@ def update_feature(layer, fid: int, props: dict) -> int:
         return cur.rowcount
 
 
+_NUMERIC_PG_TYPES = frozenset({'integer', 'bigint', 'double precision'})
+
+
+def field_stats(layer, field: str, distinct_limit: int = 60):
+    """Статистика по колонке слоя для построения тематической раскраски.
+
+    Для числовых колонок → ``{'numeric': True, 'min', 'max', 'count'}``.
+    Для остальных → ``{'numeric': False, 'values': [{'value', 'count'}],
+    'truncated': bool}`` (уникальные значения, отсортированы по частоте).
+
+    Возвращает ``None`` если ``field`` не является атрибутом слоя.
+    """
+    types = _attr_db_types(layer)
+    pg_type = types.get(field)
+    if pg_type is None:
+        return None
+
+    table = sql.Identifier(layer.table_name)
+    col = sql.Identifier(field)
+    numeric = pg_type in _NUMERIC_PG_TYPES
+
+    with connection.cursor() as cur:
+        if numeric:
+            cur.execute(sql.SQL(
+                'SELECT min({c}), max({c}), count({c}) FROM {t}'
+            ).format(c=col, t=table))
+            lo, hi, cnt = cur.fetchone()
+            return {
+                'field': field, 'type': pg_type, 'numeric': True,
+                'min': None if lo is None else float(lo),
+                'max': None if hi is None else float(hi),
+                'count': int(cnt or 0),
+            }
+        limit = max(1, min(int(distinct_limit), 500))
+        cur.execute(sql.SQL(
+            'SELECT {c}::text AS v, count(*) AS n FROM {t} '
+            'GROUP BY {c} ORDER BY n DESC, v LIMIT %s'
+        ).format(c=col, t=table), [limit + 1])
+        rows = cur.fetchall()
+
+    truncated = len(rows) > limit
+    values = [{'value': r[0], 'count': int(r[1])} for r in rows[:limit]]
+    return {
+        'field': field, 'type': pg_type, 'numeric': False,
+        'values': values, 'truncated': truncated,
+    }
+
+
 # ── Вспомогательное ─────────────────────────────────────────────────────
 
 def _field_value(feat, ogr_name):

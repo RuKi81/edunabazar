@@ -260,7 +260,32 @@
     .gis-modal .btn-primary:hover { background: #1b5e20; }
     .gis-modal .btn-secondary { background: #eee; color: #333; border: none;
       border-radius: 5px; padding: 8px 16px; cursor: pointer; font-size: 13px; }
-    .gis-modal__note { font-size: 12px; color: #777; margin: 0 0 10px; line-height: 1.4; }
+    .gis-modal__note { font-size: 12px; color: #777; margin: 10px 0 0; line-height: 1.4; }
+
+    /* Редактор тематической раскраски слоя. */
+    .gis-style-controls { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+    .gis-style-controls label { font-size: 12px; color: #555; font-weight: 500;
+      display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 140px; }
+    .gis-style-controls select.browser-default {
+      display: block; width: 100%; height: 34px; padding: 4px 8px;
+      border: 1px solid #ccc; border-radius: 5px; font-size: 13px; background: #fff; }
+    .gis-style-editor { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
+    .gis-style-editor:empty { display: none; }
+    .gis-style-item { display: grid; grid-template-columns: 26px 1fr auto; align-items: center; gap: 8px; }
+    .gis-style-item input[type="color"] {
+      width: 24px; height: 24px; padding: 0; border: 1px solid rgba(0,0,0,.25); border-radius: 4px;
+      -webkit-appearance: none; appearance: none; cursor: pointer; background: none; }
+    .gis-style-item input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+    .gis-style-item input[type="color"]::-webkit-color-swatch { border: none; border-radius: 3px; }
+    .gis-style-item__label { font-size: 12px; color: #333; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .gis-style-item__label small { color: #999; }
+    .gis-style-item input[type="number"] {
+      width: 92px; height: 30px; padding: 3px 6px; border: 1px solid #ccc; border-radius: 4px; font-size: 12px; }
+    .gis-style-item .gis-style-item__del {
+      border: none; background: transparent; cursor: pointer; color: #c62828; font-size: 14px; padding: 2px 6px; }
+    .gis-style-addstop { align-self: flex-start; border: 1px dashed #a5d6a7; background: #f1f8e9;
+      color: #2e7d32; border-radius: 5px; padding: 5px 10px; font-size: 12px; cursor: pointer; margin-top: 4px; }
+    .gis-style-addstop:hover { background: #e8f5e9; }
 
     /* Хлебные крошки — наверху левого сайдбара, inline. */
     .gis-topbar {
@@ -607,6 +632,36 @@
         <div class="gis-modal__foot">
           <button type="button" class="btn-secondary" data-attr-close>Отмена</button>
           <button type="button" class="btn-primary" id="gis-attrmodal-apply">Применить</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="gis-modal" id="gis-stylemodal" hidden>
+      <div class="gis-modal__backdrop" data-style-close></div>
+      <div class="gis-modal__box" role="dialog" aria-modal="true" aria-labelledby="gis-stylemodal-title">
+        <div class="gis-modal__head">
+          <span id="gis-stylemodal-title">Раскраска слоя</span>
+          <button type="button" class="gis-modal__x" data-style-close title="Закрыть">✕</button>
+        </div>
+        <div class="gis-modal__body">
+          <div class="gis-style-controls">
+            <label>Тип раскраски
+              <select id="gis-style-mode" class="browser-default">
+                <option value="single">Единый цвет</option>
+                <option value="categorical">По категориям</option>
+                <option value="graduated">Градиент (число)</option>
+              </select>
+            </label>
+            <label id="gis-style-field-wrap" hidden>Поле
+              <select id="gis-style-field" class="browser-default"></select>
+            </label>
+          </div>
+          <div id="gis-style-editor" class="gis-style-editor"></div>
+          <p id="gis-style-hint" class="gis-modal__note"></p>
+        </div>
+        <div class="gis-modal__foot">
+          <button type="button" class="btn-secondary" data-style-close>Отмена</button>
+          <button type="button" class="btn-primary" id="gis-stylemodal-apply">Сохранить</button>
         </div>
       </div>
     </div>
@@ -4597,6 +4652,38 @@
           '</table></div>';
       }
 
+      /* Построить MapLibre-выражение цвета из L.style. Единый цвет / нет
+         стиля → просто L.color (строка). Категории → match по строковому
+         значению поля; градиент → interpolate по числовому значению. */
+      function styleColorExpr(L) {
+        var s = L.style || {};
+        var mode = s.mode || 'single';
+        if (mode === 'categorical' && s.field &&
+            Array.isArray(s.categories) && s.categories.length) {
+          var expr = ['match', ['to-string', ['get', s.field]]];
+          s.categories.forEach(function (c) {
+            expr.push(String(c.value), c.color);
+          });
+          expr.push(s.other_color || '#cccccc');
+          return expr;
+        }
+        if (mode === 'graduated' && s.field &&
+            Array.isArray(s.stops) && s.stops.length >= 2) {
+          var stops = s.stops.slice().sort(function (a, b) { return a.value - b.value; });
+          var prev = -Infinity, ok = true;
+          for (var i = 0; i < stops.length; i++) {
+            if (stops[i].value <= prev) { ok = false; break; }
+            prev = stops[i].value;
+          }
+          if (ok) {
+            var ex = ['interpolate', ['linear'], ['to-number', ['get', s.field]]];
+            stops.forEach(function (st) { ex.push(st.value, st.color); });
+            return ex;
+          }
+        }
+        return L.color;
+      }
+
       function addLayerToMap(L) {
         var sid = srcId(L.id);
         if (map.getSource(sid)) return;
@@ -4611,26 +4698,27 @@
 
         var fill = 'gisup-fill-' + L.id, ol = 'gisup-ol-' + L.id,
             line = 'gisup-line-' + L.id, pt = 'gisup-pt-' + L.id;
+        var col = styleColorExpr(L);
         var k = L.geom_kind, added = [];
         if (k === 'polygon' || k === 'other') {
           map.addLayer({ id: fill, type: 'fill', source: sid, 'source-layer': L.table_name,
             filter: ['==', '$type', 'Polygon'],
-            paint: { 'fill-color': L.color, 'fill-opacity': 0.35 } });
+            paint: { 'fill-color': col, 'fill-opacity': 0.35 } });
           map.addLayer({ id: ol, type: 'line', source: sid, 'source-layer': L.table_name,
             filter: ['==', '$type', 'Polygon'],
-            paint: { 'line-color': L.color, 'line-width': 1.2 } });
+            paint: { 'line-color': col, 'line-width': 1.2 } });
           added.push(fill, ol);
         }
         if (k === 'line' || k === 'other') {
           map.addLayer({ id: line, type: 'line', source: sid, 'source-layer': L.table_name,
             filter: ['==', '$type', 'LineString'],
-            paint: { 'line-color': L.color, 'line-width': 2 } });
+            paint: { 'line-color': col, 'line-width': 2 } });
           added.push(line);
         }
         if (k === 'point' || k === 'other') {
           map.addLayer({ id: pt, type: 'circle', source: sid, 'source-layer': L.table_name,
             filter: ['==', '$type', 'Point'],
-            paint: { 'circle-color': L.color, 'circle-radius': 4,
+            paint: { 'circle-color': col, 'circle-radius': 4,
                      'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } });
           added.push(pt);
         }
@@ -4649,15 +4737,20 @@
           if (map.getLayer(lid)) map.setLayoutProperty(lid, 'visibility', vis ? 'visible' : 'none');
         });
       }
-      /* Перекрасить все слои карты, относящиеся к L, в заданный цвет.
+      /* Перекрасить все слои карты, относящиеся к L, по текущему L.style
+         (или переданному override-стилю для живого предпросмотра).
          Тип paint-свойства зависит от типа слоя (fill/line/circle). */
-      function applyColor(L, color) {
+      function applyStyle(L, overrideStyle) {
+        var saved = L.style;
+        if (overrideStyle !== undefined) L.style = overrideStyle;
+        var col = styleColorExpr(L);
+        if (overrideStyle !== undefined) L.style = saved;
         (L._layerIds || []).forEach(function (lid) {
           var lyr = map.getLayer(lid);
           if (!lyr) return;
-          if (lyr.type === 'fill') map.setPaintProperty(lid, 'fill-color', color);
-          else if (lyr.type === 'line') map.setPaintProperty(lid, 'line-color', color);
-          else if (lyr.type === 'circle') map.setPaintProperty(lid, 'circle-color', color);
+          if (lyr.type === 'fill') map.setPaintProperty(lid, 'fill-color', col);
+          else if (lyr.type === 'line') map.setPaintProperty(lid, 'line-color', col);
+          else if (lyr.type === 'circle') map.setPaintProperty(lid, 'circle-color', col);
         });
       }
       function removeFromMap(L) {
@@ -4801,6 +4894,11 @@
           '<button class="gis-layer__btn' + (vis ? ' active' : '') + '" data-a="vis" type="button" title="Видимость">👁</button>';
         var nameSpan = makeNameSpan(L);
         head.appendChild(nameSpan);
+        var styleBtn = document.createElement('button');
+        styleBtn.className = 'gis-layer__btn'; styleBtn.type = 'button';
+        styleBtn.setAttribute('data-a', 'style'); styleBtn.title = 'Раскраска слоя по атрибуту';
+        styleBtn.textContent = '🎨';
+        if (L.style && L.style.mode && L.style.mode !== 'single') styleBtn.classList.add('active');
         var attrBtn = document.createElement('button');
         attrBtn.className = 'gis-layer__btn'; attrBtn.type = 'button';
         attrBtn.setAttribute('data-a', 'attrs'); attrBtn.title = 'Таблица атрибутов (просмотр/правка)';
@@ -4809,7 +4907,7 @@
         zoomBtn.className = 'gis-layer__btn'; zoomBtn.type = 'button';
         zoomBtn.setAttribute('data-a', 'zoom'); zoomBtn.title = 'Приблизить к слою';
         zoomBtn.textContent = '⤢';
-        head.appendChild(attrBtn); head.appendChild(zoomBtn);
+        head.appendChild(styleBtn); head.appendChild(attrBtn); head.appendChild(zoomBtn);
 
         var meta = document.createElement('div');
         meta.className = 'gis-layer__meta';
@@ -4825,6 +4923,7 @@
           setVisible(L, on);
         });
         zoomBtn.addEventListener('click', function () { fitExtent(L.extent); });
+        styleBtn.addEventListener('click', function () { openStyleModal(L); });
         attrBtn.addEventListener('click', function () {
           if (window.__gisAttr) window.__gisAttr.open('gisup:' + L.id);
           else toast('Таблица атрибутов недоступна', true);
@@ -4842,13 +4941,12 @@
           /* input — живой предпросмотр на карте (без запросов); change —
              финальное значение отправляем на сервер. */
           colorInput.addEventListener('input', function () {
-            applyColor(L, colorInput.value);
+            L.color = colorInput.value; applyStyle(L);
           });
           colorInput.addEventListener('change', function () {
             var val = colorInput.value;
-            if (!val || val === L.color) return;
             var prev = L.color;
-            L.color = val; applyColor(L, val);
+            L.color = val; applyStyle(L);
             fetch(API + L.id + '/', {
               method: 'PATCH', credentials: 'same-origin',
               headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
@@ -4856,7 +4954,7 @@
             }).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
               .then(function () { toast('Цвет слоя сохранён'); })
               .catch(function () {
-                L.color = prev; colorInput.value = prev; applyColor(L, prev);
+                L.color = prev; colorInput.value = prev; applyStyle(L);
                 toast('Не удалось сохранить цвет', true);
               });
           });
@@ -4945,6 +5043,228 @@
           setStatus('Сетевая ошибка при загрузке.', 'err');
         });
       }
+
+      /* ═════════════════ Модалка тематической раскраски ═════════════════ */
+      var STYLE_PALETTE = [
+        '#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4', '#46b3b0',
+        '#f032e6', '#bcbd22', '#008080', '#9a6324', '#800000', '#808000',
+        '#000075', '#e67e22', '#1b9e77', '#7570b3', '#d95f02', '#66a61e',
+      ];
+      var NUMERIC_TYPES = { 'integer': 1, 'bigint': 1, 'double precision': 1 };
+      var styleModal = document.getElementById('gis-stylemodal');
+      var styleModeSel = document.getElementById('gis-style-mode');
+      var styleFieldWrap = document.getElementById('gis-style-field-wrap');
+      var styleFieldSel = document.getElementById('gis-style-field');
+      var styleEditor = document.getElementById('gis-style-editor');
+      var styleHint = document.getElementById('gis-style-hint');
+      var styleApplyBtn = document.getElementById('gis-stylemodal-apply');
+      var styleLayer = null;   /* редактируемый слой */
+      var styleOtherColor = '#cccccc';
+
+      function isNumericType(t) { return !!NUMERIC_TYPES[t]; }
+
+      function fillStyleFieldSelect(L, numericOnly, selected) {
+        var opts = (L.attributes || []).filter(function (a) {
+          return numericOnly ? isNumericType(a.type) : true;
+        }).map(function (a) {
+          var sel = a.db === selected ? ' selected' : '';
+          return '<option value="' + esc(a.db) + '"' + sel + '>' + esc(a.name) + '</option>';
+        });
+        styleFieldSel.innerHTML = '<option value="">— выберите поле —</option>' + opts.join('');
+      }
+
+      /* Собрать style-объект из текущего состояния редактора. */
+      function collectStyle() {
+        var mode = styleModeSel.value;
+        if (mode === 'single') return { mode: 'single' };
+        var field = styleFieldSel.value;
+        if (!field) return null;
+        if (mode === 'categorical') {
+          var cats = [];
+          styleEditor.querySelectorAll('.gis-style-item[data-cat]').forEach(function (row) {
+            cats.push({ value: row.getAttribute('data-cat'),
+                        color: row.querySelector('input[type="color"]').value });
+          });
+          if (!cats.length) return null;
+          return { mode: 'categorical', field: field, categories: cats, other_color: styleOtherColor };
+        }
+        var stops = [];
+        styleEditor.querySelectorAll('.gis-style-item[data-stop]').forEach(function (row) {
+          var num = parseFloat(row.querySelector('input[type="number"]').value);
+          if (!isNaN(num)) stops.push({ value: num, color: row.querySelector('input[type="color"]').value });
+        });
+        if (stops.length < 2) return null;
+        return { mode: 'graduated', field: field, stops: stops };
+      }
+
+      function previewStyle() {
+        if (!styleLayer) return;
+        var s = collectStyle();
+        applyStyle(styleLayer, s || { mode: 'single' });
+      }
+
+      function catRow(value, label, count, color) {
+        var row = document.createElement('div');
+        row.className = 'gis-style-item';
+        row.setAttribute('data-cat', value);
+        row.innerHTML =
+          '<input type="color" value="' + esc(color) + '">' +
+          '<span class="gis-style-item__label">' + esc(label) +
+          (count != null ? ' <small>(' + count + ')</small>' : '') + '</span>';
+        row.querySelector('input[type="color"]').addEventListener('input', previewStyle);
+        return row;
+      }
+      function stopRow(value, color) {
+        var row = document.createElement('div');
+        row.className = 'gis-style-item';
+        row.setAttribute('data-stop', '1');
+        row.innerHTML =
+          '<input type="color" value="' + esc(color) + '">' +
+          '<input type="number" step="any" value="' + esc(value) + '">' +
+          '<button type="button" class="gis-style-item__del" title="Убрать">✕</button>';
+        row.querySelector('input[type="color"]').addEventListener('input', previewStyle);
+        row.querySelector('input[type="number"]').addEventListener('input', previewStyle);
+        row.querySelector('.gis-style-item__del').addEventListener('click', function () {
+          if (styleEditor.querySelectorAll('.gis-style-item[data-stop]').length <= 2) {
+            toast('Нужно минимум 2 точки градиента', true); return;
+          }
+          row.remove(); previewStyle();
+        });
+        return row;
+      }
+
+      function renderCategorical(L, field) {
+        styleEditor.innerHTML = '<div class="gis-modal__note">Загрузка значений…</div>';
+        var existing = {};
+        if (L.style && L.style.mode === 'categorical' && L.style.field === field) {
+          (L.style.categories || []).forEach(function (c) { existing[c.value] = c.color; });
+          styleOtherColor = L.style.other_color || '#cccccc';
+        }
+        fetch(API + L.id + '/field-stats/?field=' + encodeURIComponent(field),
+              { credentials: 'same-origin', headers: CSRF_HDR })
+          .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+          .then(function (j) {
+            var st = j.stats || {};
+            styleEditor.innerHTML = '';
+            var vals = (st.values || []).filter(function (v) { return v.value != null; });
+            if (!vals.length) { styleEditor.innerHTML = '<div class="gis-modal__note">Нет значений для раскраски.</div>'; return; }
+            vals.forEach(function (v, i) {
+              var color = existing[v.value] || STYLE_PALETTE[i % STYLE_PALETTE.length];
+              styleEditor.appendChild(catRow(v.value, v.value, v.count, color));
+            });
+            var other = catRow('__other__', 'Прочие / пусто', null, styleOtherColor);
+            other.removeAttribute('data-cat');
+            other.querySelector('input[type="color"]').addEventListener('input', function (e) {
+              styleOtherColor = e.target.value; previewStyle();
+            });
+            styleEditor.appendChild(other);
+            styleHint.textContent = (st.truncated ? 'Показаны частые значения (список усечён). ' : '') +
+              'Цвет каждого значения — пипеткой. Предпросмотр на карте — сразу.';
+            previewStyle();
+          })
+          .catch(function () { styleEditor.innerHTML = '<div class="gis-modal__note">Не удалось загрузить значения поля.</div>'; });
+      }
+
+      function renderGraduated(L, field) {
+        styleEditor.innerHTML = '<div class="gis-modal__note">Загрузка диапазона…</div>';
+        var existing = (L.style && L.style.mode === 'graduated' && L.style.field === field)
+          ? (L.style.stops || []) : null;
+        fetch(API + L.id + '/field-stats/?field=' + encodeURIComponent(field),
+              { credentials: 'same-origin', headers: CSRF_HDR })
+          .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+          .then(function (j) {
+            var st = j.stats || {};
+            styleEditor.innerHTML = '';
+            if (st.min == null || st.max == null || st.min === st.max) {
+              styleEditor.innerHTML = '<div class="gis-modal__note">Недостаточно числовых данных для градиента.</div>';
+              return;
+            }
+            var stops = existing && existing.length >= 2 ? existing
+              : [{ value: st.min, color: '#2b83ba' }, { value: st.max, color: '#d7191c' }];
+            stops.forEach(function (s) { styleEditor.appendChild(stopRow(s.value, s.color)); });
+            var add = document.createElement('button');
+            add.type = 'button'; add.className = 'gis-style-addstop'; add.textContent = '+ точка';
+            add.addEventListener('click', function () {
+              var mid = ((st.min + st.max) / 2);
+              styleEditor.insertBefore(stopRow(Math.round(mid * 100) / 100, '#ffffbf'), add);
+              previewStyle();
+            });
+            styleEditor.appendChild(add);
+            styleHint.textContent = 'Диапазон поля: ' + st.min + ' … ' + st.max +
+              '. Значения точек и цвета задают линейный градиент.';
+            previewStyle();
+          })
+          .catch(function () { styleEditor.innerHTML = '<div class="gis-modal__note">Не удалось загрузить диапазон поля.</div>'; });
+      }
+
+      function renderStyleEditor() {
+        if (!styleLayer) return;
+        var mode = styleModeSel.value;
+        styleEditor.innerHTML = '';
+        if (mode === 'single') {
+          styleFieldWrap.hidden = true;
+          styleHint.textContent = 'Единый цвет слоя настраивается пипеткой в списке слоёв.';
+          previewStyle();
+          return;
+        }
+        styleFieldWrap.hidden = false;
+        var numericOnly = mode === 'graduated';
+        var curField = styleFieldSel.value;
+        var preselect = (styleLayer.style && styleLayer.style.field) || '';
+        fillStyleFieldSelect(styleLayer, numericOnly, curField || preselect);
+        var field = styleFieldSel.value;
+        if (!field) {
+          styleHint.textContent = numericOnly
+            ? 'Выберите числовое поле для градиента.'
+            : 'Выберите поле для раскраски по категориям.';
+          return;
+        }
+        if (mode === 'categorical') renderCategorical(styleLayer, field);
+        else renderGraduated(styleLayer, field);
+      }
+
+      function openStyleModal(L) {
+        styleLayer = L;
+        var s = L.style || {};
+        styleModeSel.value = s.mode || 'single';
+        styleOtherColor = s.other_color || '#cccccc';
+        document.getElementById('gis-stylemodal-title').textContent = 'Раскраска слоя: ' + L.title;
+        renderStyleEditor();
+        styleModal.hidden = false;
+      }
+      function closeStyleModal(revert) {
+        if (revert && styleLayer) applyStyle(styleLayer);  /* вернуть сохранённый стиль */
+        styleModal.hidden = true;
+        styleLayer = null;
+      }
+
+      styleModeSel.addEventListener('change', renderStyleEditor);
+      styleFieldSel.addEventListener('change', renderStyleEditor);
+      styleModal.querySelectorAll('[data-style-close]').forEach(function (el) {
+        el.addEventListener('click', function () { closeStyleModal(true); });
+      });
+      styleApplyBtn.addEventListener('click', function () {
+        if (!styleLayer) return;
+        var L = styleLayer;
+        var s = collectStyle();
+        if (s === null) { toast('Заполните настройки раскраски', true); return; }
+        styleApplyBtn.disabled = true;
+        fetch(API + L.id + '/', {
+          method: 'PATCH', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ style: s }),
+        }).then(function (r) { return r.ok ? r.json() : r.json().then(function (e) { return Promise.reject(e); }); })
+          .then(function (j) {
+            L.style = (j.layer && j.layer.style) || s;
+            applyStyle(L);
+            var btn = document.querySelector('#gisup-row-' + L.id + ' [data-a="style"]');
+            if (btn) btn.classList.toggle('active', L.style.mode && L.style.mode !== 'single');
+            toast('Раскраска сохранена');
+            closeStyleModal(false);
+          })
+          .catch(function (e) { toast((e && e.detail) || 'Не удалось сохранить раскраску', true); })
+          .then(function () { styleApplyBtn.disabled = false; });
+      });
 
       /* ── Загрузка существующих слоёв при старте ── */
       function loadLayers() {

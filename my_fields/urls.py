@@ -35,6 +35,7 @@ urlpatterns = [
     path('me/gis/api/layers/reorder/', api.gis_layers_reorder, name='api_gis_layers_reorder'),
     path('me/gis/api/layers/<int:pk>/', api.gis_layer_detail, name='api_gis_layer_detail'),
     path('me/gis/api/layers/<int:pk>/features/', api.gis_layer_features, name='api_gis_layer_features'),
+    path('me/gis/api/layers/<int:pk>/field-stats/', api.gis_layer_field_stats, name='api_gis_layer_field_stats'),
     path('me/gis/api/layers/<int:pk>/features/<int:fid>/',
          api.gis_layer_feature_detail, name='api_gis_layer_feature_detail'),
     path('me/gis/api/layers/<int:pk>/tiles/<int:z>/<int:x>/<int:y>.pbf',

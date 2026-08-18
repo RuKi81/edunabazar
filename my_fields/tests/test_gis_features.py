@@ -205,3 +205,105 @@ class GisFeaturesTestCase(TestCase):
         self._login('editor')
         r = self._patch_layer({})
         self.assertEqual(r.status_code, 400)
+
+    # ── тематическая раскраска (PATCH style) ─────────────────────────────
+    def _stats_url(self, field):
+        return f'/me/gis/api/layers/{self.layer.pk}/field-stats/?field={field}'
+
+    def test_style_categorical_valid(self):
+        self._login('editor')
+        r = self._patch_layer({'style': {
+            'mode': 'categorical', 'field': 'name',
+            'categories': [{'value': 'Первое', 'color': '#FF0000'},
+                           {'value': 'Второе', 'color': '#0f0'}],
+        }})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.layer.refresh_from_db()
+        st = self.layer.style
+        self.assertEqual(st['mode'], 'categorical')
+        self.assertEqual(st['field'], 'name')
+        self.assertEqual(st['categories'][0]['color'], '#ff0000')
+        self.assertEqual(st['categories'][1]['color'], '#00ff00')  # #0f0 → расширено
+        self.assertEqual(st['other_color'], '#cccccc')  # дефолт
+
+    def test_style_graduated_sorts_stops(self):
+        self._login('editor')
+        r = self._patch_layer({'style': {
+            'mode': 'graduated', 'field': 'area',
+            'stops': [{'value': 20, 'color': '#d7191c'},
+                      {'value': 10, 'color': '#2b83ba'}],
+        }})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.layer.refresh_from_db()
+        stops = self.layer.style['stops']
+        self.assertEqual([s['value'] for s in stops], [10.0, 20.0])  # отсортировано
+
+    def test_style_single_resets(self):
+        self._login('editor')
+        self.layer.style = {'mode': 'categorical', 'field': 'name',
+                            'categories': [{'value': 'x', 'color': '#111111'}],
+                            'other_color': '#cccccc'}
+        self.layer.save(update_fields=['style'])
+        r = self._patch_layer({'style': {'mode': 'single'}})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.layer.refresh_from_db()
+        self.assertEqual(self.layer.style, {'mode': 'single'})
+
+    def test_style_unknown_field_400(self):
+        self._login('editor')
+        r = self._patch_layer({'style': {
+            'mode': 'categorical', 'field': 'not_a_col',
+            'categories': [{'value': 'x', 'color': '#111111'}]}})
+        self.assertEqual(r.status_code, 400)
+
+    def test_style_graduated_needs_two_stops_400(self):
+        self._login('editor')
+        r = self._patch_layer({'style': {
+            'mode': 'graduated', 'field': 'area',
+            'stops': [{'value': 10, 'color': '#2b83ba'}]}})
+        self.assertEqual(r.status_code, 400)
+
+    def test_style_bad_color_400(self):
+        self._login('editor')
+        r = self._patch_layer({'style': {
+            'mode': 'categorical', 'field': 'name',
+            'categories': [{'value': 'Первое', 'color': 'red'}]}})
+        self.assertEqual(r.status_code, 400)
+
+    def test_style_viewer_forbidden(self):
+        self._login('viewer')
+        r = self._patch_layer({'style': {'mode': 'single'}})
+        self.assertEqual(r.status_code, 403)
+
+    # ── field-stats endpoint ─────────────────────────────────────────────
+    def test_field_stats_numeric(self):
+        self._login('viewer')
+        r = self.client.get(self._stats_url('area'))
+        self.assertEqual(r.status_code, 200, r.content)
+        st = r.json()['stats']
+        self.assertTrue(st['numeric'])
+        self.assertAlmostEqual(st['min'], 10.5)
+        self.assertAlmostEqual(st['max'], 20.0)
+
+    def test_field_stats_text_distinct(self):
+        self._login('viewer')
+        r = self.client.get(self._stats_url('name'))
+        self.assertEqual(r.status_code, 200, r.content)
+        st = r.json()['stats']
+        self.assertFalse(st['numeric'])
+        values = sorted(v['value'] for v in st['values'])
+        self.assertEqual(values, ['Второе', 'Первое'])
+
+    def test_field_stats_unknown_field_404(self):
+        self._login('viewer')
+        r = self.client.get(self._stats_url('not_a_col'))
+        self.assertEqual(r.status_code, 404)
+
+    def test_field_stats_no_field_400(self):
+        self._login('viewer')
+        r = self.client.get(f'/me/gis/api/layers/{self.layer.pk}/field-stats/')
+        self.assertEqual(r.status_code, 400)
+
+    def test_field_stats_anonymous_401(self):
+        r = self.client.get(self._stats_url('name'))
+        self.assertEqual(r.status_code, 401)
