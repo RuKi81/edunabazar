@@ -977,7 +977,11 @@ def gis_layer_detail(request: HttpRequest, pk: int) -> JsonResponse:
         drop_layer(layer)
         return JsonResponse({'ok': True})
 
-    # PATCH — переименование (title) и/или смена цвета (color).
+    return _gis_layer_patch(request, layer)
+
+
+def _gis_layer_patch(request: HttpRequest, layer: GisLayer) -> JsonResponse:
+    """PATCH-часть :func:`gis_layer_detail`: title / color / style."""
     try:
         data = json.loads(request.body or b'{}')
     except (ValueError, TypeError):
