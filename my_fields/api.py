@@ -20,6 +20,7 @@ GeoJSON in/out — без зависимости от ``djangorestframework-gis`
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from django.contrib.gis.geos import GEOSGeometry
@@ -736,6 +737,23 @@ def field_passport_zones_shp(request: HttpRequest, pk: int) -> HttpResponse:
 
 _GIS_RESOURCE = 'gis_layer'
 
+_HEX_COLOR_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
+
+
+def _normalize_hex_color(value: Any) -> str | None:
+    """Приводит цвет к ``#rrggbb`` (нижний регистр) или ``None`` если невалиден.
+
+    Принимает как ``#RRGGBB``, так и короткую форму ``#RGB`` (расширяем).
+    """
+    if not isinstance(value, str):
+        return None
+    color = value.strip()
+    if re.fullmatch(r'#[0-9a-fA-F]{3}', color):
+        color = '#' + ''.join(ch * 2 for ch in color[1:])
+    if _HEX_COLOR_RE.fullmatch(color):
+        return color.lower()
+    return None
+
 
 def _require_gis_authenticated(request: HttpRequest):
     """None если есть Django-сессия, иначе 401 (как раньше)."""
@@ -880,22 +898,45 @@ def gis_layer_detail(request: HttpRequest, pk: int) -> JsonResponse:
         drop_layer(layer)
         return JsonResponse({'ok': True})
 
-    # PATCH — пока поддерживаем только переименование (title).
+    # PATCH — переименование (title) и/или смена цвета (color).
     try:
         data = json.loads(request.body or b'{}')
     except (ValueError, TypeError):
         return JsonResponse(
             {'ok': False, 'error': 'invalid_json'}, status=400)
 
-    title = str(data.get('title', '')).strip()
-    if not title:
+    update_fields: list[str] = []
+
+    if 'title' in data:
+        title = str(data.get('title', '')).strip()
+        if not title:
+            return JsonResponse(
+                {'ok': False, 'error': 'empty_title',
+                 'detail': 'Название слоя не может быть пустым.'},
+                status=400,
+            )
+        layer.title = title[:200]
+        update_fields.append('title')
+
+    if 'color' in data:
+        color = _normalize_hex_color(data.get('color'))
+        if color is None:
+            return JsonResponse(
+                {'ok': False, 'error': 'invalid_color',
+                 'detail': 'Ожидается цвет в формате #RRGGBB.'},
+                status=400,
+            )
+        layer.color = color
+        update_fields.append('color')
+
+    if not update_fields:
         return JsonResponse(
-            {'ok': False, 'error': 'empty_title',
-             'detail': 'Название слоя не может быть пустым.'},
+            {'ok': False, 'error': 'nothing_to_update',
+             'detail': 'Не передано ни title, ни color.'},
             status=400,
         )
-    layer.title = title[:200]
-    layer.save(update_fields=['title'])
+
+    layer.save(update_fields=update_fields)
     return JsonResponse({'ok': True, 'layer': _gis_layer_to_dict(layer)})
 
 

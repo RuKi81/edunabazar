@@ -435,6 +435,18 @@
       width: 12px; height: 12px; border-radius: 3px; flex: 0 0 auto;
       border: 1px solid rgba(0,0,0,.2);
     }
+    /* Свотч-цветоввод: нативный <input type=color>, замаскированный под
+       маленький квадрат-образец. Materialize не трогает type=color, но на
+       всякий случай задаём явные размеры/сброс оформления. */
+    input.gis-layer__swatch {
+      width: 16px; height: 16px; padding: 0; margin: 0; cursor: pointer;
+      background: none; -webkit-appearance: none; -moz-appearance: none; appearance: none;
+      display: inline-flex;
+    }
+    input.gis-layer__swatch::-webkit-color-swatch-wrapper { padding: 0; }
+    input.gis-layer__swatch::-webkit-color-swatch { border: 1px solid rgba(0,0,0,.25); border-radius: 3px; }
+    input.gis-layer__swatch::-moz-color-swatch { border: 1px solid rgba(0,0,0,.25); border-radius: 3px; }
+    input.gis-layer__swatch:hover { border-color: #2e7d32; }
     .gis-layer__btn.danger:hover:not(.disabled) { background: #ffebee; color: #c62828; }
 
     /* Полноэкранный drop-оверлей поверх всего окна ГИС. */
@@ -4617,6 +4629,17 @@
           if (map.getLayer(lid)) map.setLayoutProperty(lid, 'visibility', vis ? 'visible' : 'none');
         });
       }
+      /* Перекрасить все слои карты, относящиеся к L, в заданный цвет.
+         Тип paint-свойства зависит от типа слоя (fill/line/circle). */
+      function applyColor(L, color) {
+        (L._layerIds || []).forEach(function (lid) {
+          var lyr = map.getLayer(lid);
+          if (!lyr) return;
+          if (lyr.type === 'fill') map.setPaintProperty(lid, 'fill-color', color);
+          else if (lyr.type === 'line') map.setPaintProperty(lid, 'line-color', color);
+          else if (lyr.type === 'circle') map.setPaintProperty(lid, 'circle-color', color);
+        });
+      }
       function removeFromMap(L) {
         (L._layerIds || []).forEach(function (lid) { if (map.getLayer(lid)) map.removeLayer(lid); });
         var sid = srcId(L.id);
@@ -4754,7 +4777,7 @@
         head.innerHTML =
           '<span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>' +
           '<input type="checkbox" class="gis-layer__sel" title="Отметить слой для удаления">' +
-          '<span class="gis-layer__swatch" style="background:' + esc(L.color) + '"></span>' +
+          '<input type="color" class="gis-layer__swatch" data-a="color" value="' + esc(L.color) + '" title="Цвет слоя">' +
           '<button class="gis-layer__btn' + (vis ? ' active' : '') + '" data-a="vis" type="button" title="Видимость">' + (vis ? '👁' : '🚫') + '</button>';
         var nameSpan = makeNameSpan(L);
         head.appendChild(nameSpan);
@@ -4787,6 +4810,39 @@
           if (window.__gisAttr) window.__gisAttr.open('gisup:' + L.id);
           else toast('Таблица атрибутов недоступна', true);
         });
+        var colorInput = head.querySelector('[data-a="color"]');
+        if (colorInput) {
+          /* Тот же Chrome-баг с нативными контролами внутри draggable —
+             снимаем draggable на время взаимодействия с пипеткой. */
+          colorInput.addEventListener('mousedown', function () { div.setAttribute('draggable', 'false'); });
+          ['mouseup', 'mouseleave'].forEach(function (ev) {
+            colorInput.addEventListener(ev, function () {
+              setTimeout(function () { div.setAttribute('draggable', 'true'); }, 0);
+            });
+          });
+          /* input — живой предпросмотр на карте (без запросов); change —
+             финальное значение отправляем на сервер. */
+          colorInput.addEventListener('input', function () {
+            applyColor(L, colorInput.value);
+          });
+          colorInput.addEventListener('change', function () {
+            var val = colorInput.value;
+            if (!val || val === L.color) return;
+            var prev = L.color;
+            L.color = val; applyColor(L, val);
+            fetch(API + L.id + '/', {
+              method: 'PATCH', credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+              body: JSON.stringify({ color: val }),
+            }).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+              .then(function () { toast('Цвет слоя сохранён'); })
+              .catch(function () {
+                L.color = prev; colorInput.value = prev; applyColor(L, prev);
+                toast('Не удалось сохранить цвет', true);
+              });
+          });
+        }
+
         var selBox = head.querySelector('.gis-layer__sel');
         if (selBox) {
           selBox.addEventListener('change', updateBulkDelState);

@@ -83,6 +83,14 @@ class GisFeaturesTestCase(TestCase):
     def _feature_url(self, fid):
         return f'/me/gis/api/layers/{self.layer.pk}/features/{fid}/'
 
+    def _layer_url(self):
+        return f'/me/gis/api/layers/{self.layer.pk}/'
+
+    def _patch_layer(self, payload):
+        return self.client.patch(
+            self._layer_url(), data=json.dumps(payload),
+            content_type='application/json')
+
     def _patch(self, fid, props):
         return self.client.patch(
             self._feature_url(fid), data=json.dumps({'props': props}),
@@ -154,3 +162,46 @@ class GisFeaturesTestCase(TestCase):
         self._login('admin')
         self.assertEqual(self.client.get(self._features_url()).json()['total'], 2)
         self.assertEqual(self._patch(1, {'name': 'A'}).status_code, 200)
+
+    # ── смена цвета слоя (PATCH color) ───────────────────────────────────
+    def test_editor_updates_color(self):
+        self._login('editor')
+        r = self._patch_layer({'color': '#FF8800'})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['layer']['color'], '#ff8800')
+        self.layer.refresh_from_db()
+        self.assertEqual(self.layer.color, '#ff8800')
+
+    def test_color_short_form_expands(self):
+        self._login('editor')
+        r = self._patch_layer({'color': '#0f0'})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.layer.refresh_from_db()
+        self.assertEqual(self.layer.color, '#00ff00')
+
+    def test_invalid_color_400(self):
+        self._login('editor')
+        r = self._patch_layer({'color': 'red'})
+        self.assertEqual(r.status_code, 400)
+        self.layer.refresh_from_db()
+        self.assertEqual(self.layer.color, '#333333')
+
+    def test_viewer_cannot_change_color(self):
+        self._login('viewer')
+        r = self._patch_layer({'color': '#123456'})
+        self.assertEqual(r.status_code, 403)
+        self.layer.refresh_from_db()
+        self.assertEqual(self.layer.color, '#333333')
+
+    def test_patch_title_and_color_together(self):
+        self._login('editor')
+        r = self._patch_layer({'title': 'Новое имя', 'color': '#abcdef'})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.layer.refresh_from_db()
+        self.assertEqual(self.layer.title, 'Новое имя')
+        self.assertEqual(self.layer.color, '#abcdef')
+
+    def test_patch_empty_body_400(self):
+        self._login('editor')
+        r = self._patch_layer({})
+        self.assertEqual(r.status_code, 400)
