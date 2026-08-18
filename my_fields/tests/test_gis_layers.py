@@ -381,7 +381,9 @@ class FolderTests(GisLayersTestCase):
             content_type='application/json',
         )
         self.assertEqual(resp.status_code, 200, resp.content)
-        f.refresh_from_db(); self.a.refresh_from_db(); self.b.refresh_from_db()
+        f.refresh_from_db()
+        self.a.refresh_from_db()
+        self.b.refresh_from_db()
         self.assertEqual(f.sort_order, 0)
         self.assertEqual(self.b.folder_id, f.pk)
         self.assertIsNone(self.a.folder_id)
