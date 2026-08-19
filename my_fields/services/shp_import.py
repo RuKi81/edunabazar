@@ -355,10 +355,24 @@ def _json_safe(value):
     return value
 
 
-def list_features(layer, limit: int = 1000, offset: int = 0) -> dict:
+def list_features(layer, limit: int = 1000, offset: int = 0,
+                  sort: str = 'id', direction: str = 'asc',
+                  query_text: str = '') -> dict:
     """Постранично прочитать объекты слоя (id + атрибуты, без геометрии).
 
-    Возвращает ``{'total': int, 'results': [{'id': int, 'props': {...}}]}``.
+    Поддерживает серверную сортировку и поиск — чтобы таблица работала на
+    слоях с сотнями тысяч объектов (клиент грузит только текущую страницу).
+
+    Args:
+        limit/offset: окно страницы.
+        sort: db-имя колонки для сортировки ('id' или колонка из meta слоя;
+            неизвестное имя → 'id').
+        direction: 'asc' | 'desc'.
+        query_text: подстрока для поиска по всем колонкам (ILIKE), пусто — без
+            фильтра.
+
+    Возвращает ``{'total': int, 'results': [{'id': int, 'props': {...}}]}``,
+    где ``total`` — число объектов с учётом фильтра поиска.
     Геометрию не отдаём — таблица атрибутов её не показывает, а полигоны
     могут быть тяжёлыми.
     """
@@ -366,17 +380,38 @@ def list_features(layer, limit: int = 1000, offset: int = 0) -> dict:
     cols = list(types.keys())
     table = sql.Identifier(layer.table_name)
 
+    # Сортировка: разрешаем только id или реальную колонку слоя.
+    sort_col = sort if (sort == 'id' or sort in types) else 'id'
+    dir_sql = sql.SQL('DESC') if str(direction).lower() == 'desc' else sql.SQL('ASC')
+    # id — вторичный ключ для стабильного порядка при равных значениях.
+    order_by = sql.SQL('ORDER BY {c} {d} NULLS LAST, {id} ASC').format(
+        c=sql.Identifier(sort_col), d=dir_sql, id=sql.Identifier('id'))
+
+    # Поиск: подстрока по всем колонкам (+id), приведённым к тексту.
+    q = (query_text or '').strip()
+    where_sql = sql.SQL('')
+    where_params: list = []
+    if q:
+        pattern = f'%{q}%'
+        search_cols = [sql.Identifier('id')] + [sql.Identifier(c) for c in cols]
+        ors = sql.SQL(' OR ').join(
+            sql.SQL('{}::text ILIKE %s').format(c) for c in search_cols)
+        where_sql = sql.SQL(' WHERE ({})').format(ors)
+        where_params = [pattern] * len(search_cols)
+
     select_cols = sql.SQL(', ').join(
         [sql.Identifier('id')] + [sql.Identifier(c) for c in cols])
     query = sql.SQL(
-        'SELECT {cols} FROM {table} ORDER BY id LIMIT %s OFFSET %s'
-    ).format(cols=select_cols, table=table)
+        'SELECT {cols} FROM {table}{where} {order} LIMIT %s OFFSET %s'
+    ).format(cols=select_cols, table=table, where=where_sql, order=order_by)
 
     with connection.cursor() as cur:
-        cur.execute(query, [limit, offset])
+        cur.execute(query, where_params + [limit, offset])
         rows = cur.fetchall()
         colnames = [d[0] for d in cur.description]
-        cur.execute(sql.SQL('SELECT count(*) FROM {}').format(table))
+        count_q = sql.SQL('SELECT count(*) FROM {table}{where}').format(
+            table=table, where=where_sql)
+        cur.execute(count_q, where_params)
         total = cur.fetchone()[0]
 
     results = []

@@ -542,6 +542,26 @@
     .gis-attrtable tbody tr.active:hover { background: #ffd2e2; }
     .gis-attrtable__empty { padding: 24px; text-align: center; color: #999; font-size: 13px; line-height: 1.5; }
 
+    /* Футер пагинации (server-paged SHP-слои): прилипает к низу скролл-области. */
+    .gis-attrtable__pager {
+      position: sticky; bottom: 0; z-index: 3;
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+      padding: 6px 10px; background: #f1f8e9; border-top: 1px solid #c8e6c9;
+      font-size: 12px; color: #33691e;
+    }
+    .gis-attrtable__pager button {
+      min-width: 26px; height: 24px; padding: 0 6px; cursor: pointer;
+      border: 1px solid #c8e6c9; background: #fff; border-radius: 5px;
+      color: #2e7d32; font-size: 13px; line-height: 1;
+    }
+    .gis-attrtable__pager button:hover:not(:disabled) { background: #e8f5e9; }
+    .gis-attrtable__pager button:disabled { opacity: .4; cursor: default; }
+    .gis-attrtable__pageinfo { display: inline-flex; align-items: center; gap: 4px; }
+    .gis-attrtable__pageinp {
+      width: 52px; height: 22px; text-align: center; font-size: 12px;
+      border: 1px solid #c8e6c9; border-radius: 4px; padding: 0 4px;
+    }
+
     /* Служебный столбец 🔍 (перелёт к объекту). */
     .gis-attrtable thead th.gis-attrtable__zoomh { width: 34px; cursor: default; padding: 7px 6px; }
     .gis-attrtable thead th.gis-attrtable__zoomh:hover { background: #f1f8e9; }
@@ -4638,7 +4658,26 @@
         usedFilter: '',          // фильтр is_used: '' | '1' | '0' | '-1'
         rows: [],
         sel: { layer: null, id: null },  // подсвеченная строка (на карте)
+        page: 0,                 // текущая страница (server-paged SHP-слои)
+        pageSize: 500,           // объектов на странице (server-paged)
+        total: 0,                // всего объектов на сервере (с учётом поиска)
       };
+
+      /* Активный слой грузится постранично с сервера (загруженный SHP)? */
+      function isServerPaged() {
+        var d = dynLayers[state.layer];
+        return !!(d && d.serverPaged);
+      }
+      /* Параметры текущей страницы для серверного запроса. */
+      function dynParams() {
+        return {
+          limit: state.pageSize,
+          offset: state.page * state.pageSize,
+          sort: state.sortKey || 'id',
+          dir: state.sortDir === -1 ? 'desc' : 'asc',
+          q: (state.query || '').trim(),
+        };
+      }
 
       /* Строка «грязная», если её id есть в очереди attrUpdates слоя —
          так метки авто-сбрасываются после сохранения (💾) или отмены (↶),
@@ -4684,10 +4723,12 @@
       function collectRows() {
         var rows = [];
         if (dynLayers[state.layer]) {
+          /* SHP-слой: сервер уже отдал нужную страницу, отсортированную и
+             отфильтрованную по поиску — клиентские sort/filter не применяем. */
           (dynLayers[state.layer].rows || []).forEach(function (f) {
             rows.push({ id: f.id, props: f.props || {}, geometry: null });
           });
-          return filterRows(rows);
+          return rows;
         }
         if (state.layer === 'userfields') {
           (userfieldsFC.features || []).forEach(function (f) {
@@ -4764,13 +4805,21 @@
            blur редактора успевает сделать commit и обнулить editingCell. */
         if (editingCell) return;
         var cols = COLUMNS[state.layer];
-        state.rows = sortRows(collectRows());
+        var serverPaged = isServerPaged();
+        /* SHP-слои сортируются/фильтруются на сервере — клиентский sortRows
+           применяем только к статическим слоям (ЗСН / Мои поля). */
+        state.rows = serverPaged ? collectRows() : sortRows(collectRows());
 
         if (countEl) {
-          var suffix = state.layer === 'farmlands' ? ' (видимая область)' : '';
-          var capped = state.rows.length >= ATTR_MAX_ROWS ? '+ (обрезано)' : '';
-          var filtered = (state.query || state.usedFilter) ? ', отфильтровано' : '';
-          countEl.textContent = state.rows.length + capped + ' объект(ов)' + suffix + filtered;
+          if (serverPaged) {
+            var totFiltered = state.query ? ', отфильтровано' : '';
+            countEl.textContent = (state.total || 0) + ' объект(ов)' + totFiltered;
+          } else {
+            var suffix = state.layer === 'farmlands' ? ' (видимая область)' : '';
+            var capped = state.rows.length >= ATTR_MAX_ROWS ? '+ (обрезано)' : '';
+            var filtered = (state.query || state.usedFilter) ? ', отфильтровано' : '';
+            countEl.textContent = state.rows.length + capped + ' объект(ов)' + suffix + filtered;
+          }
         }
         if (refreshBtn) refreshBtn.style.display = (state.layer === 'farmlands' || dynLayers[state.layer]) ? '' : 'none';
         if (filterEl) filterEl.style.display = state.layer === 'farmlands' ? '' : 'none';
@@ -4809,16 +4858,63 @@
           return '<tr data-id="' + esc(r.id) + '"' + cls + '>' + zoomTd + tds + '</tr>';
         }).join('') + '</tbody>';
 
-        bodyEl.innerHTML = '<table>' + thead + tbody + '</table>';
+        /* Футер пагинации — только для server-paged слоёв (SHP). Sticky снизу,
+           чтобы не уезжал при прокрутке страницы объектов. */
+        var pager = '';
+        if (serverPaged) {
+          var pages = Math.max(1, Math.ceil((state.total || 0) / state.pageSize));
+          var cur = Math.min(state.page, pages - 1) + 1;
+          var atFirst = state.page <= 0, atLast = state.page >= pages - 1;
+          var dis = function (b) { return b ? ' disabled' : ''; };
+          pager =
+            '<div class="gis-attrtable__pager">' +
+              '<button type="button" data-pg="first" title="Первая"' + dis(atFirst) + '>«</button>' +
+              '<button type="button" data-pg="prev" title="Предыдущая"' + dis(atFirst) + '>‹</button>' +
+              '<span class="gis-attrtable__pageinfo">стр. ' +
+                '<input type="number" class="gis-attrtable__pageinp" min="1" max="' + pages +
+                '" value="' + cur + '"> из ' + pages + '</span>' +
+              '<button type="button" data-pg="next" title="Следующая"' + dis(atLast) + '>›</button>' +
+              '<button type="button" data-pg="last" title="Последняя"' + dis(atLast) + '>»</button>' +
+            '</div>';
+        }
+
+        bodyEl.innerHTML = '<table>' + thead + tbody + '</table>' + pager;
 
         bodyEl.querySelectorAll('thead th[data-key]').forEach(function (th) {
           th.addEventListener('click', function () {
             var key = th.getAttribute('data-key');
             if (state.sortKey === key) state.sortDir *= -1;
             else { state.sortKey = key; state.sortDir = 1; }
-            render();
+            /* SHP-слои: сортировка на сервере → сбрасываем на 1-ю страницу и
+               перезагружаем; статические — клиентский ре-рендер. */
+            if (serverPaged) { state.page = 0; reloadDynPage(); }
+            else render();
           });
         });
+
+        if (serverPaged) {
+          bodyEl.querySelectorAll('.gis-attrtable__pager button[data-pg]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              var pgs = Math.max(1, Math.ceil((state.total || 0) / state.pageSize));
+              var act = b.getAttribute('data-pg');
+              if (act === 'first') gotoDynPage(0);
+              else if (act === 'prev') gotoDynPage(state.page - 1);
+              else if (act === 'next') gotoDynPage(state.page + 1);
+              else if (act === 'last') gotoDynPage(pgs - 1);
+            });
+          });
+          var pageInp = bodyEl.querySelector('.gis-attrtable__pageinp');
+          if (pageInp) {
+            var jump = function () {
+              var n = parseInt(pageInp.value, 10);
+              if (!isNaN(n)) gotoDynPage(n - 1);
+            };
+            pageInp.addEventListener('change', jump);
+            pageInp.addEventListener('keydown', function (e) {
+              if (e.key === 'Enter') { e.preventDefault(); jump(); }
+            });
+          }
+        }
         bodyEl.querySelectorAll('tbody tr').forEach(function (tr) {
           tr.addEventListener('click', function (e) {
             /* Клик по 🔍 — только перелёт к объекту (+ выбор строки). */
@@ -5081,6 +5177,8 @@
             state.layer = layer;
             state.sortKey = defaultSortKey(layer);
             state.sortDir = 1;
+            state.page = 0;
+            state.total = 0;
             syncTabs();
             loadDyn(layer, apply);
             return;
@@ -5104,8 +5202,12 @@
         state.layer = layer;
         state.sortKey = defaultSortKey(layer);
         state.sortDir = 1;
+        state.page = 0;          // новая вкладка — с первой страницы (SHP)
+        state.total = 0;
         syncTabs();
-        if (dynLayers[layer] && !dynLayers[layer].loaded) loadDyn(layer);
+        /* SHP-слой всегда перезагружаем страницу под текущую сортировку/поиск
+           (rows кэша могли остаться от прежних параметров). */
+        if (dynLayers[layer]) { dynLayers[layer].loaded = false; loadDyn(layer); }
         else render();
       }
 
@@ -5134,9 +5236,25 @@
         bodyEl.innerHTML = '<div class="gis-attrtable__empty">Загрузка объектов…</div>';
         def.fetch(function () {
           if (state.layer !== key) return;
+          state.total = def.total || 0;
           render();
           if (typeof after === 'function') after();
-        });
+        }, dynParams());
+      }
+      /* Перезагрузить текущую страницу активного SHP-слоя (после смены
+         страницы / сортировки / поиска). */
+      function reloadDynPage() {
+        if (!isServerPaged()) { render(); return; }
+        dynLayers[state.layer].loaded = false;
+        loadDyn(state.layer);
+      }
+      /* Перейти на страницу n (с клипом в допустимый диапазон) и перезагрузить. */
+      function gotoDynPage(n) {
+        var pages = Math.max(1, Math.ceil((state.total || 0) / state.pageSize));
+        var p = Math.max(0, Math.min(n, pages - 1));
+        if (p === state.page) return;
+        state.page = p;
+        reloadDynPage();
       }
       function renderDynCard(key, props) {
         var info = document.getElementById('gis-info');
@@ -5224,18 +5342,21 @@
           searchEl.focus();
         } else if (searchEl.value) {
           searchEl.value = ''; state.query = '';
-          if (state.open) render();
+          if (state.open) { state.page = 0; reloadDynPage(); }
         }
       });
 
-      /* Поиск (debounce) и фильтр по использованию. */
+      /* Поиск (debounce) и фильтр по использованию. Для SHP-слоёв поиск идёт
+         на сервер (сброс на 1-ю страницу), для статических — клиентский. */
       var searchTimer = null;
       if (searchEl) searchEl.addEventListener('input', function () {
         clearTimeout(searchTimer);
         searchTimer = setTimeout(function () {
           state.query = searchEl.value || '';
-          if (state.open) render();
-        }, 200);
+          if (!state.open) return;
+          if (isServerPaged()) { state.page = 0; reloadDynPage(); }
+          else render();
+        }, 250);
       });
       if (filterEl) filterEl.addEventListener('change', function () {
         state.usedFilter = filterEl.value || '';
@@ -5398,12 +5519,27 @@
           columns: attrColumnsFor(L),
           rows: [],
           loaded: false,
-          fetch: function (cb) {
-            fetch(API + L.id + '/features/?limit=5000',
+          total: 0,          /* всего объектов (с учётом поиска) — с сервера */
+          serverPaged: true, /* таблица грузит только текущую страницу */
+          /* Серверная пагинация: грузим ОДНУ страницу. Параметры (страница,
+             размер, сортировка, поиск) передаёт модуль таблицы через params —
+             так слой работает и на сотнях тысяч объектов. */
+          fetch: function (cb, params) {
+            params = params || {};
+            var qs = '?limit=' + encodeURIComponent(params.limit || 500) +
+                     '&offset=' + encodeURIComponent(params.offset || 0) +
+                     '&sort=' + encodeURIComponent(params.sort || 'id') +
+                     '&dir=' + encodeURIComponent(params.dir || 'asc');
+            if (params.q) qs += '&q=' + encodeURIComponent(params.q);
+            fetch(API + L.id + '/features/' + qs,
                   { credentials: 'same-origin', headers: CSRF_HDR })
               .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
-              .then(function (j) { def.rows = (j.results || []); def.loaded = true; cb(true); })
-              .catch(function () { def.rows = []; def.loaded = true; cb(false); });
+              .then(function (j) {
+                def.rows = (j.results || []);
+                def.total = (typeof j.total === 'number') ? j.total : def.rows.length;
+                def.loaded = true; cb(true);
+              })
+              .catch(function () { def.rows = []; def.total = 0; def.loaded = true; cb(false); });
           },
           patch: function (fid, key, val, cb) {
             var props = {}; props[key] = val;

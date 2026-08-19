@@ -1107,7 +1107,12 @@ def gis_layer_features(request: HttpRequest, pk: int) -> JsonResponse:
         offset = 0
     offset = max(0, offset)
 
-    data = list_features(layer, limit=limit, offset=offset)
+    sort = request.GET.get('sort', 'id') or 'id'
+    direction = request.GET.get('dir', 'asc')
+    query_text = request.GET.get('q', '')
+
+    data = list_features(layer, limit=limit, offset=offset,
+                         sort=sort, direction=direction, query_text=query_text)
     return JsonResponse({
         'ok': True,
         'total': data['total'],
@@ -1115,6 +1120,9 @@ def gis_layer_features(request: HttpRequest, pk: int) -> JsonResponse:
         'attributes': layer.attributes,
         'limit': limit,
         'offset': offset,
+        'sort': sort,
+        'dir': direction,
+        'q': query_text,
     })
 
 
