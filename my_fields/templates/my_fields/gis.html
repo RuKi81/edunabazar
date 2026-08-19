@@ -3558,6 +3558,15 @@
       if (f.id != null && persistedDrawIds.has(String(f.id))) return;
       if (f.id != null && findPendingCreateIdx(f.id) >= 0) return;
 
+      /* Массовое выделение лассо — поглощаем нарисованный полигон как область
+         выбора (без snap и без постановки в очередь). Проверяем ПЕРВЫМ: лассо
+         может быть активно и во время правки геометрии SHP-слоя (gupEdit),
+         иначе полигон лассо ошибочно уйдёт в очередь создания. */
+      if (lassoSelectState && f.geometry.type === 'Polygon') {
+        finishLassoSelect(f);
+        return;
+      }
+
       /* Загруженный слой (gis_up_*): своя очередь gupPending + 💾. Разрез/
          вырез (✂) и создание — без snap к чужим слоям (userfields/farmland). */
       if (gupEdit.active) {
@@ -3590,13 +3599,6 @@
         }
         gupQueueCreate(f.id, f.geometry);
         setTimeout(function () { try { draw.changeMode(gnm); } catch (_) {} highlightTool(gnm); }, 0);
-        return;
-      }
-
-      /* Сценарий «массовое выделение лассо» — поглощаем нарисованный полигон
-         как область выбора (без snap и без постановки в очередь). */
-      if (lassoSelectState && f.geometry.type === 'Polygon') {
-        finishLassoSelect(f);
         return;
       }
 
