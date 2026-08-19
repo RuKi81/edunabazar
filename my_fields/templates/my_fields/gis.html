@@ -106,9 +106,11 @@
       border: 1px solid rgba(0,0,0,.08); border-radius: 6px;
       padding: 8px 10px; margin-bottom: 8px; background: #fff;
     }
-    .gis-layer__head { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; }
+    .gis-layer__head { display: flex; flex-direction: column; align-items: stretch; gap: 6px; font-size: 11px; font-weight: 600; }
+    /* Ряд управляющих иконок над названием слоя; кебаб уходит вправо. */
+    .gis-layer__controls { display: flex; align-items: center; gap: 6px; }
     .gis-layer__head .name {
-      flex: 1; min-width: 0;
+      flex: none; min-width: 0;
       white-space: normal; overflow-wrap: anywhere; word-break: break-word;
       line-height: 1.25;
     }
@@ -654,23 +656,27 @@
       <div id="gis-layers">
         <div class="gis-layer" data-layer="farmlands" draggable="true">
           <div class="gis-layer__head">
-            <span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>
+            <div class="gis-layer__controls">
+              <span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>
+              <button class="gis-layer__btn" data-action="table" type="button" title="Таблица атрибутов">▤</button>
+              <button class="gis-layer__btn" data-action="edit" type="button"
+                      title="Включить редактирование Росреестр-слоя (изменения сохраняются сразу)">✏</button>
+              <button class="gis-layer__btn" data-action="visibility" type="button" title="Видимость">👁</button>
+            </div>
             <span class="name">ЗСН (Росреестр)</span>
-            <button class="gis-layer__btn" data-action="table" type="button" title="Таблица атрибутов">▤</button>
-            <button class="gis-layer__btn" data-action="edit" type="button"
-                    title="Включить редактирование Росреестр-слоя (изменения сохраняются сразу)">✏</button>
-            <button class="gis-layer__btn" data-action="visibility" type="button" title="Видимость">👁</button>
           </div>
           <div class="gis-layer__meta">Векторные тайлы · z 6–14 · кеш 10 мин</div>
         </div>
 
         <div class="gis-layer" data-layer="userfields" draggable="true">
           <div class="gis-layer__head">
-            <span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>
+            <div class="gis-layer__controls">
+              <span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>
+              <button class="gis-layer__btn" data-action="table" type="button" title="Таблица атрибутов">▤</button>
+              <button class="gis-layer__btn" data-action="edit" type="button" title="Включить редактирование">✏</button>
+              <button class="gis-layer__btn" data-action="visibility" type="button" title="Видимость">👁</button>
+            </div>
             <span class="name">Мои поля</span>
-            <button class="gis-layer__btn" data-action="table" type="button" title="Таблица атрибутов">▤</button>
-            <button class="gis-layer__btn" data-action="edit" type="button" title="Включить редактирование">✏</button>
-            <button class="gis-layer__btn" data-action="visibility" type="button" title="Видимость">👁</button>
           </div>
           <div class="gis-layer__meta" id="gis-userfields-meta">загрузка…</div>
         </div>
@@ -5958,21 +5964,21 @@
 
         var head = document.createElement('div');
         head.className = 'gis-layer__head';
-        head.innerHTML =
+        var controls = document.createElement('div');
+        controls.className = 'gis-layer__controls';
+        controls.innerHTML =
           '<span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>' +
           '<input type="color" class="gis-layer__swatch" data-a="color" value="' + esc(L.color) + '" title="Цвет слоя">';
-        var nameSpan = makeNameSpan(L);
-        head.appendChild(nameSpan);
         var tableBtn = document.createElement('button');
         tableBtn.className = 'gis-layer__btn'; tableBtn.type = 'button';
         tableBtn.setAttribute('data-a', 'attrs'); tableBtn.title = 'Таблица атрибутов';
         tableBtn.textContent = '▤';
-        head.appendChild(tableBtn);
+        controls.appendChild(tableBtn);
         var zoomBtn = document.createElement('button');
         zoomBtn.className = 'gis-layer__btn'; zoomBtn.type = 'button';
         zoomBtn.setAttribute('data-a', 'zoom'); zoomBtn.title = 'Приблизить к слою';
         zoomBtn.textContent = '⤢';
-        head.appendChild(zoomBtn);
+        controls.appendChild(zoomBtn);
 
         /* «Раскраска» и «Таблица атрибутов» спрятаны в kebab-меню (⋮)
            в правой части плашки слоя, чтобы не загромождать строку. */
@@ -5996,19 +6002,25 @@
         geomBtn.textContent = '✎ Геометрия';
         pop.appendChild(styleBtn); pop.appendChild(geomBtn);
         menuWrap.appendChild(kebab); menuWrap.appendChild(pop);
-        head.appendChild(menuWrap);
         if (editingGeom) kebab.classList.add('active');
 
-        /* Чекбокс выбора слоя и кнопка видимости — в правой части плашки. */
+        /* Чекбокс выбора слоя и кнопка видимости — в ряду иконок. */
         var selEl = document.createElement('input');
         selEl.type = 'checkbox'; selEl.className = 'gis-layer__sel';
         selEl.title = 'Отметить слой для удаления';
-        head.appendChild(selEl);
+        controls.appendChild(selEl);
         var visEl = document.createElement('button');
         visEl.className = 'gis-layer__btn' + (vis ? ' active' : '');
         visEl.type = 'button'; visEl.setAttribute('data-a', 'vis');
         visEl.title = 'Видимость'; visEl.textContent = '👁';
-        head.appendChild(visEl);
+        controls.appendChild(visEl);
+
+        /* Кебаб — в крайнем правом положении ряда (margin-left:auto). */
+        controls.appendChild(menuWrap);
+
+        var nameSpan = makeNameSpan(L);
+        head.appendChild(controls);
+        head.appendChild(nameSpan);
 
         kebab.addEventListener('click', function (e) {
           e.stopPropagation();
