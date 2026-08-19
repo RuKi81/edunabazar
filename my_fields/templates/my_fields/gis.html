@@ -5044,8 +5044,19 @@
         var trEl = bodyEl.querySelector('tbody tr[data-id="' + sel + '"]');
         if (trEl) {
           trEl.classList.add('active');
-          if (scroll && trEl.scrollIntoView) {
-            try { trEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) { trEl.scrollIntoView(); }
+          if (scroll) {
+            /* Ставим строку ПЕРВОЙ в видимой области таблицы. scrollIntoView
+               с block:'nearest' часто не двигал контейнер (строка чуть за
+               краем оставалась невидимой), а block:'start' прятал бы строку
+               под прилипающий заголовок. Поэтому считаем смещение вручную:
+               верх строки → сразу под thead. */
+            var cont = bodyEl;
+            var thead = cont.querySelector('thead');
+            var headH = thead ? thead.getBoundingClientRect().height : 0;
+            var delta = trEl.getBoundingClientRect().top -
+                        cont.getBoundingClientRect().top - headH;
+            try { cont.scrollBy({ top: delta, behavior: 'smooth' }); }
+            catch (_) { cont.scrollTop += delta; }
           }
         }
       }
