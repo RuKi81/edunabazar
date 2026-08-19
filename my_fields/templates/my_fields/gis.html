@@ -142,9 +142,10 @@
       box-shadow: 0 0 0 1px #2e7d32 inset;
     }
 
-    /* Оверфлоу-меню слоя (⋮): по умолчанию все иконки спрятаны в кебаб
-       (в крайнем правом положении). При расширении сайдбара (.gis-wide-icons
-       на #gis-left) иконки выводятся в ряд прямо в плашке. */
+    /* Оверфлоу-иконок плашки: сколько влезает — показываем в ряд
+       (.gis-layer__icons), остальное JS убирает в кебаб (⋮, крайний правый).
+       При расширении сайдбара иконки возвращаются из кебаба в плашку. */
+    .gis-layer__icons { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; flex-wrap: nowrap; }
     .gis-layer__menu { position: relative; display: inline-flex; align-items: center; margin-left: auto; }
     .gis-layer__kebab { font-size: 18px; line-height: 1; }
     .gis-layer__menu-pop {
@@ -154,13 +155,6 @@
       display: flex; flex-wrap: wrap; align-items: center; gap: 3px; max-width: 156px;
     }
     .gis-layer__menu-pop[hidden] { display: none; }
-    /* Широкий сайдбар — кебаб скрыт, иконки в ряд в плашке. */
-    .gis-wide-icons .gis-layer__kebab { display: none; }
-    .gis-wide-icons .gis-layer__menu-pop,
-    .gis-wide-icons .gis-layer__menu-pop[hidden] {
-      position: static; display: flex !important; flex-wrap: nowrap;
-      box-shadow: none; border: none; padding: 0; background: transparent; max-width: none;
-    }
 
     .gis-info-empty { padding: 20px 8px; font-size: 12px; color: #999; text-align: center; line-height: 1.5; }
     .gis-info-card h4 { margin: 0 0 8px; font-size: 14px; color: #2e7d32; }
@@ -651,14 +645,15 @@
           <div class="gis-layer__head">
             <div class="gis-layer__controls">
               <span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>
+              <div class="gis-layer__icons">
+                <button class="gis-layer__btn" data-action="table" data-ord="0" type="button" title="Таблица атрибутов">▤</button>
+                <button class="gis-layer__btn" data-action="edit" data-ord="1" type="button"
+                        title="Включить редактирование Росреестр-слоя (изменения сохраняются сразу)">✏</button>
+                <button class="gis-layer__btn" data-action="visibility" data-ord="2" type="button" title="Видимость">👁</button>
+              </div>
               <div class="gis-layer__menu">
                 <button class="gis-layer__btn gis-layer__kebab" type="button" title="Действия">⋮</button>
-                <div class="gis-layer__menu-pop" hidden>
-                  <button class="gis-layer__btn" data-action="table" type="button" title="Таблица атрибутов">▤</button>
-                  <button class="gis-layer__btn" data-action="edit" type="button"
-                          title="Включить редактирование Росреестр-слоя (изменения сохраняются сразу)">✏</button>
-                  <button class="gis-layer__btn" data-action="visibility" type="button" title="Видимость">👁</button>
-                </div>
+                <div class="gis-layer__menu-pop" hidden></div>
               </div>
             </div>
             <span class="name">ЗСН (Росреестр)</span>
@@ -670,13 +665,14 @@
           <div class="gis-layer__head">
             <div class="gis-layer__controls">
               <span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>
+              <div class="gis-layer__icons">
+                <button class="gis-layer__btn" data-action="table" data-ord="0" type="button" title="Таблица атрибутов">▤</button>
+                <button class="gis-layer__btn" data-action="edit" data-ord="1" type="button" title="Включить редактирование">✏</button>
+                <button class="gis-layer__btn" data-action="visibility" data-ord="2" type="button" title="Видимость">👁</button>
+              </div>
               <div class="gis-layer__menu">
                 <button class="gis-layer__btn gis-layer__kebab" type="button" title="Действия">⋮</button>
-                <div class="gis-layer__menu-pop" hidden>
-                  <button class="gis-layer__btn" data-action="table" type="button" title="Таблица атрибутов">▤</button>
-                  <button class="gis-layer__btn" data-action="edit" type="button" title="Включить редактирование">✏</button>
-                  <button class="gis-layer__btn" data-action="visibility" type="button" title="Видимость">👁</button>
-                </div>
+                <div class="gis-layer__menu-pop" hidden></div>
               </div>
             </div>
             <span class="name">Мои поля</span>
@@ -3730,16 +3726,46 @@
     /* ─── Ресайз: ширина левого сайдбара и высота атрибутивной таблицы ─── */
     var gisUiEl = document.querySelector('.gis-ui');
 
-    /* При достаточной ширине сайдбара — выводим иконки из кебаба в плашку
-       (класс .gis-wide-icons на #gis-left); иначе всё спрятано в кебаб (⋮). */
-    var ICON_WIDE_THRESHOLD = 340;
-    function updateSidebarIconMode() {
-      if (!leftPane) return;
-      var w = leftPane.getBoundingClientRect().width;
-      leftPane.classList.toggle('gis-wide-icons', w >= ICON_WIDE_THRESHOLD);
+    /* Оверфлоу иконок плашки: показываем в ряд столько, сколько влезает,
+       остальные прячем в кебаб (⋮). При расширении сайдбара — часть иконок
+       возвращается из кебаба в ряд. Порядок задаётся data-ord. */
+    function distributeChipIcons(chip) {
+      var controls = chip.querySelector('.gis-layer__controls');
+      var box = chip.querySelector('.gis-layer__icons');
+      var menu = chip.querySelector('.gis-layer__menu');
+      if (!controls || !box || !menu) return;
+      var pop = menu.querySelector('.gis-layer__menu-pop');
+      if (!pop) return;
+      if (chip.offsetParent === null && controls.clientWidth === 0) return; /* скрыт */
+
+      /* Собрать все иконки и выложить их в ряд по порядку data-ord. */
+      var icons = Array.prototype.slice.call(box.children)
+        .concat(Array.prototype.slice.call(pop.children));
+      icons.sort(function (a, b) {
+        return (+(a.getAttribute('data-ord') || 0)) - (+(b.getAttribute('data-ord') || 0));
+      });
+      icons.forEach(function (el) { box.appendChild(el); });
+
+      /* Всё влезает — кебаб не нужен. */
+      menu.style.display = 'none';
+      pop.hidden = true;
+      if (controls.scrollWidth <= controls.clientWidth + 1) return;
+
+      /* Есть переполнение — показываем кебаб и переносим иконки с конца. */
+      menu.style.display = '';
+      var i = icons.length - 1;
+      while (controls.scrollWidth > controls.clientWidth + 1 && i >= 0) {
+        pop.insertBefore(icons[i], pop.firstChild);
+        i--;
+      }
     }
-    updateSidebarIconMode();
-    window.addEventListener('resize', updateSidebarIconMode);
+    function redistributeAllChips() {
+      document.querySelectorAll('.gis-layer').forEach(distributeChipIcons);
+    }
+    window.__gisRedistribute = redistributeAllChips;
+    redistributeAllChips();
+    window.addEventListener('resize', redistributeAllChips);
+    window.addEventListener('load', redistributeAllChips);
 
     (function () {
       if (!leftResize || !gisUiEl) return;
@@ -3752,7 +3778,7 @@
         if (!dragging) return;
         var w = Math.max(200, Math.min(window.innerWidth * 0.6, e.clientX));
         gisUiEl.style.setProperty('--gis-left-w', w + 'px');
-        updateSidebarIconMode();
+        redistributeAllChips();
       });
       window.addEventListener('mouseup', function () {
         if (!dragging) return;
@@ -5912,6 +5938,8 @@
           toggle.textContent = collapsed ? '▸' : '▾';
           f.collapsed = collapsed;
           patchFolder(f.id, { collapsed: collapsed }).catch(function () {});
+          /* При раскрытии папки её плашки стали видимы — пересчитать иконки. */
+          if (!collapsed && window.__gisRedistribute) window.__gisRedistribute();
         });
         visBox.addEventListener('mousedown', function () { fEl.setAttribute('draggable', 'false'); });
         ['mouseup', 'mouseleave'].forEach(function (ev) {
@@ -6021,8 +6049,10 @@
         var editingGeom = !!(typeof gupEdit !== 'undefined' && gupEdit.active &&
           gupEdit.layer && gupEdit.layer.id === L.id);
 
-        /* Кебаб (⋮) — в крайнем правом положении. Все иконки живут в его
-           всплывашке; при широком сайдбаре CSS выводит их в ряд в плашке. */
+        /* Иконки живут в ряду (.gis-layer__icons); что не влезло — уходит в
+           кебаб (⋮, крайний правый) распределителем distributeChipIcons. */
+        var iconsBox = document.createElement('div');
+        iconsBox.className = 'gis-layer__icons';
         var menuWrap = document.createElement('div');
         menuWrap.className = 'gis-layer__menu';
         var kebab = document.createElement('button');
@@ -6031,39 +6061,41 @@
         var pop = document.createElement('div');
         pop.className = 'gis-layer__menu-pop'; pop.hidden = true;
 
-        /* Порядок: цвет, чекбокс, приблизить, геометрия, видимость,
+        /* Порядок (data-ord): цвет, чекбокс, приблизить, геометрия, видимость,
            раскраска, таблица. */
         var colorEl = document.createElement('input');
         colorEl.type = 'color'; colorEl.className = 'gis-layer__swatch';
-        colorEl.setAttribute('data-a', 'color'); colorEl.value = L.color; colorEl.title = 'Цвет слоя';
+        colorEl.setAttribute('data-a', 'color'); colorEl.setAttribute('data-ord', '0');
+        colorEl.value = L.color; colorEl.title = 'Цвет слоя';
         var selEl = document.createElement('input');
         selEl.type = 'checkbox'; selEl.className = 'gis-layer__sel';
-        selEl.title = 'Отметить слой для удаления';
+        selEl.setAttribute('data-ord', '1'); selEl.title = 'Отметить слой для удаления';
         var zoomBtn = document.createElement('button');
         zoomBtn.className = 'gis-layer__btn'; zoomBtn.type = 'button';
-        zoomBtn.setAttribute('data-a', 'zoom'); zoomBtn.title = 'Приблизить к слою';
-        zoomBtn.textContent = '⤢';
+        zoomBtn.setAttribute('data-a', 'zoom'); zoomBtn.setAttribute('data-ord', '2');
+        zoomBtn.title = 'Приблизить к слою'; zoomBtn.textContent = '⤢';
         var geomBtn = document.createElement('button');
         geomBtn.className = 'gis-layer__btn' + (editingGeom ? ' active' : '');
-        geomBtn.type = 'button'; geomBtn.setAttribute('data-a', 'geom'); geomBtn.title = 'Геометрия';
-        geomBtn.textContent = '✎';
+        geomBtn.type = 'button'; geomBtn.setAttribute('data-a', 'geom');
+        geomBtn.setAttribute('data-ord', '3'); geomBtn.title = 'Геометрия'; geomBtn.textContent = '✎';
         var visEl = document.createElement('button');
         visEl.className = 'gis-layer__btn' + (vis ? ' active' : '');
         visEl.type = 'button'; visEl.setAttribute('data-a', 'vis');
-        visEl.title = 'Видимость'; visEl.textContent = '👁';
+        visEl.setAttribute('data-ord', '4'); visEl.title = 'Видимость'; visEl.textContent = '👁';
         var styleBtn = document.createElement('button');
         styleBtn.className = 'gis-layer__btn' + (themed ? ' active' : '');
-        styleBtn.type = 'button'; styleBtn.setAttribute('data-a', 'style'); styleBtn.title = 'Раскраска';
-        styleBtn.textContent = '🎨';
+        styleBtn.type = 'button'; styleBtn.setAttribute('data-a', 'style');
+        styleBtn.setAttribute('data-ord', '5'); styleBtn.title = 'Раскраска'; styleBtn.textContent = '🎨';
         var tableBtn = document.createElement('button');
         tableBtn.className = 'gis-layer__btn'; tableBtn.type = 'button';
-        tableBtn.setAttribute('data-a', 'attrs'); tableBtn.title = 'Таблица атрибутов';
-        tableBtn.textContent = '▤';
+        tableBtn.setAttribute('data-a', 'attrs'); tableBtn.setAttribute('data-ord', '6');
+        tableBtn.title = 'Таблица атрибутов'; tableBtn.textContent = '▤';
 
-        pop.appendChild(colorEl); pop.appendChild(selEl); pop.appendChild(zoomBtn);
-        pop.appendChild(geomBtn); pop.appendChild(visEl); pop.appendChild(styleBtn);
-        pop.appendChild(tableBtn);
+        iconsBox.appendChild(colorEl); iconsBox.appendChild(selEl); iconsBox.appendChild(zoomBtn);
+        iconsBox.appendChild(geomBtn); iconsBox.appendChild(visEl); iconsBox.appendChild(styleBtn);
+        iconsBox.appendChild(tableBtn);
         menuWrap.appendChild(kebab); menuWrap.appendChild(pop);
+        controls.appendChild(iconsBox);
         controls.appendChild(menuWrap);
 
         var nameSpan = makeNameSpan(L);
@@ -6157,6 +6189,8 @@
         var container = layerContainer(L);
         if (atTop && container === listEl) listEl.insertBefore(div, listEl.firstChild);
         else container.appendChild(div);
+        /* Распределить иконки: что не влезло — в кебаб. */
+        if (typeof distributeChipIcons === 'function') distributeChipIcons(div);
       }
 
       function ingest(L, atTop, vis) {
