@@ -714,8 +714,8 @@
       <button id="gis-attrtable-toggle" type="button" title="Атрибутивная таблица активного слоя">▤</button>
       <span class="sep"></span>
       <button data-tool="select" type="button" title="Выделение">☞</button>
-      <button data-tool="pick_select" type="button" title="Множественный выбор кликами: кликайте по объектам, чтобы добавлять/убирать их из выбора." disabled>☑</button>
-      <button data-tool="lasso_select" type="button" title="Множественный выбор полигоном: кликами обведите объекты произвольным контуром (двойной клик — выбрать). Лассо можно повторять — выбор накапливается." disabled>▦</button>
+      <button data-tool="pick_select" type="button" title="Множественный выбор кликами: кликайте по объектам, чтобы добавлять/убирать их из выбора.">☑</button>
+      <button data-tool="lasso_select" type="button" title="Множественный выбор полигоном: кликами обведите объекты произвольным контуром (двойной клик — выбрать). Лассо можно повторять — выбор накапливается.">▦</button>
       <span class="sep"></span>
       <button data-tool="draw_polygon"     type="button" title="Полигон" disabled>⬡</button>
       <button data-tool="draw_line_string" type="button" title="Линия"   disabled>╱</button>
@@ -1459,11 +1459,22 @@
       }
       if (layerState.userfields.editable) return;
       renderFarmlandCard(props);
+      /* Подсветить строку в открытой таблице (без правки геометрии). */
+      if (props.id != null && window.__gisAttr && window.__gisAttr.selectFeature) {
+        window.__gisAttr.selectFeature('farmlands', props.id);
+      }
     });
     map.on('click', 'userfields-fill', function (e) {
+      if ((typeof pickSelectState !== 'undefined' && pickSelectState) ||
+          (typeof lassoSelectState !== 'undefined' && lassoSelectState)) return;
       if (layerState.userfields.editable) return;
       if (!e.features.length) return;
-      renderUserfieldCard(e.features[0].properties || {});
+      var uprops = e.features[0].properties || {};
+      var uid = (e.features[0].id != null) ? e.features[0].id : uprops.id;
+      renderUserfieldCard(uprops);
+      if (uid != null && window.__gisAttr && window.__gisAttr.selectFeature) {
+        window.__gisAttr.selectFeature('userfields', uid);
+      }
     });
 
     /* ──────────────────────── mapbox-gl-draw ──────────────────────── */
@@ -1590,11 +1601,14 @@
              (gupEdit.active && (gupIdMap[sid] != null || gupFindCreateIdx(sid) >= 0));
     }
 
-    /* Включить/выключить кнопки тулбара (кроме select / save / discard). */
+    /* Включить/выключить кнопки тулбара. Инструменты выделения (select /
+       pick_select / lasso_select) доступны всегда — они не зависят от режима
+       правки геометрии (можно выделять/подсвечивать объекты и без правки). */
     function setToolbarEnabled(on) {
       document.querySelectorAll('.gis-toolbar button[data-tool]').forEach(function (b) {
         var t = b.getAttribute('data-tool');
-        if (t === 'select' || t === 'save' || t === 'discard') return;
+        if (t === 'select' || t === 'save' || t === 'discard' ||
+            t === 'pick_select' || t === 'lasso_select') return;
         b.disabled = !on;
         if (!on) b.classList.remove('active');
       });
@@ -2303,7 +2317,10 @@
         if (tool === 'save')    { commitPending();  return; }
         if (tool === 'discard') { discardPending(); return; }
         if (tool !== 'trash') highlightTool(tool);
-        if (!drawAdded && tool !== 'select') return;
+        /* Инструменты выделения работают и без режима правки (drawAdded);
+           остальные (рисование/разрез/буфер) — только когда draw активен. */
+        if (!drawAdded && tool !== 'select' &&
+            tool !== 'pick_select' && tool !== 'lasso_select') return;
         /* Любой инструмент кроме выделения выходит из режимов выбора. */
         if (tool !== 'lasso_select' && tool !== 'pick_select') cancelSelectModes();
 
@@ -3114,8 +3131,9 @@
             { source: 'farmlands', sourceLayer: 'farmlands', id: id },
             { selected: on });
         } else if (layer && layer.indexOf('gisup:') === 0) {
-          /* Загруженные SHP-слои: подсветка на карте не поддерживается
-             (нет selected-стиля), синхронизируем только строку таблицы. */
+          /* Загруженные SHP-слои: подсветка через отдельный highlight-слой
+             (feature-state 'selected'); хелпер знает source/source-layer. */
+          if (window.__gisUpSetSel) window.__gisUpSetSel(layer.slice(6), id, on);
           return;
         } else {
           map.setFeatureState({ source: 'userfields', id: id }, { selected: on });
@@ -3165,22 +3183,57 @@
       }
     }
 
+    /* Целевой слой для инструментов выделения. Работают и без правки:
+       приоритет — слой открытой атрибутивной таблицы (ЗСН / Мои поля),
+       затем редактируемый слой, затем видимый статический. */
+    function selectionTargetLayer() {
+      var t = (window.__gisAttr && window.__gisAttr.currentLayer)
+        ? window.__gisAttr.currentLayer() : null;
+      if (t === 'farmlands' || t === 'userfields') return t;
+      var e = currentEditableLayer();
+      if (e) return e;
+      if (layerState.userfields.visible) return 'userfields';
+      if (layerState.farmlands.visible) return 'farmlands';
+      return null;
+    }
+
+    /* Временное подключение draw для лассо вне режима правки (нужен
+       draw_polygon для рисования контура выбора). */
+    var selectDrawTemp = false;
+    function ensureSelectDraw() {
+      if (drawAdded) return;
+      map.addControl(draw);
+      drawAdded = true;
+      selectDrawTemp = true;
+      if (map.getLayer('snap-indicator')) { try { map.moveLayer('snap-indicator'); } catch (_) {} }
+    }
+    function releaseSelectDraw() {
+      if (!selectDrawTemp) return;
+      if (currentEditableLayer() || (typeof gupEdit !== 'undefined' && gupEdit.active)) return;
+      try { draw.deleteAll(); } catch (_) {}
+      try { map.removeControl(draw); } catch (_) {}
+      drawAdded = false;
+      selectDrawTemp = false;
+    }
+
     /* Выход из обоих режимов выделения (без снятия самого выбора). */
     function cancelSelectModes() {
       lassoSelectState = false;
       pickSelectState = false;
+      releaseSelectDraw();
     }
     /* Обратная совместимость со старыми вызовами. */
     function cancelLassoSelect() { cancelSelectModes(); }
 
     function startLassoSelect() {
-      var layer = currentEditableLayer();
-      if (!layer) { toast('Включите редактирование слоя для выделения.', true); return; }
+      var layer = selectionTargetLayer();
+      if (!layer) { toast('Нет активного слоя (ЗСН / Мои поля) для выделения.', true); return; }
       cancelSplit();
       cancelRingCut();
       cancelBuffer();
       pickSelectState = false;
       lassoSelectState = true;
+      ensureSelectDraw();
       try { draw.changeMode('draw_polygon'); } catch (_) {}
       highlightTool('lasso_select');
       var h = document.getElementById('gis-toolbar-hint');
@@ -3189,14 +3242,14 @@
 
     /* Режим клик-выбора: каждый клик по объекту тогглит его в выборе. */
     function startPickSelect() {
-      var layer = currentEditableLayer();
-      if (!layer) { toast('Включите редактирование слоя для выделения.', true); return; }
+      var layer = selectionTargetLayer();
+      if (!layer) { toast('Нет активного слоя (ЗСН / Мои поля) для выделения.', true); return; }
       cancelSplit();
       cancelRingCut();
       cancelBuffer();
       lassoSelectState = false;
       pickSelectState = true;
-      try { draw.changeMode('simple_select'); } catch (_) {}
+      if (drawAdded) { try { draw.changeMode('simple_select'); } catch (_) {} }
       highlightTool('pick_select');
       var h = document.getElementById('gis-toolbar-hint');
       if (h) h.textContent = '☑ Кликайте по объектам, чтобы выбрать/снять · 🗑 удалить · ☞ для выхода.';
@@ -3204,7 +3257,7 @@
 
     /* Тоггл одного объекта под точкой (для клик-выбора). */
     function pickSelectAt(point) {
-      var layer = currentEditableLayer();
+      var layer = selectionTargetLayer();
       if (!layer) return;
       var layerId = layer === 'farmlands' ? 'farmlands-fill' : 'userfields-fill';
       var feats = [];
@@ -3224,7 +3277,7 @@
       var draftId = lassoFeat.id;
       try { draw.delete(draftId); } catch (_) {}
       var lasso = { type: 'Feature', properties: {}, geometry: lassoFeat.geometry };
-      var layer = massSel.layer || currentEditableLayer();
+      var layer = massSel.layer || selectionTargetLayer();
       var added = 0;
 
       if (layer === 'userfields') {
@@ -5117,6 +5170,15 @@
           if (!dynLayers['gisup:' + layerId]) return;
           selectDynFromMap(layerId, fid);
         },
+        /* Слой открытой таблицы (или null, если закрыта) — для инструментов
+           выделения на карте. */
+        currentLayer: function () { return state.open ? state.layer : null; },
+        /* Клик по объекту статического слоя (ЗСН / Мои поля) на карте →
+           подсветить строку в таблице (работает и без правки геометрии). */
+        selectFeature: function (layer, id) {
+          if (!state.open || id == null) return;
+          selectFromMap(layer, id);
+        },
       };
 
       /* ─── Слушатели ─── */
@@ -5436,6 +5498,34 @@
           added.push(pt);
         }
         L._layerIds = added;
+
+        /* Highlight-слои подсветки выбранного объекта (feature-state
+           'selected'). Держим их отдельно от _layerIds, чтобы applyStyle
+           не перекрашивал их тематическим цветом. Ширина/радиус = 0, пока
+           объект не выбран. Подсветка работает и без правки геометрии. */
+        var hlIds = [];
+        var selCase = ['boolean', ['feature-state', 'selected'], false];
+        if (k === 'polygon' || k === 'line' || k === 'other') {
+          var hlLine = 'gisup-hl-' + L.id;
+          map.addLayer({ id: hlLine, type: 'line', source: sid, 'source-layer': L.table_name,
+            filter: ['any', ['==', '$type', 'Polygon'], ['==', '$type', 'LineString']],
+            paint: { 'line-color': '#e91e63',
+                     'line-width': ['case', selCase, 3.5, 0],
+                     'line-opacity': ['case', selCase, 1, 0] } });
+          hlIds.push(hlLine);
+        }
+        if (k === 'point' || k === 'other') {
+          var hlPt = 'gisup-hlpt-' + L.id;
+          map.addLayer({ id: hlPt, type: 'circle', source: sid, 'source-layer': L.table_name,
+            filter: ['==', '$type', 'Point'],
+            paint: { 'circle-radius': ['case', selCase, 7, 0],
+                     'circle-color': 'rgba(233,30,99,0.25)',
+                     'circle-stroke-color': '#e91e63',
+                     'circle-stroke-width': ['case', selCase, 2.5, 0] } });
+          hlIds.push(hlPt);
+        }
+        L._hlIds = hlIds;
+
         added.forEach(function (lid) {
           map.on('click', lid, function (e) {
             var ft = e.features && e.features[0];
@@ -5455,10 +5545,21 @@
       }
 
       function setVisible(L, vis) {
-        (L._layerIds || []).forEach(function (lid) {
+        (L._layerIds || []).concat(L._hlIds || []).forEach(function (lid) {
           if (map.getLayer(lid)) map.setLayoutProperty(lid, 'visibility', vis ? 'visible' : 'none');
         });
       }
+      /* Подсветить/снять объект SHP-слоя на карте (feature-state 'selected').
+         Экспонируется наружу — из setSelState (клик/таблица). */
+      window.__gisUpSetSel = function (layerId, fid, on) {
+        var L = uploaded[layerId];
+        if (!L) return;
+        try {
+          map.setFeatureState(
+            { source: srcId(layerId), sourceLayer: L.table_name, id: fid },
+            { selected: !!on });
+        } catch (_) {}
+      };
       /* Перекрасить все слои карты, относящиеся к L, по текущему L.style
          (или переданному override-стилю для живого предпросмотра).
          Тип paint-свойства зависит от типа слоя (fill/line/circle). */
@@ -5482,7 +5583,7 @@
         });
       }
       function removeFromMap(L) {
-        (L._layerIds || []).forEach(function (lid) { if (map.getLayer(lid)) map.removeLayer(lid); });
+        (L._layerIds || []).concat(L._hlIds || []).forEach(function (lid) { if (map.getLayer(lid)) map.removeLayer(lid); });
         var sid = srcId(L.id);
         if (map.getSource(sid)) map.removeSource(sid);
       }
