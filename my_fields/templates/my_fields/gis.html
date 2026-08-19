@@ -1459,10 +1459,9 @@
       }
       if (layerState.userfields.editable) return;
       renderFarmlandCard(props);
-      /* Подсветить строку в открытой таблице (без правки геометрии). */
-      if (props.id != null && window.__gisAttr && window.__gisAttr.selectFeature) {
-        window.__gisAttr.selectFeature('farmlands', props.id);
-      }
+      /* Подсветку строки в таблице делает отдельный слушатель модуля
+         таблицы (см. attrTableModule) — здесь не дублируем, иначе двойной
+         вызов selectFromMap давал рассинхрон «через один объект». */
     });
     map.on('click', 'userfields-fill', function (e) {
       if ((typeof pickSelectState !== 'undefined' && pickSelectState) ||
@@ -1470,11 +1469,8 @@
       if (layerState.userfields.editable) return;
       if (!e.features.length) return;
       var uprops = e.features[0].properties || {};
-      var uid = (e.features[0].id != null) ? e.features[0].id : uprops.id;
       renderUserfieldCard(uprops);
-      if (uid != null && window.__gisAttr && window.__gisAttr.selectFeature) {
-        window.__gisAttr.selectFeature('userfields', uid);
-      }
+      /* Подсветка строки — в attrTableModule (см. ниже), без дублирования. */
     });
 
     /* ──────────────────────── mapbox-gl-draw ──────────────────────── */
@@ -3117,6 +3113,9 @@
     var lassoSelectState = false;
     var pickSelectState = false;
     var massSel = { layer: null, ids: new Set(), feats: new Map() };
+    /* Активен ли режим множественного выбора (☑/▦) — чтобы слушатели
+       синхронизации таблицы не перехватывали клики выбора. */
+    window.__gisSelectionActive = function () { return lassoSelectState || pickSelectState; };
 
     function currentEditableLayer() {
       if (layerState.farmlands.editable) return 'farmlands';
@@ -3234,7 +3233,12 @@
       pickSelectState = false;
       lassoSelectState = true;
       ensureSelectDraw();
-      try { draw.changeMode('draw_polygon'); } catch (_) {}
+      /* changeMode откладываем на следующий тик: сразу после addControl(draw)
+         контрол ещё не полностью проинициализирован, и draw_polygon мог не
+         запуститься (лассо «не работало»). */
+      setTimeout(function () {
+        if (lassoSelectState) { try { draw.changeMode('draw_polygon'); } catch (_) {} }
+      }, 0);
       highlightTool('lasso_select');
       var h = document.getElementById('gis-toolbar-hint');
       if (h) h.textContent = '▦ Кликами обведите объекты · двойной клик — выбрать · 🗑 удалить · ☞ для выхода.';
@@ -5248,12 +5252,14 @@
       /* Двусторонняя синхронизация: клик по полигону на карте → строка.
          Доп. слушатели (не мешают существующим обработчикам click). */
       map.on('click', 'farmlands-fill', function (e) {
+        if (window.__gisSelectionActive && window.__gisSelectionActive()) return;
         if (!state.open || !e.features.length) return;
         var ft = e.features[0];
         var id = (ft.id != null) ? ft.id : (ft.properties && ft.properties.id);
         selectFromMap('farmlands', id);
       });
       map.on('click', 'userfields-fill', function (e) {
+        if (window.__gisSelectionActive && window.__gisSelectionActive()) return;
         if (!state.open || !e.features.length) return;
         var ft = e.features[0];
         var id = (ft.id != null) ? ft.id : (ft.properties && ft.properties.id);
