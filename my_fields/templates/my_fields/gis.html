@@ -728,7 +728,8 @@
         <div class="label">Картографическая подложка</div>
         <div class="row">
           <button data-basemap="osm"  class="active" type="button">OSM</button>
-          <button data-basemap="sat"  type="button">Спутник</button>
+          <button data-basemap="sat"  type="button">Спутник (Esri)</button>
+          <button data-basemap="gsat" type="button">Google</button>
           <button data-basemap="none" type="button">Без</button>
         </div>
       </div>
@@ -894,6 +895,13 @@
       sat: {
         tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
         attribution: 'Tiles © Esri — World Imagery',
+      },
+      gsat: {
+        tiles: ['https://mt0.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+                'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+                'https://mt2.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+                'https://mt3.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'],
+        attribution: '© Google',
       },
     };
 
