@@ -304,6 +304,10 @@
     .gis-style-controls select.browser-default {
       display: block; width: 100%; height: 34px; padding: 4px 8px;
       border: 1px solid #ccc; border-radius: 5px; font-size: 13px; background: #fff; }
+    .gis-style-opacity { flex-basis: 100%; }
+    .gis-style-opacity input[type="range"] { width: 100%; margin-top: 2px; cursor: pointer; accent-color: #2e7d32; }
+    .gis-style-opacity #gis-style-opacity-val { color: #2e7d32; font-weight: 600; }
+    .gis-style-opacity .gis-style-opacity-note { color: #999; font-weight: 400; font-size: 11px; margin-left: 6px; }
     .gis-style-editor { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
     .gis-style-editor:empty { display: none; }
     .gis-style-item { display: grid; grid-template-columns: 26px 1fr auto; align-items: center; gap: 8px; }
@@ -813,6 +817,10 @@
             </label>
             <label id="gis-style-field-wrap" hidden>Поле
               <select id="gis-style-field" class="browser-default"></select>
+            </label>
+            <label class="gis-style-opacity">Непрозрачность заливки: <span id="gis-style-opacity-val">100%</span>
+              <span class="gis-style-opacity-note">0% — только контур</span>
+              <input type="range" id="gis-style-opacity" min="0" max="100" step="5" value="100">
             </label>
           </div>
           <div id="gis-style-editor" class="gis-style-editor"></div>
@@ -5733,6 +5741,8 @@
 
         added.forEach(function (lid) {
           map.on('click', lid, function (e) {
+            /* Слой заблокирован (замочек): объекты видны, но не выбираются. */
+            if (L.style && L.style.locked) return;
             var ft = e.features && e.features[0];
             if (!ft) return;
             showAttrs(ft.properties || {}, L);
@@ -5743,7 +5753,10 @@
               window.__gisAttr.select(L.id, fid);
             }
           });
-          map.on('mouseenter', lid, function () { map.getCanvas().style.cursor = 'pointer'; });
+          map.on('mouseenter', lid, function () {
+            if (L.style && L.style.locked) return;
+            map.getCanvas().style.cursor = 'pointer';
+          });
           map.on('mouseleave', lid, function () { map.getCanvas().style.cursor = ''; });
         });
         applyStyle(L);  /* best-effort тематическая раскраска (см. applyStyle) */
@@ -5781,18 +5794,30 @@
         var saved = L.style;
         if (overrideStyle !== undefined) L.style = overrideStyle;
         var col = styleColorExpr(L);
+        /* Прозрачность заливки: из style.opacity (0..1), иначе дефолт по типу
+           слоя (полигон 0.35, точка 1). Применяется к fill/circle; контур
+           (line) не трогаем, чтобы границы полигонов оставались чёткими. */
+        var effStyle = (overrideStyle !== undefined) ? (overrideStyle || {}) : (L.style || {});
         if (overrideStyle !== undefined) L.style = saved;
-        var prop = { fill: 'fill-color', line: 'line-color', circle: 'circle-color' };
+        var col2 = { fill: 'fill-color', line: 'line-color', circle: 'circle-color' };
+        var opProp = { fill: 'fill-opacity', circle: 'circle-opacity' };
+        var opDefault = { fill: 0.35, circle: 1 };
         (L._layerIds || []).forEach(function (lid) {
           var lyr = map.getLayer(lid);
-          if (!lyr || !prop[lyr.type]) return;
-          try {
-            map.setPaintProperty(lid, prop[lyr.type], col);
-          } catch (e) {
-            /* Невалидное style-выражение не должно ронять слой — откат на
-               сплошной цвет. */
-            if (window.console) console.warn('GIS: некорректный стиль слоя', L && L.id, e);
-            try { map.setPaintProperty(lid, prop[lyr.type], L.color); } catch (_) {}
+          if (!lyr) return;
+          if (col2[lyr.type]) {
+            try {
+              map.setPaintProperty(lid, col2[lyr.type], col);
+            } catch (e) {
+              /* Невалидное style-выражение не должно ронять слой — откат на
+                 сплошной цвет. */
+              if (window.console) console.warn('GIS: некорректный стиль слоя', L && L.id, e);
+              try { map.setPaintProperty(lid, col2[lyr.type], L.color); } catch (_) {}
+            }
+          }
+          if (opProp[lyr.type]) {
+            var op = (effStyle.opacity != null) ? effStyle.opacity : opDefault[lyr.type];
+            try { map.setPaintProperty(lid, opProp[lyr.type], op); } catch (_) {}
           }
         });
       }
@@ -6367,6 +6392,7 @@
           '<span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>';
 
         var themed = !!(L.style && L.style.mode && L.style.mode !== 'single');
+        var locked = !!(L.style && L.style.locked);
         var editingGeom = !!(typeof gupEdit !== 'undefined' && gupEdit.active &&
           gupEdit.layer && gupEdit.layer.id === L.id);
 
@@ -6411,10 +6437,17 @@
         tableBtn.className = 'gis-layer__btn'; tableBtn.type = 'button';
         tableBtn.setAttribute('data-a', 'attrs'); tableBtn.setAttribute('data-ord', '6');
         tableBtn.title = 'Таблица атрибутов'; tableBtn.textContent = '▤';
+        /* Замочек: объекты слоя видны, но не выбираются по клику на карте. */
+        var lockBtn = document.createElement('button');
+        lockBtn.className = 'gis-layer__btn' + (locked ? ' active' : '');
+        lockBtn.type = 'button'; lockBtn.setAttribute('data-a', 'lock');
+        lockBtn.setAttribute('data-ord', '7');
+        lockBtn.title = locked ? 'Разблокировать выбор объектов' : 'Заблокировать выбор объектов (только просмотр)';
+        lockBtn.textContent = locked ? '🔒' : '🔓';
 
         iconsBox.appendChild(colorEl); iconsBox.appendChild(selEl); iconsBox.appendChild(zoomBtn);
         iconsBox.appendChild(geomBtn); iconsBox.appendChild(visEl); iconsBox.appendChild(styleBtn);
-        iconsBox.appendChild(tableBtn);
+        iconsBox.appendChild(tableBtn); iconsBox.appendChild(lockBtn);
         menuWrap.appendChild(kebab); menuWrap.appendChild(pop);
         controls.appendChild(iconsBox);
         controls.appendChild(menuWrap);
@@ -6450,6 +6483,37 @@
         });
         zoomBtn.addEventListener('click', function () { pop.hidden = true; fitExtent(L.extent); });
         styleBtn.addEventListener('click', function () { pop.hidden = true; openStyleModal(L); });
+        lockBtn.addEventListener('click', function () {
+          pop.hidden = true;
+          var newLocked = !(L.style && L.style.locked);
+          /* Полная замена style на сервере — переносим текущий стиль + флаг. */
+          var newStyle = Object.assign(
+            {}, (L.style && typeof L.style === 'object') ? L.style : { mode: 'single' });
+          newStyle.locked = newLocked;
+          var prevStyle = L.style;
+          /* Оптимистично применяем: клик по объектам сразу (раз)блокируется. */
+          L.style = newStyle;
+          lockBtn.classList.toggle('active', newLocked);
+          lockBtn.textContent = newLocked ? '🔒' : '🔓';
+          lockBtn.title = newLocked ? 'Разблокировать выбор объектов' : 'Заблокировать выбор объектов (только просмотр)';
+          fetch(API + L.id + '/', {
+            method: 'PATCH', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({ style: newStyle }),
+          }).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+            .then(function (j) {
+              if (j && j.layer && j.layer.style) L.style = j.layer.style;
+              toast(newLocked ? 'Слой заблокирован от выбора' : 'Выбор объектов разблокирован');
+            })
+            .catch(function () {
+              L.style = prevStyle;
+              var back = !!(prevStyle && prevStyle.locked);
+              lockBtn.classList.toggle('active', back);
+              lockBtn.textContent = back ? '🔒' : '🔓';
+              lockBtn.title = back ? 'Разблокировать выбор объектов' : 'Заблокировать выбор объектов (только просмотр)';
+              toast('Не удалось сохранить блокировку', true);
+            });
+        });
         tableBtn.addEventListener('click', function () {
           pop.hidden = true;
           if (window.__gisAttr) window.__gisAttr.open('gisup:' + L.id);
@@ -6602,8 +6666,17 @@
       var styleEditor = document.getElementById('gis-style-editor');
       var styleHint = document.getElementById('gis-style-hint');
       var styleApplyBtn = document.getElementById('gis-stylemodal-apply');
+      var styleOpacityInp = document.getElementById('gis-style-opacity');
+      var styleOpacityVal = document.getElementById('gis-style-opacity-val');
       var styleLayer = null;   /* редактируемый слой */
       var styleOtherColor = '#cccccc';
+
+      /* Текущее значение слайдера прозрачности как доля 0..1. */
+      function styleOpacityValue() {
+        var pct = parseInt(styleOpacityInp.value, 10);
+        if (isNaN(pct)) pct = 100;
+        return Math.max(0, Math.min(100, pct)) / 100;
+      }
 
       function isNumericType(t) { return !!NUMERIC_TYPES[t]; }
 
@@ -6617,34 +6690,46 @@
         styleFieldSel.innerHTML = '<option value="">— выберите поле —</option>' + opts.join('');
       }
 
-      /* Собрать style-объект из текущего состояния редактора. */
+      /* Собрать style-объект из текущего состояния редактора. Прозрачность
+         (opacity) и блокировка выбора (locked) — сквозные опции: не зависят
+         от режима раскраски, поэтому добавляются к любому результату. */
       function collectStyle() {
         var mode = styleModeSel.value;
-        if (mode === 'single') return { mode: 'single' };
-        var field = styleFieldSel.value;
-        if (!field) return null;
-        if (mode === 'categorical') {
-          var cats = [];
-          styleEditor.querySelectorAll('.gis-style-item[data-cat]').forEach(function (row) {
-            cats.push({ value: row.getAttribute('data-cat'),
-                        color: row.querySelector('input[type="color"]').value });
-          });
-          if (!cats.length) return null;
-          return { mode: 'categorical', field: field, categories: cats, other_color: styleOtherColor };
+        var base;
+        if (mode === 'single') {
+          base = { mode: 'single' };
+        } else {
+          var field = styleFieldSel.value;
+          if (!field) return null;
+          if (mode === 'categorical') {
+            var cats = [];
+            styleEditor.querySelectorAll('.gis-style-item[data-cat]').forEach(function (row) {
+              cats.push({ value: row.getAttribute('data-cat'),
+                          color: row.querySelector('input[type="color"]').value });
+            });
+            if (!cats.length) return null;
+            base = { mode: 'categorical', field: field, categories: cats, other_color: styleOtherColor };
+          } else {
+            var stops = [];
+            styleEditor.querySelectorAll('.gis-style-item[data-stop]').forEach(function (row) {
+              var num = parseFloat(row.querySelector('input[type="number"]').value);
+              if (!isNaN(num)) stops.push({ value: num, color: row.querySelector('input[type="color"]').value });
+            });
+            if (stops.length < 2) return null;
+            base = { mode: 'graduated', field: field, stops: stops };
+          }
         }
-        var stops = [];
-        styleEditor.querySelectorAll('.gis-style-item[data-stop]').forEach(function (row) {
-          var num = parseFloat(row.querySelector('input[type="number"]').value);
-          if (!isNaN(num)) stops.push({ value: num, color: row.querySelector('input[type="color"]').value });
-        });
-        if (stops.length < 2) return null;
-        return { mode: 'graduated', field: field, stops: stops };
+        base.opacity = styleOpacityValue();
+        /* Сохранить текущее состояние замочка — иначе сохранение раскраски
+           (полная замена style) сбросило бы блокировку. */
+        if (styleLayer && styleLayer.style && styleLayer.style.locked) base.locked = true;
+        return base;
       }
 
       function previewStyle() {
         if (!styleLayer) return;
         var s = collectStyle();
-        applyStyle(styleLayer, s || { mode: 'single' });
+        applyStyle(styleLayer, s || { mode: 'single', opacity: styleOpacityValue() });
       }
 
       function catRow(value, label, count, color) {
@@ -6767,11 +6852,21 @@
         else renderGraduated(styleLayer, field);
       }
 
+      /* Обновить подпись процента у слайдера прозрачности. */
+      function syncStyleOpacityLabel() {
+        if (styleOpacityVal) styleOpacityVal.textContent = styleOpacityInp.value + '%';
+      }
+
       function openStyleModal(L) {
         styleLayer = L;
         var s = L.style || {};
         styleModeSel.value = s.mode || 'single';
         styleOtherColor = s.other_color || '#cccccc';
+        /* Прозрачность: из style.opacity, иначе дефолт по типу (полигон 35%). */
+        var defOp = (L.geom_kind === 'polygon' || L.geom_kind === 'other') ? 0.35 : 1;
+        var op = (s.opacity != null) ? s.opacity : defOp;
+        styleOpacityInp.value = Math.round(Math.max(0, Math.min(1, op)) * 100);
+        syncStyleOpacityLabel();
         document.getElementById('gis-stylemodal-title').textContent = 'Раскраска слоя: ' + L.title;
         renderStyleEditor();
         styleModal.hidden = false;
@@ -6784,6 +6879,10 @@
 
       styleModeSel.addEventListener('change', renderStyleEditor);
       styleFieldSel.addEventListener('change', renderStyleEditor);
+      styleOpacityInp.addEventListener('input', function () {
+        syncStyleOpacityLabel();
+        previewStyle();
+      });
       styleModal.querySelectorAll('[data-style-close]').forEach(function (el) {
         el.addEventListener('click', function () { closeStyleModal(true); });
       });

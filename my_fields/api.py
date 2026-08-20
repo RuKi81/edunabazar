@@ -805,12 +805,32 @@ def _normalize_graduated(value: Any, field: str):
     return {'mode': 'graduated', 'field': field, 'stops': stops}, None
 
 
+def _attach_display_opts(style: dict, value: dict) -> dict:
+    """Добавить к нормализованному стилю сквозные опции отображения слоя.
+
+    ``opacity`` — прозрачность заливки полигонов/точек (float, клипуется в
+    [0, 1]); ``locked`` — запрет выбора объектов слоя по клику на карте (bool).
+    Обе опции не зависят от режима раскраски. Некорректная ``opacity`` тихо
+    игнорируется (не роняем сохранение стиля).
+    """
+    opacity = value.get('opacity')
+    if opacity is not None:
+        try:
+            style['opacity'] = max(0.0, min(1.0, float(opacity)))
+        except (TypeError, ValueError):
+            pass
+    if 'locked' in value:
+        style['locked'] = bool(value.get('locked'))
+    return style
+
+
 def _normalize_style(value: Any, layer: GisLayer):
     """Валидировать и нормализовать style-конфиг раскраски слоя.
 
     Возвращает ``(style_dict, None)`` при успехе или ``(None, error_msg)``.
     ``single`` (или пустой) → ``{'mode': 'single'}``. Для categorical/graduated
-    поле должно присутствовать в ``layer.attributes``.
+    поле должно присутствовать в ``layer.attributes``. Сквозные опции
+    отображения (``opacity``, ``locked``) сохраняются при любом режиме.
     """
     if value in (None, '', {}):
         return {'mode': 'single'}, None
@@ -820,17 +840,22 @@ def _normalize_style(value: Any, layer: GisLayer):
     mode = value.get('mode', 'single')
     if mode not in _STYLE_MODES:
         return None, 'неизвестный mode'
+
     if mode == 'single':
-        return {'mode': 'single'}, None
+        base, err = {'mode': 'single'}, None
+    else:
+        field = value.get('field')
+        valid_fields = {a.get('db') for a in (layer.attributes or [])}
+        if not isinstance(field, str) or field not in valid_fields:
+            return None, 'field не найден среди атрибутов слоя'
+        if mode == 'categorical':
+            base, err = _normalize_categorical(value, field)
+        else:
+            base, err = _normalize_graduated(value, field)
 
-    field = value.get('field')
-    valid_fields = {a.get('db') for a in (layer.attributes or [])}
-    if not isinstance(field, str) or field not in valid_fields:
-        return None, 'field не найден среди атрибутов слоя'
-
-    if mode == 'categorical':
-        return _normalize_categorical(value, field)
-    return _normalize_graduated(value, field)
+    if err:
+        return None, err
+    return _attach_display_opts(base, value), None
 
 
 def _require_gis_authenticated(request: HttpRequest):

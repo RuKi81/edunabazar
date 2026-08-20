@@ -280,6 +280,45 @@ class GisFeaturesTestCase(TestCase):
         r = self._patch_layer({'style': {'mode': 'single'}})
         self.assertEqual(r.status_code, 403)
 
+    def test_style_opacity_stored_and_clamped(self):
+        self._login('editor')
+        r = self._patch_layer({'style': {'mode': 'single', 'opacity': 0.5}})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.layer.refresh_from_db()
+        self.assertEqual(self.layer.style['opacity'], 0.5)
+        # Вне [0, 1] — клипуется.
+        self._patch_layer({'style': {'mode': 'single', 'opacity': 5}})
+        self.layer.refresh_from_db()
+        self.assertEqual(self.layer.style['opacity'], 1.0)
+
+    def test_style_opacity_with_categorical(self):
+        self._login('editor')
+        r = self._patch_layer({'style': {
+            'mode': 'categorical', 'field': 'name', 'opacity': 0.2,
+            'categories': [{'value': 'Первое', 'color': '#FF0000'}]}})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.layer.refresh_from_db()
+        self.assertEqual(self.layer.style['mode'], 'categorical')
+        self.assertEqual(self.layer.style['opacity'], 0.2)
+
+    def test_style_invalid_opacity_ignored(self):
+        self._login('editor')
+        r = self._patch_layer({'style': {'mode': 'single', 'opacity': 'nope'}})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.layer.refresh_from_db()
+        self.assertNotIn('opacity', self.layer.style)
+
+    def test_style_locked_stored(self):
+        self._login('editor')
+        r = self._patch_layer({'style': {'mode': 'single', 'locked': True}})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.layer.refresh_from_db()
+        self.assertTrue(self.layer.style['locked'])
+        # Снятие блокировки сохраняется как False.
+        self._patch_layer({'style': {'mode': 'single', 'locked': False}})
+        self.layer.refresh_from_db()
+        self.assertFalse(self.layer.style['locked'])
+
     # ── field-stats endpoint ─────────────────────────────────────────────
     def test_field_stats_numeric(self):
         self._login('viewer')
