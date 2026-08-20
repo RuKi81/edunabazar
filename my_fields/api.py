@@ -1066,6 +1066,21 @@ def _parse_bbox(raw):
     return (minx, miny, maxx, maxy)
 
 
+def _gis_feature_rank(request: HttpRequest, layer, sort: str,
+                      direction: str, query_text: str) -> JsonResponse:
+    """Ответ на ``?rank_of=<fid>``: позиция объекта в текущем порядке/фильтре."""
+    from .services.shp_import import feature_rank
+    try:
+        fid = int(request.GET.get('rank_of'))
+    except (TypeError, ValueError):
+        return JsonResponse({'ok': False, 'error': 'invalid rank_of'},
+                            status=400)
+    info = feature_rank(layer, fid, sort=sort, direction=direction,
+                        query_text=query_text)
+    return JsonResponse({'ok': True, 'rank': info['rank'],
+                         'total': info['total']})
+
+
 @csrf_exempt
 @require_http_methods(['GET', 'POST'])
 def gis_layer_features(request: HttpRequest, pk: int) -> JsonResponse:
@@ -1102,18 +1117,8 @@ def gis_layer_features(request: HttpRequest, pk: int) -> JsonResponse:
     # rank_of=<fid>: 0-based позиция объекта в текущем порядке/фильтре — для
     # перехода таблицы на страницу с этой строкой при клике по полигону на
     # карте (двусторонняя синхронизация на слоях с сотнями тысяч объектов).
-    rank_of = request.GET.get('rank_of')
-    if rank_of is not None:
-        from .services.shp_import import feature_rank
-        try:
-            fid = int(rank_of)
-        except (TypeError, ValueError):
-            return JsonResponse({'ok': False, 'error': 'invalid rank_of'},
-                                status=400)
-        info = feature_rank(layer, fid, sort=sort, direction=direction,
-                            query_text=query_text)
-        return JsonResponse({'ok': True, 'rank': info['rank'],
-                             'total': info['total']})
+    if request.GET.get('rank_of') is not None:
+        return _gis_feature_rank(request, layer, sort, direction, query_text)
 
     from .services.shp_import import list_features
     try:
