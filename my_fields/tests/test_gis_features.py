@@ -415,3 +415,52 @@ class GisFeaturesTestCase(TestCase):
 
     def test_anonymous_create_401(self):
         self.assertEqual(self._post_feature(self.POLY).status_code, 401)
+
+    # ── rank_of: позиция объекта для перехода таблицы на его страницу ─────
+    def test_rank_of_default_sort(self):
+        # По умолчанию сортировка по id ASC → id=1 на позиции 0, id=2 — 1.
+        self._login('viewer')
+        r = self.client.get(self._features_url() + '?rank_of=1')
+        self.assertEqual(r.status_code, 200, r.content)
+        body = r.json()
+        self.assertEqual(body['rank'], 0)
+        self.assertEqual(body['total'], 2)
+        r2 = self.client.get(self._features_url() + '?rank_of=2')
+        self.assertEqual(r2.json()['rank'], 1)
+
+    def test_rank_of_respects_sort_dir(self):
+        # id DESC → id=2 первым (rank 0), id=1 вторым (rank 1).
+        self._login('viewer')
+        r = self.client.get(self._features_url() + '?rank_of=2&sort=id&dir=desc')
+        self.assertEqual(r.json()['rank'], 0)
+        r2 = self.client.get(self._features_url() + '?rank_of=1&sort=id&dir=desc')
+        self.assertEqual(r2.json()['rank'], 1)
+
+    def test_rank_of_respects_column_sort(self):
+        # Сортировка по cnt ASC: id=1 (cnt=3) перед id=2 (cnt=7).
+        self._login('viewer')
+        r = self.client.get(self._features_url() + '?rank_of=2&sort=cnt&dir=asc')
+        self.assertEqual(r.json()['rank'], 1)
+
+    def test_rank_of_filtered_out_returns_null(self):
+        # Поиск, под который объект не попадает → rank=None, total=1.
+        self._login('viewer')
+        r = self.client.get(self._features_url() + '?rank_of=2&q=Первое')
+        body = r.json()
+        self.assertIsNone(body['rank'])
+        self.assertEqual(body['total'], 1)
+
+    def test_rank_of_missing_id_returns_null(self):
+        self._login('viewer')
+        r = self.client.get(self._features_url() + '?rank_of=999999')
+        self.assertIsNone(r.json()['rank'])
+
+    def test_rank_of_invalid_400(self):
+        self._login('viewer')
+        r = self.client.get(self._features_url() + '?rank_of=abc')
+        self.assertEqual(r.status_code, 400)
+
+    def test_rank_of_requires_view(self):
+        self._login('nobody')
+        r = self.client.get(self._features_url() + '?rank_of=1')
+        self.assertEqual(r.status_code, 403)

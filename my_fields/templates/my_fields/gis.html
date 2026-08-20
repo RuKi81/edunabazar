@@ -5163,31 +5163,81 @@
       function selectFromMap(layer, id) {
         if (!state.open || id == null) return;
         if (editingCell) return;  // не рушим открытый редактор ячейки
-        var apply = function () {
+
+        /* Подсветка на карте (feature-state) применяется сразу — независимо от
+           того, удастся ли найти/подгрузить строку таблицы. */
+        var highlightMap = function () {
           clearSelHighlight();
           state.sel = { layer: layer, id: id };
           try { setSelState(layer, id, true); } catch (_) {}
-          highlightRow(String(id), true);
         };
-        if (layer !== state.layer) {
-          /* Динамический слой мог быть ещё не подгружен — тогда подсветим
-             строку в колбэке загрузки, иначе highlightRow не найдёт tr. */
-          if (dynLayers[layer] && !dynLayers[layer].loaded) {
-            clearSelHighlight();
+
+        /* Загруженные SHP-слои серверно-постраничны: строка почти наверняка не
+           на текущей странице (на сотнях тысяч объектов). Спрашиваем сервер о
+           позиции объекта в текущем порядке/фильтре и переходим на нужную
+           страницу, затем подсвечиваем строку. */
+        if (dynLayers[layer] && dynLayers[layer].serverPaged) {
+          highlightMap();
+          if (layer !== state.layer) {
             state.layer = layer;
             state.sortKey = defaultSortKey(layer);
             state.sortDir = 1;
             state.page = 0;
             state.total = 0;
             syncTabs();
-            loadDyn(layer, apply);
-            return;
           }
+          gotoDynRow(layer, id);
+          return;
+        }
+
+        var apply = function () {
+          highlightMap();
+          highlightRow(String(id), true);
+        };
+        if (layer !== state.layer) {
           setLayer(layer);
         } else {
           render();  // ЗСН: объект мог появиться/исчезнуть из видимой области
         }
         apply();
+      }
+
+      /* Перейти на страницу с объектом ``id`` активного SHP-слоя и подсветить
+         его строку. Позицию (rank) считает сервер под текущую сортировку и
+         поиск, поэтому подсветка работает на слоях любого размера. */
+      function gotoDynRow(layer, id) {
+        var def = dynLayers[layer];
+        if (!def) return;
+        var lid = layer.slice('gisup:'.length);
+        var qs = '?rank_of=' + encodeURIComponent(id) +
+                 '&sort=' + encodeURIComponent(state.sortKey || 'id') +
+                 '&dir=' + (state.sortDir === -1 ? 'desc' : 'asc');
+        if (state.query) qs += '&q=' + encodeURIComponent(state.query);
+        fetch('/me/gis/api/layers/' + lid + '/features/' + qs, {
+          credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        }).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+          .then(function (j) {
+            if (state.layer !== layer) return;  // вкладку успели переключить
+            if (!j || j.rank == null) {
+              toast('Объект не входит в текущий фильтр таблицы.', true);
+              return;
+            }
+            if (typeof j.total === 'number') state.total = j.total;
+            var targetPage = Math.floor(j.rank / state.pageSize);
+            if (targetPage === state.page && def.loaded &&
+                bodyEl.querySelector('tbody tr[data-id]')) {
+              highlightRow(String(id), true);
+            } else {
+              state.page = targetPage;
+              def.loaded = false;
+              loadDyn(layer, function () { highlightRow(String(id), true); });
+            }
+          })
+          .catch(function () {
+            /* Не удалось получить позицию — подсветим, если строка вдруг на
+               текущей странице. */
+            highlightRow(String(id), true);
+          });
       }
 
       /* Публичный вызов из карты (клик по SHP-полигону / выбор draw-объекта

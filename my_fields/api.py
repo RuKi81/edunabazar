@@ -1095,6 +1095,26 @@ def gis_layer_features(request: HttpRequest, pk: int) -> JsonResponse:
             'featurecollection': fc,
         })
 
+    sort = request.GET.get('sort', 'id') or 'id'
+    direction = request.GET.get('dir', 'asc')
+    query_text = request.GET.get('q', '')
+
+    # rank_of=<fid>: 0-based позиция объекта в текущем порядке/фильтре — для
+    # перехода таблицы на страницу с этой строкой при клике по полигону на
+    # карте (двусторонняя синхронизация на слоях с сотнями тысяч объектов).
+    rank_of = request.GET.get('rank_of')
+    if rank_of is not None:
+        from .services.shp_import import feature_rank
+        try:
+            fid = int(rank_of)
+        except (TypeError, ValueError):
+            return JsonResponse({'ok': False, 'error': 'invalid rank_of'},
+                                status=400)
+        info = feature_rank(layer, fid, sort=sort, direction=direction,
+                            query_text=query_text)
+        return JsonResponse({'ok': True, 'rank': info['rank'],
+                             'total': info['total']})
+
     from .services.shp_import import list_features
     try:
         limit = int(request.GET.get('limit', 1000))
@@ -1106,10 +1126,6 @@ def gis_layer_features(request: HttpRequest, pk: int) -> JsonResponse:
     except (TypeError, ValueError):
         offset = 0
     offset = max(0, offset)
-
-    sort = request.GET.get('sort', 'id') or 'id'
-    direction = request.GET.get('dir', 'asc')
-    query_text = request.GET.get('q', '')
 
     data = list_features(layer, limit=limit, offset=offset,
                          sort=sort, direction=direction, query_text=query_text)

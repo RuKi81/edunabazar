@@ -423,6 +423,62 @@ def list_features(layer, limit: int = 1000, offset: int = 0,
     return {'total': total, 'results': results}
 
 
+def feature_rank(layer, fid: int, sort: str = 'id', direction: str = 'asc',
+                 query_text: str = '') -> dict:
+    """0-based позиция объекта ``fid`` в текущем порядке/фильтре.
+
+    Нужна для двусторонней синхронизации карты и таблицы на слоях с сотнями
+    тысяч объектов: клик по полигону → определяем страницу с этой строкой
+    (``rank // page_size``) и переходим на неё, вместо тщетного поиска строки
+    в уже загруженной странице.
+
+    Порядок и фильтр поиска совпадают с :func:`list_features` (та же ``ORDER
+    BY``/``WHERE``), поэтому ``rank`` согласован с постраничной выдачей.
+
+    Возвращает ``{'rank': int|None, 'total': int}``. ``rank`` — ``None``, если
+    объект не найден или отфильтрован поиском.
+    """
+    types = _attr_db_types(layer)
+    cols = list(types.keys())
+    table = sql.Identifier(layer.table_name)
+
+    sort_col = sort if (sort == 'id' or sort in types) else 'id'
+    dir_sql = sql.SQL('DESC') if str(direction).lower() == 'desc' else sql.SQL('ASC')
+    order_by = sql.SQL('ORDER BY {c} {d} NULLS LAST, {id} ASC').format(
+        c=sql.Identifier(sort_col), d=dir_sql, id=sql.Identifier('id'))
+
+    q = (query_text or '').strip()
+    where_sql = sql.SQL('')
+    where_params: list = []
+    if q:
+        pattern = f'%{q}%'
+        search_cols = [sql.Identifier('id')] + [sql.Identifier(c) for c in cols]
+        ors = sql.SQL(' OR ').join(
+            sql.SQL('{}::text ILIKE %s').format(c) for c in search_cols)
+        where_sql = sql.SQL(' WHERE ({})').format(ors)
+        where_params = [pattern] * len(search_cols)
+
+    query = sql.SQL(
+        'SELECT rn, total FROM ('
+        'SELECT id, row_number() OVER ({order}) AS rn, '
+        'count(*) OVER () AS total FROM {table}{where}'
+        ') t WHERE id = %s'
+    ).format(order=order_by, table=table, where=where_sql)
+
+    with connection.cursor() as cur:
+        cur.execute(query, where_params + [fid])
+        row = cur.fetchone()
+    if not row:
+        # Объект отфильтрован поиском — вернём общий total без rank.
+        count_q = sql.SQL('SELECT count(*) FROM {table}{where}').format(
+            table=table, where=where_sql)
+        with connection.cursor() as cur:
+            cur.execute(count_q, where_params)
+            total = cur.fetchone()[0]
+        return {'rank': None, 'total': total}
+    return {'rank': int(row[0]) - 1, 'total': int(row[1])}
+
+
 def update_feature(layer, fid: int, props: dict) -> int:
     """Обновить атрибуты одного объекта. Возвращает число затронутых строк.
 
