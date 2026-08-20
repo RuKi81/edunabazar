@@ -5754,6 +5754,15 @@
           if (map.getLayer(lid)) map.setLayoutProperty(lid, 'visibility', vis ? 'visible' : 'none');
         });
       }
+      /* Видимость ТОЛЬКО базовых слоёв (заливка/контур/точки), без highlight.
+         В режиме правки геометрии базу прячем (правим в draw), а highlight-слой
+         оставляем видимым — иначе подсветка выбранного объекта (feature-state
+         'selected') не видна на карте. */
+      function setBaseVisible(L, vis) {
+        (L._layerIds || []).forEach(function (lid) {
+          if (map.getLayer(lid)) map.setLayoutProperty(lid, 'visibility', vis ? 'visible' : 'none');
+        });
+      }
       /* Подсветить/снять объект SHP-слоя на карте (feature-state 'selected').
          Экспонируется наружу — из setSelState (клик/таблица). */
       window.__gisUpSetSel = function (layerId, fid, on) {
@@ -5909,7 +5918,13 @@
           }
           persistedDrawIds.clear();
           try { draw.deleteAll(); } catch (_) {}
-          setVisible(L, false);   /* прячем MVT — правим точную геометрию в draw */
+          /* Прячем MVT-заливку (правим точную геометрию в draw), но highlight-
+             слой оставляем видимым — чтобы клик по строке/лупе подсвечивал
+             выбранный объект (feature-state 'selected') и в режиме правки. */
+          setBaseVisible(L, false);
+          (L._hlIds || []).forEach(function (lid) {
+            if (map.getLayer(lid)) map.setLayoutProperty(lid, 'visibility', 'visible');
+          });
           setToolbarEnabled(true);
           gupRestrictToolbar(L.geom_kind);
           try { draw.changeMode('simple_select'); } catch (_) {}
