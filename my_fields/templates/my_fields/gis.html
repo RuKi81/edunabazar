@@ -3320,6 +3320,9 @@
       } else {
         bar.hidden = true;
       }
+      /* Синхронизация подсветки строк открытой атрибутивной таблицы с текущим
+         выбором (лассо/клик на карте ИЛИ Ctrl/Shift-выбор в самой таблице). */
+      if (window.__gisAttrOnMassChange) { try { window.__gisAttrOnMassChange(); } catch (_) {} }
     }
 
     /* Целевой слой для инструментов выделения. Работают и без правки:
@@ -4844,6 +4847,7 @@
         usedFilter: '',          // фильтр is_used: '' | '1' | '0' | '-1'
         rows: [],
         sel: { layer: null, id: null },  // подсвеченная строка (на карте)
+        anchorId: null,          // якорь для Shift-выбора диапазона строк
         page: 0,                 // текущая страница (server-paged SHP-слои)
         pageSize: 100,           // объектов на странице (server-paged)
         total: 0,                // всего объектов на сервере (с учётом поиска)
@@ -5030,7 +5034,9 @@
           }).join('') + '</tr></thead>';
 
         var tbody = '<tbody>' + state.rows.map(function (r) {
-          var cls = (state.sel.layer === state.layer && String(state.sel.id) === String(r.id)) ? ' class="active"' : '';
+          var isActive = (massSel.layer === state.layer && massSel.ids.has(String(r.id))) ||
+                         (state.sel.layer === state.layer && String(state.sel.id) === String(r.id));
+          var cls = isActive ? ' class="active"' : '';
           var rowDirty = isRowDirty(r.id);
           var zoomTd = '<td class="gis-attrtable__zoom">' +
             '<button type="button" class="gis-attrtable__zoombtn" title="Приблизить к объекту">🔍</button></td>';
@@ -5103,17 +5109,28 @@
         }
         bodyEl.querySelectorAll('tbody tr').forEach(function (tr) {
           tr.addEventListener('click', function (e) {
-            /* Клик по 🔍 — только перелёт к объекту (+ выбор строки). */
+            var idStr = tr.getAttribute('data-id');
+            /* Клик по 🔍 — перелёт к объекту + выбор (одиночный). */
             if (e.target.closest('.gis-attrtable__zoombtn')) {
               e.stopPropagation();
-              onRowClick(tr.getAttribute('data-id'), true);
+              onRowClick(idStr, true);
+              return;
+            }
+            /* Мультивыбор (Ctrl/Cmd — тоггл, Shift — диапазон) в режиме правки
+               статических слоёв. Проверяем ДО инлайн-редактора, чтобы модификатор
+               по редактируемой ячейке добавлял строку в выбор, а не открывал
+               редактор. */
+            if (canMultiSelect() && (e.ctrlKey || e.metaKey || e.shiftKey)) {
+              e.preventDefault();
+              if (e.shiftKey) rangeSelectTo(idStr);
+              else toggleRowSelection(idStr);
               return;
             }
             /* Клик по редактируемой ячейке открывает инлайн-редактор и не
                должен запускать выбор+перелёт. */
             var td = e.target.closest('td.editable');
             if (td) { e.stopPropagation(); startCellEdit(tr, td); return; }
-            onRowClick(tr.getAttribute('data-id'));
+            onRowClick(idStr);
           });
         });
       }
@@ -5254,10 +5271,17 @@
       }
 
       function clearSelHighlight() {
-        if (state.sel.layer && state.sel.id != null) {
-          try { setSelState(state.sel.layer, state.sel.id, false); } catch (_) {}
+        /* Мультивыбор (Ctrl/Shift или лассо) хранится в massSel — снимаем его.
+           state.sel читаем ДО clearMassSelection: его хук может обнулить sel. */
+        var prev = state.sel;
+        if (typeof massSel !== 'undefined' && massSel.ids.size) {
+          try { clearMassSelection(); } catch (_) {}
+        }
+        if (prev.layer && prev.id != null) {
+          try { setSelState(prev.layer, prev.id, false); } catch (_) {}
         }
         state.sel = { layer: null, id: null };
+        state.anchorId = null;
       }
 
       /* Перелёт к охвату bbox [minx,miny,maxx,maxy] (EPSG:4326). */
@@ -5289,18 +5313,8 @@
         }
       }
 
-      function onRowClick(idStr, zoom) {
-        var row = null;
-        for (var i = 0; i < state.rows.length; i++) {
-          if (String(state.rows[i].id) === String(idStr)) { row = state.rows[i]; break; }
-        }
-        if (!row) return;
-
-        clearSelHighlight();
-        state.sel = { layer: state.layer, id: row.id };
-        try { setSelState(state.layer, row.id, true); } catch (_) {}
-
-        /* Карточка в правой панели + раскрыть её, если свёрнута. */
+      /* Открыть карточку объекта строки в правой панели (+ развернуть её). */
+      function renderCardFor(row) {
         if (dynLayers[state.layer]) renderDynCard(state.layer, row.props);
         else if (state.layer === 'farmlands') renderFarmlandCard(row.props);
         else renderUserfieldCard(row.props);
@@ -5310,6 +5324,55 @@
           rightAside.classList.remove('collapsed');
           if (rightBtn) rightBtn.classList.remove('shifted');
         }
+      }
+
+      /* Множественный выбор строк работает в режиме ПРАВКИ статических слоёв
+         (Мои поля / ЗСН): выбор ведём через общий massSel (та же модель, что у
+         лассо/клик-выбора на карте) — подсветка на карте + панель массовых
+         операций (✎ Атрибуты / 🗑 удалить). Для загруженных SHP-слоёв и вне
+         режима правки — прежний одиночный выбор. */
+      function canMultiSelect() {
+        return isEditing() && (state.layer === 'userfields' || state.layer === 'farmlands');
+      }
+
+      /* Если массвыбор пуст, а одиночная строка подсвечена — переносим её в
+         massSel, чтобы Ctrl/Shift достраивали выбор именно от неё. */
+      function seedMassFromSingle() {
+        if (massSel.ids.size) return;
+        if (state.sel.layer !== state.layer || state.sel.id == null) return;
+        var r = findRow(state.sel.id);
+        addToSelection(state.layer, state.sel.id, r ? r.geometry : null, r ? r.props : {});
+      }
+
+      /* Обновить класс .active у строк по текущему выбору (massSel / одиночный)
+         без полной перерисовки — сохраняет прокрутку таблицы. */
+      function applyActiveClasses() {
+        bodyEl.querySelectorAll('tbody tr[data-id]').forEach(function (tr) {
+          var id = tr.getAttribute('data-id');
+          var on = (massSel.layer === state.layer && massSel.ids.has(String(id))) ||
+                   (state.sel.layer === state.layer && String(state.sel.id) === String(id));
+          tr.classList.toggle('active', on);
+        });
+      }
+
+      /* Одиночный выбор строки (+ карточка, перелёт). В режиме правки статических
+         слоёв кладём объект в massSel (чтобы Ctrl/Shift продолжали от него и
+         работали массовые операции), иначе — обычная подсветка feature-state. */
+      function onRowClick(idStr, zoom) {
+        var row = findRow(idStr);
+        if (!row) return;
+
+        clearSelHighlight();
+        state.sel = { layer: state.layer, id: row.id };
+        state.anchorId = String(row.id);
+        if (canMultiSelect()) {
+          addToSelection(state.layer, row.id, row.geometry, row.props);
+          updateMassBar();
+        } else {
+          try { setSelState(state.layer, row.id, true); } catch (_) {}
+        }
+
+        renderCardFor(row);
 
         /* Перелёт: по клику 🔍 (zoom) — всегда; по клику на строку — только
            если геометрия уже в памяти (не дёргаем сервер лишний раз). */
@@ -5317,6 +5380,50 @@
         else if (row.geometry) zoomToRow(row);
 
         highlightRow(idStr, false);
+      }
+
+      /* Ctrl/Cmd-клик: добавить/убрать одну строку из выбора. */
+      function toggleRowSelection(idStr) {
+        var row = findRow(idStr);
+        if (!row) return;
+        if (massSel.layer && massSel.layer !== state.layer) clearMassSelection();
+        seedMassFromSingle();
+        var sid = String(row.id);
+        if (massSel.ids.has(sid)) {
+          removeFromSelection(state.layer, row.id);
+        } else {
+          addToSelection(state.layer, row.id, row.geometry, row.props);
+          state.sel = { layer: state.layer, id: row.id };
+          renderCardFor(row);
+        }
+        state.anchorId = sid;
+        updateMassBar();
+        applyActiveClasses();
+      }
+
+      /* Shift-клик: выбрать диапазон строк от якоря до текущей (в текущем
+         порядке отображения), заменяя прежний выбор. */
+      function rangeSelectTo(idStr) {
+        var target = findRow(idStr);
+        if (!target) return;
+        if (state.anchorId == null) { onRowClick(idStr); return; }
+        var ai = -1, bi = -1;
+        for (var i = 0; i < state.rows.length; i++) {
+          var rid = String(state.rows[i].id);
+          if (rid === String(state.anchorId)) ai = i;
+          if (rid === String(idStr)) bi = i;
+        }
+        if (ai < 0 || bi < 0) { onRowClick(idStr); return; }
+        clearMassSelection();
+        var lo = Math.min(ai, bi), hi = Math.max(ai, bi);
+        for (var j = lo; j <= hi; j++) {
+          var rr = state.rows[j];
+          addToSelection(state.layer, rr.id, rr.geometry, rr.props);
+        }
+        state.sel = { layer: state.layer, id: target.id };
+        renderCardFor(target);
+        updateMassBar();
+        applyActiveClasses();
       }
 
       /* Подсветить строку в таблице (+ опц. прокрутить к ней). */
@@ -5550,6 +5657,19 @@
           if (!state.open || id == null) return;
           selectFromMap(layer, id);
         },
+      };
+
+      /* Хук: внешний massSel изменился (лассо/клик на карте, Ctrl/Shift-выбор
+         в таблице, очистка через Esc/✕/массовое удаление) — обновляем .active
+         строк без полной перерисовки. При пустом выборе сбрасываем одиночный
+         указатель, чтобы подсветка карты и таблицы не расходились. */
+      window.__gisAttrOnMassChange = function () {
+        if (!state.open) return;
+        if (typeof massSel !== 'undefined' && !massSel.ids.size) {
+          state.sel = { layer: null, id: null };
+          state.anchorId = null;
+        }
+        applyActiveClasses();
       };
 
       /* ─── Слушатели ─── */
