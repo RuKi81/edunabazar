@@ -796,7 +796,7 @@
       <span class="sep"></span>
       <button data-tool="trash" type="button" title="Удалить выбранное (Del)" disabled>🗑</button>
       <span class="sep"></span>
-      <button data-tool="save"    type="button" title="Сохранить все изменения" disabled>💾</button>
+      <button data-tool="save"    type="button" title="Сохранить все изменения (S)" disabled>💾</button>
       <button data-tool="discard" type="button" title="Отменить все несохранённые изменения" disabled>↶</button>
       <span class="hint" id="gis-toolbar-hint"></span>
     </div>
@@ -2478,6 +2478,23 @@
       e.preventDefault();
       e.stopImmediatePropagation();
       handleTrash();
+    }, true);
+
+    /* Хоткей S — сохранить все несохранённые изменения (геометрия + правки
+       таблицы/атрибутов в очереди), то же, что 💾. Работает в любом режиме
+       правки (gup / «Мои поля» / ЗСН). Реагируем только на «чистую» S без
+       Ctrl/Meta/Alt (Ctrl+S оставляем браузеру) и не в полях ввода. */
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 's' && e.key !== 'S' && e.key !== 'ы' && e.key !== 'Ы') return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      var t = e.target;
+      var tag = t && t.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+          (t && t.isContentEditable)) return;
+      if (typeof pendingCount !== 'function' || pendingCount() === 0) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      commitPending();
     }, true);
 
     /* ──────────────────────── Trash / Delete ──────────────────────── */
