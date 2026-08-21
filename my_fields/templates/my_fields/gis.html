@@ -5116,9 +5116,9 @@
               onRowClick(idStr, true);
               return;
             }
-            /* Мультивыбор (Ctrl/Cmd — тоггл, Shift — диапазон) в режиме правки
-               статических слоёв. Проверяем ДО инлайн-редактора, чтобы модификатор
-               по редактируемой ячейке добавлял строку в выбор, а не открывал
+            /* Мультивыбор (Ctrl/Cmd — тоггл, Shift — диапазон) для статических
+               слоёв. Проверяем ДО инлайн-редактора, чтобы модификатор по
+               редактируемой ячейке добавлял строку в выбор, а не открывал
                редактор. */
             if (canMultiSelect() && (e.ctrlKey || e.metaKey || e.shiftKey)) {
               e.preventDefault();
@@ -5326,13 +5326,13 @@
         }
       }
 
-      /* Множественный выбор строк работает в режиме ПРАВКИ статических слоёв
-         (Мои поля / ЗСН): выбор ведём через общий massSel (та же модель, что у
-         лассо/клик-выбора на карте) — подсветка на карте + панель массовых
-         операций (✎ Атрибуты / 🗑 удалить). Для загруженных SHP-слоёв и вне
-         режима правки — прежний одиночный выбор. */
+      /* Множественный выбор строк доступен для статических слоёв (Мои поля /
+         ЗСН) — как и инструменты лассо/клик-выбора на карте, работает и без
+         режима правки. Выбор ведём через общий massSel: подсветка на карте +
+         панель массовых операций (✎ Атрибуты / 🗑 удалить). Для загруженных
+         SHP-слоёв (server-paged) — прежний одиночный выбор. */
       function canMultiSelect() {
-        return isEditing() && (state.layer === 'userfields' || state.layer === 'farmlands');
+        return state.layer === 'userfields' || state.layer === 'farmlands';
       }
 
       /* Если массвыбор пуст, а одиночная строка подсвечена — переносим её в
@@ -5355,9 +5355,8 @@
         });
       }
 
-      /* Одиночный выбор строки (+ карточка, перелёт). В режиме правки статических
-         слоёв кладём объект в massSel (чтобы Ctrl/Shift продолжали от него и
-         работали массовые операции), иначе — обычная подсветка feature-state. */
+      /* Одиночный выбор строки (+ карточка, перелёт): обычная подсветка
+         feature-state. Ctrl/Shift-выбор строится отдельно через massSel. */
       function onRowClick(idStr, zoom) {
         var row = findRow(idStr);
         if (!row) return;
@@ -5365,12 +5364,11 @@
         clearSelHighlight();
         state.sel = { layer: state.layer, id: row.id };
         state.anchorId = String(row.id);
-        if (canMultiSelect()) {
-          addToSelection(state.layer, row.id, row.geometry, row.props);
-          updateMassBar();
-        } else {
-          try { setSelState(state.layer, row.id, true); } catch (_) {}
-        }
+        /* Одиночный клик / 🔍 — обычная подсветка feature-state (без панели
+           массовых операций). Панель появляется только при осознанном
+           Ctrl/Shift-выборе (toggleRowSelection / rangeSelectTo), которые
+           подхватывают этот объект через seedMassFromSingle. */
+        try { setSelState(state.layer, row.id, true); } catch (_) {}
 
         renderCardFor(row);
 
