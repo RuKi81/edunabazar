@@ -375,7 +375,12 @@ def _create_table(table_name: str, columns) -> None:
 def _copy_features(table_name: str, layer, columns, ct) -> int:
     col_idents = [sql.Identifier(db) for db, _, _ in columns]
     placeholders = [sql.Placeholder()] * len(columns)
-    insert = sql.SQL('INSERT INTO {} ({}) VALUES ({}, ST_GeomFromText(%s, 4326))').format(
+    # ST_Force2D сплющивает Z/M-измерения: SHP нередко содержит 3D-геометрию
+    # (PolygonZ и т.п.), а колонка geom объявлена 2D (geometry(Geometry,4326)),
+    # иначе PostGIS падает с «Geometry has Z dimension but column does not».
+    insert = sql.SQL(
+        'INSERT INTO {} ({}) VALUES ({}, ST_Force2D(ST_GeomFromText(%s, 4326)))'
+    ).format(
         sql.Identifier(table_name),
         sql.SQL(', ').join(col_idents + [sql.Identifier('geom')]),
         sql.SQL(', ').join(placeholders),
