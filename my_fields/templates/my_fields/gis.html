@@ -2456,6 +2456,30 @@
       });
     });
 
+    /* Хоткей Delete — удалить выбранные объекты (то же, что 🗑). Работает в
+       любом режиме правки (gup / «Мои поля» / ЗСН) и при массовом выборе.
+       Слушаем в CAPTURE-фазе и глушим событие: иначе штатный обработчик
+       mapbox-gl-draw удалил бы объект прямо из draw в обход очереди (на сервер
+       удаление бы не ушло). Не перехватываем во время активного рисования и
+       в полях ввода. Backspace НЕ трогаем — в draw он убирает последний узел. */
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Delete') return;
+      var t = e.target;
+      var tag = t && t.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+          (t && t.isContentEditable)) return;
+      var mode = '';
+      try { mode = draw.getMode() || ''; } catch (_) {}
+      if (mode.indexOf('draw_') === 0) return;   /* активное рисование — не мешаем */
+      var hasMass = (typeof massSel !== 'undefined' && massSel.ids.size > 0);
+      var hasDrawSel = false;
+      try { hasDrawSel = (draw.getSelectedIds() || []).length > 0; } catch (_) {}
+      if (!hasMass && !hasDrawSel) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      handleTrash();
+    }, true);
+
     /* ──────────────────────── Trash / Delete ──────────────────────── */
     /* Batch: ничего не уходит на сервер мгновенно. queueDelete сам
        разруливает draft (удалить из очереди) vs persisted (отправить
@@ -2475,7 +2499,9 @@
       }
       /* Загруженный слой — удаление в очередь gupPending (применится по 💾). */
       if (gupEdit.active) {
+        var gn = sel.length;
         sel.forEach(function (sid) { gupQueueDelete(String(sid)); });
+        toast('В очередь на удаление: ' + gn + ' · 💾 для применения.');
         return;
       }
       sel.forEach(function (sid) {
@@ -3322,8 +3348,9 @@
     function cancelLassoSelect() { cancelSelectModes(); }
 
     function startLassoSelect() {
+      var gup = (typeof gupEdit !== 'undefined' && gupEdit.active);
       var layer = selectionTargetLayer();
-      if (!layer) { toast('Нет активного слоя (ЗСН / Мои поля) для выделения.', true); return; }
+      if (!layer && !gup) { toast('Нет активного слоя (ЗСН / Мои поля) для выделения.', true); return; }
       cancelSplit();
       cancelRingCut();
       cancelBuffer();
@@ -3338,26 +3365,37 @@
       }, 0);
       highlightTool('lasso_select');
       var h = document.getElementById('gis-toolbar-hint');
-      if (h) h.textContent = '▦ Кликами обведите объекты · двойной клик — выбрать · 🗑 удалить · ☞ для выхода.';
+      if (h) h.textContent = gup
+        ? '▦ Кликами обведите объекты слоя · двойной клик — выбрать · 🗑 / Del — удалить · ☞ для выхода.'
+        : '▦ Кликами обведите объекты · двойной клик — выбрать · 🗑 удалить · ☞ для выхода.';
     }
 
     /* Режим клик-выбора: каждый клик по объекту тогглит его в выборе. */
     function startPickSelect() {
+      var gup = (typeof gupEdit !== 'undefined' && gupEdit.active);
       var layer = selectionTargetLayer();
-      if (!layer) { toast('Нет активного слоя (ЗСН / Мои поля) для выделения.', true); return; }
+      if (!layer && !gup) { toast('Нет активного слоя (ЗСН / Мои поля) для выделения.', true); return; }
       cancelSplit();
       cancelRingCut();
       cancelBuffer();
       lassoSelectState = false;
-      pickSelectState = true;
+      /* В режиме правки загруженного слоя объекты живут в draw — выбор ведём
+         его штатным simple_select (клик — объект, Shift+клик — добавить/убрать,
+         рамкой мышью — область). Свой pickSelectAt не используем: в
+         simple_select mapbox-gl-draw сам поглощает клик по объекту. */
+      pickSelectState = !gup;
       if (drawAdded) { try { draw.changeMode('simple_select'); } catch (_) {} }
       highlightTool('pick_select');
       var h = document.getElementById('gis-toolbar-hint');
-      if (h) h.textContent = '☑ Кликайте по объектам, чтобы выбрать/снять · 🗑 удалить · ☞ для выхода.';
+      if (h) h.textContent = gup
+        ? '☑ Клик — выбрать объект · Shift+клик — добавить/убрать · рамкой мыши — область · 🗑 / Del — удалить · ☞ для выхода.'
+        : '☑ Кликайте по объектам, чтобы выбрать/снять · 🗑 удалить · ☞ для выхода.';
     }
 
     /* Тоггл одного объекта под точкой (для клик-выбора). */
     function pickSelectAt(point) {
+      /* В gup-режиме выбор ведёт сам draw (simple_select) — не трогаем. */
+      if (typeof gupEdit !== 'undefined' && gupEdit.active) return;
       var layer = selectionTargetLayer();
       if (!layer) return;
       var layerId = layer === 'farmlands' ? 'farmlands-fill' : 'userfields-fill';
@@ -3376,8 +3414,40 @@
     /* Завершение рисования лассо: добавляем попавшие объекты к выбору. */
     function finishLassoSelect(lassoFeat) {
       var draftId = lassoFeat.id;
-      try { draw.delete(draftId); } catch (_) {}
       var lasso = { type: 'Feature', properties: {}, geometry: lassoFeat.geometry };
+
+      /* Загруженный слой (gup): его объекты живут в draw. Считаем пересечение
+         с контуром лассо по turf и выделяем найденные штатным simple_select
+         (аккумулируя к уже выбранным). Удаление — 🗑 / Del → handleTrash →
+         gupQueueDelete. */
+      if (typeof gupEdit !== 'undefined' && gupEdit.active) {
+        var sel = {};
+        try { (draw.getSelectedIds() || []).forEach(function (x) { sel[String(x)] = 1; }); } catch (_) {}
+        var all = [];
+        try { all = (draw.getAll().features) || []; } catch (_) {}
+        var gAdded = 0;
+        all.forEach(function (df) {
+          if (!df || df.id == null) return;
+          if (String(df.id) === String(draftId)) return;   /* сам контур лассо */
+          if (sel[String(df.id)]) return;
+          var hit = false;
+          try { hit = turf.booleanIntersects(lasso, df); } catch (_) { hit = false; }
+          if (hit) { sel[String(df.id)] = 1; gAdded++; }
+        });
+        try { draw.delete(draftId); } catch (_) {}
+        var gIds = Object.keys(sel);
+        lassoSelectState = false;
+        setTimeout(function () {
+          try { draw.changeMode('simple_select', { featureIds: gIds }); } catch (_) {}
+          highlightTool('select');
+        }, 0);
+        toast(gAdded
+          ? ('Выбрано объектов: ' + gIds.length + '. 🗑 или Del — удалить.')
+          : 'Под лассо ничего не найдено.', !gAdded);
+        return;
+      }
+
+      try { draw.delete(draftId); } catch (_) {}
       var layer = massSel.layer || selectionTargetLayer();
       var added = 0;
 
@@ -5939,6 +6009,7 @@
           if (t === 'save' || t === 'discard') return;
           var isDraw = drawTools.indexOf(t) >= 0;
           var keep = t === 'select' || t === 'trash' ||
+                     t === 'pick_select' || t === 'lasso_select' ||
                      ((t === 'split' || t === 'buffer_line') && polygonal) ||
                      (isDraw && (kind === 'other' || t === allow));
           b.disabled = !keep;
