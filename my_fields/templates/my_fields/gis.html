@@ -310,6 +310,28 @@
     .gis-style-opacity .gis-style-opacity-note { color: #999; font-weight: 400; font-size: 11px; margin-left: 6px; }
     .gis-style-editor { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
     .gis-style-editor:empty { display: none; }
+
+    /* Создание нового слоя (тип геометрии + атрибуты). */
+    .gis-newlayer-controls { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+    .gis-newlayer-controls label { font-size: 12px; color: #555; font-weight: 500;
+      display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 150px; }
+    .gis-newlayer-controls input.browser-default,
+    .gis-newlayer-controls select.browser-default {
+      display: block; width: 100%; height: 34px; padding: 4px 8px; box-sizing: border-box;
+      border: 1px solid #ccc; border-radius: 5px; font-size: 13px; background: #fff; }
+    .gis-newlayer-attrs-head { display: flex; align-items: center; justify-content: space-between;
+      font-size: 12px; color: #555; font-weight: 600; margin-bottom: 6px; }
+    .gis-newlayer-addattr { border: 1px solid #a5d6a7; background: #e8f5e9; color: #2e7d32;
+      border-radius: 5px; padding: 4px 10px; cursor: pointer; font-size: 12px; font-weight: 600; }
+    .gis-newlayer-addattr:hover { background: #c8e6c9; }
+    .gis-newlayer-attrs { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+    .gis-newlayer-attr { display: grid; grid-template-columns: 1fr 150px 28px; align-items: center; gap: 8px; }
+    .gis-newlayer-attr input, .gis-newlayer-attr select {
+      height: 32px; padding: 4px 8px; box-sizing: border-box; border: 1px solid #ccc;
+      border-radius: 5px; font-size: 13px; background: #fff; width: 100%; }
+    .gis-newlayer-attr .gis-newlayer-delattr { border: 1px solid #ef9a9a; background: #fff;
+      color: #c62828; border-radius: 5px; height: 32px; cursor: pointer; font-size: 14px; padding: 0; }
+    .gis-newlayer-attr .gis-newlayer-delattr:hover { background: #ffebee; }
     .gis-style-item { display: grid; grid-template-columns: 26px 1fr auto; align-items: center; gap: 8px; }
     .gis-style-item input[type="color"] {
       width: 24px; height: 24px; padding: 0; border: 1px solid rgba(0,0,0,.25); border-radius: 4px;
@@ -657,6 +679,8 @@
       <div class="gis-layers-bar">
         <button id="gis-master-vis" class="gis-master-vis" type="button"
                 aria-pressed="false" title="Показать/скрыть все слои">🚫</button>
+        <button id="gis-layer-new" class="gis-master-vis gis-layer-new" type="button"
+                title="Создать новый слой — тип геометрии и атрибуты">➕</button>
         <button id="gis-folder-add" class="gis-master-vis gis-folder-add" type="button"
                 title="Добавить папку — перетаскивайте в неё слои">📁+</button>
         <button id="gis-bulk-del" class="gis-master-vis gis-bulk-del" type="button"
@@ -830,6 +854,43 @@
         <div class="gis-modal__foot">
           <button type="button" class="btn-secondary" data-style-close>Отмена</button>
           <button type="button" class="btn-primary" id="gis-stylemodal-apply">Сохранить</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="gis-modal" id="gis-newlayer-modal" hidden>
+      <div class="gis-modal__backdrop" data-newlayer-close></div>
+      <div class="gis-modal__box" role="dialog" aria-modal="true" aria-labelledby="gis-newlayer-title">
+        <div class="gis-modal__head">
+          <span id="gis-newlayer-title">Новый слой</span>
+          <button type="button" class="gis-modal__x" data-newlayer-close title="Закрыть">✕</button>
+        </div>
+        <div class="gis-modal__body">
+          <div class="gis-newlayer-controls">
+            <label>Название слоя
+              <input type="text" id="gis-newlayer-name" class="browser-default"
+                     maxlength="200" placeholder="напр. Точки осмотра" autocomplete="off">
+            </label>
+            <label>Тип геометрии
+              <select id="gis-newlayer-geom" class="browser-default">
+                <option value="point">Точки</option>
+                <option value="line">Линии</option>
+                <option value="polygon">Полигоны</option>
+              </select>
+            </label>
+          </div>
+          <div class="gis-newlayer-attrs-head">
+            <span>Атрибуты</span>
+            <button type="button" class="gis-newlayer-addattr" id="gis-newlayer-addattr"
+                    title="Добавить атрибут">＋ атрибут</button>
+          </div>
+          <div id="gis-newlayer-attrs" class="gis-newlayer-attrs"></div>
+          <p class="gis-modal__note">Слой создаётся пустым. Объекты рисуются инструментом
+            «Геометрия» (✎) в плашке слоя, атрибуты заполняются в таблице (▤).</p>
+        </div>
+        <div class="gis-modal__foot">
+          <button type="button" class="btn-secondary" data-newlayer-close>Отмена</button>
+          <button type="button" class="btn-primary" id="gis-newlayer-create">Создать</button>
         </div>
       </div>
     </div>
@@ -6980,6 +7041,93 @@
             })
             .catch(function () { toast('Не удалось создать папку', true); });
         });
+      })();
+
+      /* ── Кнопка «Новый слой»: модалка с типом геометрии и атрибутами ── */
+      (function () {
+        var openBtn = document.getElementById('gis-layer-new');
+        var modal = document.getElementById('gis-newlayer-modal');
+        if (!openBtn || !modal) return;
+        var nameInp = document.getElementById('gis-newlayer-name');
+        var geomSel = document.getElementById('gis-newlayer-geom');
+        var attrsBox = document.getElementById('gis-newlayer-attrs');
+        var addAttrBtn = document.getElementById('gis-newlayer-addattr');
+        var createBtn = document.getElementById('gis-newlayer-create');
+        /* Типы атрибутов: значение (pg-тип) → подпись. Должны совпадать с
+           NEW_LAYER_ATTR_TYPES на бэкенде. */
+        var ATTR_TYPES = [
+          ['text', 'Текст'],
+          ['integer', 'Целое'],
+          ['double precision', 'Дробное'],
+          ['date', 'Дата'],
+        ];
+
+        function attrRow(name, type) {
+          var row = document.createElement('div');
+          row.className = 'gis-newlayer-attr';
+          var inp = document.createElement('input');
+          inp.type = 'text'; inp.maxLength = 200; inp.placeholder = 'имя атрибута';
+          inp.value = name || '';
+          var sel = document.createElement('select');
+          sel.innerHTML = ATTR_TYPES.map(function (t) {
+            return '<option value="' + t[0] + '">' + t[1] + '</option>';
+          }).join('');
+          sel.value = type || 'text';
+          var del = document.createElement('button');
+          del.type = 'button'; del.className = 'gis-newlayer-delattr';
+          del.title = 'Удалить атрибут'; del.textContent = '✕';
+          del.addEventListener('click', function () { row.remove(); });
+          row.appendChild(inp); row.appendChild(sel); row.appendChild(del);
+          return row;
+        }
+
+        function openModal() {
+          nameInp.value = '';
+          geomSel.value = 'point';
+          attrsBox.innerHTML = '';
+          modal.hidden = false;
+          setTimeout(function () { nameInp.focus(); }, 0);
+        }
+        function closeModal() { modal.hidden = true; }
+
+        openBtn.addEventListener('click', openModal);
+        addAttrBtn.addEventListener('click', function () {
+          attrsBox.appendChild(attrRow('', 'text'));
+        });
+        modal.querySelectorAll('[data-newlayer-close]').forEach(function (el) {
+          el.addEventListener('click', closeModal);
+        });
+
+        function submit() {
+          var title = nameInp.value.trim();
+          if (!title) { toast('Укажите название слоя', true); nameInp.focus(); return; }
+          var attrs = [];
+          attrsBox.querySelectorAll('.gis-newlayer-attr').forEach(function (row) {
+            var nm = row.querySelector('input').value.trim();
+            if (!nm) return;  /* безымянный — пропускаем */
+            attrs.push({ name: nm, type: row.querySelector('select').value });
+          });
+          createBtn.disabled = true;
+          fetch(API + 'create/', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({ title: title, geom_kind: geomSel.value, attributes: attrs }),
+          }).then(function (r) {
+            return r.json().then(function (j) { return { ok: r.ok, j: j }; });
+          }).then(function (res) {
+            if (!res.ok || !res.j || !res.j.layer) {
+              toast((res.j && res.j.detail) || 'Не удалось создать слой', true);
+              return;
+            }
+            ingest(res.j.layer, true, true);
+            persistOrder();
+            closeModal();
+            toast('Слой создан: ' + res.j.layer.title);
+          }).catch(function () {
+            toast('Не удалось создать слой', true);
+          }).then(function () { createBtn.disabled = false; });
+        }
+        createBtn.addEventListener('click', submit);
       })();
 
       /* ── Кнопка выбора файла + drop на сам dropzone (опционально) ──

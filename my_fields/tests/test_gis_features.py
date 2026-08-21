@@ -503,3 +503,130 @@ class GisFeaturesTestCase(TestCase):
         self._login('nobody')
         r = self.client.get(self._features_url() + '?rank_of=1')
         self.assertEqual(r.status_code, 403)
+
+
+class GisLayerCreateTestCase(TestCase):
+    """Создание нового пустого слоя: тип геометрии + атрибуты (POST create/)."""
+
+    CREATE = '/me/gis/api/layers/create/'
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.roles = {}
+        for name in ('admin', 'manager', 'viewer'):
+            dj = User.objects.create_user(name, password='x')
+            cls.roles[name] = (dj, _mk_legacy(name))
+        _, manager_lu = cls.roles['manager']
+        _, viewer_lu = cls.roles['viewer']
+        ResourceGrant.objects.create(
+            legacy_user=manager_lu, resource_type=GL, resource_id=None, level='manage')
+        ResourceGrant.objects.create(
+            legacy_user=viewer_lu, resource_type=GL, resource_id=None, level='view')
+
+    def _login(self, role):
+        dj, lu = self.roles[role]
+        self.client.force_login(dj)
+        session = self.client.session
+        session['legacy_user_id'] = lu.pk
+        session.save()
+
+    def _create(self, payload):
+        return self.client.post(
+            self.CREATE, data=json.dumps(payload),
+            content_type='application/json')
+
+    @staticmethod
+    def _table_columns(table_name):
+        with connection.cursor() as cur:
+            cur.execute(
+                'SELECT column_name, data_type FROM information_schema.columns '
+                'WHERE table_name = %s', [table_name])
+            return {r[0]: r[1] for r in cur.fetchall()}
+
+    def test_create_point_layer_with_attributes(self):
+        self._login('manager')
+        r = self._create({
+            'title': 'Точки осмотра', 'geom_kind': 'point',
+            'attributes': [
+                {'name': 'Комментарий', 'type': 'text'},
+                {'name': 'Балл', 'type': 'integer'},
+            ],
+        })
+        self.assertEqual(r.status_code, 201, r.content)
+        lyr = r.json()['layer']
+        self.assertEqual(lyr['geom_kind'], 'point')
+        self.assertEqual(lyr['feature_count'], 0)
+        self.assertEqual(len(lyr['attributes']), 2)
+
+        layer = GisLayer.objects.get(pk=lyr['id'])
+        cols = self._table_columns(layer.table_name)
+        self.assertIn('id', cols)
+        self.assertIn('geom', cols)
+        # Атрибуты приведены к безопасным именам с нужными pg-типами.
+        dbs = {a['db']: a['type'] for a in layer.attributes}
+        self.assertEqual(set(dbs.values()), {'text', 'integer'})
+        for db, t in dbs.items():
+            self.assertIn(db, cols)
+
+    def test_create_polygon_no_attributes(self):
+        self._login('manager')
+        r = self._create({'title': 'Контуры', 'geom_kind': 'polygon'})
+        self.assertEqual(r.status_code, 201, r.content)
+        layer = GisLayer.objects.get(pk=r.json()['layer']['id'])
+        self.assertEqual(layer.geom_kind, 'polygon')
+        self.assertEqual(layer.attributes, [])
+
+    def test_admin_can_create(self):
+        self._login('admin')
+        r = self._create({'title': 'Линии', 'geom_kind': 'line'})
+        self.assertEqual(r.status_code, 201, r.content)
+
+    def test_empty_title_400(self):
+        self._login('manager')
+        r = self._create({'title': '   ', 'geom_kind': 'point'})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()['error'], 'empty_title')
+
+    def test_invalid_geom_kind_400(self):
+        self._login('manager')
+        r = self._create({'title': 'X', 'geom_kind': 'circle'})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()['error'], 'invalid_geom_kind')
+
+    def test_invalid_attr_type_400(self):
+        self._login('manager')
+        r = self._create({
+            'title': 'X', 'geom_kind': 'point',
+            'attributes': [{'name': 'A', 'type': 'boolean'}]})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()['error'], 'create_failed')
+
+    def test_blank_attr_name_skipped(self):
+        self._login('manager')
+        r = self._create({
+            'title': 'X', 'geom_kind': 'point',
+            'attributes': [{'name': '  ', 'type': 'text'},
+                           {'name': 'Годен', 'type': 'text'}]})
+        self.assertEqual(r.status_code, 201, r.content)
+        layer = GisLayer.objects.get(pk=r.json()['layer']['id'])
+        self.assertEqual(len(layer.attributes), 1)
+
+    def test_viewer_forbidden_403(self):
+        self._login('viewer')
+        r = self._create({'title': 'X', 'geom_kind': 'point'})
+        self.assertEqual(r.status_code, 403)
+
+    def test_anonymous_401(self):
+        r = self._create({'title': 'X', 'geom_kind': 'point'})
+        self.assertEqual(r.status_code, 401)
+
+    def test_created_layer_accepts_feature(self):
+        # Новый слой сразу поддерживает добавление объекта своей геометрии.
+        self._login('manager')
+        r = self._create({'title': 'Точки', 'geom_kind': 'point'})
+        pk = r.json()['layer']['id']
+        r2 = self.client.post(
+            f'/me/gis/api/layers/{pk}/features/',
+            data=json.dumps({'geometry': {'type': 'Point', 'coordinates': [34.0, 45.0]}}),
+            content_type='application/json')
+        self.assertEqual(r2.status_code, 201, r2.content)

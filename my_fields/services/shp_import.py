@@ -247,6 +247,117 @@ def import_shapefile(shp_path: str, title: str, owner=None,
     )
 
 
+# ── Создание нового пустого слоя (тип геометрии + атрибуты) ─────────────
+
+# geom_kind → OGR-подобная строка типа для реестра (geom-колонка всё равно
+# generic Geometry(4326), как и у импортированных SHP).
+_KIND_TO_GEOM_TYPE = {
+    'point': 'Point',
+    'line': 'LineString',
+    'polygon': 'Polygon',
+}
+
+# Допустимые типы атрибутов для слоёв, создаваемых пользователем в UI
+# (значение из формы → тип колонки PostgreSQL). Ограничены подмножеством
+# _ALLOWED_CAST_TYPES, чтобы правка атрибутов (update_feature) работала.
+NEW_LAYER_ATTR_TYPES = {
+    'text': 'text',
+    'integer': 'integer',
+    'double precision': 'double precision',
+    'date': 'date',
+}
+
+
+def _build_columns_typed(field_names, pg_types):
+    """Как :func:`_build_columns`, но типы колонок заданы явно (pg-типы).
+
+    Возвращает ``(columns, attributes_meta)`` где columns —
+    ``[(db_name, pg_type, display_name), ...]``. Имена dedup'нуты и не
+    пересекаются с reserved ``id``/``geom``.
+    """
+    used = {'id', 'geom'}
+    columns = []
+    meta = []
+    for name, pg_type in zip(field_names, pg_types):
+        db = slugify_identifier(name, fallback='attr')[:MAX_IDENT]
+        base = db
+        i = 1
+        while db in used:
+            suffix = f'_{i}'
+            db = f'{base[:MAX_IDENT - len(suffix)]}{suffix}'
+            i += 1
+        used.add(db)
+        columns.append((db, pg_type, name))
+        meta.append({'name': name, 'db': db, 'type': pg_type})
+    return columns, meta
+
+
+def create_empty_layer(title: str, geom_kind: str, attributes=None, owner=None):
+    """Создать новый ПУСТОЙ слой: таблица PostGIS + запись реестра.
+
+    Args:
+        title: название слоя (обязательное, непустое).
+        geom_kind: ``point`` | ``line`` | ``polygon``.
+        attributes: ``[{'name': str, 'type': str}, ...]`` — отображаемое имя
+            и тип из :data:`NEW_LAYER_ATTR_TYPES`. Пустые имена пропускаются.
+        owner: Django-пользователь (или None) — записывается в реестр.
+
+    Returns:
+        Созданный :class:`my_fields.models.GisLayer`.
+
+    Raises:
+        ShapefileImportError: некорректный заголовок/тип геометрии/атрибута
+            (сообщение пригодно для показа в UI).
+    """
+    from my_fields.models import GisLayer
+
+    title = (title or '').strip()
+    if not title:
+        raise ShapefileImportError('Укажите название слоя.')
+    if geom_kind not in _KIND_TO_GEOM_TYPE:
+        raise ShapefileImportError('Недопустимый тип геометрии.')
+
+    field_names, field_pg = [], []
+    for a in (attributes or []):
+        if not isinstance(a, dict):
+            raise ShapefileImportError('Некорректное описание атрибута.')
+        name = str(a.get('name', '')).strip()
+        if not name:
+            continue  # безымянный атрибут — пропускаем
+        pg_type = NEW_LAYER_ATTR_TYPES.get(a.get('type'))
+        if pg_type is None:
+            raise ShapefileImportError(
+                f'Недопустимый тип атрибута: {a.get("type")!r}.')
+        field_names.append(name)
+        field_pg.append(pg_type)
+
+    columns, attr_meta = _build_columns_typed(field_names, field_pg)
+    table_name = _unique_table_name(title)
+    color = LAYER_COLORS[GisLayer.objects.count() % len(LAYER_COLORS)]
+    next_order = (
+        GisLayer.objects.aggregate(m=Max('sort_order'))['m'] or 0
+    ) + 1
+
+    _create_table(table_name, columns)
+    _finalize_table(table_name)
+
+    return GisLayer.objects.create(
+        title=title[:200],
+        table_name=table_name,
+        original_filename='',
+        source_archive='',
+        geom_kind=geom_kind,
+        geom_type=_KIND_TO_GEOM_TYPE[geom_kind],
+        srid_original=4326,
+        feature_count=0,
+        attributes=attr_meta,
+        extent=None,
+        color=color,
+        sort_order=next_order,
+        owner=owner if getattr(owner, 'is_authenticated', False) else None,
+    )
+
+
 # ── Низкоуровневые операции с БД ────────────────────────────────────────
 
 def _create_table(table_name: str, columns) -> None:

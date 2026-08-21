@@ -999,6 +999,55 @@ def gis_layers_collection(request: HttpRequest) -> JsonResponse:
 
 
 @csrf_exempt
+@require_http_methods(['POST'])
+def gis_layer_create(request: HttpRequest) -> JsonResponse:
+    """POST JSON — создать новый пустой слой с типом геометрии и атрибутами.
+
+    Body: ``{title, geom_kind: point|line|polygon, attributes: [{name, type}]}``.
+    Нужен whole-class ``manage`` (как загрузка SHP).
+    """
+    gate = _require_gis_access(request, level='manage')
+    if gate:
+        return gate
+
+    try:
+        data = json.loads(request.body or b'{}')
+    except (ValueError, TypeError):
+        return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
+
+    title = str(data.get('title', '')).strip()
+    geom_kind = data.get('geom_kind')
+    attributes = data.get('attributes') or []
+    if not title:
+        return JsonResponse(
+            {'ok': False, 'error': 'empty_title',
+             'detail': 'Укажите название слоя.'}, status=400)
+    if geom_kind not in ('point', 'line', 'polygon'):
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_geom_kind',
+             'detail': 'Выберите тип геометрии.'}, status=400)
+    if not isinstance(attributes, list):
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_attributes',
+             'detail': 'attributes должен быть списком.'}, status=400)
+
+    from .services.shp_import import ShapefileImportError, create_empty_layer
+    try:
+        layer = create_empty_layer(
+            title, geom_kind, attributes, owner=request.user)
+    except ShapefileImportError as e:
+        return JsonResponse(
+            {'ok': False, 'error': 'create_failed', 'detail': str(e)},
+            status=400)
+    except Exception as e:  # noqa: BLE001
+        return JsonResponse(
+            {'ok': False, 'error': 'create_failed',
+             'detail': f'Ошибка создания слоя: {e}'}, status=400)
+    return JsonResponse(
+        {'ok': True, 'layer': _gis_layer_to_dict(layer)}, status=201)
+
+
+@csrf_exempt
 @require_http_methods(['PATCH', 'DELETE'])
 def gis_layer_detail(request: HttpRequest, pk: int) -> JsonResponse:
     """PATCH — переименовать слой; DELETE — дроп таблицы + записи реестра."""
