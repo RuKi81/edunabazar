@@ -4197,6 +4197,16 @@
         });
       }
       var hadGup = gupPendingCount() > 0;
+      /* Запоминаем активный инструмент оцифровки загруженного слоя, чтобы
+         НЕ выключать его после сохранения — пользователь продолжает рисовать
+         следующие объекты без повторного клика по инструменту. */
+      var gupPrevMode = null;
+      if (hadGup && gupEdit.active) {
+        try {
+          var m = draw.getMode();
+          if (m && m.indexOf('draw_') === 0) gupPrevMode = m;
+        } catch (_) {}
+      }
 
       Promise.all(ops).then(function (results) {
         var ok = 0, fail = 0, failMsg = '';
@@ -4223,7 +4233,19 @@
           }
           /* Загруженный слой: перечитываем точную геометрию с сервера
              (новые объекты получат реальные id). */
-          if (hadGup && gupEdit.active && gupEdit.reload) gupEdit.reload();
+          if (hadGup && gupEdit.active && gupEdit.reload) {
+            gupEdit.reload();
+            /* Возвращаем активный инструмент оцифровки (draw.deleteAll выше
+               сбрасывает режим в simple_select) — чтобы после 💾 можно было
+               сразу продолжать рисовать, не кликая инструмент заново. */
+            if (gupPrevMode) {
+              setTimeout(function () {
+                if (!gupEdit.active) return;
+                try { draw.changeMode(gupPrevMode); } catch (_) {}
+                highlightTool(gupPrevMode);
+              }, 0);
+            }
+          }
           /* ЗСН: снимаем фильтр-превью и перезапрашиваем тайлы. */
           applyFarmlandFilter();
           if (hadFarmland) refreshFarmlandTiles();
