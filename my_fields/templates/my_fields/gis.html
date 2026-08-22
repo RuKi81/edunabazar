@@ -1789,7 +1789,7 @@
       /* Режим «только выбранные»: оставляем на карте лишь выбранные pk
          (комбинируем с фильтром скрытых оверлеев через 'all'). */
       if (farmlandOnlySelectedIds) {
-        var only = ['in', ['get', 'id'], ['literal', farmlandOnlySelectedIds]];
+        var only = ['in', ['to-string', ['get', 'id']], ['literal', farmlandOnlySelectedIds]];
         flt = flt ? ['all', flt, only] : only;
       }
       try { map.setFilter('farmlands-fill', flt); } catch (_) {}
@@ -5556,22 +5556,23 @@
         return s;
       }
 
-      /* Числовые id выбранных объектов (для фильтров карты), либо null. */
-      function selectedNumIds() {
+      /* Строковые id выбранных объектов (для фильтров карты), либо null.
+         Используем строки, а не числа: id SHP-слоёв бывают нечисловыми, и
+         числовой фильтр молча отсекал их (selectedNumIds -> null -> карта не
+         фильтровалась). В самих фильтрах сравниваем ['to-string', ['get','id']]
+         со строками — это снимает и несовпадение типов число↔строка в тайле. */
+      function selectedFilterIds() {
         var out = [];
-        selectedIdSet().forEach(function (sid) {
-          var n = Number(sid);
-          if (!isNaN(n)) out.push(n);
-        });
+        selectedIdSet().forEach(function (sid) { out.push(String(sid)); });
         return out.length ? out : null;
       }
 
       /* Применить фильтр карты «только выбранные» для активного слоя (или снять,
          если режим выключен / выбор пуст). */
       function applyOnlySelectedMap() {
-        var ids = state.onlySelected ? selectedNumIds() : null;
+        var ids = state.onlySelected ? selectedFilterIds() : null;
         if (state.layer === 'userfields') {
-          var flt = ids ? ['in', ['get', 'id'], ['literal', ids]] : null;
+          var flt = ids ? ['in', ['to-string', ['get', 'id']], ['literal', ids]] : null;
           try { map.setFilter('userfields-fill', flt); } catch (_) {}
           try { map.setFilter('userfields-outline', flt); } catch (_) {}
         } else if (state.layer === 'farmlands') {
@@ -6416,7 +6417,7 @@
           var base = (L._baseFilter && L._baseFilter[lid]) || null;
           var flt;
           if (ids && ids.length) {
-            var idf = ['in', ['get', 'id'], ['literal', ids]];
+            var idf = ['in', ['to-string', ['get', 'id']], ['literal', ids]];
             flt = base ? ['all', base, idf] : idf;
           } else {
             flt = base;
