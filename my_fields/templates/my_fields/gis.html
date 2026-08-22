@@ -558,6 +558,19 @@
     }
     .gis-attrtable thead th:hover { background: #e6f0d6; }
     .gis-attrtable thead th .sort-ind { color: #2e7d32; margin-left: 4px; font-size: 10px; }
+    /* Столбец выбора строк (чекбоксы) — работает для всех слоёв. */
+    .gis-attrtable th.gis-attrtable__selh, .gis-attrtable td.gis-attrtable__sel {
+      width: 30px; text-align: center; padding: 4px 6px; cursor: default;
+    }
+    .gis-attrtable th.gis-attrtable__selh:hover { background: #f1f8e9; }
+    .gis-attrtable input.gis-attrtable__selbox,
+    .gis-attrtable input.gis-attrtable__selall {
+      width: 15px !important; height: 15px !important; min-width: 15px !important;
+      min-height: 15px !important; opacity: 1 !important; position: static !important;
+      pointer-events: auto !important; margin: 0 !important; cursor: pointer;
+      display: inline-block !important; appearance: auto !important;
+      -webkit-appearance: checkbox !important;
+    }
     .gis-attrtable tbody td {
       padding: 6px 10px; border-bottom: 1px solid #f0f0f0;
       white-space: nowrap; max-width: 280px; overflow: hidden; text-overflow: ellipsis;
@@ -805,8 +818,8 @@
       <span class="gis-massbar__count" id="gis-mass-count">Выбрано: 0</span>
       <button type="button" data-mass="merge"  title="Слить выделенные полигоны в один">⬓ Объединить</button>
       <button type="button" data-mass="attrs"  title="Изменить атрибуты у всех выделенных">✎ Атрибуты</button>
+      <button type="button" data-mass="delete" title="Удалить все выделенные">🗑 Удалить</button>
       <button type="button" data-mass="clear"  title="Снять выделение (Esc)">✕ Снять</button>
-      <span class="gis-massbar__hint">Удаление — кнопкой 🗑 на панели.</span>
     </div>
 
     <div class="gis-modal" id="gis-attrmodal" hidden>
@@ -3308,6 +3321,14 @@
       updateMassBar();
     }
 
+    /* Подпись единиц выбора по слою: ЗСН → угодий, Мои поля → полей,
+       загруженный SHP-слой → объектов. */
+    function massSelLabel(layer) {
+      if (layer === 'farmlands') return 'угодий';
+      if (layer === 'userfields') return 'полей';
+      return 'объектов';
+    }
+
     function updateMassBar() {
       var bar = document.getElementById('gis-massbar');
       var cnt = document.getElementById('gis-mass-count');
@@ -3315,8 +3336,7 @@
       var n = massSel.ids.size;
       if (n > 0) {
         bar.hidden = false;
-        var lbl = massSel.layer === 'farmlands' ? 'угодий' : 'полей';
-        if (cnt) cnt.textContent = 'Выбрано ' + lbl + ': ' + n;
+        if (cnt) cnt.textContent = 'Выбрано ' + massSelLabel(massSel.layer) + ': ' + n;
       } else {
         bar.hidden = true;
       }
@@ -3524,11 +3544,29 @@
       var n = massSel.ids.size;
       if (!n) return;
       var layer = massSel.layer;
-      var lbl = layer === 'farmlands' ? 'угодий' : 'полей';
-      if (!window.confirm('Удалить выбранные (' + n + ' ' + lbl +
-          ')? Объекты попадут в очередь на удаление — примените 💾.')) return;
+      var lbl = massSelLabel(layer);
+      var isDyn = !!(layer && layer.indexOf('gisup:') === 0);
+      var msg = isDyn
+        ? 'Удалить выбранные (' + n + ' ' + lbl + ')? Действие необратимо.'
+        : 'Удалить выбранные (' + n + ' ' + lbl +
+          ')? Объекты попадут в очередь на удаление — примените 💾.';
+      if (!window.confirm(msg)) return;
       var ids = Array.from(massSel.ids);
       ids.forEach(function (id) { setSelState(layer, id, false); });
+
+      /* Загруженный SHP-слой: удаление уходит на сервер сразу (нет очереди
+         черновиков, как у ЗСН/Мои поля). Тайлы и таблица обновляются через
+         колбэки слоя (def.deleteMany → gupRefreshTiles) и хук перезагрузки. */
+      if (isDyn) {
+        massSel = { layer: null, ids: new Set(), feats: new Map() };
+        updateMassBar();
+        if (window.__gisAttr && window.__gisAttr.massDelete) {
+          window.__gisAttr.massDelete(layer, ids, function (done) {
+            toast('Удалено объектов: ' + done);
+          });
+        }
+        return;
+      }
 
       if (layer === 'userfields') {
         ids.forEach(function (id) { try { queueDelete(id); } catch (_) {} });
@@ -3584,6 +3622,29 @@
     }
 
     function buildAttrFormHtml(layer) {
+      /* Загруженный SHP-слой: набор атрибутов индивидуален — берём
+         редактируемые столбцы из модуля таблицы через window.__gisAttr. */
+      if (layer && layer.indexOf('gisup:') === 0) {
+        var dcols = (window.__gisAttr && window.__gisAttr.editableCols)
+          ? window.__gisAttr.editableCols(layer) : [];
+        if (!dcols.length) {
+          return '<p class="gis-modal__note">У этого слоя нет редактируемых атрибутов.</p>';
+        }
+        return '' +
+          '<p class="gis-modal__note">Отметьте слева поля, которые нужно изменить. ' +
+          'Изменения применятся сразу.</p>' +
+          dcols.map(function (c) {
+            var kind = (c.edit && c.edit.kind) || 'str';
+            var ctl;
+            if (c.edit && c.edit.type === 'select') {
+              ctl = '<select class="browser-default" data-input disabled>' +
+                optionsHtml(c.edit.choices) + '</select>';
+            } else {
+              ctl = '<input type="text" data-input disabled>';
+            }
+            return attrRow(c.key, c.label, kind, ctl);
+          }).join('');
+      }
       if (layer === 'farmlands') {
         return '' +
           '<p class="gis-modal__note">Отметьте слева поля, которые нужно изменить. ' +
@@ -3613,8 +3674,7 @@
       var layer = massSel.layer;
       var body = document.getElementById('gis-attrmodal-body');
       var title = document.getElementById('gis-attrmodal-title');
-      var lbl = layer === 'farmlands' ? 'угодий' : 'полей';
-      if (title) title.textContent = 'Атрибуты: ' + massSel.ids.size + ' ' + lbl;
+      if (title) title.textContent = 'Атрибуты: ' + massSel.ids.size + ' ' + massSelLabel(layer);
       if (body) {
         body.innerHTML = buildAttrFormHtml(layer);
         /* Чекбокс включает/выключает свой контрол. */
@@ -3654,8 +3714,18 @@
       return patch;
     }
 
-    /* Применить patch ко всем выбранным — в очередь attrUpdates. */
+    /* Применить patch ко всем выбранным. Статические слои — в очередь
+       attrUpdates (💾); загруженный SHP-слой — сразу на сервер через модуль
+       таблицы (window.__gisAttr.massPatch). */
     function applyMassAttrs(patch) {
+      var layer = massSel.layer;
+      if (layer && layer.indexOf('gisup:') === 0) {
+        var ids = Array.from(massSel.ids);
+        if (window.__gisAttr && window.__gisAttr.massPatch) {
+          window.__gisAttr.massPatch(layer, ids, patch);
+        }
+        return ids.length;
+      }
       return applyAttrsToIds(massSel.layer, Array.from(massSel.ids), patch);
     }
 
@@ -3711,6 +3781,7 @@
         var act = btn.getAttribute('data-mass');
         if (act === 'clear')  { clearMassSelection(); return; }
         if (act === 'attrs')  { openMassAttrModal(); return; }
+        if (act === 'delete') { massDeleteSelected(); return; }
         if (act === 'merge')  { toast('Массовое объединение — в разработке.', true); return; }
       });
     })();
@@ -3730,9 +3801,12 @@
             toast('Отметьте хотя бы одно поле для изменения.', true);
             return;
           }
+          var isDyn = !!(massSel.layer && massSel.layer.indexOf('gisup:') === 0);
           var n = applyMassAttrs(patch);
           closeMassAttrModal();
-          toast('Атрибуты обновлены у ' + n + ' объектов · 💾 для применения, ↶ — отмена.');
+          toast(isDyn
+            ? 'Атрибуты обновлены у ' + n + ' объектов.'
+            : 'Атрибуты обновлены у ' + n + ' объектов · 💾 для применения, ↶ — отмена.');
         });
       }
     })();
@@ -5025,8 +5099,15 @@
           return;
         }
 
-        /* Ведущий служебный столбец 🔍 (перелёт к объекту) — без сортировки. */
-        var thead = '<thead><tr><th class="gis-attrtable__zoomh" title="Приблизить"></th>' +
+        /* Служебные столбцы: чекбокс выбора + 🔍 (перелёт к объекту). Оба без
+           сортировки. Чекбокс «выбрать все» отмечает все строки страницы. */
+        var allSelected = state.rows.length > 0 && state.rows.every(function (r) {
+          return massSel.layer === state.layer && massSel.ids.has(String(r.id));
+        });
+        var thead = '<thead><tr>' +
+          '<th class="gis-attrtable__selh" title="Выбрать все на странице">' +
+            '<input type="checkbox" class="gis-attrtable__selall"' + (allSelected ? ' checked' : '') + '></th>' +
+          '<th class="gis-attrtable__zoomh" title="Приблизить"></th>' +
           cols.map(function (c) {
             var ind = '';
             if (c.key === state.sortKey) ind = '<span class="sort-ind">' + (state.sortDir === 1 ? '▲' : '▼') + '</span>';
@@ -5034,10 +5115,13 @@
           }).join('') + '</tr></thead>';
 
         var tbody = '<tbody>' + state.rows.map(function (r) {
-          var isActive = (massSel.layer === state.layer && massSel.ids.has(String(r.id))) ||
+          var inMass = massSel.layer === state.layer && massSel.ids.has(String(r.id));
+          var isActive = inMass ||
                          (state.sel.layer === state.layer && String(state.sel.id) === String(r.id));
           var cls = isActive ? ' class="active"' : '';
           var rowDirty = isRowDirty(r.id);
+          var selTd = '<td class="gis-attrtable__sel">' +
+            '<input type="checkbox" class="gis-attrtable__selbox"' + (inMass ? ' checked' : '') + '></td>';
           var zoomTd = '<td class="gis-attrtable__zoom">' +
             '<button type="button" class="gis-attrtable__zoombtn" title="Приблизить к объекту">🔍</button></td>';
           var tds = cols.map(function (c) {
@@ -5047,7 +5131,7 @@
             return '<td' + (tdCls ? ' class="' + tdCls + '"' : '') +
               ' data-key="' + esc(c.key) + '" title="' + esc(val) + '">' + esc(val) + '</td>';
           }).join('');
-          return '<tr data-id="' + esc(r.id) + '"' + cls + '>' + zoomTd + tds + '</tr>';
+          return '<tr data-id="' + esc(r.id) + '"' + cls + '>' + selTd + zoomTd + tds + '</tr>';
         }).join('') + '</tbody>';
 
         /* Футер пагинации — только для server-paged слоёв (SHP). Sticky снизу,
@@ -5084,6 +5168,24 @@
           });
         });
 
+        /* Чекбокс «выбрать все на странице» — отмечает/снимает все текущие
+           строки (для SHP — только объекты текущей страницы). */
+        var selAll = bodyEl.querySelector('.gis-attrtable__selall');
+        if (selAll) {
+          selAll.addEventListener('click', function (e) { e.stopPropagation(); });
+          selAll.addEventListener('change', function () {
+            if (!canMultiSelect()) return;
+            var on = selAll.checked;
+            if (massSel.layer && massSel.layer !== state.layer) clearMassSelection();
+            state.rows.forEach(function (r) {
+              if (on) addToSelection(state.layer, r.id, r.geometry, r.props);
+              else removeFromSelection(state.layer, r.id);
+            });
+            updateMassBar();
+            applyActiveClasses();
+          });
+        }
+
         if (serverPaged) {
           bodyEl.querySelectorAll('.gis-attrtable__pager button[data-pg]').forEach(function (b) {
             b.addEventListener('click', function () {
@@ -5107,17 +5209,29 @@
             });
           }
         }
+        bodyEl.querySelectorAll('.gis-attrtable__selbox').forEach(function (cb) {
+          /* Чекбокс строки — основной механизм множественного выбора
+             (без Ctrl/Shift), работает для всех слоёв. */
+          cb.addEventListener('click', function (e) { e.stopPropagation(); });
+          cb.addEventListener('change', function () {
+            var tr = cb.closest('tr');
+            if (!tr) return;
+            setRowSelected(tr.getAttribute('data-id'), cb.checked);
+          });
+        });
         bodyEl.querySelectorAll('tbody tr').forEach(function (tr) {
           tr.addEventListener('click', function (e) {
             var idStr = tr.getAttribute('data-id');
+            /* Клик в ячейке чекбокса обрабатывает сам чекбокс (change). */
+            if (e.target.closest('.gis-attrtable__sel')) return;
             /* Клик по 🔍 — перелёт к объекту + выбор (одиночный). */
             if (e.target.closest('.gis-attrtable__zoombtn')) {
               e.stopPropagation();
               onRowClick(idStr, true);
               return;
             }
-            /* Мультивыбор (Ctrl/Cmd — тоггл, Shift — диапазон) для статических
-               слоёв. Проверяем ДО инлайн-редактора, чтобы модификатор по
+            /* Мультивыбор (Ctrl/Cmd — тоггл, Shift — диапазон) для всех слоёв.
+               Проверяем ДО инлайн-редактора, чтобы модификатор по
                редактируемой ячейке добавлял строку в выбор, а не открывал
                редактор. */
             if (canMultiSelect() && (e.ctrlKey || e.metaKey || e.shiftKey)) {
@@ -5326,13 +5440,14 @@
         }
       }
 
-      /* Множественный выбор строк доступен для статических слоёв (Мои поля /
-         ЗСН) — как и инструменты лассо/клик-выбора на карте, работает и без
-         режима правки. Выбор ведём через общий massSel: подсветка на карте +
-         панель массовых операций (✎ Атрибуты / 🗑 удалить). Для загруженных
-         SHP-слоёв (server-paged) — прежний одиночный выбор. */
+      /* Множественный выбор строк доступен для ВСЕХ слоёв (Мои поля / ЗСН и
+         загруженные SHP) — как и инструменты лассо/клик-выбора на карте,
+         работает и без режима правки. Выбор ведём через общий massSel:
+         подсветка на карте + панель массовых операций (✎ Атрибуты / 🗑 удалить).
+         Для SHP-слоёв выбор ограничен объектами текущей страницы. */
       function canMultiSelect() {
-        return state.layer === 'userfields' || state.layer === 'farmlands';
+        return state.layer === 'userfields' || state.layer === 'farmlands' ||
+               !!dynLayers[state.layer];
       }
 
       /* Если массвыбор пуст, а одиночная строка подсвечена — переносим её в
@@ -5347,12 +5462,39 @@
       /* Обновить класс .active у строк по текущему выбору (massSel / одиночный)
          без полной перерисовки — сохраняет прокрутку таблицы. */
       function applyActiveClasses() {
+        var pageAll = state.rows.length > 0;
         bodyEl.querySelectorAll('tbody tr[data-id]').forEach(function (tr) {
           var id = tr.getAttribute('data-id');
-          var on = (massSel.layer === state.layer && massSel.ids.has(String(id))) ||
+          var inMass = (massSel.layer === state.layer && massSel.ids.has(String(id)));
+          var on = inMass ||
                    (state.sel.layer === state.layer && String(state.sel.id) === String(id));
           tr.classList.toggle('active', on);
+          /* Синхронизируем чекбокс строки с фактическим массвыбором (важно для
+             лассо/клик-выбора на карте, Ctrl/Shift и «выбрать все»). */
+          var cb = tr.querySelector('.gis-attrtable__selbox');
+          if (cb) cb.checked = inMass;
+          if (!inMass) pageAll = false;
         });
+        var selAll = bodyEl.querySelector('.gis-attrtable__selall');
+        if (selAll) selAll.checked = pageAll;
+      }
+
+      /* Чекбокс строки (плоский выбор без модификаторов): добавить/убрать
+         объект в общий massSel. Работает для всех слоёв. */
+      function setRowSelected(idStr, on) {
+        var row = findRow(idStr);
+        if (!row) return;
+        if (massSel.layer && massSel.layer !== state.layer) clearMassSelection();
+        if (on) {
+          addToSelection(state.layer, row.id, row.geometry, row.props);
+          state.sel = { layer: state.layer, id: row.id };
+          renderCardFor(row);
+        } else {
+          removeFromSelection(state.layer, row.id);
+        }
+        state.anchorId = String(row.id);
+        updateMassBar();
+        applyActiveClasses();
       }
 
       /* Одиночный выбор строки (+ карточка, перелёт): обычная подсветка
@@ -5655,6 +5797,36 @@
           if (!state.open || id == null) return;
           selectFromMap(layer, id);
         },
+        /* Редактируемые столбцы SHP-слоя — для формы массовой правки атрибутов
+           (модалка живёт во внешнем scope и не видит COLUMNS). */
+        editableCols: function (layer) {
+          return (COLUMNS[layer] || []).filter(function (c) { return !!c.edit; })
+            .map(function (c) { return { key: c.key, label: c.label, edit: c.edit }; });
+        },
+        /* Массовая правка атрибутов SHP-слоя: PATCH каждого объекта сразу на
+           сервер (у SHP нет очереди 💾), затем перезагрузка страницы + тайлов. */
+        massPatch: function (layer, ids, patch) {
+          var def = dynLayers[layer];
+          if (!def || !def.patch) return;
+          var keys = Object.keys(patch);
+          var pending = ids.length * keys.length;
+          if (!pending) return;
+          var done = function () { if (--pending <= 0) reloadDynPage(); };
+          ids.forEach(function (fid) {
+            keys.forEach(function (k) { def.patch(fid, k, patch[k], done); });
+          });
+        },
+        /* Массовое удаление объектов SHP-слоя (см. def.deleteMany). */
+        massDelete: function (layer, ids, cb) {
+          var def = dynLayers[layer];
+          if (!def || !def.deleteMany) { if (cb) cb(0); return; }
+          def.deleteMany(ids, function (done) {
+            reloadDynPage();
+            if (cb) cb(done);
+          });
+        },
+        /* Перезагрузить текущую страницу активного SHP-слоя. */
+        reload: function () { if (state.open) reloadDynPage(); },
       };
 
       /* Хук: внешний massSel изменился (лассо/клик на карте, Ctrl/Shift-выбор
@@ -5902,6 +6074,20 @@
               headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
               body: JSON.stringify({ props: props }),
             }).then(function (r) { cb(r.ok); }).catch(function () { cb(false); });
+          },
+          /* Массовое удаление объектов слоя: DELETE каждого fid, затем
+             cache-bust тайлов (gupRefreshTiles), чтобы карта отразила правку. */
+          deleteMany: function (fids, cb) {
+            var done = 0;
+            Promise.all((fids || []).map(function (fid) {
+              return fetch(API + L.id + '/features/' + fid + '/', {
+                method: 'DELETE', credentials: 'same-origin',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+              }).then(function (r) { if (r.ok) done++; }).catch(function () {});
+            })).then(function () {
+              try { gupRefreshTiles(L); } catch (_) {}
+              if (cb) cb(done);
+            });
           },
         };
         window.__gisAttr.register('gisup:' + L.id, def);
