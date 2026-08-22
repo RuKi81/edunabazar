@@ -523,6 +523,19 @@
     }
     .gis-attrtable__edithint { font-size: 11px; color: #2e7d32; font-weight: 600; }
     .gis-attrtable__spacer { flex: 1; }
+    /* Чекбокс «показать только выбранные». */
+    .gis-attrtable__onlysel {
+      display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+      font-size: 12px; color: #555; cursor: pointer; user-select: none;
+    }
+    .gis-attrtable__onlysel input {
+      width: 15px !important; height: 15px !important; min-width: 15px !important;
+      min-height: 15px !important; opacity: 1 !important; position: static !important;
+      pointer-events: auto !important; margin: 0 !important; cursor: pointer;
+      display: inline-block !important; appearance: auto !important;
+      -webkit-appearance: checkbox !important;
+    }
+    .gis-attrtable__onlysel.active { color: #2e7d32; font-weight: 600; }
     /* Лупа-переключатель поиска (в левом верхнем углу шапки). */
     .gis-attrtable__searchtoggle { padding: 5px 8px; }
     .gis-attrtable__searchtoggle.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
@@ -924,6 +937,10 @@
         </select>
         <span class="gis-attrtable__edithint" id="gis-attrtable-edithint">✎ кликните ячейку с подсветкой — правка идёт в очередь (💾 сохранить, ↶ отменить)</span>
         <span class="gis-attrtable__spacer"></span>
+        <label class="gis-attrtable__onlysel" id="gis-attrtable-onlysel-lbl"
+               title="Показать на карте и в таблице только выбранные объекты">
+          <input type="checkbox" id="gis-attrtable-onlysel"> показать только выбранные
+        </label>
         <button type="button" class="gis-attrtable__btn" id="gis-attrtable-refresh"
                 title="Обновить объекты из видимой области">⟳ Обновить</button>
         <button type="button" class="gis-attrtable__x" id="gis-attrtable-close" title="Закрыть таблицу">✕</button>
@@ -1754,6 +1771,9 @@
     }
     /* Список pk, которые надо спрятать из тайлов (есть оверлей в draw или
        помечены на удаление) — чтобы не было двойной отрисовки/«призраков». */
+    /* Список pk выбранных угодий для режима «показать только выбранные»
+       (устанавливается модулем таблицы). null — режим выключен. */
+    var farmlandOnlySelectedIds = null;
     function applyFarmlandFilter() {
       var hide = [];
       flDrawIds.forEach(function (sid) {
@@ -1765,6 +1785,12 @@
         if (!isNaN(n)) hide.push(n);
       });
       var flt = hide.length ? ['!', ['in', ['get', 'id'], ['literal', hide]]] : null;
+      /* Режим «только выбранные»: оставляем на карте лишь выбранные pk
+         (комбинируем с фильтром скрытых оверлеев через 'all'). */
+      if (farmlandOnlySelectedIds) {
+        var only = ['in', ['get', 'id'], ['literal', farmlandOnlySelectedIds]];
+        flt = flt ? ['all', flt, only] : only;
+      }
       try { map.setFilter('farmlands-fill', flt); } catch (_) {}
       try { map.setFilter('farmlands-outline', flt); } catch (_) {}
       refreshFarmlandPreview();
@@ -4891,6 +4917,8 @@
       var bodyEl   = document.getElementById('gis-attrtable-body');
       var countEl  = document.getElementById('gis-attrtable-count');
       var refreshBtn = document.getElementById('gis-attrtable-refresh');
+      var onlySelEl = document.getElementById('gis-attrtable-onlysel');
+      var onlySelLbl = document.getElementById('gis-attrtable-onlysel-lbl');
       var closeBtn = document.getElementById('gis-attrtable-close');
       var searchEl = document.getElementById('gis-attrtable-search');
       var filterEl = document.getElementById('gis-attrtable-filter');
@@ -4925,6 +4953,7 @@
         page: 0,                 // текущая страница (server-paged SHP-слои)
         pageSize: 100,           // объектов на странице (server-paged)
         total: 0,                // всего объектов на сервере (с учётом поиска)
+        onlySelected: false,     // показывать только выбранные (карта + таблица)
       };
 
       /* Активный слой грузится постранично с сервера (загруженный SHP)? */
@@ -5074,6 +5103,12 @@
            применяем только к статическим слоям (ЗСН / Мои поля). */
         state.rows = serverPaged ? collectRows() : sortRows(collectRows());
 
+        /* Режим «показать только выбранные»: оставляем в таблице только строки
+           из текущего массвыбора (для SHP — в пределах текущей страницы). */
+        if (state.onlySelected && massSel.layer === state.layer && massSel.ids.size) {
+          state.rows = state.rows.filter(function (r) { return massSel.ids.has(String(r.id)); });
+        }
+
         if (countEl) {
           if (serverPaged) {
             var totFiltered = state.query ? ', отфильтровано' : '';
@@ -5087,6 +5122,10 @@
         }
         if (refreshBtn) refreshBtn.style.display = (state.layer === 'farmlands' || dynLayers[state.layer]) ? '' : 'none';
         if (filterEl) filterEl.style.display = state.layer === 'farmlands' ? '' : 'none';
+        /* Чекбокс «показать только выбранные» — для слоёв с мультивыбором. */
+        if (onlySelLbl) onlySelLbl.style.display = canMultiSelect() ? '' : 'none';
+        if (onlySelEl) onlySelEl.checked = state.onlySelected;
+        if (onlySelLbl) onlySelLbl.classList.toggle('active', state.onlySelected);
 
         if (!state.rows.length) {
           var base;
@@ -5497,6 +5536,48 @@
         applyActiveClasses();
       }
 
+      /* Числовые id текущего массвыбора (для фильтров карты), либо null. */
+      function selectedNumIds() {
+        if (!(massSel.layer === state.layer && massSel.ids.size)) return null;
+        var out = [];
+        massSel.ids.forEach(function (sid) {
+          var n = Number(sid);
+          if (!isNaN(n)) out.push(n);
+        });
+        return out.length ? out : null;
+      }
+
+      /* Применить фильтр карты «только выбранные» для активного слоя (или снять,
+         если режим выключен / выбор пуст). */
+      function applyOnlySelectedMap() {
+        var ids = state.onlySelected ? selectedNumIds() : null;
+        if (state.layer === 'userfields') {
+          var flt = ids ? ['in', ['get', 'id'], ['literal', ids]] : null;
+          try { map.setFilter('userfields-fill', flt); } catch (_) {}
+          try { map.setFilter('userfields-outline', flt); } catch (_) {}
+        } else if (state.layer === 'farmlands') {
+          farmlandOnlySelectedIds = ids;
+          try { applyFarmlandFilter(); } catch (_) {}
+        } else if (dynLayers[state.layer]) {
+          var lid = state.layer.slice('gisup:'.length);
+          if (window.__gisUpOnlySelected) window.__gisUpOnlySelected(lid, ids);
+        }
+      }
+
+      /* Полностью снять фильтр «только выбранные» с указанного слоя. */
+      function clearOnlySelectedMap(layer) {
+        if (layer === 'userfields') {
+          try { map.setFilter('userfields-fill', null); } catch (_) {}
+          try { map.setFilter('userfields-outline', null); } catch (_) {}
+        } else if (layer === 'farmlands') {
+          farmlandOnlySelectedIds = null;
+          try { applyFarmlandFilter(); } catch (_) {}
+        } else if (dynLayers[layer]) {
+          var lid = layer.slice('gisup:'.length);
+          if (window.__gisUpOnlySelected) window.__gisUpOnlySelected(lid, null);
+        }
+      }
+
       /* Одиночный выбор строки (+ карточка, перелёт): обычная подсветка
          feature-state. Ctrl/Shift-выбор строится отдельно через massSel. */
       function onRowClick(idStr, zoom) {
@@ -5682,6 +5763,9 @@
       function setLayer(layer) {
         if (layer === state.layer) return;
         clearSelHighlight();
+        /* Смена слоя сбрасывает режим «только выбранные» и снимает фильтр карты
+           с покидаемого слоя, чтобы он не остался частично скрытым. */
+        if (state.onlySelected) { clearOnlySelectedMap(state.layer); state.onlySelected = false; }
         state.layer = layer;
         state.sortKey = defaultSortKey(layer);
         state.sortDir = 1;
@@ -5707,6 +5791,9 @@
         panel.classList.remove('open');
         if (uiEl) uiEl.classList.remove('attrtable-open');
         if (toggleBtn) toggleBtn.classList.remove('active');
+        /* Закрытие таблицы снимает фильтр «только выбранные» с карты — иначе
+           объекты остались бы скрытыми при закрытой таблице. */
+        if (state.onlySelected) { clearOnlySelectedMap(state.layer); state.onlySelected = false; }
       }
 
       /* ─── Динамические слои (загруженные SHP) ─── */
@@ -5839,7 +5926,14 @@
           state.sel = { layer: null, id: null };
           state.anchorId = null;
         }
-        applyActiveClasses();
+        /* В режиме «только выбранные» изменение выбора меняет и состав карты, и
+           набор строк — синхронизируем фильтр карты и перерисовываем таблицу. */
+        if (state.onlySelected) {
+          applyOnlySelectedMap();
+          render();
+        } else {
+          applyActiveClasses();
+        }
       };
 
       /* ─── Слушатели ─── */
@@ -5850,6 +5944,11 @@
       if (refreshBtn) refreshBtn.addEventListener('click', function () {
         if (state.layer === 'farmlands') render();
         else if (dynLayers[state.layer]) { dynLayers[state.layer].loaded = false; loadDyn(state.layer); }
+      });
+      if (onlySelEl) onlySelEl.addEventListener('change', function () {
+        state.onlySelected = onlySelEl.checked;
+        applyOnlySelectedMap();
+        render();
       });
 
       /* Кнопка ▤ в плашке статического слоя (ЗСН / Мои поля) открывает его
@@ -6194,6 +6293,16 @@
         }
         L._layerIds = added;
 
+        /* Базовые $type-фильтры каждого слоя — чтобы режим «только выбранные»
+           мог комбинировать их с фильтром по id (см. __gisUpOnlySelected). */
+        L._baseFilter = {};
+        if (k === 'polygon' || k === 'other') {
+          L._baseFilter[fill] = ['==', '$type', 'Polygon'];
+          L._baseFilter[ol] = ['==', '$type', 'Polygon'];
+        }
+        if (k === 'line' || k === 'other') L._baseFilter[line] = ['==', '$type', 'LineString'];
+        if (k === 'point' || k === 'other') L._baseFilter[pt] = ['==', '$type', 'Point'];
+
         /* Highlight-слои подсветки выбранного объекта (feature-state
            'selected'). Держим их отдельно от _layerIds, чтобы applyStyle
            не перекрашивал их тематическим цветом. Ширина/радиус = 0, пока
@@ -6268,6 +6377,26 @@
             { source: srcId(layerId), sourceLayer: L.table_name, id: fid },
             { selected: !!on });
         } catch (_) {}
+      };
+
+      /* Режим «показать только выбранные» для SHP-слоя: ids — массив id
+         объектов (оставить видимыми) или null (снять фильтр). Комбинируем с
+         базовым $type-фильтром слоя. */
+      window.__gisUpOnlySelected = function (layerId, ids) {
+        var L = uploaded[layerId];
+        if (!L) return;
+        (L._layerIds || []).forEach(function (lid) {
+          if (!map.getLayer(lid)) return;
+          var base = (L._baseFilter && L._baseFilter[lid]) || null;
+          var flt;
+          if (ids && ids.length) {
+            var idf = ['in', ['get', 'id'], ['literal', ids]];
+            flt = base ? ['all', base, idf] : idf;
+          } else {
+            flt = base;
+          }
+          try { map.setFilter(lid, flt); } catch (_) {}
+        });
       };
       /* Перекрасить все слои карты, относящиеся к L, по текущему L.style
          (или переданному override-стилю для живого предпросмотра).
