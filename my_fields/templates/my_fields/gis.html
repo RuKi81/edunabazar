@@ -523,10 +523,11 @@
     }
     .gis-attrtable__edithint { font-size: 11px; color: #2e7d32; font-weight: 600; }
     .gis-attrtable__spacer { flex: 1; }
-    /* Чекбокс «показать только выбранные». */
+    /* Чекбокс «показать только выбранные» — подпись в общем стиле шапки. */
     .gis-attrtable__onlysel {
       display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
-      font-size: 12px; color: #555; cursor: pointer; user-select: none;
+      font-family: inherit; font-size: 12px; font-weight: 400; color: #777;
+      cursor: pointer; user-select: none;
     }
     .gis-attrtable__onlysel input {
       width: 15px !important; height: 15px !important; min-width: 15px !important;
@@ -5104,9 +5105,13 @@
         state.rows = serverPaged ? collectRows() : sortRows(collectRows());
 
         /* Режим «показать только выбранные»: оставляем в таблице только строки
-           из текущего массвыбора (для SHP — в пределах текущей страницы). */
-        if (state.onlySelected && massSel.layer === state.layer && massSel.ids.size) {
-          state.rows = state.rows.filter(function (r) { return massSel.ids.has(String(r.id)); });
+           из текущего выбора (массвыбор + одиночный; для SHP — в пределах
+           текущей страницы). */
+        if (state.onlySelected) {
+          var selSet = selectedIdSet();
+          if (selSet.size) {
+            state.rows = state.rows.filter(function (r) { return selSet.has(String(r.id)); });
+          }
         }
 
         if (countEl) {
@@ -5536,11 +5541,25 @@
         applyActiveClasses();
       }
 
-      /* Числовые id текущего массвыбора (для фильтров карты), либо null. */
+      /* Множество id выбранных объектов активного слоя (строки). Учитываем и
+         массвыбор (чекбоксы/Ctrl/Shift/лассо), и одиночный выбор (клик по
+         строке/объекту) — чтобы «только выбранные» показывал любую выбранную
+         геометрию. */
+      function selectedIdSet() {
+        var s = new Set();
+        if (massSel.layer === state.layer) {
+          massSel.ids.forEach(function (id) { s.add(String(id)); });
+        }
+        if (state.sel.layer === state.layer && state.sel.id != null) {
+          s.add(String(state.sel.id));
+        }
+        return s;
+      }
+
+      /* Числовые id выбранных объектов (для фильтров карты), либо null. */
       function selectedNumIds() {
-        if (!(massSel.layer === state.layer && massSel.ids.size)) return null;
         var out = [];
-        massSel.ids.forEach(function (sid) {
+        selectedIdSet().forEach(function (sid) {
           var n = Number(sid);
           if (!isNaN(n)) out.push(n);
         });
