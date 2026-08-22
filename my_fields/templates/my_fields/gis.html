@@ -526,7 +526,7 @@
     /* Чекбокс «показать только выбранные» — подпись в общем стиле шапки. */
     .gis-attrtable__onlysel {
       display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
-      font-family: inherit; font-size: 12px; font-weight: 400; color: #777;
+      font-family: inherit; font-size: 11px; font-weight: 400; color: #777;
       cursor: pointer; user-select: none;
     }
     .gis-attrtable__onlysel input {
@@ -5620,6 +5620,13 @@
         else if (row.geometry) zoomToRow(row);
 
         highlightRow(idStr, false);
+
+        /* Режим «только выбранные» активен: одиночный клик меняет набор
+           выбранного → живо пересобираем фильтр карты и состав таблицы. */
+        if (state.onlySelected) {
+          applyOnlySelectedMap();
+          render();
+        }
       }
 
       /* Ctrl/Cmd-клик: добавить/убрать одну строку из выбора. */
