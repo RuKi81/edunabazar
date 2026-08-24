@@ -362,16 +362,12 @@ class ExportTests(GisLayersTestCase):
             # эмулируем прод: агрессивный лимит на сессии
             cur.execute("SET statement_timeout = '2ms'")
         try:
-            # sanity: без снятия лимита такой скан действительно отменяется
-            # (иначе тест не проверял бы регрессию); savepoint откатит
+            # sanity: лимит на сессии реально действует (детерминированно —
+            # через pg_sleep, а не завися от времени скана); savepoint откатит
             # аборт транзакции, чтобы не сломать последующие запросы.
             with self.assertRaises(Exception):
                 with transaction.atomic(), connection.cursor() as cur:
-                    cur.execute(sql.SQL(
-                        'SELECT id, ST_AsGeoJSON(geom), ST_AsText(geom) '
-                        'FROM {t} ORDER BY id'
-                    ).format(t=sql.Identifier(table)))
-                    cur.fetchall()
+                    cur.execute('SELECT pg_sleep(1)')   # 1с ≫ 2мс лимита
             # с фиксом экспорт снимает лимит и успешно формирует архив
             for fmt in ('shp', 'geojson', 'xlsx'):
                 resp = self._export(fmt)
@@ -615,3 +611,65 @@ class FolderTests(GisLayersTestCase):
         self.client.logout()
         resp = self.client.delete(f'/me/gis/api/folders/{f.pk}/')
         self.assertEqual(resp.status_code, 401)
+
+
+class LayerQueryEndpointTests(GisLayersTestCase):
+    """POST /me/gis/api/layers/<pk>/query/ — визуальный конструктор выборки."""
+
+    def setUp(self):
+        self._login_admin()
+        self._upload(_make_shp_zip(shp_name='fields'))   # 1 объект: num=42
+        self.layer = GisLayer.objects.get()
+
+    def _query(self, body):
+        return self.client.post(
+            f'/me/gis/api/layers/{self.layer.pk}/query/',
+            data=json.dumps(body), content_type='application/json')
+
+    def test_filter_matches(self):
+        resp = self._query({'filter': {'rules': [
+            {'field': 'num', 'op': 'eq', 'value': 42}]}})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertTrue(body['ok'])
+        self.assertEqual(body['total'], 1)
+
+    def test_filter_no_match(self):
+        resp = self._query({'filter': {'rules': [
+            {'field': 'num', 'op': 'eq', 'value': 99}]}})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['total'], 0)
+
+    def test_invalid_filter_is_400(self):
+        resp = self._query({'filter': {'rules': [
+            {'field': 'nope', 'op': 'eq', 'value': 1}]}})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()['error'], 'invalid_filter')
+
+    def test_save_as_creates_layer(self):
+        resp = self._query({
+            'filter': {'rules': [{'field': 'num', 'op': 'gt', 'value': 0}]},
+            'save_as': 'Выборка num>0'})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertTrue(body['ok'])
+        self.assertEqual(GisLayer.objects.count(), 2)
+        new_layer = GisLayer.objects.get(pk=body['layer']['id'])
+        self.assertEqual(new_layer.feature_count, 1)
+        self.assertEqual(new_layer.title, 'Выборка num>0')
+
+    def test_save_as_empty_title_is_400(self):
+        resp = self._query({'filter': {'rules': []}, 'save_as': '   '})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()['error'], 'empty_title')
+
+    def test_anonymous_denied(self):
+        self.client.logout()
+        resp = self._query({'filter': {'rules': []}})
+        self.assertEqual(resp.status_code, 401)
+
+    def test_non_admin_denied(self):
+        self.client.logout()
+        self._login_plain()
+        resp = self._query({'filter': {'rules': []}})
+        self.assertEqual(resp.status_code, 403)

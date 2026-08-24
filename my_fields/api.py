@@ -1253,6 +1253,98 @@ def gis_layer_field_stats(request: HttpRequest, pk: int) -> JsonResponse:
     return JsonResponse({'ok': True, 'stats': stats})
 
 
+@csrf_exempt
+@require_http_methods(['POST'])
+def gis_layer_query(request: HttpRequest, pk: int) -> JsonResponse:
+    """POST — SQL-выборка (визуальный конструктор) по таблице слоя.
+
+    Тело JSON::
+
+        {"filter": {...}, "q": "", "sort": "id", "dir": "asc",
+         "limit": 1000, "offset": 0, "save_as": "<название>"?}
+
+    * без ``save_as`` — постраничный список отфильтрованных объектов (как
+      таблица атрибутов), уровень ``view``;
+    * с ``save_as`` — материализовать результат выборки в НОВЫЙ слой (уровень
+      whole-class ``manage``, как загрузка/создание слоя) и вернуть его.
+
+    ``filter`` компилируется безопасно на сервере (см.
+    :mod:`my_fields.services.layer_query`); сырой SQL от клиента не принимается.
+    """
+    gate = _require_gis_access(request, level='view', pk=pk)
+    if gate:
+        return gate
+    layer = get_object_or_404(GisLayer, pk=pk)
+
+    try:
+        data = json.loads(request.body or b'{}')
+    except (ValueError, TypeError):
+        return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
+    if not isinstance(data, dict):
+        return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
+
+    filter_spec = data.get('filter')
+    query_text = str(data.get('q', '') or '')
+    sort = data.get('sort', 'id') or 'id'
+    direction = data.get('dir', 'asc')
+    save_as = data.get('save_as')
+
+    from .services import shp_import
+    from .services.layer_query import LayerQueryError
+
+    if save_as is not None:
+        # Создание нового слоя из выборки — как загрузка SHP: whole-class manage.
+        mgate = _require_gis_access(request, level='manage')
+        if mgate:
+            return mgate
+        title = str(save_as).strip()
+        if not title:
+            return JsonResponse(
+                {'ok': False, 'error': 'empty_title',
+                 'detail': 'Укажите название слоя.'}, status=400)
+        try:
+            new_layer = shp_import.create_layer_from_query(
+                layer, title, filter_spec=filter_spec,
+                query_text=query_text, owner=request.user)
+        except LayerQueryError as e:
+            return JsonResponse(
+                {'ok': False, 'error': 'invalid_filter', 'detail': str(e)},
+                status=400)
+        return JsonResponse({'ok': True, 'layer': _gis_layer_to_dict(new_layer)})
+
+    try:
+        limit = int(data.get('limit', 1000))
+    except (TypeError, ValueError):
+        limit = 1000
+    limit = max(1, min(limit, 5000))
+    try:
+        offset = int(data.get('offset', 0))
+    except (TypeError, ValueError):
+        offset = 0
+    offset = max(0, offset)
+
+    try:
+        result = shp_import.list_features(
+            layer, limit=limit, offset=offset, sort=sort,
+            direction=direction, query_text=query_text, filter_spec=filter_spec)
+    except LayerQueryError as e:
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_filter', 'detail': str(e)},
+            status=400)
+    return JsonResponse({
+        'ok': True,
+        'total': result['total'],
+        'results': result['results'],
+        'attributes': layer.attributes,
+        'limit': limit,
+        'offset': offset,
+        'sort': sort,
+        'dir': direction,
+        'filter': filter_spec,
+        'q': query_text,
+    })
+
+
 @require_http_methods(['GET'])
 def gis_layer_export(request: HttpRequest, pk: int) -> HttpResponse:
     """GET — скачать данные слоя одним ZIP-архивом.

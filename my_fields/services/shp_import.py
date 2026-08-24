@@ -451,6 +451,33 @@ def create_layer_from_select(
     )
 
 
+def create_layer_from_query(layer, title: str, filter_spec=None,
+                            query_text: str = '', owner=None):
+    """Материализовать результат SQL-выборки слоя в новый слой.
+
+    Отбирает объекты ``layer`` по визуальному фильтру/поиску (та же логика,
+    что в таблице атрибутов — :func:`list_features`) и сохраняет их (со всеми
+    атрибутами и геометрией) в новый слой через :func:`create_layer_from_select`.
+    """
+    from .layer_query import build_where
+
+    types = _attr_db_types(layer)
+    cols = list(types.keys())
+    where_sql, params = build_where(layer, cols, filter_spec, query_text)
+    select_cols = [sql.Identifier(c) for c in cols] + [
+        sql.SQL('geom AS {}').format(sql.Identifier('geom'))]
+    select_sql = sql.SQL('SELECT {cols} FROM {table}{where}').format(
+        cols=sql.SQL(', ').join(select_cols),
+        table=sql.Identifier(layer.table_name),
+        where=where_sql,
+    )
+    return create_layer_from_select(
+        title, layer.geom_kind, list(layer.attributes or []),
+        select_sql, params, owner=owner,
+        source_note=f'query:{layer.table_name}',
+    )
+
+
 # ── Низкоуровневые операции с БД ────────────────────────────────────────
 
 def _create_table(table_name: str, columns) -> None:
@@ -566,7 +593,7 @@ def _json_safe(value):
 
 def list_features(layer, limit: int = 1000, offset: int = 0,
                   sort: str = 'id', direction: str = 'asc',
-                  query_text: str = '') -> dict:
+                  query_text: str = '', filter_spec=None) -> dict:
     """Постранично прочитать объекты слоя (id + атрибуты, без геометрии).
 
     Поддерживает серверную сортировку и поиск — чтобы таблица работала на
@@ -579,12 +606,17 @@ def list_features(layer, limit: int = 1000, offset: int = 0,
         direction: 'asc' | 'desc'.
         query_text: подстрока для поиска по всем колонкам (ILIKE), пусто — без
             фильтра.
+        filter_spec: структурный фильтр визуального конструктора (см.
+            :mod:`my_fields.services.layer_query`) или None. Комбинируется с
+            ``query_text`` через AND.
 
     Возвращает ``{'total': int, 'results': [{'id': int, 'props': {...}}]}``,
-    где ``total`` — число объектов с учётом фильтра поиска.
+    где ``total`` — число объектов с учётом фильтра/поиска.
     Геометрию не отдаём — таблица атрибутов её не показывает, а полигоны
     могут быть тяжёлыми.
     """
+    from .layer_query import build_where
+
     types = _attr_db_types(layer)
     cols = list(types.keys())
     table = sql.Identifier(layer.table_name)
@@ -596,17 +628,8 @@ def list_features(layer, limit: int = 1000, offset: int = 0,
     order_by = sql.SQL('ORDER BY {c} {d} NULLS LAST, {id} ASC').format(
         c=sql.Identifier(sort_col), d=dir_sql, id=sql.Identifier('id'))
 
-    # Поиск: подстрока по всем колонкам (+id), приведённым к тексту.
-    q = (query_text or '').strip()
-    where_sql = sql.SQL('')
-    where_params: list = []
-    if q:
-        pattern = f'%{q}%'
-        search_cols = [sql.Identifier('id')] + [sql.Identifier(c) for c in cols]
-        ors = sql.SQL(' OR ').join(
-            sql.SQL('{}::text ILIKE %s').format(c) for c in search_cols)
-        where_sql = sql.SQL(' WHERE ({})').format(ors)
-        where_params = [pattern] * len(search_cols)
+    # WHERE: структурный фильтр + подстрочный поиск (оба опциональны).
+    where_sql, where_params = build_where(layer, cols, filter_spec, query_text)
 
     select_cols = sql.SQL(', ').join(
         [sql.Identifier('id')] + [sql.Identifier(c) for c in cols])
@@ -633,7 +656,7 @@ def list_features(layer, limit: int = 1000, offset: int = 0,
 
 
 def feature_rank(layer, fid: int, sort: str = 'id', direction: str = 'asc',
-                 query_text: str = '') -> dict:
+                 query_text: str = '', filter_spec=None) -> dict:
     """0-based позиция объекта ``fid`` в текущем порядке/фильтре.
 
     Нужна для двусторонней синхронизации карты и таблицы на слоях с сотнями
@@ -647,6 +670,8 @@ def feature_rank(layer, fid: int, sort: str = 'id', direction: str = 'asc',
     Возвращает ``{'rank': int|None, 'total': int}``. ``rank`` — ``None``, если
     объект не найден или отфильтрован поиском.
     """
+    from .layer_query import build_where
+
     types = _attr_db_types(layer)
     cols = list(types.keys())
     table = sql.Identifier(layer.table_name)
@@ -656,16 +681,7 @@ def feature_rank(layer, fid: int, sort: str = 'id', direction: str = 'asc',
     order_by = sql.SQL('ORDER BY {c} {d} NULLS LAST, {id} ASC').format(
         c=sql.Identifier(sort_col), d=dir_sql, id=sql.Identifier('id'))
 
-    q = (query_text or '').strip()
-    where_sql = sql.SQL('')
-    where_params: list = []
-    if q:
-        pattern = f'%{q}%'
-        search_cols = [sql.Identifier('id')] + [sql.Identifier(c) for c in cols]
-        ors = sql.SQL(' OR ').join(
-            sql.SQL('{}::text ILIKE %s').format(c) for c in search_cols)
-        where_sql = sql.SQL(' WHERE ({})').format(ors)
-        where_params = [pattern] * len(search_cols)
+    where_sql, where_params = build_where(layer, cols, filter_spec, query_text)
 
     query = sql.SQL(
         'SELECT rn, total FROM ('
