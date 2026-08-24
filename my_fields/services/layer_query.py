@@ -48,7 +48,6 @@ def _column_types(layer) -> dict:
 def _rule_sql(field_ident, pg_type, op, value):
     """Собрать ``(sql, params)`` для одного правила."""
     col = field_ident
-    typed = sql.SQL('{}::{}').format(col, sql.SQL(pg_type))
 
     if op in ('is_null', 'not_null'):
         return (sql.SQL('{} IS NULL').format(col) if op == 'is_null'

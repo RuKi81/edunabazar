@@ -13,7 +13,6 @@ from django.test import TestCase
 from psycopg import sql
 
 from my_fields.models import GisLayer
-from my_fields.services import shp_import
 from my_fields.services.layer_query import LayerQueryError, build_filter
 from my_fields.services.shp_import import (
     create_empty_layer, create_layer_from_query, list_features,
