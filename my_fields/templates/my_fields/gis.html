@@ -552,6 +552,38 @@
     /* Лупа-переключатель поиска (в левом верхнем углу шапки). */
     .gis-attrtable__searchtoggle { padding: 5px 8px; }
     .gis-attrtable__searchtoggle.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
+    /* Конструктор выборки (фильтр по атрибутам). */
+    .gis-attrtable__filtertoggle { padding: 5px 8px; white-space: nowrap; }
+    .gis-attrtable__filtertoggle.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
+    .gis-attrtable__filterpanel {
+      border-bottom: 1px solid rgba(0,0,0,.12); background: #fafafa;
+      padding: 8px 10px; display: flex; flex-direction: column; gap: 8px;
+      max-height: 40%; overflow-y: auto;
+    }
+    .gis-fp__head, .gis-fp__foot { display: flex; align-items: center; gap: 8px; }
+    .gis-fp__match { font-size: 12px; color: #555; display: inline-flex; align-items: center; gap: 6px; }
+    .gis-fp__spacer { flex: 1; }
+    .gis-fp__rules { display: flex; flex-direction: column; gap: 6px; }
+    .gis-fp__rule { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .gis-fp__rule select, .gis-fp__rule input {
+      height: 30px; padding: 3px 8px; box-sizing: border-box; border: 1px solid #ccc;
+      border-radius: 5px; font-size: 12px; background: #fff;
+    }
+    .gis-fp__rule .gis-fp__field { min-width: 120px; }
+    .gis-fp__rule .gis-fp__op { min-width: 130px; }
+    .gis-fp__rule .gis-fp__val { min-width: 120px; flex: 1; }
+    .gis-fp__rule .gis-fp__del {
+      border: 1px solid #ef9a9a; background: #fff; color: #c62828; border-radius: 5px;
+      height: 30px; width: 30px; cursor: pointer; font-size: 14px; padding: 0; flex: none;
+    }
+    .gis-fp__rule .gis-fp__del:hover { background: #ffebee; }
+    .gis-fp__btn {
+      border: 1px solid rgba(0,0,0,.18); background: #fff; border-radius: 5px;
+      padding: 5px 12px; cursor: pointer; font-size: 12px; font-weight: 600; color: #444;
+    }
+    .gis-fp__btn:hover { background: #f0f0f0; }
+    .gis-fp__btn--primary { background: #2e7d32; color: #fff; border-color: #2e7d32; }
+    .gis-fp__btn--primary:hover { background: #276a2b; }
     /* Редактируемые ячейки (режим правки слоя). */
     .gis-attrtable td.editable { background: #fffef2; cursor: text; }
     .gis-attrtable td.editable:hover { background: #fff9d6; }
@@ -940,6 +972,8 @@
         <button type="button" class="gis-attrtable__btn gis-attrtable__searchtoggle" id="gis-attrtable-search-toggle" title="Поиск по строкам">🔎</button>
         <input type="text" class="gis-attrtable__search" id="gis-attrtable-search"
                placeholder="поиск по строкам…" autocomplete="off" hidden>
+        <button type="button" class="gis-attrtable__btn gis-attrtable__filtertoggle" id="gis-attrtable-filter-toggle"
+                title="Конструктор выборки (фильтр по атрибутам)" hidden>⚟ Фильтр</button>
         <span class="gis-attrtable__title" id="gis-attrtable-title">ЗСН (Росреестр)</span>
         <span class="gis-attrtable__count" id="gis-attrtable-count"></span>
         <select class="gis-attrtable__filter browser-default" id="gis-attrtable-filter" title="Фильтр по использованию">
@@ -957,6 +991,25 @@
         <button type="button" class="gis-attrtable__btn" id="gis-attrtable-refresh"
                 title="Обновить объекты из видимой области">⟳ Обновить</button>
         <button type="button" class="gis-attrtable__x" id="gis-attrtable-close" title="Закрыть таблицу">✕</button>
+      </div>
+      <div class="gis-attrtable__filterpanel" id="gis-attrtable-filterpanel" hidden>
+        <div class="gis-fp__head">
+          <span class="gis-fp__match">Совпадение:
+            <select class="browser-default" id="gis-fp-match">
+              <option value="all">все условия (И)</option>
+              <option value="any">любое условие (ИЛИ)</option>
+            </select>
+          </span>
+          <span class="gis-fp__spacer"></span>
+          <button type="button" class="gis-fp__btn" id="gis-fp-add">+ условие</button>
+        </div>
+        <div class="gis-fp__rules" id="gis-fp-rules"></div>
+        <div class="gis-fp__foot">
+          <button type="button" class="gis-fp__btn gis-fp__btn--primary" id="gis-fp-apply">Применить</button>
+          <button type="button" class="gis-fp__btn" id="gis-fp-reset">Сбросить</button>
+          <span class="gis-fp__spacer"></span>
+          <button type="button" class="gis-fp__btn" id="gis-fp-save">Сохранить как слой…</button>
+        </div>
       </div>
       <div class="gis-attrtable__body" id="gis-attrtable-body"></div>
     </section>
@@ -4935,6 +4988,10 @@
       var closeBtn = document.getElementById('gis-attrtable-close');
       var searchEl = document.getElementById('gis-attrtable-search');
       var filterEl = document.getElementById('gis-attrtable-filter');
+      var fpToggle = document.getElementById('gis-attrtable-filter-toggle');
+      var fpPanel  = document.getElementById('gis-attrtable-filterpanel');
+      var fpRules  = document.getElementById('gis-fp-rules');
+      var fpMatch  = document.getElementById('gis-fp-match');
       var editHint = document.getElementById('gis-attrtable-edithint');
       var titleEl  = document.getElementById('gis-attrtable-title');
       var uiEl     = document.querySelector('.gis-ui');
@@ -4959,6 +5016,7 @@
         sortKey: 'id',
         sortDir: 1,              // 1 = asc, -1 = desc
         query: '',               // строка поиска
+        filter: null,            // структурный фильтр (SQL-выборка) или null
         usedFilter: '',          // фильтр is_used: '' | '1' | '0' | '-1'
         rows: [],
         sel: { layer: null, id: null },  // подсвеченная строка (на карте)
@@ -4982,6 +5040,7 @@
           sort: state.sortKey || 'id',
           dir: state.sortDir === -1 ? 'desc' : 'asc',
           q: (state.query || '').trim(),
+          filter: state.filter || null,
         };
       }
 
@@ -5128,7 +5187,7 @@
 
         if (countEl) {
           if (serverPaged) {
-            var totFiltered = state.query ? ', отфильтровано' : '';
+            var totFiltered = (state.query || state.filter) ? ', отфильтровано' : '';
             countEl.textContent = (state.total || 0) + ' объект(ов)' + totFiltered;
           } else {
             var suffix = state.layer === 'farmlands' ? ' (видимая область)' : '';
@@ -5765,13 +5824,31 @@
         var def = dynLayers[layer];
         if (!def) return;
         var lid = layer.slice('gisup:'.length);
-        var qs = '?rank_of=' + encodeURIComponent(id) +
-                 '&sort=' + encodeURIComponent(state.sortKey || 'id') +
-                 '&dir=' + (state.sortDir === -1 ? 'desc' : 'asc');
-        if (state.query) qs += '&q=' + encodeURIComponent(state.query);
-        fetch('/me/gis/api/layers/' + lid + '/features/' + qs, {
-          credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' },
-        }).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+        /* Позицию (rank) считает сервер под текущий порядок/поиск/фильтр.
+           При активном структурном фильтре — POST /query/ (rank_of в теле),
+           иначе — GET /features/. */
+        var reqRank;
+        if (state.filter) {
+          reqRank = fetch('/me/gis/api/layers/' + lid + '/query/', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({
+              rank_of: id, filter: state.filter,
+              sort: state.sortKey || 'id',
+              dir: state.sortDir === -1 ? 'desc' : 'asc',
+              q: (state.query || ''),
+            }),
+          });
+        } else {
+          var qs = '?rank_of=' + encodeURIComponent(id) +
+                   '&sort=' + encodeURIComponent(state.sortKey || 'id') +
+                   '&dir=' + (state.sortDir === -1 ? 'desc' : 'asc');
+          if (state.query) qs += '&q=' + encodeURIComponent(state.query);
+          reqRank = fetch('/me/gis/api/layers/' + lid + '/features/' + qs, {
+            credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' },
+          });
+        }
+        reqRank.then(function (r) { return r.ok ? r.json() : Promise.reject(); })
           .then(function (j) {
             if (state.layer !== layer) return;  // вкладку успели переключить
             if (!j || j.rank == null) {
@@ -5813,6 +5890,11 @@
         state.sortDir = 1;
         state.page = 0;          // новая вкладка — с первой страницы (SHP)
         state.total = 0;
+        /* Структурный фильтр привязан к колонкам конкретного слоя — при смене
+           слоя сбрасываем его и очищаем конструктор. */
+        state.filter = null;
+        if (typeof fpResetUI === 'function') fpResetUI();
+        if (typeof fpClosePanel === 'function') fpClosePanel();
         syncTabs();
         /* SHP-слой всегда перезагружаем страницу под текущую сортировку/поиск
            (rows кэша могли остаться от прежних параметров). */
@@ -5841,6 +5923,7 @@
       /* ─── Динамические слои (загруженные SHP) ─── */
       function syncTabs() {
         if (titleEl) titleEl.textContent = layerTitleFor(state.layer);
+        if (typeof fpSyncToggle === 'function') fpSyncToggle();
       }
       function loadDyn(key, after) {
         var def = dynLayers[key];
@@ -6038,6 +6121,196 @@
         if (state.open) render();
       });
 
+      /* ─── Конструктор SQL-выборки (визуальный фильтр по атрибутам) ───
+         Только для загруженных слоёв (gis_up_*): условия собираются в UI и
+         компилируются в безопасный WHERE на сервере (POST /query/). */
+      var FP_OPS = [
+        { op: 'eq', label: '=' }, { op: 'neq', label: '≠' },
+        { op: 'gt', label: '>' }, { op: 'gte', label: '≥' },
+        { op: 'lt', label: '<' }, { op: 'lte', label: '≤' },
+        { op: 'contains', label: 'содержит' },
+        { op: 'starts', label: 'начинается с' },
+        { op: 'ends', label: 'заканчивается на' },
+        { op: 'in', label: 'в списке' },
+        { op: 'between', label: 'между' },
+        { op: 'is_null', label: 'пусто' },
+        { op: 'not_null', label: 'не пусто' },
+      ];
+      /* Арность: 0 — без значения, 1 — одно, 2 — два, 'list' — список. */
+      var FP_ARITY = { is_null: 0, not_null: 0, between: 2, in: 'list' };
+
+      function fpAvailable() { return !!dynLayers[state.layer]; }
+      function fpFields() {
+        return (COLUMNS[state.layer] || []).map(function (c) {
+          var kind = (c.edit && c.edit.kind) || (c.num ? 'int' : 'str');
+          return { key: c.key, label: c.label || c.key, kind: kind };
+        });
+      }
+      function fpFieldKind(key) {
+        var f = fpFields().filter(function (x) { return x.key === key; })[0];
+        return f ? f.kind : 'str';
+      }
+      function fpIsNumericKind(k) { return k === 'int' || k === 'num'; }
+
+      function fpRenderVal(wrap, op, kind) {
+        var arity = FP_ARITY[op]; if (arity === undefined) arity = 1;
+        var t = fpIsNumericKind(kind) ? 'number' : 'text';
+        if (arity === 0) { wrap.innerHTML = ''; return; }
+        if (arity === 2) {
+          wrap.innerHTML =
+            '<input class="gis-fp__val gis-fp__val-a" type="' + t + '" placeholder="от" step="any">' +
+            '<input class="gis-fp__val gis-fp__val-b" type="' + t + '" placeholder="до" step="any">';
+          return;
+        }
+        if (arity === 'list') {
+          wrap.innerHTML = '<input class="gis-fp__val" type="text" placeholder="значение1, значение2, …">';
+          return;
+        }
+        wrap.innerHTML = '<input class="gis-fp__val" type="' + t + '" placeholder="значение" step="any">';
+      }
+      function fpSetVal(wrap, op, value) {
+        var arity = FP_ARITY[op]; if (arity === undefined) arity = 1;
+        if (arity === 2 && Array.isArray(value)) {
+          var a = wrap.querySelector('.gis-fp__val-a'), b = wrap.querySelector('.gis-fp__val-b');
+          if (a) a.value = value[0]; if (b) b.value = value[1];
+        } else if (arity === 'list' && Array.isArray(value)) {
+          var el = wrap.querySelector('.gis-fp__val'); if (el) el.value = value.join(', ');
+        } else if (arity === 1) {
+          var e1 = wrap.querySelector('.gis-fp__val'); if (e1) e1.value = value;
+        }
+      }
+      function fpAddRule(preset) {
+        if (!fpRules) return;
+        var fields = fpFields();
+        if (!fields.length) return;
+        var row = document.createElement('div');
+        row.className = 'gis-fp__rule';
+        row.innerHTML =
+          '<select class="browser-default gis-fp__field">' +
+          fields.map(function (f) {
+            return '<option value="' + esc(f.key) + '">' + esc(f.label) + '</option>';
+          }).join('') + '</select>' +
+          '<select class="browser-default gis-fp__op">' +
+          FP_OPS.map(function (o) {
+            return '<option value="' + o.op + '">' + esc(o.label) + '</option>';
+          }).join('') + '</select>' +
+          '<span class="gis-fp__valwrap gis-fp__val" style="display:contents;"></span>' +
+          '<button type="button" class="gis-fp__del" title="Удалить условие">✕</button>';
+        fpRules.appendChild(row);
+        var fEl = row.querySelector('.gis-fp__field');
+        var oEl = row.querySelector('.gis-fp__op');
+        var vWrap = row.querySelector('.gis-fp__valwrap');
+        var syncVal = function () { fpRenderVal(vWrap, oEl.value, fpFieldKind(fEl.value)); };
+        fEl.addEventListener('change', syncVal);
+        oEl.addEventListener('change', syncVal);
+        row.querySelector('.gis-fp__del').addEventListener('click', function () { row.remove(); });
+        if (preset) {
+          if (preset.field) fEl.value = preset.field;
+          if (preset.op) oEl.value = preset.op;
+        }
+        syncVal();
+        if (preset && preset.value != null) fpSetVal(vWrap, oEl.value, preset.value);
+      }
+      /* Собрать filter_spec из UI → {spec} либо {error}. */
+      function fpBuildSpec() {
+        var rules = [];
+        var rowEls = fpRules ? fpRules.querySelectorAll('.gis-fp__rule') : [];
+        for (var i = 0; i < rowEls.length; i++) {
+          var row = rowEls[i];
+          var field = row.querySelector('.gis-fp__field').value;
+          var op = row.querySelector('.gis-fp__op').value;
+          var kind = fpFieldKind(field);
+          var arity = FP_ARITY[op]; if (arity === undefined) arity = 1;
+          var rule = { field: field, op: op };
+          if (arity === 0) {
+            /* без значения */
+          } else if (arity === 2) {
+            var a = row.querySelector('.gis-fp__val-a').value.trim();
+            var b = row.querySelector('.gis-fp__val-b').value.trim();
+            if (a === '' || b === '') return { error: 'Заполните оба значения для «между».' };
+            rule.value = fpIsNumericKind(kind) ? [Number(a), Number(b)] : [a, b];
+          } else if (arity === 'list') {
+            var raw = row.querySelector('.gis-fp__val').value.split(',')
+              .map(function (s) { return s.trim(); })
+              .filter(function (s) { return s !== ''; });
+            if (!raw.length) return { error: 'Укажите хотя бы одно значение для «в списке».' };
+            rule.value = fpIsNumericKind(kind) ? raw.map(Number) : raw;
+          } else {
+            var v = row.querySelector('.gis-fp__val').value.trim();
+            if (v === '') return { error: 'Заполните значения всех условий.' };
+            rule.value = fpIsNumericKind(kind) ? Number(v) : v;
+          }
+          rules.push(rule);
+        }
+        return { spec: { match: (fpMatch ? fpMatch.value : 'all'), rules: rules } };
+      }
+      function fpSyncToggle() {
+        if (!fpToggle) return;
+        var avail = fpAvailable();
+        fpToggle.hidden = !avail;
+        if (!avail) fpClosePanel();
+        fpToggle.classList.toggle('active', !!state.filter);
+      }
+      function fpOpenPanel() {
+        if (!fpPanel) return;
+        fpPanel.hidden = false;
+        if (fpRules && !fpRules.querySelector('.gis-fp__rule')) fpAddRule();
+      }
+      function fpClosePanel() { if (fpPanel) fpPanel.hidden = true; }
+      function fpResetUI() { if (fpRules) fpRules.innerHTML = ''; }
+
+      if (fpToggle) fpToggle.addEventListener('click', function () {
+        if (!fpAvailable()) return;
+        if (fpPanel.hidden) fpOpenPanel(); else fpClosePanel();
+      });
+      var fpAddBtn = document.getElementById('gis-fp-add');
+      if (fpAddBtn) fpAddBtn.addEventListener('click', function () { fpAddRule(); });
+      var fpApplyBtn = document.getElementById('gis-fp-apply');
+      if (fpApplyBtn) fpApplyBtn.addEventListener('click', function () {
+        var res = fpBuildSpec();
+        if (res.error) { toast(res.error, true); return; }
+        state.filter = res.spec.rules.length ? res.spec : null;
+        if (fpToggle) fpToggle.classList.toggle('active', !!state.filter);
+        if (state.open) { state.page = 0; reloadDynPage(); }
+      });
+      var fpResetBtn = document.getElementById('gis-fp-reset');
+      if (fpResetBtn) fpResetBtn.addEventListener('click', function () {
+        fpResetUI(); fpAddRule();
+        state.filter = null;
+        if (fpToggle) fpToggle.classList.remove('active');
+        if (state.open) { state.page = 0; reloadDynPage(); }
+      });
+      var fpSaveBtn = document.getElementById('gis-fp-save');
+      if (fpSaveBtn) fpSaveBtn.addEventListener('click', function () {
+        if (!dynLayers[state.layer]) return;
+        var res = fpBuildSpec();
+        if (res.error) { toast(res.error, true); return; }
+        var def = dynLayers[state.layer];
+        var name = window.prompt('Название нового слоя из выборки:',
+                                 (def.title || 'Слой') + ' (выборка)');
+        if (name == null) return;
+        name = name.trim();
+        if (!name) { toast('Укажите название слоя.', true); return; }
+        var lid = state.layer.slice('gisup:'.length);
+        fpSaveBtn.disabled = true;
+        fetch('/me/gis/api/layers/' + lid + '/query/', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ filter: res.spec, q: (state.query || ''), save_as: name }),
+        }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+          .then(function (o) {
+            fpSaveBtn.disabled = false;
+            if (!o.ok || !o.j || !o.j.ok) {
+              toast((o.j && o.j.detail) || 'Не удалось создать слой.', true);
+              return;
+            }
+            if (window.__gisUpIngest && o.j.layer) window.__gisUpIngest(o.j.layer);
+            toast('Слой создан: ' + name +
+                  (o.j.layer ? ' (' + o.j.layer.feature_count + ' об.)' : ''));
+          })
+          .catch(function () { fpSaveBtn.disabled = false; toast('Ошибка сети при создании слоя.', true); });
+      });
+
       /* Переключение режима правки слоя (кнопка ✏): перерисуем таблицу и,
          если для слоя включили правку, переключим вкладку таблицы на этот
          слой — иначе правки в таблице уходили бы в слой активной вкладки
@@ -6201,6 +6474,30 @@
              так слой работает и на сотнях тысяч объектов. */
           fetch: function (cb, params) {
             params = params || {};
+            var onOk = function (j) {
+              def.rows = (j.results || []);
+              def.total = (typeof j.total === 'number') ? j.total : def.rows.length;
+              def.loaded = true; cb(true);
+            };
+            var onErr = function () {
+              def.rows = []; def.total = 0; def.loaded = true; cb(false);
+            };
+            /* Активен структурный фильтр (визуальный конструктор) → POST на
+               /query/ (сырой SQL не шлём); иначе — обычный GET /features/. */
+            if (params.filter) {
+              fetch(API + L.id + '/query/', {
+                method: 'POST', credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                body: JSON.stringify({
+                  filter: params.filter,
+                  limit: params.limit || 500, offset: params.offset || 0,
+                  sort: params.sort || 'id', dir: params.dir || 'asc',
+                  q: (params.q || ''),
+                }),
+              }).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+                .then(onOk).catch(onErr);
+              return;
+            }
             var qs = '?limit=' + encodeURIComponent(params.limit || 500) +
                      '&offset=' + encodeURIComponent(params.offset || 0) +
                      '&sort=' + encodeURIComponent(params.sort || 'id') +
@@ -6209,12 +6506,7 @@
             fetch(API + L.id + '/features/' + qs,
                   { credentials: 'same-origin', headers: CSRF_HDR })
               .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
-              .then(function (j) {
-                def.rows = (j.results || []);
-                def.total = (typeof j.total === 'number') ? j.total : def.rows.length;
-                def.loaded = true; cb(true);
-              })
-              .catch(function () { def.rows = []; def.total = 0; def.loaded = true; cb(false); });
+              .then(onOk).catch(onErr);
           },
           patch: function (fid, key, val, cb) {
             var props = {}; props[key] = val;
@@ -6241,6 +6533,13 @@
         };
         window.__gisAttr.register('gisup:' + L.id, def);
       }
+
+      /* Мост для модуля таблицы: добавить только что созданный слой (например,
+         результат SQL-выборки «сохранить как слой») в сайдбар и на карту без
+         перезагрузки страницы. L — dict слоя из API (как в loadLayers). */
+      window.__gisUpIngest = function (L) {
+        try { ingest(L, true, true); } catch (_) {}
+      };
 
       function fitExtent(ext) {
         if (!ext || ext.length !== 4) return;

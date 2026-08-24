@@ -1292,6 +1292,26 @@ def gis_layer_query(request: HttpRequest, pk: int) -> JsonResponse:
     from .services import shp_import
     from .services.layer_query import LayerQueryError
 
+    # rank_of=<fid>: 0-based позиция объекта в текущем фильтре/порядке — для
+    # синхронизации карты и таблицы (клик по полигону → нужная страница) при
+    # активном структурном фильтре (аналог GET-ветки features).
+    if data.get('rank_of') is not None:
+        try:
+            fid = int(data.get('rank_of'))
+        except (TypeError, ValueError):
+            return JsonResponse({'ok': False, 'error': 'invalid rank_of'},
+                                status=400)
+        try:
+            info = shp_import.feature_rank(
+                layer, fid, sort=sort, direction=direction,
+                query_text=query_text, filter_spec=filter_spec)
+        except LayerQueryError as e:
+            return JsonResponse(
+                {'ok': False, 'error': 'invalid_filter', 'detail': str(e)},
+                status=400)
+        return JsonResponse({'ok': True, 'rank': info['rank'],
+                             'total': info['total']})
+
     if save_as is not None:
         # Создание нового слоя из выборки — как загрузка SHP: whole-class manage.
         mgate = _require_gis_access(request, level='manage')
