@@ -5941,6 +5941,14 @@
         },
         /* Перезагрузить текущую страницу активного SHP-слоя. */
         reload: function () { if (state.open) reloadDynPage(); },
+        /* Активный набор id режима «только выбранные» для указанного слоя
+           (массив строк) или null, если режим выключен / таблица закрыта /
+           открыт другой слой. Нужен редактору геометрии, чтобы грузить в draw
+           только выбранные объекты, а не весь слой по экстенту. */
+        onlySelectedIds: function (layer) {
+          if (!state.open || state.layer !== layer || !state.onlySelected) return null;
+          return selectedFilterIds();
+        },
       };
 
       /* Хук: внешний massSel изменился (лассо/клик на карте, Ctrl/Shift-выбор
@@ -6536,8 +6544,14 @@
           .then(function (j) {
             if (!gupEdit.active || !gupEdit.layer || gupEdit.layer.id !== L.id) return;
             var feats = (j.featurecollection && j.featurecollection.features) || [];
+            /* Режим «только выбранные» в таблице: в редактор геометрии грузим
+               лишь выбранные объекты, а не весь слой по экстенту. */
+            var onlyIds = (window.__gisAttr && window.__gisAttr.onlySelectedIds)
+              ? window.__gisAttr.onlySelectedIds('gisup:' + L.id) : null;
+            var onlySet = onlyIds ? new Set(onlyIds.map(String)) : null;
             var added = 0;
             feats.forEach(function (f) {
+              if (onlySet && !onlySet.has(String(f.id))) return;
               var sid = GUP_PREFIX + f.id;
               /* Уже загружен (возможно, отредактирован) — не перезатираем. */
               if (gupIdMap[sid] != null) return;
