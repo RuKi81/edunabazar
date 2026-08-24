@@ -5581,6 +5581,9 @@
         } else if (dynLayers[state.layer]) {
           var lid = state.layer.slice('gisup:'.length);
           if (window.__gisUpOnlySelected) window.__gisUpOnlySelected(lid, ids);
+          /* Если слой сейчас в режиме правки геометрии — мгновенно пересобрать
+             состав draw (иначе изменение бы применилось только при сдвиге карты). */
+          if (window.__gisUpOnlyEditReload) window.__gisUpOnlyEditReload(lid);
         }
       }
 
@@ -6570,6 +6573,35 @@
           })
           .catch(function () { toast('Не удалось загрузить геометрию слоя', true); });
       }
+
+      /* Мгновенное применение режима «только выбранные» ПРЯМО в режиме правки
+         геометрии: убираем из draw невыбранные загруженные объекты и догружаем
+         недостающие — без потери несохранённых правок (объекты из очереди
+         updates не трогаем). Вызывается из applyOnlySelectedMap при
+         переключении чекбокса и изменении выбора. */
+      window.__gisUpOnlyEditReload = function (layerId) {
+        if (!gupEdit.active || !gupEdit.layer ||
+            String(gupEdit.layer.id) !== String(layerId)) return;
+        var L = gupEdit.layer;
+        var onlyIds = (window.__gisAttr && window.__gisAttr.onlySelectedIds)
+          ? window.__gisAttr.onlySelectedIds('gisup:' + L.id) : null;
+        var onlySet = onlyIds ? new Set(onlyIds.map(String)) : null;
+        if (onlySet) {
+          Object.keys(gupIdMap).forEach(function (sid) {
+            var fid = gupIdMap[sid];
+            if (fid == null) return;
+            if (onlySet.has(String(fid))) return;      /* выбран — оставляем */
+            if (gupPending.updates.has(fid)) return;   /* правится — не теряем */
+            try { draw.delete(sid); } catch (_) {}
+            persistedDrawIds.delete(sid);
+            delete gupIdMap[sid];
+          });
+        }
+        /* Догрузить недостающие (аддитивно; gupLoadFeatures сам учитывает
+           «только выбранные»). При выключении режима подтянет весь слой в
+           текущем экстенте. */
+        gupLoadFeatures(L);
+      };
 
       /* Подгрузка по новому экстенту при движении карты (только в режиме
          правки геометрии слоя), с дебаунсом. */
