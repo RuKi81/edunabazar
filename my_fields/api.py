@@ -1287,50 +1287,64 @@ def gis_layer_query(request: HttpRequest, pk: int) -> JsonResponse:
     query_text = str(data.get('q', '') or '')
     sort = data.get('sort', 'id') or 'id'
     direction = data.get('dir', 'asc')
-    save_as = data.get('save_as')
-
-    from .services import shp_import
-    from .services.layer_query import LayerQueryError
 
     # rank_of=<fid>: 0-based позиция объекта в текущем фильтре/порядке — для
     # синхронизации карты и таблицы (клик по полигону → нужная страница) при
     # активном структурном фильтре (аналог GET-ветки features).
     if data.get('rank_of') is not None:
-        try:
-            fid = int(data.get('rank_of'))
-        except (TypeError, ValueError):
-            return JsonResponse({'ok': False, 'error': 'invalid rank_of'},
-                                status=400)
-        try:
-            info = shp_import.feature_rank(
-                layer, fid, sort=sort, direction=direction,
-                query_text=query_text, filter_spec=filter_spec)
-        except LayerQueryError as e:
-            return JsonResponse(
-                {'ok': False, 'error': 'invalid_filter', 'detail': str(e)},
-                status=400)
-        return JsonResponse({'ok': True, 'rank': info['rank'],
-                             'total': info['total']})
+        return _gis_query_rank(layer, data, sort, direction, query_text, filter_spec)
+    if data.get('save_as') is not None:
+        return _gis_query_save_as(
+            request, layer, data.get('save_as'), filter_spec, query_text)
+    return _gis_query_list(layer, data, sort, direction, query_text, filter_spec)
 
-    if save_as is not None:
-        # Создание нового слоя из выборки — как загрузка SHP: whole-class manage.
-        mgate = _require_gis_access(request, level='manage')
-        if mgate:
-            return mgate
-        title = str(save_as).strip()
-        if not title:
-            return JsonResponse(
-                {'ok': False, 'error': 'empty_title',
-                 'detail': 'Укажите название слоя.'}, status=400)
-        try:
-            new_layer = shp_import.create_layer_from_query(
-                layer, title, filter_spec=filter_spec,
-                query_text=query_text, owner=request.user)
-        except LayerQueryError as e:
-            return JsonResponse(
-                {'ok': False, 'error': 'invalid_filter', 'detail': str(e)},
-                status=400)
-        return JsonResponse({'ok': True, 'layer': _gis_layer_to_dict(new_layer)})
+
+def _gis_query_rank(layer, data, sort, direction, query_text, filter_spec):
+    """Позиция (rank) объекта в текущем фильтре/порядке (для клика по карте)."""
+    from .services import shp_import
+    from .services.layer_query import LayerQueryError
+
+    try:
+        fid = int(data.get('rank_of'))
+    except (TypeError, ValueError):
+        return JsonResponse({'ok': False, 'error': 'invalid rank_of'}, status=400)
+    try:
+        info = shp_import.feature_rank(
+            layer, fid, sort=sort, direction=direction,
+            query_text=query_text, filter_spec=filter_spec)
+    except LayerQueryError as e:
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_filter', 'detail': str(e)}, status=400)
+    return JsonResponse({'ok': True, 'rank': info['rank'], 'total': info['total']})
+
+
+def _gis_query_save_as(request, layer, save_as, filter_spec, query_text):
+    """Материализовать результат выборки в новый слой (whole-class manage)."""
+    from .services import shp_import
+    from .services.layer_query import LayerQueryError
+
+    mgate = _require_gis_access(request, level='manage')
+    if mgate:
+        return mgate
+    title = str(save_as).strip()
+    if not title:
+        return JsonResponse(
+            {'ok': False, 'error': 'empty_title',
+             'detail': 'Укажите название слоя.'}, status=400)
+    try:
+        new_layer = shp_import.create_layer_from_query(
+            layer, title, filter_spec=filter_spec,
+            query_text=query_text, owner=request.user)
+    except LayerQueryError as e:
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_filter', 'detail': str(e)}, status=400)
+    return JsonResponse({'ok': True, 'layer': _gis_layer_to_dict(new_layer)})
+
+
+def _gis_query_list(layer, data, sort, direction, query_text, filter_spec):
+    """Постраничный список отфильтрованных объектов (как таблица атрибутов)."""
+    from .services import shp_import
+    from .services.layer_query import LayerQueryError
 
     try:
         limit = int(data.get('limit', 1000))
@@ -1349,8 +1363,7 @@ def gis_layer_query(request: HttpRequest, pk: int) -> JsonResponse:
             direction=direction, query_text=query_text, filter_spec=filter_spec)
     except LayerQueryError as e:
         return JsonResponse(
-            {'ok': False, 'error': 'invalid_filter', 'detail': str(e)},
-            status=400)
+            {'ok': False, 'error': 'invalid_filter', 'detail': str(e)}, status=400)
     return JsonResponse({
         'ok': True,
         'total': result['total'],
@@ -1392,6 +1405,33 @@ def gis_overlay_create(request: HttpRequest) -> JsonResponse:
     if not isinstance(data, dict):
         return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
 
+    prepared = _prepare_overlay(request, data)
+    if isinstance(prepared, JsonResponse):
+        return prepared
+    layer_a, layer_b, params = prepared
+
+    from agrocosmos.models import PipelineRun
+
+    owner = request.user if getattr(request.user, 'is_authenticated', False) else None
+    run = PipelineRun.objects.create(
+        task_type=PipelineRun.TaskType.GIS_OVERLAY,
+        status=PipelineRun.Status.QUEUED,
+        description=(f'Оверлей: {layer_a.title} × {layer_b.title} '
+                     f'({params["op"]})')[:500],
+        launch_args={
+            'layer_a_id': params['layer_a_id'],
+            'layer_b_id': params['layer_b_id'],
+            'op': params['op'],
+            'title': params['title'],
+            'owner_id': owner.pk if owner is not None else None,
+        },
+    )
+    return JsonResponse(
+        {'ok': True, 'run_id': run.pk, 'status': run.status}, status=202)
+
+
+def _validate_overlay_request(data):
+    """Проверить тело запроса оверлея → ``(params, None)`` | ``(None, JsonResponse)``."""
     from .services.overlay import OVERLAY_OPS
 
     op = str(data.get('op', '') or '')
@@ -1400,54 +1440,49 @@ def gis_overlay_create(request: HttpRequest) -> JsonResponse:
         layer_a_id = int(data.get('layer_a_id'))
         layer_b_id = int(data.get('layer_b_id'))
     except (TypeError, ValueError):
-        return JsonResponse(
+        return None, JsonResponse(
             {'ok': False, 'error': 'invalid_layers',
              'detail': 'Укажите оба слоя.'}, status=400)
-
     if op not in OVERLAY_OPS:
-        return JsonResponse(
+        return None, JsonResponse(
             {'ok': False, 'error': 'invalid_op',
              'detail': 'Неизвестная операция.'}, status=400)
     if not title:
-        return JsonResponse(
+        return None, JsonResponse(
             {'ok': False, 'error': 'empty_title',
              'detail': 'Укажите название слоя.'}, status=400)
     if layer_a_id == layer_b_id:
-        return JsonResponse(
+        return None, JsonResponse(
             {'ok': False, 'error': 'same_layer',
              'detail': 'Выберите два разных слоя.'}, status=400)
+    return {'op': op, 'title': title,
+            'layer_a_id': layer_a_id, 'layer_b_id': layer_b_id}, None
+
+
+def _prepare_overlay(request, data):
+    """Валидация + доступ + загрузка слоёв.
+
+    Возвращает ``(layer_a, layer_b, params)`` при успехе либо ``JsonResponse``
+    с ошибкой (валидация/доступ/тип геометрии).
+    """
+    params, err = _validate_overlay_request(data)
+    if err:
+        return err
 
     # Доступ на чтение каждого исходного слоя.
-    for lid in (layer_a_id, layer_b_id):
+    for lid in (params['layer_a_id'], params['layer_b_id']):
         vgate = _require_gis_access(request, level='view', pk=lid)
         if vgate:
             return vgate
 
-    layer_a = get_object_or_404(GisLayer, pk=layer_a_id)
-    layer_b = get_object_or_404(GisLayer, pk=layer_b_id)
+    layer_a = get_object_or_404(GisLayer, pk=params['layer_a_id'])
+    layer_b = get_object_or_404(GisLayer, pk=params['layer_b_id'])
     if layer_a.geom_kind != 'polygon' or layer_b.geom_kind != 'polygon':
         return JsonResponse(
             {'ok': False, 'error': 'not_polygon',
              'detail': 'Оверлеи поддерживаются только для полигональных слоёв.'},
             status=400)
-
-    from agrocosmos.models import PipelineRun
-
-    owner = request.user if getattr(request.user, 'is_authenticated', False) else None
-    run = PipelineRun.objects.create(
-        task_type=PipelineRun.TaskType.GIS_OVERLAY,
-        status=PipelineRun.Status.QUEUED,
-        description=f'Оверлей: {layer_a.title} × {layer_b.title} ({op})'[:500],
-        launch_args={
-            'layer_a_id': layer_a_id,
-            'layer_b_id': layer_b_id,
-            'op': op,
-            'title': title,
-            'owner_id': owner.pk if owner is not None else None,
-        },
-    )
-    return JsonResponse(
-        {'ok': True, 'run_id': run.pk, 'status': run.status}, status=202)
+    return layer_a, layer_b, params
 
 
 @require_http_methods(['GET'])

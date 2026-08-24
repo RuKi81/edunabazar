@@ -82,6 +82,42 @@ def _rule_sql(field_ident, pg_type, op, value):
     raise LayerQueryError(f'Неизвестный оператор: {op!r}.')
 
 
+def _validate_rule_value(op, value):
+    """Проверить значение правила по арности оператора → нормализованное value.
+
+    ``LayerQueryError`` — значение не соответствует оператору.
+    """
+    arity = OPERATORS[op]
+    if arity == 0:
+        return None
+    if arity == 2:
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            raise LayerQueryError('Оператор "между" требует два значения.')
+    elif arity == 'list':
+        if not isinstance(value, (list, tuple)) or not value:
+            raise LayerQueryError('Оператор "в списке" требует непустой список.')
+    elif value is None or (isinstance(value, str) and value == ''):  # arity == 1
+        raise LayerQueryError('Укажите значение условия.')
+    return value
+
+
+def _compile_rule(rule, types):
+    """Скомпилировать одно правило фильтра в ``(sql, params)``.
+
+    ``LayerQueryError`` — неизвестное поле/оператор или неверное значение.
+    """
+    if not isinstance(rule, dict):
+        raise LayerQueryError('Правило должно быть объектом.')
+    field = rule.get('field')
+    op = rule.get('op')
+    if field not in types:
+        raise LayerQueryError(f'Недопустимое поле: {field!r}.')
+    if op not in OPERATORS:
+        raise LayerQueryError(f'Недопустимый оператор: {op!r}.')
+    value = _validate_rule_value(op, rule.get('value'))
+    return _rule_sql(sql.Identifier(field), types[field], op, value)
+
+
 def build_filter(layer, filter_spec):
     """Скомпилировать структурный фильтр в ``(sql, params)`` или ``(None, [])``.
 
@@ -103,33 +139,7 @@ def build_filter(layer, filter_spec):
     types = _column_types(layer)
     parts, params = [], []
     for rule in rules:
-        if not isinstance(rule, dict):
-            raise LayerQueryError('Правило должно быть объектом.')
-        field = rule.get('field')
-        op = rule.get('op')
-        if field not in types:
-            raise LayerQueryError(f'Недопустимое поле: {field!r}.')
-        if op not in OPERATORS:
-            raise LayerQueryError(f'Недопустимый оператор: {op!r}.')
-
-        arity = OPERATORS[op]
-        value = rule.get('value')
-        if arity == 0:
-            value = None
-        elif arity == 2:
-            if not isinstance(value, (list, tuple)) or len(value) != 2:
-                raise LayerQueryError(
-                    'Оператор "между" требует два значения.')
-        elif arity == 'list':
-            if not isinstance(value, (list, tuple)) or not value:
-                raise LayerQueryError(
-                    'Оператор "в списке" требует непустой список.')
-        else:  # arity == 1
-            if value is None or (isinstance(value, str) and value == ''):
-                raise LayerQueryError('Укажите значение условия.')
-
-        rule_sql, rule_params = _rule_sql(
-            sql.Identifier(field), types[field], op, value)
+        rule_sql, rule_params = _compile_rule(rule, types)
         parts.append(rule_sql)
         params.extend(rule_params)
 
