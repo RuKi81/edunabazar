@@ -6407,22 +6407,39 @@
       };
 
       /* Режим «показать только выбранные» для SHP-слоя: ids — массив id
-         объектов (оставить видимыми) или null (снять фильтр). Комбинируем с
-         базовым $type-фильтром слоя. */
+         объектов (оставить видимыми) или null (снять режим).
+         Реализовано через feature-state 'selected' (тот же механизм, что и
+         подсветка выбранного — он надёжно работает с promoteId на векторных
+         тайлах, в отличие от setFilter по ['get','id'], который на MVT без
+         нативного feature-id объекты не отсекал). Выбранные объекты уже имеют
+         feature-state selected=true (см. __gisUpSetSel), поэтому просто гасим
+         прозрачность у всех, кроме выбранных; при выключении — восстанавливаем
+         обычную прозрачность по стилю слоя. */
       window.__gisUpOnlySelected = function (layerId, ids) {
         var L = uploaded[layerId];
         if (!L) return;
+        var active = !!(ids && ids.length);
+        var selCase = ['boolean', ['feature-state', 'selected'], false];
+        var st = L.style || {};
         (L._layerIds || []).forEach(function (lid) {
-          if (!map.getLayer(lid)) return;
-          var base = (L._baseFilter && L._baseFilter[lid]) || null;
-          var flt;
-          if (ids && ids.length) {
-            var idf = ['in', ['to-string', ['get', 'id']], ['literal', ids]];
-            flt = base ? ['all', base, idf] : idf;
-          } else {
-            flt = base;
-          }
-          try { map.setFilter(lid, flt); } catch (_) {}
+          var lyr = map.getLayer(lid);
+          if (!lyr) return;
+          try {
+            if (lyr.type === 'fill') {
+              var fop = (st.opacity != null) ? st.opacity : 0.35;
+              map.setPaintProperty(lid, 'fill-opacity',
+                active ? ['case', selCase, fop, 0] : fop);
+            } else if (lyr.type === 'line') {
+              map.setPaintProperty(lid, 'line-opacity',
+                active ? ['case', selCase, 1, 0] : 1);
+            } else if (lyr.type === 'circle') {
+              var cop = (st.opacity != null) ? st.opacity : 1;
+              map.setPaintProperty(lid, 'circle-opacity',
+                active ? ['case', selCase, cop, 0] : cop);
+              map.setPaintProperty(lid, 'circle-stroke-opacity',
+                active ? ['case', selCase, 1, 0] : 1);
+            }
+          } catch (_) {}
         });
       };
       /* Перекрасить все слои карты, относящиеся к L, по текущему L.style
