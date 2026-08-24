@@ -130,6 +130,18 @@
     .gis-layer__btn:hover:not(.disabled) { background: #f5f5f5; }
     .gis-layer__btn.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
     .gis-layer__btn.disabled { opacity: 0.35; cursor: not-allowed; }
+    /* Плавающее меню выбора формата скачивания слоя (крепится к body). */
+    .gis-dl-menu {
+      background: #fff; border: 1px solid #d0d0d0; border-radius: 8px;
+      box-shadow: 0 6px 24px rgba(0,0,0,0.18); padding: 4px; min-width: 190px;
+      z-index: 10000;
+    }
+    .gis-dl-menu__item {
+      display: block; width: 100%; text-align: left; border: 0;
+      background: none; padding: 8px 10px; border-radius: 6px;
+      cursor: pointer; font-size: 13px; color: #333;
+    }
+    .gis-dl-menu__item:hover { background: #eef4ee; }
     /* Кнопка видимости: всегда глазик. Выключенный слой — приглушённый
        серый глаз без рамки; активный (видимый) — зелёный глаз в рамке. */
     .gis-layer__btn[data-a="vis"],
@@ -7076,6 +7088,60 @@
         input.addEventListener('blur', function () { finish(true); });
       }
 
+      /* ── Меню скачивания слоя (SHP / GeoJSON / Excel) ── */
+      var _dlMenuEl = null;
+      function closeDownloadMenu() {
+        if (_dlMenuEl) { _dlMenuEl.remove(); _dlMenuEl = null; }
+      }
+      function triggerLayerDownload(L, fmt) {
+        var a = document.createElement('a');
+        a.href = API + L.id + '/export/?format=' + encodeURIComponent(fmt);
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(function () { a.remove(); }, 0);
+        toast('Формируется архив (' + fmt.toUpperCase() +
+              ')… скачивание начнётся автоматически.');
+      }
+      function openDownloadMenu(anchorBtn, L) {
+        closeDownloadMenu();
+        var menu = document.createElement('div');
+        menu.className = 'gis-dl-menu';
+        [{ fmt: 'shp', label: '⭳ Shapefile (.zip)' },
+         { fmt: 'geojson', label: '⭳ GeoJSON (.zip)' },
+         { fmt: 'xlsx', label: '⭳ Excel (.xlsx)' }].forEach(function (o) {
+          var b = document.createElement('button');
+          b.type = 'button'; b.className = 'gis-dl-menu__item';
+          b.textContent = o.label;
+          b.addEventListener('click', function (e) {
+            e.stopPropagation();
+            triggerLayerDownload(L, o.fmt);
+            closeDownloadMenu();
+          });
+          menu.appendChild(b);
+        });
+        document.body.appendChild(menu);
+        var r = anchorBtn.getBoundingClientRect();
+        menu.style.position = 'fixed';
+        menu.style.top = (r.bottom + 4) + 'px';
+        menu.style.left = r.left + 'px';
+        var mr = menu.getBoundingClientRect();
+        if (mr.right > window.innerWidth - 8) {
+          menu.style.left = Math.max(8, window.innerWidth - mr.width - 8) + 'px';
+        }
+        if (mr.bottom > window.innerHeight - 8) {
+          menu.style.top = Math.max(8, r.top - mr.height - 4) + 'px';
+        }
+        _dlMenuEl = menu;
+        /* Закрытие по клику вне меню / прокрутке (в следующем тике, чтобы этот
+           же клик по кнопке не закрыл меню сразу). */
+        setTimeout(function () {
+          document.addEventListener('click', closeDownloadMenu, { once: true });
+          window.addEventListener('scroll', closeDownloadMenu,
+                                   { once: true, capture: true });
+        }, 0);
+      }
+
       function renderRow(L, atTop, vis) {
         if (vis === undefined) vis = true;
         var existing = document.getElementById('gisup-row-' + L.id);
@@ -7146,10 +7212,16 @@
         lockBtn.setAttribute('data-ord', '7');
         lockBtn.title = locked ? 'Разблокировать выбор объектов' : 'Заблокировать выбор объектов (только просмотр)';
         lockBtn.textContent = locked ? '🔒' : '🔓';
+        /* Скачивание слоя одним ZIP: клик открывает меню выбора формата
+           (SHP / GeoJSON / Excel), сервер собирает архив и отдаёт файлом. */
+        var dlBtn = document.createElement('button');
+        dlBtn.className = 'gis-layer__btn'; dlBtn.type = 'button';
+        dlBtn.setAttribute('data-a', 'download'); dlBtn.setAttribute('data-ord', '8');
+        dlBtn.title = 'Скачать слой (SHP / GeoJSON / Excel)'; dlBtn.textContent = '⭳';
 
         iconsBox.appendChild(colorEl); iconsBox.appendChild(selEl); iconsBox.appendChild(zoomBtn);
         iconsBox.appendChild(geomBtn); iconsBox.appendChild(visEl); iconsBox.appendChild(styleBtn);
-        iconsBox.appendChild(tableBtn); iconsBox.appendChild(lockBtn);
+        iconsBox.appendChild(tableBtn); iconsBox.appendChild(lockBtn); iconsBox.appendChild(dlBtn);
         menuWrap.appendChild(kebab); menuWrap.appendChild(pop);
         controls.appendChild(iconsBox);
         controls.appendChild(menuWrap);
@@ -7220,6 +7292,12 @@
           pop.hidden = true;
           if (window.__gisAttr) window.__gisAttr.open('gisup:' + L.id);
           else toast('Таблица атрибутов недоступна', true);
+        });
+        dlBtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          /* Позицию меню считаем ДО скрытия кебаба (кнопка может жить в нём). */
+          openDownloadMenu(dlBtn, L);
+          pop.hidden = true;
         });
         geomBtn.addEventListener('click', function () {
           pop.hidden = true;

@@ -1253,6 +1253,47 @@ def gis_layer_field_stats(request: HttpRequest, pk: int) -> JsonResponse:
     return JsonResponse({'ok': True, 'stats': stats})
 
 
+@require_http_methods(['GET'])
+def gis_layer_export(request: HttpRequest, pk: int) -> HttpResponse:
+    """GET — скачать данные слоя одним ZIP-архивом.
+
+    ``?format=shp|geojson|xlsx`` (по умолчанию ``shp``). Уровень ``view``.
+    Архив собирается на сервере из таблицы PostGIS слоя (геометрия 4326 +
+    атрибуты) и отдаётся как ``attachment``.
+    """
+    gate = _require_gis_access(request, level='view', pk=pk)
+    if gate:
+        return gate
+    layer = get_object_or_404(GisLayer, pk=pk)
+
+    fmt = (request.GET.get('format') or 'shp').lower()
+    from .services.shp_import import EXPORT_FORMATS, export_layer
+    if fmt not in EXPORT_FORMATS:
+        return JsonResponse(
+            {'ok': False, 'error': 'unknown_format',
+             'detail': 'format должен быть shp, geojson или xlsx.'},
+            status=400,
+        )
+
+    try:
+        zip_bytes, filename = export_layer(layer, fmt)
+    except Exception:  # noqa: BLE001 — не роняем 500-стектрейсом
+        import logging
+        logging.getLogger('my_fields').exception(
+            'gis layer %s export (%s) failed', pk, fmt)
+        return JsonResponse(
+            {'ok': False, 'error': 'export_failed',
+             'detail': 'Не удалось сформировать архив.'},
+            status=500,
+        )
+
+    resp = HttpResponse(zip_bytes, content_type='application/zip')
+    resp['Content-Disposition'] = f'attachment; filename="{filename}"'
+    resp['Content-Length'] = str(len(zip_bytes))
+    resp['Cache-Control'] = 'private, no-store'
+    return resp
+
+
 def _gis_feature_create(request: HttpRequest, pk: int) -> JsonResponse:
     """POST — создать объект слоя по геометрии (уровень ``edit``)."""
     gate = _require_gis_access(request, level='edit', pk=pk)

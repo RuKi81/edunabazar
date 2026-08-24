@@ -270,6 +270,70 @@ class ListAndTilesTests(GisLayersTestCase):
         self.assertEqual(resp.status_code, 401)
 
 
+class ExportTests(GisLayersTestCase):
+    def setUp(self):
+        self._login_admin()
+        self._upload(_make_shp_zip(shp_name='fields'))
+        self.layer = GisLayer.objects.get()
+
+    def _export(self, fmt):
+        return self.client.get(
+            f'/me/gis/api/layers/{self.layer.pk}/export/?format={fmt}')
+
+    def test_export_shp_zip(self):
+        resp = self._export('shp')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp['Content-Type'], 'application/zip')
+        self.assertIn('attachment', resp['Content-Disposition'])
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+            names = z.namelist()
+            exts = {n.rsplit('.', 1)[-1] for n in names}
+            self.assertTrue({'shp', 'shx', 'dbf', 'prj'}.issubset(exts))
+            base = next(n[:-4] for n in names if n.endswith('.shp'))
+            r = shapefile.Reader(
+                shp=io.BytesIO(z.read(base + '.shp')),
+                shx=io.BytesIO(z.read(base + '.shx')),
+                dbf=io.BytesIO(z.read(base + '.dbf')),
+            )
+            self.assertEqual(len(r), 1)         # один полигон слоя
+            fields = [f[0] for f in r.fields if f[0] != 'DeletionFlag']
+            self.assertIn('id', fields)
+
+    def test_export_geojson_zip(self):
+        resp = self._export('geojson')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+            gj_name = next(n for n in z.namelist() if n.endswith('.geojson'))
+            fc = json.loads(z.read(gj_name).decode('utf-8'))
+        self.assertEqual(fc['type'], 'FeatureCollection')
+        self.assertEqual(len(fc['features']), 1)
+        self.assertEqual(fc['features'][0]['geometry']['type'], 'Polygon')
+        self.assertEqual(fc['features'][0]['properties']['num'], 42)
+
+    def test_export_xlsx_zip(self):
+        import openpyxl
+        resp = self._export('xlsx')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+            xlsx_name = next(n for n in z.namelist() if n.endswith('.xlsx'))
+            wb = openpyxl.load_workbook(io.BytesIO(z.read(xlsx_name)))
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        self.assertEqual(rows[0][0], 'id')
+        self.assertIn('name', rows[0])
+        self.assertIn('wkt', rows[0])
+        self.assertEqual(len(rows), 2)          # заголовок + 1 объект
+
+    def test_export_unknown_format_is_400(self):
+        resp = self._export('kml')
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.json()['ok'])
+
+    def test_export_requires_auth(self):
+        self.client.logout()
+        self.assertEqual(self._export('shp').status_code, 401)
+
+
 class ParseBboxTests(TestCase):
     def test_valid(self):
         from my_fields.api import _parse_bbox

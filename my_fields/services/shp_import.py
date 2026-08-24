@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import io
 import logging
 import os
 import re
@@ -887,3 +888,236 @@ def _find_shapefiles(root: str) -> list:
             if fname.lower().endswith('.shp'):
                 result.append(os.path.join(dirpath, fname))
     return sorted(result)
+
+
+# ── Экспорт слоя в ZIP (SHP / GeoJSON / Excel) ──────────────────────────
+
+EXPORT_FORMATS = frozenset({'shp', 'geojson', 'xlsx'})
+
+# WGS84 .prj (ESRI WKT) — как у остальных SHP-экспортов портала.
+_EXPORT_WGS84_PRJ = (
+    'GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",'
+    'SPHEROID["WGS_1984",6378137.0,298.257223563]],'
+    'PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]'
+)
+
+
+def _export_base_name(layer) -> str:
+    """Безопасное ASCII-имя файлов в архиве на основе названия слоя."""
+    base = slugify_identifier(layer.title or '', fallback='') or layer.table_name
+    return base[:80]
+
+
+def _iter_export_rows(layer):
+    """Итератор строк слоя: ``(id, {db_col: value}, geojson_dict|None, wkt|None)``."""
+    import json as _json
+
+    cols = [a.get('db') for a in (layer.attributes or []) if a.get('db')]
+    select_cols = [sql.Identifier('id')] + [sql.Identifier(c) for c in cols]
+    query = sql.SQL(
+        'SELECT {cols}, ST_AsGeoJSON(geom), ST_AsText(geom) '
+        'FROM {table} ORDER BY id'
+    ).format(cols=sql.SQL(', ').join(select_cols),
+             table=sql.Identifier(layer.table_name))
+    ncols = len(cols)
+    with connection.cursor() as cur:
+        cur.execute(query)
+        for row in cur:
+            props = {cols[i]: row[1 + i] for i in range(ncols)}
+            gj = row[1 + ncols]
+            wkt = row[2 + ncols]
+            yield row[0], props, (_json.loads(gj) if gj else None), wkt
+
+
+def export_layer(layer, fmt: str) -> tuple[bytes, str]:
+    """Сформировать ZIP-архив с данными слоя в формате ``fmt``.
+
+    ``fmt`` ∈ :data:`EXPORT_FORMATS` (``shp`` / ``geojson`` / ``xlsx``).
+    Возвращает ``(zip_bytes, filename)``. ``ValueError`` — неизвестный формат.
+    """
+    fmt = (fmt or '').lower()
+    if fmt not in EXPORT_FORMATS:
+        raise ValueError('unknown_format')
+    base = _export_base_name(layer)
+
+    if fmt == 'shp':
+        return _export_shp_zip(layer, base), f'{base}_shp.zip'
+
+    if fmt == 'geojson':
+        inner_name, payload = base + '.geojson', _export_geojson_bytes(layer)
+    else:  # xlsx
+        inner_name, payload = base + '.xlsx', _export_xlsx_bytes(layer)
+
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr(inner_name, payload)
+    return zip_buf.getvalue(), f'{base}_{fmt}.zip'
+
+
+def _export_geojson_bytes(layer) -> bytes:
+    """FeatureCollection (EPSG:4326) со всеми объектами слоя — UTF-8 байты."""
+    import json as _json
+
+    feats = []
+    for fid, props, geom, _wkt in _iter_export_rows(layer):
+        feats.append({
+            'type': 'Feature', 'id': fid,
+            'properties': props, 'geometry': geom,
+        })
+    fc = {'type': 'FeatureCollection', 'features': feats}
+    # default=str — на случай date/Decimal среди атрибутов.
+    return _json.dumps(fc, ensure_ascii=False, default=str).encode('utf-8')
+
+
+def _export_xlsx_bytes(layer) -> bytes:
+    """Excel-книга: строка заголовков (id + атрибуты + wkt) и данные слоя."""
+    import datetime as _dt
+
+    import openpyxl
+
+    attrs = [a for a in (layer.attributes or []) if a.get('db')]
+    cols = [a['db'] for a in attrs]
+    headers = ['id'] + [(a.get('name') or a['db']) for a in attrs] + ['wkt']
+
+    wb = openpyxl.Workbook(write_only=True)
+    ws = wb.create_sheet(title='attributes')
+    ws.append(headers)
+    ok_types = (str, int, float, bool, _dt.date, _dt.datetime)
+    for fid, props, _geom, wkt in _iter_export_rows(layer):
+        row = [fid]
+        for c in cols:
+            v = props.get(c)
+            row.append(v if (v is None or isinstance(v, ok_types)) else str(v))
+        row.append(wkt)
+        ws.append(row)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _geojson_shapetype(gtype, pyshp):
+    """GeoJSON-тип → pyshp shapeType (или ``None``, если не поддержан)."""
+    if gtype == 'Point':
+        return pyshp.POINT
+    if gtype == 'MultiPoint':
+        return pyshp.MULTIPOINT
+    if gtype in ('LineString', 'MultiLineString'):
+        return pyshp.POLYLINE
+    if gtype in ('Polygon', 'MultiPolygon'):
+        return pyshp.POLYGON
+    return None
+
+
+def _orient_ring_export(ring, clockwise: bool):
+    """Порядок колец SHP: внешнее — по часовой, дыры — против."""
+    s = 0.0
+    for (x1, y1), (x2, y2) in zip(ring, ring[1:]):
+        s += (x2 - x1) * (y2 + y1)
+    is_cw = s > 0
+    return list(ring) if is_cw == clockwise else list(reversed(ring))
+
+
+def _write_shp_geom(w, geom, shapetype, pyshp) -> bool:
+    """Записать геометрию в pyshp-Writer. ``False`` — тип не совпал/ошибка."""
+    gtype = geom.get('type')
+    coords = geom.get('coordinates')
+    if not coords or _geojson_shapetype(gtype, pyshp) != shapetype:
+        return False
+    try:
+        if shapetype == pyshp.POINT:
+            w.point(coords[0], coords[1])
+        elif shapetype == pyshp.MULTIPOINT:
+            w.multipoint(coords)
+        elif shapetype == pyshp.POLYLINE:
+            w.line(coords if gtype == 'MultiLineString' else [coords])
+        elif shapetype == pyshp.POLYGON:
+            polys = coords if gtype == 'MultiPolygon' else [coords]
+            rings = []
+            for poly in polys:
+                for i, ring in enumerate(poly):
+                    rings.append(_orient_ring_export(ring, clockwise=(i == 0)))
+            w.poly(rings)
+        else:
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def _dbf_field_defs(attrs):
+    """DBF-поля из атрибутов слоя: ``[(dbf_name, db_col, ftype, size, dec)]``.
+
+    Имена DBF ограничены 10 символами и дедуплицируются; ``id`` зарезервирован.
+    """
+    used = {'id'}
+    defs = []
+    for a in attrs:
+        db = a.get('db')
+        if not db:
+            continue
+        nm = db[:10]
+        base = nm
+        i = 1
+        while nm in used:
+            suf = str(i)
+            nm = base[:10 - len(suf)] + suf
+            i += 1
+        used.add(nm)
+        t = (a.get('type') or 'text').lower()
+        if t in ('integer', 'bigint'):
+            defs.append((nm, db, 'N', 18, 0))
+        elif t in ('double precision', 'real', 'numeric'):
+            defs.append((nm, db, 'N', 20, 8))
+        elif t == 'date':
+            defs.append((nm, db, 'D', 8, 0))
+        else:
+            defs.append((nm, db, 'C', 254, 0))
+    return defs
+
+
+def _shp_value(v, ftype):
+    """Привести значение атрибута к тому, что понимает pyshp для типа ``ftype``."""
+    if v is None:
+        return '' if ftype == 'C' else None
+    if ftype == 'C':
+        return str(v)[:254]
+    return v
+
+
+def _export_shp_zip(layer, base) -> bytes:
+    """Собрать zipped shapefile (.shp/.shx/.dbf/.prj) со всеми объектами слоя."""
+    import shapefile as pyshp
+
+    rows = list(_iter_export_rows(layer))
+    # shapeType определяем по первой непустой геометрии (SHP — однотипный).
+    shapetype = None
+    for _fid, _p, geom, _w in rows:
+        if geom and geom.get('type'):
+            shapetype = _geojson_shapetype(geom['type'], pyshp)
+            if shapetype is not None:
+                break
+    if shapetype is None:
+        shapetype = pyshp.POLYGON
+
+    field_defs = _dbf_field_defs(layer.attributes or [])
+    shp_buf, shx_buf, dbf_buf = io.BytesIO(), io.BytesIO(), io.BytesIO()
+    with pyshp.Writer(shp=shp_buf, shx=shx_buf, dbf=dbf_buf,
+                      shapeType=shapetype) as w:
+        w.field('id', 'N', size=18, decimal=0)
+        for nm, _db, ftype, size, dec in field_defs:
+            w.field(nm, ftype, size=size, decimal=dec)
+        for fid, props, geom, _wkt in rows:
+            if not geom or not _write_shp_geom(w, geom, shapetype, pyshp):
+                continue
+            rec = [fid]
+            for _nm, db, ftype, _s, _d in field_defs:
+                rec.append(_shp_value(props.get(db), ftype))
+            w.record(*rec)
+
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr(f'{base}.shp', shp_buf.getvalue())
+        z.writestr(f'{base}.shx', shx_buf.getvalue())
+        z.writestr(f'{base}.dbf', dbf_buf.getvalue())
+        z.writestr(f'{base}.prj', _EXPORT_WGS84_PRJ)
+    return zip_buf.getvalue()
