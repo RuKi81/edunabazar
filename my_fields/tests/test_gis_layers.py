@@ -21,9 +21,10 @@ import zipfile
 import shapefile
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.db import connection
+from django.db import connection, transaction
 from django.test import TestCase
 from django.utils import timezone
+from psycopg import sql
 
 from legacy.models import LegacyUser
 from my_fields.models import GisFolder, GisLayer
@@ -323,6 +324,40 @@ class ExportTests(GisLayersTestCase):
         self.assertIn('name', rows[0])
         self.assertIn('wkt', rows[0])
         self.assertEqual(len(rows), 2)          # заголовок + 1 объект
+
+    def test_export_survives_low_statement_timeout(self):
+        # Регрессия: на слоях с большим количеством объектов тяжёлый скан
+        # ST_AsGeoJSON+ST_AsText упирался в глобальный statement_timeout
+        # Postgres и отменялся (QueryCanceled → «export_failed»). Экспорт
+        # должен снимать лимит на этот read и отдавать архив.
+        table = self.layer.table_name
+        with connection.cursor() as cur:
+            cur.execute(sql.SQL(
+                'INSERT INTO {t} (name, num, geom) '
+                "SELECT 'poly-' || g, g, "
+                'ST_SetSRID(ST_MakeEnvelope(34.1, 45.1, 34.12, 45.12), 4326) '
+                'FROM generate_series(1, 5000) g'
+            ).format(t=sql.Identifier(table)))
+            # эмулируем прод: агрессивный лимит на сессии
+            cur.execute("SET statement_timeout = '2ms'")
+        try:
+            # sanity: без снятия лимита такой скан действительно отменяется
+            # (иначе тест не проверял бы регрессию); savepoint откатит
+            # аборт транзакции, чтобы не сломать последующие запросы.
+            with self.assertRaises(Exception):
+                with transaction.atomic(), connection.cursor() as cur:
+                    cur.execute(sql.SQL(
+                        'SELECT id, ST_AsGeoJSON(geom), ST_AsText(geom) '
+                        'FROM {t} ORDER BY id'
+                    ).format(t=sql.Identifier(table)))
+                    cur.fetchall()
+            # с фиксом экспорт снимает лимит и успешно формирует архив
+            for fmt in ('shp', 'geojson', 'xlsx'):
+                resp = self._export(fmt)
+                self.assertEqual(resp.status_code, 200, (fmt, resp.content))
+        finally:
+            with connection.cursor() as cur:
+                cur.execute('SET statement_timeout = DEFAULT')
 
     def test_export_unknown_format_is_400(self):
         resp = self._export('kml')

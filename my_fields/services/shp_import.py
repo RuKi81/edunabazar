@@ -920,7 +920,13 @@ def _iter_export_rows(layer):
     ).format(cols=sql.SQL(', ').join(select_cols),
              table=sql.Identifier(layer.table_name))
     ncols = len(cols)
-    with connection.cursor() as cur:
+    # Экспорт больших слоёв сериализует геометрию каждого объекта
+    # (ST_AsGeoJSON + ST_AsText) — на десятках тысяч объектов запрос легко
+    # упирается в глобальный statement_timeout Postgres и отменяется
+    # (QueryCanceled → «export_failed»). Снимаем лимит только на этот тяжёлый
+    # read внутри отдельной транзакции (SET LOCAL действует до её конца).
+    with transaction.atomic(), connection.cursor() as cur:
+        cur.execute('SET LOCAL statement_timeout = 0')
         cur.execute(query)
         for row in cur:
             props = {cols[i]: row[1 + i] for i in range(ncols)}
