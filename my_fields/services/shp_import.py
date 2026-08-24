@@ -359,6 +359,98 @@ def create_empty_layer(title: str, geom_kind: str, attributes=None, owner=None):
     )
 
 
+# ── Материализация слоя из SELECT (фундамент выборки/оверлеев) ──────────
+
+def create_layer_from_select(
+    title: str, geom_kind: str, attr_meta, select_sql, params=None, *,
+    owner=None, source_note: str = '', drop_empty: bool = True,
+):
+    """Создать новый слой из произвольного ``SELECT`` (``CREATE TABLE AS``).
+
+    Общий механизм для SQL-выборки («сохранить результат как слой») и
+    оверлейных операций. Вызывающий код собирает безопасный (через
+    ``psycopg.sql``) ``SELECT``, который возвращает атрибутивные колонки под
+    именами ``attr_meta[*]['db']`` и последнюю колонку геометрии с алиасом
+    ``geom`` в EPSG:4326. Здесь мы материализуем результат в таблицу
+    ``gis_up_*``, добавляем ``id serial PK`` и типобезопасную колонку
+    ``geom geometry(Geometry, 4326)``, строим GIST-индекс и пишем запись
+    реестра :class:`my_fields.models.GisLayer`.
+
+    Args:
+        title: название нового слоя (как в плашке).
+        geom_kind: ``point`` | ``line`` | ``polygon`` | ``other``.
+        attr_meta: ``[{'name', 'db', 'type'}, ...]`` — метаданные атрибутов
+            результата (порядок совпадает с колонками ``SELECT`` до ``geom``).
+        select_sql: ``psycopg.sql.SQL``/``Composed`` — тело ``SELECT`` целиком.
+        params: параметры для ``select_sql``.
+        owner: Django-пользователь (или None).
+        source_note: пометка происхождения (пишется в ``source_archive``).
+        drop_empty: удалить строки с NULL/пустой геометрией (для оверлеев,
+            где пересечение может дать пустой результат).
+
+    Returns:
+        Созданный :class:`my_fields.models.GisLayer`.
+    """
+    from my_fields.models import GisLayer
+
+    title = (title or '').strip()
+    if not title:
+        raise ShapefileImportError('Укажите название слоя.')
+
+    table_name = _unique_table_name(title)
+    table = sql.Identifier(table_name)
+    color = LAYER_COLORS[GisLayer.objects.count() % len(LAYER_COLORS)]
+    next_order = (
+        GisLayer.objects.aggregate(m=Max('sort_order'))['m'] or 0
+    ) + 1
+
+    # Тяжёлые оверлеи/выборки на больших слоях не должны упираться в
+    # глобальный statement_timeout — снимаем его на время построения таблицы.
+    with transaction.atomic(), connection.cursor() as cur:
+        cur.execute('SET LOCAL statement_timeout = 0')
+        cur.execute(
+            sql.SQL('CREATE TABLE {t} AS {sel}').format(t=table, sel=select_sql),
+            params or [],
+        )
+        if drop_empty:
+            cur.execute(sql.SQL(
+                'DELETE FROM {t} WHERE geom IS NULL OR ST_IsEmpty(geom)'
+            ).format(t=table))
+        # id serial PK — заполняется последовательно для уже вставленных строк.
+        cur.execute(sql.SQL(
+            'ALTER TABLE {t} ADD COLUMN id serial PRIMARY KEY'
+        ).format(t=table))
+        # Приводим geom к типобезопасной 2D-колонке 4326 (как у SHP-слоёв).
+        cur.execute(sql.SQL(
+            'ALTER TABLE {t} ALTER COLUMN geom TYPE geometry(Geometry, 4326) '
+            'USING ST_SetSRID(ST_Force2D(geom), 4326)'
+        ).format(t=table))
+        cur.execute(sql.SQL(
+            'CREATE INDEX {i} ON {t} USING GIST (geom)'
+        ).format(i=sql.Identifier(f'{table_name}_geom_gix'), t=table))
+        cur.execute(sql.SQL('SELECT count(*) FROM {t}').format(t=table))
+        feature_count = int(cur.fetchone()[0] or 0)
+
+    extent = _table_extent(table_name)
+    geom_type = _KIND_TO_GEOM_TYPE.get(geom_kind, 'Geometry')
+
+    return GisLayer.objects.create(
+        title=title[:200],
+        table_name=table_name,
+        original_filename='',
+        source_archive=(source_note or '')[:255],
+        geom_kind=geom_kind if geom_kind in ('point', 'line', 'polygon') else 'other',
+        geom_type=geom_type[:40],
+        srid_original=4326,
+        feature_count=feature_count,
+        attributes=list(attr_meta or []),
+        extent=extent,
+        color=color,
+        sort_order=next_order,
+        owner=owner if getattr(owner, 'is_authenticated', False) else None,
+    )
+
+
 # ── Низкоуровневые операции с БД ────────────────────────────────────────
 
 def _create_table(table_name: str, columns) -> None:
