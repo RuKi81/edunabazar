@@ -50,6 +50,7 @@ POLL_INTERVAL_SEC_DEFAULT = 5
 TASK_COMMAND = {
     PipelineRun.TaskType.RASTER_NDVI: 'run_ndvi_pipeline',
     PipelineRun.TaskType.ARCHIVE_NDVI: 'run_archive_pipeline',
+    PipelineRun.TaskType.GIS_OVERLAY: 'run_gis_overlay',
 }
 SUPPORTED_TASK_TYPES = set(TASK_COMMAND)
 

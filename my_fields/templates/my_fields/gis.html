@@ -416,6 +416,19 @@
       cursor: grab; margin-right: 2px;
     }
 
+    /* ── Оверлей слоёв: индикатор прогресса ── */
+    .gis-overlay-progress {
+      display: flex; align-items: center; gap: 10px;
+      margin-top: 12px; font-size: 13px; color: #2e7d32;
+    }
+    .gis-overlay-progress[hidden] { display: none; }
+    .gis-overlay-spinner {
+      width: 16px; height: 16px; border-radius: 50%;
+      border: 2px solid #c8e6c9; border-top-color: #2e7d32;
+      animation: gis-spin .8s linear infinite; flex: 0 0 auto;
+    }
+    @keyframes gis-spin { to { transform: rotate(360deg); } }
+
     /* ── Папки-группы слоёв ── */
     .gis-folder-add { font-size: 13px !important; }
     .gis-folder {
@@ -754,6 +767,8 @@
                 title="Создать новый слой — тип геометрии и атрибуты">➕</button>
         <button id="gis-folder-add" class="gis-master-vis gis-folder-add" type="button"
                 title="Добавить папку — перетаскивайте в неё слои">📁+</button>
+        <button id="gis-overlay-btn" class="gis-master-vis gis-overlay-btn" type="button"
+                title="Оверлей двух полигональных слоёв (пересечение, разность, объединение)">🔀</button>
         <button id="gis-bulk-del" class="gis-master-vis gis-bulk-del" type="button"
                 title="Удалить выбранные слои" disabled>🗑</button>
         <span id="gis-bulk-count" class="gis-bulk-count"></span>
@@ -962,6 +977,48 @@
         <div class="gis-modal__foot">
           <button type="button" class="btn-secondary" data-newlayer-close>Отмена</button>
           <button type="button" class="btn-primary" id="gis-newlayer-create">Создать</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="gis-modal" id="gis-overlay-modal" hidden>
+      <div class="gis-modal__backdrop" data-overlay-close></div>
+      <div class="gis-modal__box" role="dialog" aria-modal="true" aria-labelledby="gis-overlay-title">
+        <div class="gis-modal__head">
+          <span id="gis-overlay-title">Оверлей слоёв</span>
+          <button type="button" class="gis-modal__x" data-overlay-close title="Закрыть">✕</button>
+        </div>
+        <div class="gis-modal__body">
+          <div class="gis-newlayer-controls">
+            <label>Слой A
+              <select id="gis-overlay-a" class="browser-default"></select>
+            </label>
+            <label>Операция
+              <select id="gis-overlay-op" class="browser-default">
+                <option value="intersection">Пересечение (A ∩ B)</option>
+                <option value="difference">Разность (A − B)</option>
+                <option value="union">Объединение (A ∪ B)</option>
+                <option value="symmetric_difference">Симметрическая разность (A △ B)</option>
+              </select>
+            </label>
+            <label>Слой B
+              <select id="gis-overlay-b" class="browser-default"></select>
+            </label>
+            <label>Название нового слоя
+              <input type="text" id="gis-overlay-name" class="browser-default"
+                     maxlength="200" placeholder="Результат оверлея">
+            </label>
+          </div>
+          <p class="gis-modal__note" id="gis-overlay-note">Доступны только полигональные слои.
+            Операция выполняется в фоне; результат появится в списке слоёв.</p>
+          <div id="gis-overlay-progress" class="gis-overlay-progress" hidden>
+            <span class="gis-overlay-spinner"></span>
+            <span id="gis-overlay-progress-text">Выполняется…</span>
+          </div>
+        </div>
+        <div class="gis-modal__foot">
+          <button type="button" class="btn-secondary" data-overlay-close>Отмена</button>
+          <button type="button" class="btn-primary" id="gis-overlay-run">Выполнить</button>
         </div>
       </div>
     </div>
@@ -8138,6 +8195,139 @@
           }).then(function () { createBtn.disabled = false; });
         }
         createBtn.addEventListener('click', submit);
+      })();
+
+      /* ── Кнопка «Оверлей»: пересечение/разность/объединение двух
+         полигональных слоёв. Ставит фоновую задачу и опрашивает статус,
+         по завершении подхватывает новый слой в список. ── */
+      (function () {
+        var openBtn = document.getElementById('gis-overlay-btn');
+        var modal = document.getElementById('gis-overlay-modal');
+        if (!openBtn || !modal) return;
+        var selA = document.getElementById('gis-overlay-a');
+        var selB = document.getElementById('gis-overlay-b');
+        var opSel = document.getElementById('gis-overlay-op');
+        var nameInp = document.getElementById('gis-overlay-name');
+        var runBtn = document.getElementById('gis-overlay-run');
+        var note = document.getElementById('gis-overlay-note');
+        var progress = document.getElementById('gis-overlay-progress');
+        var progressText = document.getElementById('gis-overlay-progress-text');
+        var OVERLAY_API = '/me/gis/api/overlay/';
+        var poll = null;
+        var busy = false;
+
+        /* Только полигональные загруженные слои пригодны для оверлея. */
+        function polygonLayers() {
+          return Object.keys(uploaded).map(function (id) { return uploaded[id]; })
+            .filter(function (L) { return L && L.geom_kind === 'polygon'; })
+            .sort(function (a, b) {
+              return String(a.title || '').localeCompare(String(b.title || ''));
+            });
+        }
+
+        function fillSelect(sel, layers, keep) {
+          sel.innerHTML = layers.map(function (L) {
+            return '<option value="' + L.id + '">' +
+              (L.title || ('Слой #' + L.id)).replace(/</g, '&lt;') + '</option>';
+          }).join('');
+          if (keep != null) sel.value = String(keep);
+        }
+
+        function setBusy(on, text) {
+          busy = on;
+          runBtn.disabled = on;
+          selA.disabled = selB.disabled = opSel.disabled = nameInp.disabled = on;
+          progress.hidden = !on;
+          if (on && text) progressText.textContent = text;
+        }
+
+        function stopPoll() { if (poll) { clearInterval(poll); poll = null; } }
+
+        function openModal() {
+          var layers = polygonLayers();
+          if (layers.length < 2) {
+            toast('Нужно минимум два полигональных слоя для оверлея.', true);
+            return;
+          }
+          fillSelect(selA, layers, layers[0].id);
+          fillSelect(selB, layers, layers[1].id);
+          opSel.value = 'intersection';
+          nameInp.value = '';
+          note.textContent = 'Доступны только полигональные слои. Операция ' +
+            'выполняется в фоне; результат появится в списке слоёв.';
+          setBusy(false);
+          modal.hidden = false;
+          setTimeout(function () { nameInp.focus(); }, 0);
+        }
+        function closeModal() {
+          if (busy) return;  /* не закрывать во время выполнения */
+          stopPoll();
+          modal.hidden = true;
+        }
+
+        openBtn.addEventListener('click', openModal);
+        modal.querySelectorAll('[data-overlay-close]').forEach(function (el) {
+          el.addEventListener('click', closeModal);
+        });
+
+        function pollStatus(runId) {
+          fetch(OVERLAY_API + runId + '/', {
+            credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' },
+          }).then(function (r) { return r.json(); }).then(function (j) {
+            if (!j || !j.ok) return;
+            if (j.status === 'completed') {
+              stopPoll();
+              setBusy(false);
+              if (j.layer) {
+                ingest(j.layer, true, true);
+                persistOrder();
+                toast('Оверлей выполнен: ' + j.layer.title +
+                  ' (' + j.layer.feature_count + ' об.)');
+              } else {
+                toast('Оверлей выполнен, но результат пуст.', true);
+              }
+              modal.hidden = true;
+            } else if (j.status === 'failed') {
+              stopPoll();
+              setBusy(false);
+              toast((j.detail || 'Оверлей завершился с ошибкой.'), true);
+            } else {
+              setBusy(true, j.status === 'running' ? 'Выполняется…' : 'В очереди…');
+            }
+          }).catch(function () {});
+        }
+
+        function run() {
+          if (busy) return;
+          var aId = parseInt(selA.value, 10);
+          var bId = parseInt(selB.value, 10);
+          var title = nameInp.value.trim();
+          if (!aId || !bId) { toast('Выберите оба слоя.', true); return; }
+          if (aId === bId) { toast('Выберите два разных слоя.', true); return; }
+          if (!title) { toast('Укажите название нового слоя.', true); nameInp.focus(); return; }
+          setBusy(true, 'В очереди…');
+          fetch(OVERLAY_API, {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({ layer_a_id: aId, layer_b_id: bId,
+                                   op: opSel.value, title: title }),
+          }).then(function (r) {
+            return r.json().then(function (j) { return { ok: r.ok, j: j }; });
+          }).then(function (res) {
+            if (!res.ok || !res.j || !res.j.run_id) {
+              setBusy(false);
+              toast((res.j && res.j.detail) || 'Не удалось запустить оверлей.', true);
+              return;
+            }
+            var runId = res.j.run_id;
+            pollStatus(runId);
+            poll = setInterval(function () { pollStatus(runId); }, 2000);
+          }).catch(function () {
+            setBusy(false);
+            toast('Не удалось запустить оверлей.', true);
+          });
+        }
+        runBtn.addEventListener('click', run);
       })();
 
       /* ── Кнопка выбора файла + drop на сам dropzone (опционально) ──

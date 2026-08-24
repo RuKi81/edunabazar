@@ -467,6 +467,7 @@ class PipelineRun(models.Model):
         ARCHIVE_NDVI = 'archive_ndvi', 'Архивные данные NDVI (MODIS)'
         RASTER_NDVI = 'raster_ndvi', 'Растровые данные NDVI (S2/L8)'
         MONITORING = 'monitoring', 'Мониторинг NDVI'
+        GIS_OVERLAY = 'gis_overlay', 'Оверлей ГИС-слоёв'
 
     class Status(models.TextChoices):
         QUEUED = 'queued', 'В очереди'

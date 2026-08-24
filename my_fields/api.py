@@ -1365,6 +1365,125 @@ def gis_layer_query(request: HttpRequest, pk: int) -> JsonResponse:
     })
 
 
+@csrf_exempt
+@require_http_methods(['POST'])
+def gis_overlay_create(request: HttpRequest) -> JsonResponse:
+    """POST — поставить в очередь оверлей двух слоёв (async через PipelineRun).
+
+    Тело JSON::
+
+        {"layer_a_id": <int>, "layer_b_id": <int>,
+         "op": "intersection|difference|union|symmetric_difference",
+         "title": "<название нового слоя>"}
+
+    Создание нового слоя — whole-class ``manage`` (как загрузка SHP); плюс
+    ``view`` на каждый исходный слой. Тяжёлая операция выполняется воркером
+    (``run_gis_overlay``); эндпоинт лишь ставит задачу и возвращает ``run_id``
+    для опроса статуса.
+    """
+    gate = _require_gis_access(request, level='manage')
+    if gate:
+        return gate
+
+    try:
+        data = json.loads(request.body or b'{}')
+    except (ValueError, TypeError):
+        return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
+    if not isinstance(data, dict):
+        return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
+
+    from .services.overlay import OVERLAY_OPS
+
+    op = str(data.get('op', '') or '')
+    title = str(data.get('title', '') or '').strip()
+    try:
+        layer_a_id = int(data.get('layer_a_id'))
+        layer_b_id = int(data.get('layer_b_id'))
+    except (TypeError, ValueError):
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_layers',
+             'detail': 'Укажите оба слоя.'}, status=400)
+
+    if op not in OVERLAY_OPS:
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_op',
+             'detail': 'Неизвестная операция.'}, status=400)
+    if not title:
+        return JsonResponse(
+            {'ok': False, 'error': 'empty_title',
+             'detail': 'Укажите название слоя.'}, status=400)
+    if layer_a_id == layer_b_id:
+        return JsonResponse(
+            {'ok': False, 'error': 'same_layer',
+             'detail': 'Выберите два разных слоя.'}, status=400)
+
+    # Доступ на чтение каждого исходного слоя.
+    for lid in (layer_a_id, layer_b_id):
+        vgate = _require_gis_access(request, level='view', pk=lid)
+        if vgate:
+            return vgate
+
+    layer_a = get_object_or_404(GisLayer, pk=layer_a_id)
+    layer_b = get_object_or_404(GisLayer, pk=layer_b_id)
+    if layer_a.geom_kind != 'polygon' or layer_b.geom_kind != 'polygon':
+        return JsonResponse(
+            {'ok': False, 'error': 'not_polygon',
+             'detail': 'Оверлеи поддерживаются только для полигональных слоёв.'},
+            status=400)
+
+    from agrocosmos.models import PipelineRun
+
+    owner = request.user if getattr(request.user, 'is_authenticated', False) else None
+    run = PipelineRun.objects.create(
+        task_type=PipelineRun.TaskType.GIS_OVERLAY,
+        status=PipelineRun.Status.QUEUED,
+        description=f'Оверлей: {layer_a.title} × {layer_b.title} ({op})'[:500],
+        launch_args={
+            'layer_a_id': layer_a_id,
+            'layer_b_id': layer_b_id,
+            'op': op,
+            'title': title,
+            'owner_id': owner.pk if owner is not None else None,
+        },
+    )
+    return JsonResponse(
+        {'ok': True, 'run_id': run.pk, 'status': run.status}, status=202)
+
+
+@require_http_methods(['GET'])
+def gis_overlay_status(request: HttpRequest, run_id: int) -> JsonResponse:
+    """GET — статус фоновой оверлейной задачи ``run_id``.
+
+    Возвращает ``{status}`` и, когда задача завершена — созданный слой
+    (``layer``), чтобы фронт подхватил его без перезагрузки. Уровень ``view``.
+    """
+    gate = _require_gis_access(request, level='view')
+    if gate:
+        return gate
+
+    from agrocosmos.models import PipelineRun
+
+    run = PipelineRun.objects.filter(
+        pk=run_id, task_type=PipelineRun.TaskType.GIS_OVERLAY).first()
+    if run is None:
+        return JsonResponse({'ok': False, 'error': 'not_found'}, status=404)
+
+    resp = {
+        'ok': True,
+        'run_id': run.pk,
+        'status': run.status,
+        'records_count': run.records_count,
+    }
+    if run.status == PipelineRun.Status.COMPLETED:
+        result_id = (run.launch_args or {}).get('_result_layer_id')
+        layer = GisLayer.objects.filter(pk=result_id).first() if result_id else None
+        resp['layer'] = _gis_layer_to_dict(layer) if layer else None
+    elif run.status == PipelineRun.Status.FAILED:
+        tail = '\n'.join((run.log or '').splitlines()[-5:])
+        resp['detail'] = tail or 'Оверлей завершился с ошибкой.'
+    return JsonResponse(resp)
+
+
 @require_http_methods(['GET'])
 def gis_layer_export(request: HttpRequest, pk: int) -> HttpResponse:
     """GET — скачать данные слоя одним ZIP-архивом.
