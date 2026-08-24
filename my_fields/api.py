@@ -1288,7 +1288,14 @@ def gis_layer_export(request: HttpRequest, pk: int) -> HttpResponse:
         )
 
     resp = HttpResponse(zip_bytes, content_type='application/zip')
-    resp['Content-Disposition'] = f'attachment; filename="{filename}"'
+    # Имя = название слоя (может быть кириллицей) → RFC 5987: ASCII-фолбэк
+    # filename + UTF-8 filename* для современных браузеров.
+    from urllib.parse import quote
+    ascii_name = filename.encode('ascii', 'ignore').decode('ascii') or 'layer.zip'
+    resp['Content-Disposition'] = (
+        f'attachment; filename="{ascii_name}"; '
+        f"filename*=UTF-8''{quote(filename)}"
+    )
     resp['Content-Length'] = str(len(zip_bytes))
     resp['Cache-Control'] = 'private, no-store'
     return resp

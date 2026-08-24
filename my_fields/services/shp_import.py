@@ -902,10 +902,20 @@ _EXPORT_WGS84_PRJ = (
 )
 
 
+# Символы, недопустимые в именах файлов (Windows/большинство ФС) + управляющие.
+_FS_ILLEGAL_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
 def _export_base_name(layer) -> str:
-    """Безопасное ASCII-имя файлов в архиве на основе названия слоя."""
-    base = slugify_identifier(layer.title or '', fallback='') or layer.table_name
-    return base[:80]
+    """Имя файлов в архиве = название слоя (как в плашке).
+
+    Unicode (кириллица) сохраняется; вырезаются лишь символы, недопустимые
+    в именах файлов. Пустое/битое название → ``table_name``.
+    """
+    title = (layer.title or '').strip()
+    base = _FS_ILLEGAL_RE.sub('_', title)
+    base = re.sub(r'\s+', ' ', base).strip(' .')
+    return (base or layer.table_name)[:120]
 
 
 def _iter_export_rows(layer):
@@ -947,7 +957,7 @@ def export_layer(layer, fmt: str) -> tuple[bytes, str]:
     base = _export_base_name(layer)
 
     if fmt == 'shp':
-        return _export_shp_zip(layer, base), f'{base}_shp.zip'
+        return _export_shp_zip(layer, base), f'{base}.zip'
 
     if fmt == 'geojson':
         inner_name, payload = base + '.geojson', _export_geojson_bytes(layer)
@@ -957,7 +967,7 @@ def export_layer(layer, fmt: str) -> tuple[bytes, str]:
     zip_buf = io.BytesIO()
     with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as z:
         z.writestr(inner_name, payload)
-    return zip_buf.getvalue(), f'{base}_{fmt}.zip'
+    return zip_buf.getvalue(), f'{base}.zip'
 
 
 def _export_geojson_bytes(layer) -> bytes:

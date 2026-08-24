@@ -325,6 +325,27 @@ class ExportTests(GisLayersTestCase):
         self.assertIn('wkt', rows[0])
         self.assertEqual(len(rows), 2)          # заголовок + 1 объект
 
+    def test_export_filename_matches_layer_title(self):
+        # Имя ZIP и вложенных файлов = название слоя (как в плашке), кириллица.
+        self.layer.title = 'Поля 2024/тест'   # со «слэшем» — проверим санитайз
+        self.layer.save(update_fields=['title'])
+        from urllib.parse import quote
+        expected = 'Поля 2024_тест'           # '/' → '_'
+        # shp: вложенные файлы носят имя слоя
+        resp = self._export('shp')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        cd = resp['Content-Disposition']
+        self.assertIn("filename*=UTF-8''" + quote(expected + '.zip'), cd)
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+            names = z.namelist()
+            self.assertIn(expected + '.shp', names)
+            self.assertIn(expected + '.dbf', names)
+        # geojson / xlsx: вложенный файл тоже носит имя слоя
+        with zipfile.ZipFile(io.BytesIO(self._export('geojson').content)) as z:
+            self.assertIn(expected + '.geojson', z.namelist())
+        with zipfile.ZipFile(io.BytesIO(self._export('xlsx').content)) as z:
+            self.assertIn(expected + '.xlsx', z.namelist())
+
     def test_export_survives_low_statement_timeout(self):
         # Регрессия: на слоях с большим количеством объектов тяжёлый скан
         # ST_AsGeoJSON+ST_AsText упирался в глобальный statement_timeout
