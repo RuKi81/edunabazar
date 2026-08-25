@@ -1411,18 +1411,23 @@ def gis_overlay_create(request: HttpRequest) -> JsonResponse:
     layer_a, layer_b, params = prepared
 
     from agrocosmos.models import PipelineRun
+    from .services.overlay import op_label
 
     owner = request.user if getattr(request.user, 'is_authenticated', False) else None
+    if layer_b is not None:
+        desc = f'{op_label(params["op"])}: {layer_a.title} × {layer_b.title}'
+    else:
+        desc = f'{op_label(params["op"])}: {layer_a.title}'
     run = PipelineRun.objects.create(
         task_type=PipelineRun.TaskType.GIS_OVERLAY,
         status=PipelineRun.Status.QUEUED,
-        description=(f'Оверлей: {layer_a.title} × {layer_b.title} '
-                     f'({params["op"]})')[:500],
+        description=desc[:500],
         launch_args={
             'layer_a_id': params['layer_a_id'],
             'layer_b_id': params['layer_b_id'],
             'op': params['op'],
             'title': params['title'],
+            'params': params['params'],
             'owner_id': owner.pk if owner is not None else None,
         },
     )
@@ -1431,57 +1436,84 @@ def gis_overlay_create(request: HttpRequest) -> JsonResponse:
 
 
 def _validate_overlay_request(data):
-    """Проверить тело запроса оверлея → ``(params, None)`` | ``(None, JsonResponse)``."""
-    from .services.overlay import OVERLAY_OPS
+    """Проверить тело запроса геообработки → ``(params, None)`` | ``(None, JsonResponse)``.
+
+    Поддерживает одно-слойные операции (только ``layer_a_id``), двух-слойные
+    оверлеи и spatial join (``layer_a_id`` + ``layer_b_id``). Параметры операции
+    передаются в ``params`` (буфер/упрощение/dissolve/spatial join).
+    """
+    from .services.overlay import ALL_OPS, SINGLE_OPS
 
     op = str(data.get('op', '') or '')
     title = str(data.get('title', '') or '').strip()
-    try:
-        layer_a_id = int(data.get('layer_a_id'))
-        layer_b_id = int(data.get('layer_b_id'))
-    except (TypeError, ValueError):
-        return None, JsonResponse(
-            {'ok': False, 'error': 'invalid_layers',
-             'detail': 'Укажите оба слоя.'}, status=400)
-    if op not in OVERLAY_OPS:
+    op_params = data.get('params')
+    if not isinstance(op_params, dict):
+        op_params = {}
+    if op not in ALL_OPS:
         return None, JsonResponse(
             {'ok': False, 'error': 'invalid_op',
              'detail': 'Неизвестная операция.'}, status=400)
+    try:
+        layer_a_id = int(data.get('layer_a_id'))
+    except (TypeError, ValueError):
+        return None, JsonResponse(
+            {'ok': False, 'error': 'invalid_layers',
+             'detail': 'Укажите слой.'}, status=400)
+
+    single = op in SINGLE_OPS
+    layer_b_id = None
+    if not single:
+        try:
+            layer_b_id = int(data.get('layer_b_id'))
+        except (TypeError, ValueError):
+            return None, JsonResponse(
+                {'ok': False, 'error': 'invalid_layers',
+                 'detail': 'Укажите оба слоя.'}, status=400)
+        if layer_a_id == layer_b_id:
+            return None, JsonResponse(
+                {'ok': False, 'error': 'same_layer',
+                 'detail': 'Выберите два разных слоя.'}, status=400)
     if not title:
         return None, JsonResponse(
             {'ok': False, 'error': 'empty_title',
              'detail': 'Укажите название слоя.'}, status=400)
-    if layer_a_id == layer_b_id:
-        return None, JsonResponse(
-            {'ok': False, 'error': 'same_layer',
-             'detail': 'Выберите два разных слоя.'}, status=400)
-    return {'op': op, 'title': title,
-            'layer_a_id': layer_a_id, 'layer_b_id': layer_b_id}, None
+    return {'op': op, 'title': title, 'layer_a_id': layer_a_id,
+            'layer_b_id': layer_b_id, 'params': op_params}, None
 
 
 def _prepare_overlay(request, data):
     """Валидация + доступ + загрузка слоёв.
 
-    Возвращает ``(layer_a, layer_b, params)`` при успехе либо ``JsonResponse``
-    с ошибкой (валидация/доступ/тип геометрии).
+    Возвращает ``(layer_a, layer_b, params)`` при успехе (``layer_b`` может быть
+    ``None`` для одно-слойных операций) либо ``JsonResponse`` с ошибкой.
     """
+    from .services.overlay import OVERLAY_OPS
+
     params, err = _validate_overlay_request(data)
     if err:
         return err
 
+    ids = [params['layer_a_id']]
+    if params['layer_b_id'] is not None:
+        ids.append(params['layer_b_id'])
     # Доступ на чтение каждого исходного слоя.
-    for lid in (params['layer_a_id'], params['layer_b_id']):
+    for lid in ids:
         vgate = _require_gis_access(request, level='view', pk=lid)
         if vgate:
             return vgate
 
     layer_a = get_object_or_404(GisLayer, pk=params['layer_a_id'])
-    layer_b = get_object_or_404(GisLayer, pk=params['layer_b_id'])
-    if layer_a.geom_kind != 'polygon' or layer_b.geom_kind != 'polygon':
-        return JsonResponse(
-            {'ok': False, 'error': 'not_polygon',
-             'detail': 'Оверлеи поддерживаются только для полигональных слоёв.'},
-            status=400)
+    layer_b = (get_object_or_404(GisLayer, pk=params['layer_b_id'])
+               if params['layer_b_id'] is not None else None)
+    # Полигональность требуется только для классических оверлеев; одно-слойные
+    # операции и spatial join валидируют тип геометрии в сервисе.
+    if params['op'] in OVERLAY_OPS:
+        if layer_a.geom_kind != 'polygon' or (
+                layer_b is not None and layer_b.geom_kind != 'polygon'):
+            return JsonResponse(
+                {'ok': False, 'error': 'not_polygon',
+                 'detail': 'Оверлеи поддерживаются только для полигональных слоёв.'},
+                status=400)
     return layer_a, layer_b, params
 
 

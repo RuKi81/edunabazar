@@ -37,6 +37,9 @@ class Command(BaseCommand):
         parser.add_argument('--op', type=str)
         parser.add_argument('--title', type=str)
         parser.add_argument('--owner-id', type=int)
+        # Параметры операции: воркер передаёт dict из launch_args напрямую,
+        # ручной запуск — JSON-строкой.
+        parser.add_argument('--params', default=None)
 
     def handle(self, *args, **options):
         run_id = options['run_id']
@@ -51,11 +54,17 @@ class Command(BaseCommand):
         op = options.get('op') or args_src.get('op')
         title = options.get('title') or args_src.get('title')
         owner_id = options.get('owner_id') or args_src.get('owner_id')
+        opt_params = options.get('params')
+        if isinstance(opt_params, str):
+            import json
+            opt_params = json.loads(opt_params) if opt_params else None
+        op_params = opt_params or args_src.get('params') or {}
 
         self._bootstrap(run_id)
 
         try:
-            layer = self._execute(layer_a_id, layer_b_id, op, title, owner_id)
+            layer = self._execute(layer_a_id, layer_b_id, op, title, owner_id,
+                                  op_params)
         except Exception:
             tb = traceback.format_exc()
             self._log(run_id, f'!!! Overlay failed !!!\n{tb[-4000:]}')
@@ -82,27 +91,34 @@ class Command(BaseCommand):
 
     # ------------------------------------------------------------------
 
-    def _execute(self, layer_a_id, layer_b_id, op, title, owner_id):
+    def _execute(self, layer_a_id, layer_b_id, op, title, owner_id, op_params):
         from django.contrib.auth import get_user_model
         from my_fields.models import GisLayer
-        from my_fields.services.overlay import OverlayError, op_label, run_overlay
+        from my_fields.services.overlay import (
+            OverlayError, op_label, run_from_params,
+        )
 
-        if not layer_a_id or not layer_b_id:
-            raise OverlayError('Не заданы оба слоя (layer_a_id/layer_b_id).')
+        if not layer_a_id:
+            raise OverlayError('Не задан слой A (layer_a_id).')
         layer_a = GisLayer.objects.filter(pk=layer_a_id).first()
-        layer_b = GisLayer.objects.filter(pk=layer_b_id).first()
-        if layer_a is None or layer_b is None:
-            raise OverlayError('Один из слоёв не найден.')
+        if layer_a is None:
+            raise OverlayError('Слой A не найден.')
+        layer_b = None
+        if layer_b_id:
+            layer_b = GisLayer.objects.filter(pk=layer_b_id).first()
+            if layer_b is None:
+                raise OverlayError('Слой B не найден.')
 
         owner = None
         if owner_id:
             owner = get_user_model().objects.filter(pk=owner_id).first()
 
+        b_repr = f' B=#{layer_b_id}' if layer_b_id else ''
         self.stdout.write(
-            f'[overlay] run: {op_label(op)}  A=#{layer_a_id} B=#{layer_b_id} '
-            f'→ "{title}"'
+            f'[overlay] run: {op_label(op)}  A=#{layer_a_id}{b_repr} → "{title}"'
         )
-        return run_overlay(layer_a, layer_b, op, title, owner=owner)
+        return run_from_params(op, layer_a=layer_a, layer_b=layer_b,
+                               title=title, owner=owner, params=op_params)
 
     @staticmethod
     def _bootstrap(run_id: int) -> None:

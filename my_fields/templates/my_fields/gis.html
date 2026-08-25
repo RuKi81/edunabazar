@@ -416,6 +416,33 @@
       cursor: grab; margin-right: 2px;
     }
 
+    /* ── Оверлей слоёв: параметры операции ── */
+    .gis-overlay-params:empty { display: none; }
+    .gis-overlay-params {
+      margin-top: 10px; padding: 10px 12px; border: 1px solid #e0e0e0;
+      border-radius: 8px; background: #fafafa; display: flex;
+      flex-direction: column; gap: 8px;
+    }
+    .gis-overlay-params label { font-size: 13px; color: #444; display: block; }
+    .gis-overlay-params input.browser-default,
+    .gis-overlay-params select.browser-default { margin-top: 2px; }
+    .gis-join-row {
+      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    }
+    .gis-join-row select, .gis-join-row input {
+      flex: 1 1 90px; min-width: 80px;
+    }
+    .gis-join-row .gis-join-del {
+      flex: 0 0 auto; border: none; background: #ffebee; color: #c62828;
+      border-radius: 6px; cursor: pointer; width: 28px; height: 28px;
+      font-size: 15px; line-height: 1;
+    }
+    .gis-join-add {
+      align-self: flex-start; border: 1px dashed #2e7d32; color: #2e7d32;
+      background: #fff; border-radius: 6px; padding: 4px 10px; cursor: pointer;
+      font-size: 13px;
+    }
+
     /* ── Оверлей слоёв: индикатор прогресса ── */
     .gis-overlay-progress {
       display: flex; align-items: center; gap: 10px;
@@ -768,7 +795,7 @@
         <button id="gis-folder-add" class="gis-master-vis gis-folder-add" type="button"
                 title="Добавить папку — перетаскивайте в неё слои">📁+</button>
         <button id="gis-overlay-btn" class="gis-master-vis gis-overlay-btn" type="button"
-                title="Оверлей двух полигональных слоёв (пересечение, разность, объединение)">🔀</button>
+                title="Геообработка: буфер, dissolve, центроиды, упрощение, оверлеи, clip/erase, пространственное соединение">🔀</button>
         <button id="gis-bulk-del" class="gis-master-vis gis-bulk-del" type="button"
                 title="Удалить выбранные слои" disabled>🗑</button>
         <span id="gis-bulk-count" class="gis-bulk-count"></span>
@@ -985,32 +1012,46 @@
       <div class="gis-modal__backdrop" data-overlay-close></div>
       <div class="gis-modal__box" role="dialog" aria-modal="true" aria-labelledby="gis-overlay-title">
         <div class="gis-modal__head">
-          <span id="gis-overlay-title">Оверлей слоёв</span>
+          <span id="gis-overlay-title">Геообработка слоёв</span>
           <button type="button" class="gis-modal__x" data-overlay-close title="Закрыть">✕</button>
         </div>
         <div class="gis-modal__body">
           <div class="gis-newlayer-controls">
-            <label>Слой A
-              <select id="gis-overlay-a" class="browser-default"></select>
-            </label>
             <label>Операция
               <select id="gis-overlay-op" class="browser-default">
-                <option value="intersection">Пересечение (A ∩ B)</option>
-                <option value="difference">Разность (A − B)</option>
-                <option value="union">Объединение (A ∪ B)</option>
-                <option value="symmetric_difference">Симметрическая разность (A △ B)</option>
+                <optgroup label="Одно-слойные">
+                  <option value="buffer">Буфер (метры)</option>
+                  <option value="dissolve">Объединение (dissolve)</option>
+                  <option value="centroids">Центроиды</option>
+                  <option value="simplify">Упрощение геометрии</option>
+                </optgroup>
+                <optgroup label="Два слоя">
+                  <option value="intersection">Пересечение (A ∩ B)</option>
+                  <option value="difference">Разность (A − B)</option>
+                  <option value="erase">Стереть B из A (A − B)</option>
+                  <option value="clip">Обрезка A по B (clip)</option>
+                  <option value="union">Объединение (A ∪ B)</option>
+                  <option value="symmetric_difference">Симметрическая разность (A △ B)</option>
+                </optgroup>
+                <optgroup label="Соединение">
+                  <option value="spatial_join">Пространственное соединение</option>
+                </optgroup>
               </select>
             </label>
-            <label>Слой B
+            <label id="gis-overlay-a-wrap">Слой A
+              <select id="gis-overlay-a" class="browser-default"></select>
+            </label>
+            <label id="gis-overlay-b-wrap">Слой B
               <select id="gis-overlay-b" class="browser-default"></select>
             </label>
             <label>Название нового слоя
               <input type="text" id="gis-overlay-name" class="browser-default"
-                     maxlength="200" placeholder="Результат оверлея">
+                     maxlength="200" placeholder="Результат геообработки">
             </label>
           </div>
-          <p class="gis-modal__note" id="gis-overlay-note">Доступны только полигональные слои.
-            Операция выполняется в фоне; результат появится в списке слоёв.</p>
+          <div id="gis-overlay-params" class="gis-overlay-params"></div>
+          <p class="gis-modal__note" id="gis-overlay-note">Операция выполняется в фоне;
+            результат появится в списке слоёв.</p>
           <div id="gis-overlay-progress" class="gis-overlay-progress" hidden>
             <span class="gis-overlay-spinner"></span>
             <span id="gis-overlay-progress-text">Выполняется…</span>
@@ -8322,31 +8363,210 @@
         var note = document.getElementById('gis-overlay-note');
         var progress = document.getElementById('gis-overlay-progress');
         var progressText = document.getElementById('gis-overlay-progress-text');
+        var aWrap = document.getElementById('gis-overlay-a-wrap');
+        var bWrap = document.getElementById('gis-overlay-b-wrap');
+        var paramsBox = document.getElementById('gis-overlay-params');
         var OVERLAY_API = '/me/gis/api/overlay/';
         var poll = null;
         var busy = false;
 
-        /* Только полигональные загруженные слои пригодны для оверлея. */
-        function polygonLayers() {
+        var SINGLE_OPS = { buffer: 1, dissolve: 1, centroids: 1, simplify: 1 };
+        /* Классические оверлеи требуют полигоны; single/spatial_join — любой тип. */
+        var POLY_OPS = { intersection: 1, difference: 1, erase: 1, clip: 1,
+                         union: 1, symmetric_difference: 1 };
+        function opIsSingle(op) { return !!SINGLE_OPS[op]; }
+        function opNeedsPolygon(op) { return !!POLY_OPS[op]; }
+
+        function esc(s) { return String(s == null ? '' : s).replace(/</g, '&lt;'); }
+        function kindLabel(k) {
+          return k === 'polygon' ? 'полигон' : k === 'line' ? 'линия'
+            : k === 'point' ? 'точка' : (k || '?');
+        }
+        function allLayers() {
           return Object.keys(uploaded).map(function (id) { return uploaded[id]; })
-            .filter(function (L) { return L && L.geom_kind === 'polygon'; })
+            .filter(function (L) { return L && L.geom_kind; })
             .sort(function (a, b) {
               return String(a.title || '').localeCompare(String(b.title || ''));
             });
         }
+        function eligibleLayers(op) {
+          var all = allLayers();
+          if (opNeedsPolygon(op)) {
+            return all.filter(function (L) { return L.geom_kind === 'polygon'; });
+          }
+          return all;  /* single ops + spatial_join: любой тип геометрии */
+        }
+        function layerById(id) { return uploaded[id] || null; }
+        function layerAttrs(L) { return (L && L.attributes) || []; }
 
         function fillSelect(sel, layers, keep) {
           sel.innerHTML = layers.map(function (L) {
-            return '<option value="' + L.id + '">' +
-              (L.title || ('Слой #' + L.id)).replace(/</g, '&lt;') + '</option>';
+            return '<option value="' + L.id + '">' + esc(L.title || ('Слой #' + L.id)) +
+              ' [' + kindLabel(L.geom_kind) + ']</option>';
           }).join('');
           if (keep != null) sel.value = String(keep);
+        }
+
+        /* ── Параметры операции (динамический рендер) ── */
+        function numberField(id, label, def) {
+          var wrap = document.createElement('label'); wrap.textContent = label;
+          var inp = document.createElement('input'); inp.type = 'number';
+          inp.id = id; inp.className = 'browser-default'; inp.value = def; inp.step = 'any';
+          wrap.appendChild(inp); return wrap;
+        }
+        function dissolveField() {
+          var wrap = document.createElement('label');
+          wrap.textContent = 'Поле группировки (опц.)';
+          var sel = document.createElement('select');
+          sel.id = 'gis-p-field'; sel.className = 'browser-default';
+          var opts = '<option value="">— объединить всё —</option>';
+          layerAttrs(layerById(selA.value)).forEach(function (a) {
+            opts += '<option value="' + esc(a.db) + '">' + esc(a.name || a.db) + '</option>';
+          });
+          sel.innerHTML = opts; wrap.appendChild(sel); return wrap;
+        }
+        function renderParams() {
+          var op = opSel.value;
+          paramsBox.innerHTML = '';
+          if (op === 'buffer') {
+            paramsBox.appendChild(numberField('gis-p-distance', 'Радиус буфера, м', '1000'));
+          } else if (op === 'simplify') {
+            paramsBox.appendChild(numberField('gis-p-tolerance', 'Допуск упрощения, м', '10'));
+          } else if (op === 'dissolve') {
+            paramsBox.appendChild(dissolveField());
+          } else if (op === 'spatial_join') {
+            renderJoinBuilder();
+          }
+        }
+
+        /* ── Конструктор пространственного соединения ── */
+        function renderJoinBuilder() {
+          var predWrap = document.createElement('label');
+          predWrap.textContent = 'Пространственный предикат';
+          var pred = document.createElement('select');
+          pred.id = 'gis-p-predicate'; pred.className = 'browser-default';
+          pred.innerHTML =
+            '<option value="intersects">A пересекается с B</option>' +
+            '<option value="contains">A содержит B</option>' +
+            '<option value="within">A внутри B</option>' +
+            '<option value="covers">A покрывает B</option>' +
+            '<option value="covered_by">A покрыт B</option>';
+          predWrap.appendChild(pred); paramsBox.appendChild(predWrap);
+          var lbl = document.createElement('div');
+          lbl.textContent = 'Переносимые поля / агрегаты:';
+          lbl.style.fontSize = '13px'; lbl.style.color = '#444';
+          paramsBox.appendChild(lbl);
+          var list = document.createElement('div'); list.id = 'gis-join-list';
+          paramsBox.appendChild(list);
+          var add = document.createElement('button');
+          add.type = 'button'; add.className = 'gis-join-add'; add.textContent = '+ поле';
+          add.addEventListener('click', function () { list.appendChild(joinRow()); });
+          paramsBox.appendChild(add);
+          list.appendChild(joinRow());
+        }
+        function joinRow() {
+          var row = document.createElement('div'); row.className = 'gis-join-row';
+          var bAttrs = layerAttrs(layerById(selB.value));
+          var agg = document.createElement('select');
+          agg.className = 'gis-join-agg browser-default';
+          agg.innerHTML =
+            '<option value="count">Количество</option>' +
+            '<option value="sum">Сумма</option>' +
+            '<option value="avg">Среднее</option>' +
+            '<option value="min">Минимум</option>' +
+            '<option value="max">Максимум</option>' +
+            '<option value="first">Первое значение</option>';
+          var field = document.createElement('select');
+          field.className = 'gis-join-field browser-default';
+          var fopts = '<option value="">— поле B —</option>';
+          bAttrs.forEach(function (a) {
+            fopts += '<option value="' + esc(a.db) + '">' + esc(a.name || a.db) + '</option>';
+          });
+          field.innerHTML = fopts;
+          var alias = document.createElement('input');
+          alias.type = 'text'; alias.className = 'gis-join-as browser-default';
+          alias.placeholder = 'имя столбца';
+          var del = document.createElement('button');
+          del.type = 'button'; del.className = 'gis-join-del'; del.textContent = '✕';
+          del.addEventListener('click', function () { row.remove(); });
+          function sync() { field.disabled = (agg.value === 'count'); }
+          agg.addEventListener('change', sync); sync();
+          row.appendChild(agg); row.appendChild(field);
+          row.appendChild(alias); row.appendChild(del);
+          return row;
+        }
+        function collectJoins() {
+          var out = [];
+          Array.prototype.forEach.call(
+            paramsBox.querySelectorAll('.gis-join-row'), function (r) {
+              var agg = r.querySelector('.gis-join-agg').value;
+              var field = r.querySelector('.gis-join-field').value;
+              var as = r.querySelector('.gis-join-as').value.trim();
+              var spec = { agg: agg };
+              if (agg !== 'count') spec.field = field;
+              if (as) spec.as = as;
+              out.push(spec);
+            });
+          return out;
+        }
+        function buildParams(op) {
+          if (op === 'buffer') {
+            return { distance: parseFloat(document.getElementById('gis-p-distance').value) };
+          }
+          if (op === 'simplify') {
+            return { tolerance: parseFloat(document.getElementById('gis-p-tolerance').value) };
+          }
+          if (op === 'dissolve') {
+            var f = document.getElementById('gis-p-field');
+            return { field: f ? f.value : '' };
+          }
+          if (op === 'spatial_join') {
+            var p = document.getElementById('gis-p-predicate');
+            return { predicate: p ? p.value : 'intersects', joins: collectJoins() };
+          }
+          return {};
+        }
+
+        function updateLayout() {
+          var op = opSel.value;
+          var single = opIsSingle(op);
+          var layers = eligibleLayers(op);
+          var keepA = selA.value;
+          fillSelect(selA, layers,
+            layers.some(function (L) { return String(L.id) === keepA; })
+              ? keepA : (layers[0] && layers[0].id));
+          aWrap.firstChild.textContent = single ? 'Слой' : 'Слой A';
+          if (single) {
+            bWrap.hidden = true;
+          } else {
+            bWrap.hidden = false;
+            var keepB = selB.value;
+            fillSelect(selB, layers,
+              layers.some(function (L) { return String(L.id) === keepB; })
+                ? keepB : ((layers[1] && layers[1].id) || (layers[0] && layers[0].id)));
+          }
+          renderParams();
+          var need = single ? 1 : 2;
+          if (layers.length < need) {
+            note.textContent = single ? 'Нет подходящих слоёв для операции.'
+              : (opNeedsPolygon(op) ? 'Нужно минимум два полигональных слоя.'
+                                    : 'Нужно минимум два слоя.');
+            runBtn.disabled = true;
+          } else {
+            note.textContent = opNeedsPolygon(op)
+              ? 'Оверлей полигональных слоёв. Результат появится в списке слоёв.'
+              : 'Операция выполняется в фоне; результат появится в списке слоёв.';
+            runBtn.disabled = busy;
+          }
         }
 
         function setBusy(on, text) {
           busy = on;
           runBtn.disabled = on;
           selA.disabled = selB.disabled = opSel.disabled = nameInp.disabled = on;
+          Array.prototype.forEach.call(
+            paramsBox.querySelectorAll('input,select,button'),
+            function (el) { el.disabled = on; });
           progress.hidden = !on;
           if (on && text) progressText.textContent = text;
         }
@@ -8354,18 +8574,10 @@
         function stopPoll() { if (poll) { clearInterval(poll); poll = null; } }
 
         function openModal() {
-          var layers = polygonLayers();
-          if (layers.length < 2) {
-            toast('Нужно минимум два полигональных слоя для оверлея.', true);
-            return;
-          }
-          fillSelect(selA, layers, layers[0].id);
-          fillSelect(selB, layers, layers[1].id);
-          opSel.value = 'intersection';
+          if (allLayers().length < 1) { toast('Нет загруженных слоёв.', true); return; }
           nameInp.value = '';
-          note.textContent = 'Доступны только полигональные слои. Операция ' +
-            'выполняется в фоне; результат появится в списке слоёв.';
           setBusy(false);
+          updateLayout();
           modal.hidden = false;
           setTimeout(function () { nameInp.focus(); }, 0);
         }
@@ -8379,6 +8591,13 @@
         modal.querySelectorAll('[data-overlay-close]').forEach(function (el) {
           el.addEventListener('click', closeModal);
         });
+        opSel.addEventListener('change', updateLayout);
+        selA.addEventListener('change', function () {
+          if (opSel.value === 'dissolve') renderParams();
+        });
+        selB.addEventListener('change', function () {
+          if (opSel.value === 'spatial_join') renderParams();
+        });
 
         function pollStatus(runId) {
           fetch(OVERLAY_API + runId + '/', {
@@ -8391,16 +8610,16 @@
               if (j.layer) {
                 ingest(j.layer, true, true);
                 persistOrder();
-                toast('Оверлей выполнен: ' + j.layer.title +
+                toast('Готово: ' + j.layer.title +
                   ' (' + j.layer.feature_count + ' об.)');
               } else {
-                toast('Оверлей выполнен, но результат пуст.', true);
+                toast('Операция выполнена, но результат пуст.', true);
               }
               modal.hidden = true;
             } else if (j.status === 'failed') {
               stopPoll();
               setBusy(false);
-              toast((j.detail || 'Оверлей завершился с ошибкой.'), true);
+              toast((j.detail || 'Операция завершилась с ошибкой.'), true);
             } else {
               setBusy(true, j.status === 'running' ? 'Выполняется…' : 'В очереди…');
             }
@@ -8409,24 +8628,39 @@
 
         function run() {
           if (busy) return;
+          var op = opSel.value;
+          var single = opIsSingle(op);
           var aId = parseInt(selA.value, 10);
-          var bId = parseInt(selB.value, 10);
           var title = nameInp.value.trim();
-          if (!aId || !bId) { toast('Выберите оба слоя.', true); return; }
-          if (aId === bId) { toast('Выберите два разных слоя.', true); return; }
+          if (!aId) { toast('Выберите слой.', true); return; }
+          var payload = { layer_a_id: aId, op: op, title: title, params: buildParams(op) };
+          if (!single) {
+            var bId = parseInt(selB.value, 10);
+            if (!bId) { toast('Выберите оба слоя.', true); return; }
+            if (aId === bId) { toast('Выберите два разных слоя.', true); return; }
+            payload.layer_b_id = bId;
+          }
           if (!title) { toast('Укажите название нового слоя.', true); nameInp.focus(); return; }
+          if (op === 'buffer' && isNaN(payload.params.distance)) {
+            toast('Укажите радиус буфера.', true); return;
+          }
+          if (op === 'simplify' && isNaN(payload.params.tolerance)) {
+            toast('Укажите допуск упрощения.', true); return;
+          }
+          if (op === 'spatial_join' && (!payload.params.joins || !payload.params.joins.length)) {
+            toast('Добавьте хотя бы одно переносимое поле.', true); return;
+          }
           setBusy(true, 'В очереди…');
           fetch(OVERLAY_API, {
             method: 'POST', credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-            body: JSON.stringify({ layer_a_id: aId, layer_b_id: bId,
-                                   op: opSel.value, title: title }),
+            body: JSON.stringify(payload),
           }).then(function (r) {
             return r.json().then(function (j) { return { ok: r.ok, j: j }; });
           }).then(function (res) {
             if (!res.ok || !res.j || !res.j.run_id) {
               setBusy(false);
-              toast((res.j && res.j.detail) || 'Не удалось запустить оверлей.', true);
+              toast((res.j && res.j.detail) || 'Не удалось запустить операцию.', true);
               return;
             }
             var runId = res.j.run_id;
@@ -8434,7 +8668,7 @@
             poll = setInterval(function () { pollStatus(runId); }, 2000);
           }).catch(function () {
             setBusy(false);
-            toast('Не удалось запустить оверлей.', true);
+            toast('Не удалось запустить операцию.', true);
           });
         }
         runBtn.addEventListener('click', run);
