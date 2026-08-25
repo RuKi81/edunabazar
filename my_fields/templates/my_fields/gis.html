@@ -5728,15 +5728,26 @@
         }
       }
 
+      /* Кэш id объектов текущей SQL-выборки. Нужен режиму правки геометрии: там
+         MVT-заливка скрыта и гашение по feature-state не видно, поэтому состав
+         draw ограничиваем по этому набору (onlySelectedIds отдаёт его синхронно).
+         Ключ — слой + фильтр + строка поиска. */
+      var filterIdCache = { key: null, ids: null };
+      function filterCacheKey() {
+        return JSON.stringify([state.layer, state.filter, state.query || '']);
+      }
+
       /* Подтянуть id объектов текущей SQL-выборки и погасить на карте всё,
          кроме них. Ограничиваем 5000 id (лимит эндпоинта); при большем числе
          совпадений гасим первые 5000. Гонки отсекаем сверкой слоя/режима. */
       function applyFilterDimForMap(lid) {
         if (!state.filter) {
+          filterIdCache = { key: null, ids: null };
           if (window.__gisUpShowOnlyIds) window.__gisUpShowOnlyIds(lid, null);
           return;
         }
         var reqKey = 'gisup:' + lid;
+        var keyAtRequest = filterCacheKey();
         fetch('/me/gis/api/layers/' + lid + '/query/', {
           method: 'POST', credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
@@ -5749,7 +5760,11 @@
             /* Ответ устарел (сменили слой / выключили режим / убрали фильтр). */
             if (state.layer !== reqKey || !state.onlySelected || !state.filter) return;
             var ids = (j.results || []).map(function (x) { return x.id; });
+            filterIdCache = { key: keyAtRequest, ids: ids.map(String) };
             if (window.__gisUpShowOnlyIds) window.__gisUpShowOnlyIds(lid, ids);
+            /* В режиме правки геометрии MVT скрыт — пересобираем состав draw
+               по актуальному набору выборки (иначе видны все объекты). */
+            if (window.__gisUpOnlyEditReload) window.__gisUpOnlyEditReload(lid);
           }).catch(function () {});
       }
 
@@ -6141,7 +6156,24 @@
            только выбранные объекты, а не весь слой по экстенту. */
         onlySelectedIds: function (layer) {
           if (!state.open || state.layer !== layer || !state.onlySelected) return null;
-          return selectedFilterIds();
+          var sel = selectedFilterIds();
+          if (sel) return sel;                 /* ручной выбор в приоритете */
+          /* Ручного выбора нет, но активна SQL-выборка: в редактор геометрии
+             грузим только её объекты. Пока id не подтянуты (кэш не под текущий
+             фильтр) — прячем все, корректный набор подтянет applyFilterDimForMap. */
+          if (state.filter) {
+            return (filterIdCache.key === filterCacheKey()) ? (filterIdCache.ids || []) : [];
+          }
+          return null;
+        },
+        /* Гарантировать, что id SQL-выборки подтянуты и draw пересобран
+           (вызывается при входе в режим правки геометрии слоя). */
+        ensureFilterDim: function (layer) {
+          if (dynLayers[layer] && state.open && state.layer === layer &&
+              state.onlySelected && state.filter &&
+              filterIdCache.key !== filterCacheKey()) {
+            applyFilterDimForMap(layer.slice('gisup:'.length));
+          }
         },
       };
 
@@ -7103,6 +7135,12 @@
           }
           updateSaveBadge();
           gupLoadFeatures(L, { initial: true });
+          /* Если открыта таблица в режиме «только выбранные» с активной
+             SQL-выборкой — подтянуть её id и пересобрать состав draw, иначе
+             в редактор попадёт весь слой по экстенту. */
+          if (window.__gisAttr && window.__gisAttr.ensureFilterDim) {
+            window.__gisAttr.ensureFilterDim('gisup:' + L.id);
+          }
         } else {
           /* Не теряем несохранённые правки без подтверждения. */
           if (gupPendingCount() > 0) {
