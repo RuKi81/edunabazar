@@ -5708,11 +5708,49 @@
           try { applyFarmlandFilter(); } catch (_) {}
         } else if (dynLayers[state.layer]) {
           var lid = state.layer.slice('gisup:'.length);
-          if (window.__gisUpOnlySelected) window.__gisUpOnlySelected(lid, ids);
+          if (ids) {
+            /* Есть ручной выбор — гасим карту по выбранным. */
+            if (window.__gisUpShowOnlyIds) window.__gisUpShowOnlyIds(lid, null);
+            if (window.__gisUpOnlySelected) window.__gisUpOnlySelected(lid, ids);
+          } else if (state.onlySelected && state.filter) {
+            /* Ручного выбора нет, но активна SQL-выборка — гасим по её
+               результату (id тянем с сервера, режим — feature-state 'infilter'). */
+            if (window.__gisUpOnlySelected) window.__gisUpOnlySelected(lid, null);
+            applyFilterDimForMap(lid);
+          } else {
+            /* Режим выключен и фильтра нет — снимаем оба гашения. */
+            if (window.__gisUpShowOnlyIds) window.__gisUpShowOnlyIds(lid, null);
+            if (window.__gisUpOnlySelected) window.__gisUpOnlySelected(lid, null);
+          }
           /* Если слой сейчас в режиме правки геометрии — мгновенно пересобрать
              состав draw (иначе изменение бы применилось только при сдвиге карты). */
           if (window.__gisUpOnlyEditReload) window.__gisUpOnlyEditReload(lid);
         }
+      }
+
+      /* Подтянуть id объектов текущей SQL-выборки и погасить на карте всё,
+         кроме них. Ограничиваем 5000 id (лимит эндпоинта); при большем числе
+         совпадений гасим первые 5000. Гонки отсекаем сверкой слоя/режима. */
+      function applyFilterDimForMap(lid) {
+        if (!state.filter) {
+          if (window.__gisUpShowOnlyIds) window.__gisUpShowOnlyIds(lid, null);
+          return;
+        }
+        var reqKey = 'gisup:' + lid;
+        fetch('/me/gis/api/layers/' + lid + '/query/', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({
+            filter: state.filter, q: (state.query || ''),
+            limit: 5000, offset: 0, sort: 'id', dir: 'asc',
+          }),
+        }).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+          .then(function (j) {
+            /* Ответ устарел (сменили слой / выключили режим / убрали фильтр). */
+            if (state.layer !== reqKey || !state.onlySelected || !state.filter) return;
+            var ids = (j.results || []).map(function (x) { return x.id; });
+            if (window.__gisUpShowOnlyIds) window.__gisUpShowOnlyIds(lid, ids);
+          }).catch(function () {});
       }
 
       /* Полностью снять фильтр «только выбранные» с указанного слоя. */
@@ -5725,6 +5763,7 @@
           try { applyFarmlandFilter(); } catch (_) {}
         } else if (dynLayers[layer]) {
           var lid = layer.slice('gisup:'.length);
+          if (window.__gisUpShowOnlyIds) window.__gisUpShowOnlyIds(lid, null);
           if (window.__gisUpOnlySelected) window.__gisUpOnlySelected(lid, null);
         }
       }
@@ -6329,6 +6368,9 @@
         state.filter = res.spec.rules.length ? res.spec : null;
         if (fpToggle) fpToggle.classList.toggle('active', !!state.filter);
         if (state.open) { state.page = 0; reloadDynPage(); }
+        /* Режим «только выбранные» активен без ручного выбора → пересобрать
+           гашение карты под новый фильтр (или снять, если фильтр убрали). */
+        if (state.onlySelected) applyOnlySelectedMap();
       });
       var fpResetBtn = document.getElementById('gis-fp-reset');
       if (fpResetBtn) fpResetBtn.addEventListener('click', function () {
@@ -6336,6 +6378,7 @@
         state.filter = null;
         if (fpToggle) fpToggle.classList.remove('active');
         if (state.open) { state.page = 0; reloadDynPage(); }
+        if (state.onlySelected) applyOnlySelectedMap();
       });
       var fpSaveBtn = document.getElementById('gis-fp-save');
       if (fpSaveBtn) fpSaveBtn.addEventListener('click', function () {
@@ -6785,20 +6828,19 @@
         } catch (_) {}
       };
 
-      /* Режим «показать только выбранные» для SHP-слоя: ids — массив id
-         объектов (оставить видимыми) или null (снять режим).
-         Реализовано через feature-state 'selected' (тот же механизм, что и
-         подсветка выбранного — он надёжно работает с promoteId на векторных
-         тайлах, в отличие от setFilter по ['get','id'], который на MVT без
-         нативного feature-id объекты не отсекал). Выбранные объекты уже имеют
-         feature-state selected=true (см. __gisUpSetSel), поэтому просто гасим
-         прозрачность у всех, кроме выбранных; при выключении — восстанавливаем
-         обычную прозрачность по стилю слоя. */
-      window.__gisUpOnlySelected = function (layerId, ids) {
+      /* Режим «показать только выбранные»/«результат выборки» для SHP-слоя
+         реализован через feature-state + гашение прозрачности у остальных
+         (надёжно работает с promoteId на MVT, в отличие от setFilter по
+         ['get','id'], который без нативного feature-id объекты не отсекал).
+
+         Погасить на карте объекты слоя, кроме тех, у кого feature-state
+         ``stateKey`` === true (active=false — восстановить обычную
+         прозрачность). Общая база для «только выбранные» (stateKey='selected')
+         и гашения по результату SQL-выборки (stateKey='infilter'). */
+      function _gisUpApplyDim(layerId, active, stateKey) {
         var L = uploaded[layerId];
         if (!L) return;
-        var active = !!(ids && ids.length);
-        var selCase = ['boolean', ['feature-state', 'selected'], false];
+        var okCase = ['boolean', ['feature-state', stateKey], false];
         var st = L.style || {};
         (L._layerIds || []).forEach(function (lid) {
           var lyr = map.getLayer(lid);
@@ -6807,19 +6849,49 @@
             if (lyr.type === 'fill') {
               var fop = (st.opacity != null) ? st.opacity : 0.35;
               map.setPaintProperty(lid, 'fill-opacity',
-                active ? ['case', selCase, fop, 0] : fop);
+                active ? ['case', okCase, fop, 0] : fop);
             } else if (lyr.type === 'line') {
               map.setPaintProperty(lid, 'line-opacity',
-                active ? ['case', selCase, 1, 0] : 1);
+                active ? ['case', okCase, 1, 0] : 1);
             } else if (lyr.type === 'circle') {
               var cop = (st.opacity != null) ? st.opacity : 1;
               map.setPaintProperty(lid, 'circle-opacity',
-                active ? ['case', selCase, cop, 0] : cop);
+                active ? ['case', okCase, cop, 0] : cop);
               map.setPaintProperty(lid, 'circle-stroke-opacity',
-                active ? ['case', selCase, 1, 0] : 1);
+                active ? ['case', okCase, 1, 0] : 1);
             }
           } catch (_) {}
         });
+      }
+      window.__gisUpOnlySelected = function (layerId, ids) {
+        _gisUpApplyDim(layerId, !!(ids && ids.length), 'selected');
+      };
+      /* Гасить карту по результату SQL-выборки: ids — id отфильтрованных
+         объектов (оставить видимыми), либо null (снять режим). В отличие от
+         «только выбранные» (feature-state 'selected' ставит подсветка), здесь
+         сами помечаем объекты feature-state 'infilter'. */
+      window.__gisUpShowOnlyIds = function (layerId, ids) {
+        var L = uploaded[layerId];
+        if (!L) return;
+        var src = srcId(layerId);
+        /* Снять пометку с прежнего набора. */
+        (L._infilterIds || []).forEach(function (fid) {
+          try {
+            map.setFeatureState(
+              { source: src, sourceLayer: L.table_name, id: fid },
+              { infilter: false });
+          } catch (_) {}
+        });
+        var arr = (ids || []).slice();
+        L._infilterIds = arr;
+        arr.forEach(function (fid) {
+          try {
+            map.setFeatureState(
+              { source: src, sourceLayer: L.table_name, id: fid },
+              { infilter: true });
+          } catch (_) {}
+        });
+        _gisUpApplyDim(layerId, arr.length > 0, 'infilter');
       };
       /* Перекрасить все слои карты, относящиеся к L, по текущему L.style
          (или переданному override-стилю для живого предпросмотра).
