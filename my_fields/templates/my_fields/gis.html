@@ -6251,7 +6251,7 @@
           FP_OPS.map(function (o) {
             return '<option value="' + o.op + '">' + esc(o.label) + '</option>';
           }).join('') + '</select>' +
-          '<span class="gis-fp__valwrap gis-fp__val" style="display:contents;"></span>' +
+          '<span class="gis-fp__valwrap" style="display:contents;"></span>' +
           '<button type="button" class="gis-fp__del" title="Удалить условие">✕</button>';
         fpRules.appendChild(row);
         var fEl = row.querySelector('.gis-fp__field');
