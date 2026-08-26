@@ -48,6 +48,14 @@ urlpatterns = [
     path('me/gis/api/layers/<int:pk>/tiles/<int:z>/<int:x>/<int:y>.pbf',
          api.gis_layer_tiles, name='api_gis_layer_tiles'),
 
+    # ── Растровые слои (GeoTIFF → COG в MinIO/S3) ──
+    path('me/gis/api/rasters/', api.raster_layers_collection, name='api_raster_layers'),
+    path('me/gis/api/rasters/upload/init/', api.raster_upload_init, name='api_raster_upload_init'),
+    path('me/gis/api/rasters/upload/sign/', api.raster_upload_sign, name='api_raster_upload_sign'),
+    path('me/gis/api/rasters/upload/complete/', api.raster_upload_complete, name='api_raster_upload_complete'),
+    path('me/gis/api/rasters/upload/abort/', api.raster_upload_abort, name='api_raster_upload_abort'),
+    path('me/gis/api/rasters/<int:pk>/', api.raster_layer_detail, name='api_raster_layer_detail'),
+
     # ── UI ──
     path('me/fields/', views.fields_list_page, name='ui_fields_list'),
     path('me/fields/<int:pk>/', views.field_detail_page, name='ui_field_detail'),

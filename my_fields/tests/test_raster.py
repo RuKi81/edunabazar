@@ -212,3 +212,183 @@ class RasterAccessTest(TestCase):
             self.nobody, self.RL, self.layer_a.pk, 'view'))
         self.assertEqual(accessible_raster_layer_ids(self.nobody), set())
         self.assertFalse(can_open_gis_page(self.nobody))
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Эндпоинты загрузки: init → sign → complete / abort / detail
+# boto3 не нужен — функции s3_storage мокаются целиком.
+# ─────────────────────────────────────────────────────────────────────
+@override_settings(**_S3_SETTINGS)
+class RasterUploadEndpointsTest(TestCase):
+    INIT = '/me/gis/api/rasters/upload/init/'
+    SIGN = '/me/gis/api/rasters/upload/sign/'
+    COMPLETE = '/me/gis/api/rasters/upload/complete/'
+    ABORT = '/me/gis/api/rasters/upload/abort/'
+    LIST = '/me/gis/api/rasters/'
+
+    @classmethod
+    def setUpTestData(cls):
+        RL = ResourceGrant.ResourceType.RASTER_LAYER
+        cls.manager_dj = User.objects.create_user('r_mgr', password='x')
+        cls.manager_lu = _mk_legacy('r_mgr')
+        ResourceGrant.objects.create(
+            legacy_user=cls.manager_lu, resource_type=RL,
+            resource_id=None, level='manage')
+        cls.nobody_dj = User.objects.create_user('r_none', password='x')
+        cls.nobody_lu = _mk_legacy('r_none')
+
+    def _login(self, dj, lu):
+        self.client.force_login(dj)
+        session = self.client.session
+        session['legacy_user_id'] = lu.pk
+        session.save()
+
+    def _login_manager(self):
+        self._login(self.manager_dj, self.manager_lu)
+
+    def _post(self, url, payload):
+        import json
+        return self.client.post(
+            url, data=json.dumps(payload), content_type='application/json')
+
+    def _detail(self, pk):
+        return f'/me/gis/api/rasters/{pk}/'
+
+    # ── init ──
+    def test_init_creates_layer_and_multipart(self):
+        self._login_manager()
+        with patch.object(s3_storage, 'create_multipart_upload',
+                          return_value='uid-1') as mock_create:
+            resp = self._post(self.INIT,
+                              {'filename': 'field.tif', 'size': 100 * 1024 * 1024})
+        self.assertEqual(resp.status_code, 201, resp.content)
+        body = resp.json()
+        self.assertTrue(body['ok'])
+        self.assertEqual(body['upload_id'], 'uid-1')
+        self.assertEqual(body['part_count'], 2)  # 100 МБ / 64 МБ → 2 части
+        mock_create.assert_called_once()
+        layer = RasterLayer.objects.get(pk=body['layer_id'])
+        self.assertEqual(layer.status, RasterLayer.Status.UPLOADING)
+        self.assertEqual(layer.upload_id, 'uid-1')
+        self.assertEqual(layer.original_filename, 'field.tif')
+        self.assertEqual(layer.title, 'field')
+
+    def test_init_rejects_non_tiff(self):
+        self._login_manager()
+        resp = self._post(self.INIT, {'filename': 'x.png', 'size': 10})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()['error'], 'invalid_filename')
+
+    def test_init_rejects_bad_size(self):
+        self._login_manager()
+        resp = self._post(self.INIT, {'filename': 'x.tif', 'size': 0})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()['error'], 'invalid_size')
+
+    def test_init_forbidden_without_manage(self):
+        self._login(self.nobody_dj, self.nobody_lu)
+        resp = self._post(self.INIT, {'filename': 'x.tif', 'size': 10})
+        self.assertEqual(resp.status_code, 403)
+
+    @override_settings(S3_ENDPOINT_URL='', S3_ACCESS_KEY='', S3_SECRET_KEY='')
+    def test_init_storage_disabled_503(self):
+        s3_storage.reset_clients()
+        self._login_manager()
+        resp = self._post(self.INIT, {'filename': 'x.tif', 'size': 10})
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(resp.json()['error'], 'storage_disabled')
+
+    # ── sign ──
+    def _make_uploading_layer(self):
+        return RasterLayer.objects.create(
+            title='f', status=RasterLayer.Status.UPLOADING,
+            original_filename='f.tif', upload_key='0/x/original.tif',
+            upload_id='uid-1', size_bytes=100, owner=self.manager_dj,
+        )
+
+    def test_sign_returns_urls(self):
+        self._login_manager()
+        layer = self._make_uploading_layer()
+        with patch.object(s3_storage, 'presign_part_url',
+                          side_effect=lambda k, u, n, **kw: f'https://s/{n}'):
+            resp = self._post(self.SIGN,
+                              {'layer_id': layer.pk, 'part_numbers': [1, 2]})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        urls = resp.json()['urls']
+        self.assertEqual(urls['1'], 'https://s/1')
+        self.assertEqual(urls['2'], 'https://s/2')
+
+    def test_sign_rejects_bad_part_numbers(self):
+        self._login_manager()
+        layer = self._make_uploading_layer()
+        resp = self._post(self.SIGN, {'layer_id': layer.pk, 'part_numbers': []})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()['error'], 'invalid_part_numbers')
+
+    def test_sign_not_uploading_conflict(self):
+        self._login_manager()
+        layer = RasterLayer.objects.create(
+            title='f', status=RasterLayer.Status.QUEUED, upload_id='')
+        resp = self._post(self.SIGN, {'layer_id': layer.pk, 'part_numbers': [1]})
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()['error'], 'not_uploading')
+
+    # ── complete ──
+    def test_complete_finalizes_and_queues(self):
+        self._login_manager()
+        layer = self._make_uploading_layer()
+        with patch.object(s3_storage, 'complete_multipart_upload') as mock_c, \
+                patch.object(s3_storage, 'object_size', return_value=12345):
+            resp = self._post(self.COMPLETE, {
+                'layer_id': layer.pk,
+                'parts': [{'PartNumber': 1, 'ETag': 'a'},
+                          {'PartNumber': 2, 'ETag': 'b'}],
+            })
+        self.assertEqual(resp.status_code, 200, resp.content)
+        mock_c.assert_called_once()
+        layer.refresh_from_db()
+        self.assertEqual(layer.status, RasterLayer.Status.QUEUED)
+        self.assertEqual(layer.upload_id, '')
+        self.assertEqual(layer.size_bytes, 12345)
+
+    def test_complete_rejects_invalid_parts(self):
+        self._login_manager()
+        layer = self._make_uploading_layer()
+        resp = self._post(self.COMPLETE, {'layer_id': layer.pk, 'parts': []})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()['error'], 'invalid_parts')
+
+    # ── abort ──
+    def test_abort_deletes_layer(self):
+        self._login_manager()
+        layer = self._make_uploading_layer()
+        with patch.object(s3_storage, 'abort_multipart_upload') as mock_a:
+            resp = self._post(self.ABORT, {'layer_id': layer.pk})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        mock_a.assert_called_once()
+        self.assertFalse(RasterLayer.objects.filter(pk=layer.pk).exists())
+
+    # ── detail PATCH / DELETE ──
+    def test_patch_title_and_opacity(self):
+        self._login_manager()
+        layer = RasterLayer.objects.create(
+            title='old', status=RasterLayer.Status.READY, opacity=1.0)
+        resp = self.client.patch(
+            self._detail(layer.pk),
+            data='{"title": "Новый", "opacity": 0.4}',
+            content_type='application/json')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        layer.refresh_from_db()
+        self.assertEqual(layer.title, 'Новый')
+        self.assertAlmostEqual(layer.opacity, 0.4)
+
+    def test_delete_removes_layer_and_objects(self):
+        self._login_manager()
+        layer = RasterLayer.objects.create(
+            title='r', status=RasterLayer.Status.READY,
+            upload_key='0/x/original.tif', cog_key='9/cog.tif')
+        with patch.object(s3_storage, 'delete_object') as mock_del:
+            resp = self.client.delete(self._detail(layer.pk))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertFalse(RasterLayer.objects.filter(pk=layer.pk).exists())
+        self.assertEqual(mock_del.call_count, 2)  # upload_key + cog_key

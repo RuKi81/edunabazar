@@ -474,6 +474,11 @@ class RasterLayer(models.Model):
     cog_key = models.CharField(
         max_length=512, blank=True, default='', verbose_name='Ключ COG (S3)',
     )
+    # S3 UploadId активной multipart-загрузки (нужен между init→sign→complete;
+    # очищается после финализации/отмены). Непустой = загрузка не завершена.
+    upload_id = models.CharField(
+        max_length=255, blank=True, default='', verbose_name='UploadId (S3 multipart)',
+    )
     size_bytes = models.BigIntegerField(default=0, verbose_name='Размер, байт')
 
     # ── Геометрия/метаданные (заполняются конвейером ingest) ──

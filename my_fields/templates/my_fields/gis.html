@@ -456,6 +456,25 @@
     }
     @keyframes gis-spin { to { transform: rotate(360deg); } }
 
+    /* ── Растровые слои ── */
+    .gis-raster__badge {
+      display: inline-block; padding: 1px 6px; border-radius: 4px;
+      font-size: 10px; font-weight: 600; text-transform: uppercase;
+      background: #eceff1; color: #607d8b;
+    }
+    .gis-raster__badge.busy { background: #fff8e1; color: #f9a825; }
+    .gis-raster__badge.ok { background: #e8f5e9; color: #2e7d32; }
+    .gis-raster__badge.err { background: #ffebee; color: #c62828; }
+    .gis-raster__bar {
+      height: 5px; margin: 6px 0 2px; border-radius: 3px;
+      background: #eceff1; overflow: hidden;
+    }
+    .gis-raster__bar[hidden] { display: none; }
+    .gis-raster__barfill {
+      height: 100%; width: 0; background: #2e7d32;
+      transition: width .2s ease;
+    }
+
     /* ── Папки-группы слоёв ── */
     .gis-folder-add { font-size: 13px !important; }
     .gis-folder {
@@ -1115,7 +1134,7 @@
     <div class="gis-drop-overlay" id="gis-drop-overlay" hidden>
       <div class="gis-drop-overlay__box">
         <div class="gis-drop-overlay__icon">📥</div>
-        <div class="gis-drop-overlay__text">Отпустите ZIP с шейп-файлами для импорта</div>
+        <div class="gis-drop-overlay__text">Отпустите ZIP с шейп-файлами или GeoTIFF (.tif) для импорта</div>
       </div>
     </div>
 
@@ -6547,6 +6566,7 @@
     (function () {
       var API = '/me/gis/api/layers/';
       var FOLDERS_API = '/me/gis/api/folders/';
+      var RASTER_API = '/me/gis/api/rasters/';
       var dz = document.getElementById('gis-upload-dz');
       var input = document.getElementById('gis-upload-input');
       var btn = document.getElementById('gis-upload-btn');
@@ -7901,10 +7921,16 @@
       };
 
       function upload(fileList) {
-        var zips = Array.prototype.filter.call(fileList || [], function (f) {
-          return /\.zip$/i.test(f.name);
-        });
-        if (!zips.length) { setStatus('Нужен .zip архив с шейп-файлами.', 'err'); return; }
+        var all = Array.prototype.slice.call(fileList || []);
+        /* Растровые GeoTIFF идут отдельным путём — presigned multipart прямо
+           в объектное хранилище, минуя gunicorn (файлы до десятков ГБ). */
+        var tiffs = all.filter(function (f) { return /\.tiff?$/i.test(f.name); });
+        if (tiffs.length) { uploadRasters(tiffs); }
+        var zips = all.filter(function (f) { return /\.zip$/i.test(f.name); });
+        if (!zips.length) {
+          if (!tiffs.length) setStatus('Нужен .zip архив с шейп-файлами или .tif/.tiff растр.', 'err');
+          return;
+        }
         var fd = new FormData();
         zips.forEach(function (f) { fd.append('files', f); });
         setStatus('Загрузка и импорт… для крупных SHP это может занять время.', 'busy');
@@ -7937,6 +7963,269 @@
         }).catch(function () {
           setStatus('Сетевая ошибка при загрузке.', 'err');
         });
+      }
+
+      /* ═══════════════════ Растровые слои (GeoTIFF → COG) ═══════════════════
+         Загрузка идёт напрямую браузер→объектное хранилище через presigned
+         S3 Multipart Upload (минуя gunicorn, файлы до десятков ГБ):
+           init → sign (пачками) → PUT частей → complete.
+         Отрисовка растра на карте — Фаза 4; здесь только загрузка + строка
+         слоя со статусом (uploading/queued/processing/ready/failed). */
+      var rasters = {};  /* id -> raster meta */
+      var RASTER_STATUS = {
+        uploading: { label: 'загрузка', cls: 'busy' },
+        queued: { label: 'в очереди', cls: 'busy' },
+        processing: { label: 'обработка', cls: 'busy' },
+        ready: { label: 'готов', cls: 'ok' },
+        failed: { label: 'ошибка', cls: 'err' },
+      };
+      var RASTER_HDR = { 'X-Requested-With': 'XMLHttpRequest' };
+
+      function rasterJson(url, opts) {
+        opts = opts || {};
+        opts.credentials = 'same-origin';
+        opts.headers = Object.assign(
+          { 'Content-Type': 'application/json' }, RASTER_HDR, opts.headers || {});
+        return fetch(url, opts).then(function (r) {
+          return r.json().then(function (j) {
+            return r.ok ? j : Promise.reject(j || {});
+          }, function () { return Promise.reject({}); });
+        });
+      }
+
+      function fmtBytes(n) {
+        n = n || 0;
+        if (n < 1024) return n + ' Б';
+        var u = ['КБ', 'МБ', 'ГБ', 'ТБ'], i = -1;
+        do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+        return n.toFixed(n < 10 ? 1 : 0) + ' ' + u[i];
+      }
+
+      function renderRasterRow(r, atTop) {
+        var existing = document.getElementById('gisras-row-' + r.id);
+        if (existing) existing.remove();
+        rasters[r.id] = r;
+        var div = document.createElement('div');
+        div.className = 'gis-layer gis-raster';
+        div.id = 'gisras-row-' + r.id;
+        div.setAttribute('data-gisraster', r.id);
+
+        var head = document.createElement('div');
+        head.className = 'gis-layer__head';
+        var controls = document.createElement('div');
+        controls.className = 'gis-layer__controls';
+        controls.innerHTML = '<span class="gis-layer__grip" title="Растровый слой">🗺️</span>';
+        var iconsBox = document.createElement('div');
+        iconsBox.className = 'gis-layer__icons';
+        var delBtn = document.createElement('button');
+        delBtn.className = 'gis-layer__btn danger'; delBtn.type = 'button';
+        delBtn.title = 'Удалить растровый слой'; delBtn.textContent = '🗑';
+        iconsBox.appendChild(delBtn);
+        controls.appendChild(iconsBox);
+
+        var nameSpan = document.createElement('span');
+        nameSpan.className = 'gis-layer__name'; nameSpan.textContent = r.title;
+        nameSpan.title = r.title;
+        head.appendChild(controls); head.appendChild(nameSpan);
+
+        var meta = document.createElement('div');
+        meta.className = 'gis-layer__meta';
+
+        var bar = document.createElement('div');
+        bar.className = 'gis-raster__bar'; bar.hidden = true;
+        var fill = document.createElement('div');
+        fill.className = 'gis-raster__barfill'; bar.appendChild(fill);
+
+        div.appendChild(head); div.appendChild(meta); div.appendChild(bar);
+
+        delBtn.addEventListener('click', function () { deleteRaster(r.id); });
+
+        if (atTop && listEl.firstChild) listEl.insertBefore(div, listEl.firstChild);
+        else listEl.appendChild(div);
+        updateRasterRow(r);
+        return div;
+      }
+
+      function updateRasterRow(r) {
+        rasters[r.id] = Object.assign(rasters[r.id] || {}, r);
+        r = rasters[r.id];
+        var row = document.getElementById('gisras-row-' + r.id);
+        if (!row) return;
+        var st = RASTER_STATUS[r.status] || { label: r.status, cls: '' };
+        var meta = row.querySelector('.gis-layer__meta');
+        var parts = ['<span class="gis-raster__badge ' + (st.cls || '') + '">' +
+                     esc(st.label) + '</span>'];
+        if (r.size_bytes) parts.push(fmtBytes(r.size_bytes));
+        if (r.status === 'ready' && r.band_count) parts.push(r.band_count + ' канал.');
+        if (r.status === 'failed' && r.error) parts.push(esc(r.error));
+        if (meta) meta.innerHTML = parts.join(' · ');
+        var name = row.querySelector('.gis-layer__name');
+        if (name) { name.textContent = r.title; name.title = r.title; }
+      }
+
+      function setRasterProgress(id, frac) {
+        var row = document.getElementById('gisras-row-' + id);
+        if (!row) return;
+        var bar = row.querySelector('.gis-raster__bar');
+        var fill = row.querySelector('.gis-raster__barfill');
+        if (!bar || !fill) return;
+        if (frac == null) { bar.hidden = true; return; }
+        bar.hidden = false;
+        fill.style.width = Math.max(0, Math.min(100, frac * 100)).toFixed(1) + '%';
+      }
+
+      function deleteRaster(id) {
+        var r = rasters[id];
+        if (!window.confirm('Удалить растровый слой «' + ((r && r.title) || id) +
+            '» и его файлы в хранилище? Действие необратимо.')) return;
+        fetch(RASTER_API + id + '/', {
+          method: 'DELETE', credentials: 'same-origin', headers: RASTER_HDR,
+        }).then(function (resp) {
+          if (!resp.ok) throw new Error();
+          var row = document.getElementById('gisras-row-' + id);
+          if (row) row.remove();
+          delete rasters[id];
+          toast('Растровый слой удалён');
+        }).catch(function () { toast('Не удалось удалить растровый слой', true); });
+      }
+
+      function uploadRasters(files) {
+        files.forEach(function (f) { uploadOneRaster(f); });
+      }
+
+      /* Одна загрузка: init → последовательный PUT частей (presigned) →
+         complete. Части грузим по одной, чтобы не держать в памяти много
+         крупных срезов файла; при ошибке — abort + удаление строки. */
+      function uploadOneRaster(file) {
+        rasterJson(RASTER_API + 'upload/init/', {
+          method: 'POST',
+          body: JSON.stringify({ filename: file.name, size: file.size }),
+        }).then(function (init) {
+          var r = { id: init.layer_id, title: file.name.replace(/\.tiff?$/i, ''),
+                    status: 'uploading', size_bytes: file.size };
+          renderRasterRow(r, true);
+          setRasterProgress(r.id, 0);
+          return signAndPutParts(init, file, r.id).then(function (parts) {
+            return rasterJson(RASTER_API + 'upload/complete/', {
+              method: 'POST',
+              body: JSON.stringify({ layer_id: init.layer_id, parts: parts }),
+            });
+          }).then(function (done) {
+            setRasterProgress(init.layer_id, null);
+            if (done && done.layer) updateRasterRow(done.layer);
+            else updateRasterRow({ id: init.layer_id, status: 'queued' });
+            toast('Растр «' + file.name + '» загружен, поставлен в очередь.');
+          }).catch(function (err) {
+            abortRaster(init.layer_id);
+            var row = document.getElementById('gisras-row-' + init.layer_id);
+            if (row) row.remove();
+            delete rasters[init.layer_id];
+            var msg = (err && err.detail) ? err.detail : 'ошибка загрузки частей';
+            toast('Растр «' + file.name + '»: ' + msg, true);
+          });
+        }).catch(function (err) {
+          var msg = (err && err.detail) ? err.detail :
+            'не удалось начать загрузку (хранилище?)';
+          setStatus('Растр «' + esc(file.name) + '»: ' + esc(msg), 'err');
+          toast('Растр «' + file.name + '»: ' + msg, true);
+        });
+      }
+
+      /* Подписать номера частей пачками (≤1000) и PUT'ить их последовательно,
+         собирая {PartNumber, ETag}. Возвращает промис со списком частей. */
+      function signAndPutParts(init, file, layerId) {
+        var partSize = init.part_size, partCount = init.part_count;
+        var numbers = [];
+        for (var n = 1; n <= partCount; n++) numbers.push(n);
+        var parts = [], uploadedBytes = 0;
+
+        function signBatch(batch) {
+          return rasterJson(RASTER_API + 'upload/sign/', {
+            method: 'POST',
+            body: JSON.stringify({ layer_id: layerId, part_numbers: batch }),
+          }).then(function (j) { return j.urls || {}; });
+        }
+
+        var chain = Promise.resolve();
+        for (var i = 0; i < numbers.length; i += 1000) {
+          (function (batch) {
+            chain = chain.then(function () {
+              return signBatch(batch).then(function (urls) {
+                var seq = Promise.resolve();
+                batch.forEach(function (num) {
+                  seq = seq.then(function () {
+                    var start = (num - 1) * partSize;
+                    var blob = file.slice(start, Math.min(start + partSize, file.size));
+                    return putPart(urls[num], blob).then(function (etag) {
+                      parts.push({ PartNumber: num, ETag: etag });
+                      uploadedBytes += blob.size;
+                      setRasterProgress(layerId, uploadedBytes / file.size);
+                    });
+                  });
+                });
+                return seq;
+              });
+            });
+          })(numbers.slice(i, i + 1000));
+        }
+        return chain.then(function () { return parts; });
+      }
+
+      /* PUT одной части по presigned URL; ETag берём из заголовка ответа
+         (CORS на хранилище должен экспонировать ETag). */
+      function putPart(url, blob) {
+        if (!url) return Promise.reject({ detail: 'нет URL части' });
+        return fetch(url, { method: 'PUT', body: blob }).then(function (resp) {
+          if (!resp.ok) return Promise.reject({ detail: 'HTTP ' + resp.status });
+          var etag = resp.headers.get('ETag') || resp.headers.get('etag');
+          if (!etag) return Promise.reject({
+            detail: 'хранилище не вернуло ETag (проверьте CORS Expose-Headers)' });
+          return etag;
+        });
+      }
+
+      function abortRaster(layerId) {
+        fetch(RASTER_API + 'upload/abort/', {
+          method: 'POST', credentials: 'same-origin',
+          headers: Object.assign({ 'Content-Type': 'application/json' }, RASTER_HDR),
+          body: JSON.stringify({ layer_id: layerId }),
+        }).catch(function () {});
+      }
+
+      /* Загрузка существующих растровых слоёв при старте. Хранилище может быть
+         выключено (503) — тогда просто ничего не показываем. */
+      function loadRasters() {
+        fetch(RASTER_API, { credentials: 'same-origin', headers: RASTER_HDR })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            if (!j || !j.results) return;
+            j.results.slice().sort(function (a, b) {
+              return (a.sort_order - b.sort_order) || (a.id - b.id);
+            }).forEach(function (r) { renderRasterRow(r, false); });
+            /* Слои в обработке — периодически опрашиваем до готовности. */
+            if (j.results.some(function (r) {
+              return r.status === 'queued' || r.status === 'processing';
+            })) scheduleRasterPoll();
+          })
+          .catch(function () {});
+      }
+
+      var _rasterPoll = null;
+      function scheduleRasterPoll() {
+        if (_rasterPoll) return;
+        _rasterPoll = setInterval(function () {
+          fetch(RASTER_API, { credentials: 'same-origin', headers: RASTER_HDR })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (j) {
+              if (!j || !j.results) return;
+              var pending = false;
+              j.results.forEach(function (r) {
+                if (rasters[r.id]) updateRasterRow(r);
+                if (r.status === 'queued' || r.status === 'processing') pending = true;
+              });
+              if (!pending) { clearInterval(_rasterPoll); _rasterPoll = null; }
+            }).catch(function () {});
+        }, 8000);
       }
 
       /* ═════════════════ Модалка тематической раскраски ═════════════════ */
@@ -8236,7 +8525,8 @@
           })
           .catch(function () {});
       }
-      if (map.loaded()) loadLayers(); else map.on('load', loadLayers);
+      function loadAll() { loadLayers(); loadRasters(); }
+      if (map.loaded()) loadAll(); else map.on('load', loadAll);
 
       /* ── Кнопка «Добавить папку»: создаём папку на сервере и рисуем
          сверху списка. ── */

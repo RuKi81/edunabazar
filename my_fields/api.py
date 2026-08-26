@@ -23,6 +23,7 @@ import json
 import re
 from typing import Any
 
+from django.conf import settings
 from django.contrib.gis.geos import GEOSGeometry
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404
@@ -30,7 +31,9 @@ from django.utils.dateparse import parse_date
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from .models import FieldEvent, FieldSeason, GisFolder, GisLayer, UserField
+from .models import (
+    FieldEvent, FieldSeason, GisFolder, GisLayer, RasterLayer, UserField,
+)
 from .permissions import can_edit_field, can_view_field
 from .services.geometry import (
     compute_area_ha, ensure_multipolygon, resolve_region_district,
@@ -736,6 +739,7 @@ def field_passport_zones_shp(request: HttpRequest, pk: int) -> HttpResponse:
 # ─────────────────────────────────────────────────────────────────────
 
 _GIS_RESOURCE = 'gis_layer'
+_RASTER_RESOURCE = 'raster_layer'
 
 _HEX_COLOR_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
 
@@ -866,15 +870,15 @@ def _require_gis_authenticated(request: HttpRequest):
     return None
 
 
-def _require_gis_access(request: HttpRequest, *, level: str = 'view',
-                        pk: int | None = None):
-    """Гейт доступа к ГИС-данным на основе грантов (``access.services``).
+def _require_resource_access(request: HttpRequest, resource: str, *,
+                             level: str = 'view', pk: int | None = None):
+    """Гейт доступа к ресурсу ``resource`` на основе грантов (``access``).
 
     Возвращает ``None`` при доступе, иначе ``JsonResponse`` 401/403.
 
-    * ``pk`` задан — проверяем доступ к конкретному слою (или whole-class);
+    * ``pk`` задан — проверяем доступ к конкретному ресурсу (или whole-class);
     * ``pk`` не задан — действие над «всем классом» (загрузка/список/reorder):
-      для ``view`` достаточно доступа к странице (любой ГИС-грант),
+      для ``view`` достаточно доступа к странице (любой ГИС/растровый грант),
       для ``edit``/``manage`` нужен whole-class грант нужного уровня.
     """
     from access.services import (
@@ -889,13 +893,25 @@ def _require_gis_access(request: HttpRequest, *, level: str = 'view',
         return None
 
     if pk is not None:
-        allowed = has_resource_access(user, _GIS_RESOURCE, pk, level)
+        allowed = has_resource_access(user, resource, pk, level)
     elif level == 'view':
         allowed = can_open_gis_page(user)
     else:
-        allowed = has_resource_access(user, _GIS_RESOURCE, None, level)
+        allowed = has_resource_access(user, resource, None, level)
 
     return None if allowed else JsonResponse({'error': 'forbidden'}, status=403)
+
+
+def _require_gis_access(request: HttpRequest, *, level: str = 'view',
+                        pk: int | None = None):
+    """Гейт доступа к векторным ГИС-слоям (SHP). См. :func:`_require_resource_access`."""
+    return _require_resource_access(request, _GIS_RESOURCE, level=level, pk=pk)
+
+
+def _require_raster_access(request: HttpRequest, *, level: str = 'view',
+                           pk: int | None = None):
+    """Гейт доступа к растровым слоям. См. :func:`_require_resource_access`."""
+    return _require_resource_access(request, _RASTER_RESOURCE, level=level, pk=pk)
 
 
 def _gis_folder_to_dict(folder) -> dict:
@@ -1944,3 +1960,392 @@ def gis_layer_tiles(request: HttpRequest, pk: int, z: int, x: int,
     resp['Cache-Control'] = 'private, max-age=60'
     resp['Access-Control-Allow-Origin'] = '*'
     return resp
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Растровые слои (GeoTIFF → COG в MinIO/S3)
+# Загрузка идёт напрямую браузер→MinIO через presigned S3 Multipart Upload,
+# минуя gunicorn (файлы до десятков ГБ). Поток:
+#   1. POST rasters/upload/init/     → создаёт RasterLayer + multipart, отдаёт
+#                                       part_size / part_count / upload_id
+#   2. POST rasters/upload/sign/     → presigned URL для пачки частей (браузер
+#                                       PUT'ит части прямо в MinIO, собирает ETag)
+#   3. POST rasters/upload/complete/ → финализирует multipart, статус=queued
+#      POST rasters/upload/abort/    → отменяет multipart, удаляет слой
+# Конвейер COG (status queued→processing→ready) подключается в Фазе 3.
+# ─────────────────────────────────────────────────────────────────────
+
+# S3 multipart: часть ≥5 МБ (кроме последней), ≤10000 частей. 64 МБ —
+# компромисс между числом запросов и памятью браузера; для очень крупных
+# файлов размер части поднимается, чтобы уложиться в лимит частей.
+_RASTER_PART_SIZE = 64 * 1024 * 1024
+_RASTER_MAX_PARTS = 10000
+_RASTER_MAX_SIZE = 200 * 1024 * 1024 * 1024  # 200 ГБ — потолок здравого смысла
+_RASTER_SIGN_BATCH = 1000                    # макс. частей на один /sign/
+_RASTER_EXTS = ('.tif', '.tiff')
+
+
+def _raster_layer_to_dict(r: RasterLayer) -> dict:
+    return {
+        'id': r.pk,
+        'folder': r.folder_id,
+        'title': r.title,
+        'status': r.status,
+        'status_display': r.get_status_display(),
+        'original_filename': r.original_filename,
+        'size_bytes': r.size_bytes,
+        'srid': r.srid,
+        'bounds': r.bounds,
+        'band_count': r.band_count,
+        'nodata': r.nodata,
+        'stats': r.stats or [],
+        'style': r.style or {},
+        'opacity': r.opacity,
+        'error': r.error,
+        'sort_order': r.sort_order,
+        'created_at': r.created_at.isoformat(),
+    }
+
+
+def _raster_part_plan(size: int) -> tuple[int, int]:
+    """(part_size, part_count) для файла ``size`` байт под лимиты S3."""
+    part_size = _RASTER_PART_SIZE
+    # Если частей больше лимита — увеличиваем размер части (кратно МБ).
+    if size > part_size * _RASTER_MAX_PARTS:
+        mb = 1024 * 1024
+        part_size = -(-size // (_RASTER_MAX_PARTS * mb)) * mb  # ceil до МБ
+    part_count = max(1, -(-size // part_size))  # ceil
+    return part_size, part_count
+
+
+def _raster_storage_gate():
+    """503, если объектное хранилище не сконфигурировано (модуль выключен)."""
+    from .services import s3_storage
+    if not s3_storage.is_configured():
+        return JsonResponse(
+            {'ok': False, 'error': 'storage_disabled',
+             'detail': 'Объектное хранилище не настроено (S3_* не заданы).'},
+            status=503,
+        )
+    return None
+
+
+def _raster_list(request: HttpRequest) -> JsonResponse:
+    """GET — список растровых слоёв, отфильтрованный по грантам."""
+    gate = _require_raster_access(request, level='view')
+    if gate:
+        return gate
+    from access.services import accessible_raster_layer_ids
+    rasters = RasterLayer.objects.all()
+    ids = accessible_raster_layer_ids(getattr(request, 'legacy_user', None))
+    if ids is not None:
+        rasters = rasters.filter(pk__in=ids)
+    return JsonResponse({
+        'ok': True,
+        'count': rasters.count(),
+        'results': [_raster_layer_to_dict(x) for x in rasters],
+    })
+
+
+@csrf_exempt
+@require_http_methods(['GET'])
+def raster_layers_collection(request: HttpRequest) -> JsonResponse:
+    """GET — список растровых слоёв (загрузка идёт через отдельные /upload/*)."""
+    return _raster_list(request)
+
+
+@csrf_exempt
+@require_http_methods(['POST'])
+def raster_upload_init(request: HttpRequest) -> JsonResponse:
+    """POST — инициировать multipart-загрузку растра.
+
+    Body: ``{filename, size}``. Создаёт ``RasterLayer(status=uploading)`` и
+    S3 multipart upload, возвращает план частей + ``upload_id`` для клиента.
+    """
+    gate = _require_raster_access(request, level='manage')
+    if gate:
+        return gate
+    disabled = _raster_storage_gate()
+    if disabled:
+        return disabled
+
+    data, err = _parse_json(request)
+    if err:
+        return err
+    filename = str(data.get('filename', '')).strip()
+    size = _coerce_int(data.get('size'))
+
+    if not filename or not filename.lower().endswith(_RASTER_EXTS):
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_filename',
+             'detail': 'Ожидается файл .tif/.tiff.'}, status=400)
+    if not size or size <= 0:
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_size',
+             'detail': 'Некорректный размер файла.'}, status=400)
+    if size > _RASTER_MAX_SIZE:
+        return JsonResponse(
+            {'ok': False, 'error': 'too_large',
+             'detail': 'Файл превышает допустимый размер.'}, status=400)
+
+    from .services import s3_storage
+
+    owner_id = getattr(request.user, 'id', None)
+    title = filename.rsplit('.', 1)[0][:200] or 'Растровый слой'
+    part_size, part_count = _raster_part_plan(size)
+
+    key = s3_storage.build_upload_key(owner_id, filename)
+    try:
+        upload_id = s3_storage.create_multipart_upload(
+            key, content_type='image/tiff')
+    except Exception as e:  # noqa: BLE001
+        return JsonResponse(
+            {'ok': False, 'error': 'storage_error',
+             'detail': f'Не удалось начать загрузку: {e}'}, status=502)
+
+    layer = RasterLayer.objects.create(
+        title=title, status=RasterLayer.Status.UPLOADING,
+        original_filename=filename[:255], upload_key=key,
+        upload_id=upload_id, size_bytes=size, owner=request.user,
+    )
+    return JsonResponse({
+        'ok': True, 'layer_id': layer.pk, 'upload_id': upload_id, 'key': key,
+        'part_size': part_size, 'part_count': part_count,
+    }, status=201)
+
+
+def _get_uploading_layer(request, data):
+    """Загрузить RasterLayer в статусе uploading по layer_id из тела.
+
+    Возвращает ``(layer, None)`` или ``(None, JsonResponse-ошибка)``.
+    """
+    layer_id = _coerce_int(data.get('layer_id'))
+    if not layer_id:
+        return None, JsonResponse(
+            {'ok': False, 'error': 'invalid_layer_id'}, status=400)
+    layer = RasterLayer.objects.filter(pk=layer_id).first()
+    if not layer:
+        return None, JsonResponse(
+            {'ok': False, 'error': 'not_found'}, status=404)
+    if layer.status != RasterLayer.Status.UPLOADING or not layer.upload_id:
+        return None, JsonResponse(
+            {'ok': False, 'error': 'not_uploading',
+             'detail': 'Загрузка уже завершена или отменена.'}, status=409)
+    return layer, None
+
+
+@csrf_exempt
+@require_http_methods(['POST'])
+def raster_upload_sign(request: HttpRequest) -> JsonResponse:
+    """POST — presigned URL'ы для пачки частей.
+
+    Body: ``{layer_id, part_numbers: [int, ...]}`` → ``{urls: {n: url}}``.
+    """
+    gate = _require_raster_access(request, level='manage')
+    if gate:
+        return gate
+    disabled = _raster_storage_gate()
+    if disabled:
+        return disabled
+
+    data, err = _parse_json(request)
+    if err:
+        return err
+    layer, err = _get_uploading_layer(request, data)
+    if err:
+        return err
+
+    raw = data.get('part_numbers')
+    if not isinstance(raw, list) or not raw:
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_part_numbers'}, status=400)
+    if len(raw) > _RASTER_SIGN_BATCH:
+        return JsonResponse(
+            {'ok': False, 'error': 'batch_too_large',
+             'detail': f'Не более {_RASTER_SIGN_BATCH} частей за запрос.'},
+            status=400)
+
+    from .services import s3_storage
+
+    urls = {}
+    for value in raw:
+        n = _coerce_int(value)
+        if not n or n < 1 or n > _RASTER_MAX_PARTS:
+            return JsonResponse(
+                {'ok': False, 'error': 'invalid_part_number',
+                 'detail': f'Некорректный номер части: {value}.'}, status=400)
+        urls[n] = s3_storage.presign_part_url(
+            layer.upload_key, layer.upload_id, n)
+    return JsonResponse({'ok': True, 'urls': urls})
+
+
+@csrf_exempt
+@require_http_methods(['POST'])
+def raster_upload_complete(request: HttpRequest) -> JsonResponse:
+    """POST — финализировать multipart-загрузку.
+
+    Body: ``{layer_id, parts: [{PartNumber, ETag}, ...]}``. По успеху слой
+    переходит в ``queued`` (ждёт конвейер COG, Фаза 3).
+    """
+    gate = _require_raster_access(request, level='manage')
+    if gate:
+        return gate
+    disabled = _raster_storage_gate()
+    if disabled:
+        return disabled
+
+    data, err = _parse_json(request)
+    if err:
+        return err
+    layer, err = _get_uploading_layer(request, data)
+    if err:
+        return err
+
+    parts = data.get('parts')
+    if not isinstance(parts, list) or not parts:
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_parts'}, status=400)
+    cleaned = []
+    for p in parts:
+        if not isinstance(p, dict):
+            return JsonResponse(
+                {'ok': False, 'error': 'invalid_parts'}, status=400)
+        n = _coerce_int(p.get('PartNumber'))
+        etag = p.get('ETag')
+        if not n or not etag:
+            return JsonResponse(
+                {'ok': False, 'error': 'invalid_parts'}, status=400)
+        cleaned.append({'PartNumber': n, 'ETag': etag})
+
+    from .services import s3_storage
+
+    try:
+        s3_storage.complete_multipart_upload(
+            layer.upload_key, layer.upload_id, cleaned)
+    except Exception as e:  # noqa: BLE001
+        return JsonResponse(
+            {'ok': False, 'error': 'storage_error',
+             'detail': f'Не удалось завершить загрузку: {e}'}, status=502)
+
+    # Уточняем реальный размер объекта (клиент мог соврать в init).
+    real = s3_storage.object_size(
+        layer.upload_key, bucket=None)
+    if real:
+        layer.size_bytes = real
+    layer.status = RasterLayer.Status.QUEUED
+    layer.upload_id = ''
+    # sort_order: наверх списка (как у SHP — новые сверху не требуется, но
+    # держим детерминированно по created_at через дефолтный ordering).
+    layer.save(update_fields=['size_bytes', 'status', 'upload_id', 'updated_at'])
+    # TODO(Фаза 3): поставить PipelineRun task_type='raster_ingest'.
+    return JsonResponse({'ok': True, 'layer': _raster_layer_to_dict(layer)})
+
+
+@csrf_exempt
+@require_http_methods(['POST'])
+def raster_upload_abort(request: HttpRequest) -> JsonResponse:
+    """POST — отменить незавершённую загрузку и удалить слой.
+
+    Body: ``{layer_id}``. Освобождает залитые части в S3 и удаляет запись.
+    """
+    gate = _require_raster_access(request, level='manage')
+    if gate:
+        return gate
+    disabled = _raster_storage_gate()
+    if disabled:
+        return disabled
+
+    data, err = _parse_json(request)
+    if err:
+        return err
+    layer, err = _get_uploading_layer(request, data)
+    if err:
+        return err
+
+    from .services import s3_storage
+
+    try:
+        s3_storage.abort_multipart_upload(layer.upload_key, layer.upload_id)
+    except Exception:  # noqa: BLE001
+        pass  # отмена best-effort — запись всё равно удаляем
+    layer.delete()
+    return JsonResponse({'ok': True})
+
+
+@csrf_exempt
+@require_http_methods(['PATCH', 'DELETE'])
+def raster_layer_detail(request: HttpRequest, pk: int) -> JsonResponse:
+    """PATCH — title/style/opacity; DELETE — удалить слой (+ S3-объекты)."""
+    level = 'manage' if request.method == 'DELETE' else 'edit'
+    gate = _require_raster_access(request, level=level, pk=pk)
+    if gate:
+        return gate
+
+    layer = get_object_or_404(RasterLayer, pk=pk)
+
+    if request.method == 'DELETE':
+        from .services import s3_storage
+        # Незавершённая загрузка — отменить multipart; иначе почистить объекты.
+        if layer.upload_id:
+            try:
+                s3_storage.abort_multipart_upload(
+                    layer.upload_key, layer.upload_id)
+            except Exception:  # noqa: BLE001
+                pass
+        for key, bucket in (
+            (layer.upload_key, settings.S3_BUCKET_UPLOADS),
+            (layer.cog_key, settings.S3_BUCKET_COG),
+        ):
+            if key and s3_storage.is_configured():
+                try:
+                    s3_storage.delete_object(key, bucket=bucket)
+                except Exception:  # noqa: BLE001
+                    pass
+        layer.delete()
+        return JsonResponse({'ok': True})
+
+    return _raster_layer_patch(request, layer)
+
+
+def _raster_layer_patch(request: HttpRequest, layer: RasterLayer) -> JsonResponse:
+    """PATCH-часть :func:`raster_layer_detail`: title / style / opacity."""
+    data, err = _parse_json(request)
+    if err:
+        return err
+
+    update_fields: list[str] = []
+    if 'title' in data:
+        title = str(data.get('title', '')).strip()
+        if not title:
+            return JsonResponse(
+                {'ok': False, 'error': 'empty_title',
+                 'detail': 'Название слоя не может быть пустым.'}, status=400)
+        layer.title = title[:200]
+        update_fields.append('title')
+
+    if 'style' in data:
+        style = data.get('style')
+        if style is None:
+            style = {}
+        if not isinstance(style, dict):
+            return JsonResponse(
+                {'ok': False, 'error': 'invalid_style',
+                 'detail': 'style должен быть объектом.'}, status=400)
+        layer.style = style
+        update_fields.append('style')
+
+    if 'opacity' in data:
+        try:
+            layer.opacity = max(0.0, min(1.0, float(data.get('opacity'))))
+        except (TypeError, ValueError):
+            return JsonResponse(
+                {'ok': False, 'error': 'invalid_opacity'}, status=400)
+        update_fields.append('opacity')
+
+    if not update_fields:
+        return JsonResponse(
+            {'ok': False, 'error': 'nothing_to_update'}, status=400)
+
+    update_fields.append('updated_at')
+    layer.save(update_fields=update_fields)
+    return JsonResponse({'ok': True, 'layer': _raster_layer_to_dict(layer)})
