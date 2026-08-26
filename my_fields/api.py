@@ -2179,6 +2179,25 @@ def raster_upload_sign(request: HttpRequest) -> JsonResponse:
     return JsonResponse({'ok': True, 'urls': urls})
 
 
+def _clean_upload_parts(parts):
+    """Провалидировать ``parts`` из тела complete-запроса.
+
+    Возвращает ``(cleaned, None)`` со списком ``{'PartNumber', 'ETag'}`` либо
+    ``(None, JsonResponse-ошибка)`` (``invalid_parts``, 400).
+    """
+    err = JsonResponse({'ok': False, 'error': 'invalid_parts'}, status=400)
+    if not isinstance(parts, list) or not parts:
+        return None, err
+    cleaned = []
+    for p in parts:
+        n = _coerce_int(p.get('PartNumber')) if isinstance(p, dict) else None
+        etag = p.get('ETag') if isinstance(p, dict) else None
+        if not n or not etag:
+            return None, err
+        cleaned.append({'PartNumber': n, 'ETag': etag})
+    return cleaned, None
+
+
 @csrf_exempt
 @require_http_methods(['POST'])
 def raster_upload_complete(request: HttpRequest) -> JsonResponse:
@@ -2201,21 +2220,9 @@ def raster_upload_complete(request: HttpRequest) -> JsonResponse:
     if err:
         return err
 
-    parts = data.get('parts')
-    if not isinstance(parts, list) or not parts:
-        return JsonResponse(
-            {'ok': False, 'error': 'invalid_parts'}, status=400)
-    cleaned = []
-    for p in parts:
-        if not isinstance(p, dict):
-            return JsonResponse(
-                {'ok': False, 'error': 'invalid_parts'}, status=400)
-        n = _coerce_int(p.get('PartNumber'))
-        etag = p.get('ETag')
-        if not n or not etag:
-            return JsonResponse(
-                {'ok': False, 'error': 'invalid_parts'}, status=400)
-        cleaned.append({'PartNumber': n, 'ETag': etag})
+    cleaned, err = _clean_upload_parts(data.get('parts'))
+    if err:
+        return err
 
     from .services import s3_storage
 
@@ -2307,6 +2314,46 @@ def raster_layer_detail(request: HttpRequest, pk: int) -> JsonResponse:
     return _raster_layer_patch(request, layer)
 
 
+def _patch_raster_title(data, layer, update_fields):
+    if 'title' not in data:
+        return None
+    title = str(data.get('title', '')).strip()
+    if not title:
+        return JsonResponse(
+            {'ok': False, 'error': 'empty_title',
+             'detail': 'Название слоя не может быть пустым.'}, status=400)
+    layer.title = title[:200]
+    update_fields.append('title')
+    return None
+
+
+def _patch_raster_style(data, layer, update_fields):
+    if 'style' not in data:
+        return None
+    style = data.get('style')
+    if style is None:
+        style = {}
+    if not isinstance(style, dict):
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_style',
+             'detail': 'style должен быть объектом.'}, status=400)
+    layer.style = style
+    update_fields.append('style')
+    return None
+
+
+def _patch_raster_opacity(data, layer, update_fields):
+    if 'opacity' not in data:
+        return None
+    try:
+        layer.opacity = max(0.0, min(1.0, float(data.get('opacity'))))
+    except (TypeError, ValueError):
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_opacity'}, status=400)
+    update_fields.append('opacity')
+    return None
+
+
 def _raster_layer_patch(request: HttpRequest, layer: RasterLayer) -> JsonResponse:
     """PATCH-часть :func:`raster_layer_detail`: title / style / opacity."""
     data, err = _parse_json(request)
@@ -2314,33 +2361,11 @@ def _raster_layer_patch(request: HttpRequest, layer: RasterLayer) -> JsonRespons
         return err
 
     update_fields: list[str] = []
-    if 'title' in data:
-        title = str(data.get('title', '')).strip()
-        if not title:
-            return JsonResponse(
-                {'ok': False, 'error': 'empty_title',
-                 'detail': 'Название слоя не может быть пустым.'}, status=400)
-        layer.title = title[:200]
-        update_fields.append('title')
-
-    if 'style' in data:
-        style = data.get('style')
-        if style is None:
-            style = {}
-        if not isinstance(style, dict):
-            return JsonResponse(
-                {'ok': False, 'error': 'invalid_style',
-                 'detail': 'style должен быть объектом.'}, status=400)
-        layer.style = style
-        update_fields.append('style')
-
-    if 'opacity' in data:
-        try:
-            layer.opacity = max(0.0, min(1.0, float(data.get('opacity'))))
-        except (TypeError, ValueError):
-            return JsonResponse(
-                {'ok': False, 'error': 'invalid_opacity'}, status=400)
-        update_fields.append('opacity')
+    for handler in (_patch_raster_title, _patch_raster_style,
+                    _patch_raster_opacity):
+        err = handler(data, layer, update_fields)
+        if err:
+            return err
 
     if not update_fields:
         return JsonResponse(
