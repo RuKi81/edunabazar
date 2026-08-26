@@ -219,22 +219,31 @@ def vsis3_path(key: str, *, bucket: str | None = None) -> str:
     return f'/vsis3/{bucket}/{key}'
 
 
-def gdal_vsis3_env() -> dict[str, str]:
-    """Переменные окружения GDAL для чтения ``/vsis3/`` из MinIO.
+def gdal_vsis3_env() -> dict:
+    """Kwargs для ``rasterio.Env`` для чтения ``/vsis3/`` из MinIO.
 
     Применяются в рендерере тайлов (Фаза 4) через ``rasterio.Env(**env)``.
-    ``AWS_S3_ENDPOINT`` — host[:port] БЕЗ схемы; ``AWS_HTTPS`` + ``AWS_VIRTUAL_HOSTING``
-    подстраивают драйвер под MinIO (http, path-style).
+
+    ВАЖНО: креды передаются через :class:`rasterio.session.AWSSession` (boto3),
+    а НЕ как GDAL-опции — rasterio запрещает ``AWS_ACCESS_KEY_ID`` /
+    ``AWS_SECRET_ACCESS_KEY`` прямо в ``Env`` (``EnvError``). Остальное —
+    GDAL-настройки: ``AWS_S3_ENDPOINT`` (host[:port] без схемы),
+    ``AWS_HTTPS`` + ``AWS_VIRTUAL_HOSTING`` (http, path-style для MinIO), кэш.
     """
+    from rasterio.session import AWSSession
+
     parsed = urlparse(settings.S3_ENDPOINT_URL)
     host = parsed.netloc or parsed.path  # на случай "host:port" без схемы
+    session = AWSSession(
+        aws_access_key_id=settings.S3_ACCESS_KEY,
+        aws_secret_access_key=settings.S3_SECRET_KEY,
+        region_name=getattr(settings, 'S3_REGION', 'us-east-1'),
+    )
     return {
+        'session': session,
         'AWS_S3_ENDPOINT': host,
         'AWS_HTTPS': 'YES' if parsed.scheme == 'https' else 'NO',
         'AWS_VIRTUAL_HOSTING': 'FALSE',       # path-style (MinIO)
-        'AWS_ACCESS_KEY_ID': settings.S3_ACCESS_KEY,
-        'AWS_SECRET_ACCESS_KEY': settings.S3_SECRET_KEY,
-        'AWS_REGION': getattr(settings, 'S3_REGION', 'us-east-1'),
         # Ускоряет открытие COG: не листить «директорию» бакета.
         'GDAL_DISABLE_READDIR_ON_OPEN': 'EMPTY_DIR',
         'CPL_VSIL_CURL_ALLOWED_EXTENSIONS': '.tif',

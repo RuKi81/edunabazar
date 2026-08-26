@@ -97,14 +97,23 @@ class S3StorageHelpersTest(TestCase):
             '/vsis3/raster-cog/42/cog.tif',
         )
 
+    @unittest.skipUnless(_HAS_RASTERIO, 'rasterio required')
     @override_settings(**_S3_SETTINGS)
     def test_gdal_vsis3_env(self):
+        from rasterio.session import AWSSession
         env = s3_storage.gdal_vsis3_env()
         self.assertEqual(env['AWS_S3_ENDPOINT'], '10.0.0.11:9000')
         self.assertEqual(env['AWS_HTTPS'], 'NO')
         self.assertEqual(env['AWS_VIRTUAL_HOSTING'], 'FALSE')
-        self.assertEqual(env['AWS_ACCESS_KEY_ID'], 'key')
         self.assertEqual(env['GDAL_DISABLE_READDIR_ON_OPEN'], 'EMPTY_DIR')
+        # Креды НЕ должны быть GDAL-опциями (rasterio.Env их запрещает) —
+        # они уходят через AWSSession (boto3).
+        self.assertNotIn('AWS_ACCESS_KEY_ID', env)
+        self.assertNotIn('AWS_SECRET_ACCESS_KEY', env)
+        self.assertIsInstance(env['session'], AWSSession)
+        creds = env['session'].get_credential_options()
+        self.assertEqual(creds['AWS_ACCESS_KEY_ID'], 'key')
+        self.assertEqual(creds['AWS_SECRET_ACCESS_KEY'], 'secret')
 
 
 # ─────────────────────────────────────────────────────────────────────
