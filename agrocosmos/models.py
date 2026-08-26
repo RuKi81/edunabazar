@@ -468,6 +468,7 @@ class PipelineRun(models.Model):
         RASTER_NDVI = 'raster_ndvi', 'Растровые данные NDVI (S2/L8)'
         MONITORING = 'monitoring', 'Мониторинг NDVI'
         GIS_OVERLAY = 'gis_overlay', 'Оверлей ГИС-слоёв'
+        RASTER_INGEST = 'raster_ingest', 'Конвертация растра (COG)'
 
     class Status(models.TextChoices):
         QUEUED = 'queued', 'В очереди'

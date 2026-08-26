@@ -2244,7 +2244,17 @@ def raster_upload_complete(request: HttpRequest) -> JsonResponse:
     # sort_order: наверх списка (как у SHP — новые сверху не требуется, но
     # держим детерминированно по created_at через дефолтный ordering).
     layer.save(update_fields=['size_bytes', 'status', 'upload_id', 'updated_at'])
-    # TODO(Фаза 3): поставить PipelineRun task_type='raster_ingest'.
+
+    # Ставим конвертацию в COG в очередь (воркер run_ndvi_worker подхватит по
+    # task_type='raster_ingest' и вызовет run_raster_ingest).
+    from agrocosmos.models import PipelineRun
+
+    PipelineRun.objects.create(
+        task_type=PipelineRun.TaskType.RASTER_INGEST,
+        status=PipelineRun.Status.QUEUED,
+        description=f'Конвертация растра в COG: {layer.title}'[:500],
+        launch_args={'layer_id': layer.pk},
+    )
     return JsonResponse({'ok': True, 'layer': _raster_layer_to_dict(layer)})
 
 

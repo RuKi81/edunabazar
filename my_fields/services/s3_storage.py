@@ -186,6 +186,20 @@ def delete_object(key: str, *, bucket: str | None = None) -> None:
     _client().delete_object(Bucket=bucket, Key=key)
 
 
+def download_object(key: str, dest_path: str, *, bucket: str | None = None) -> None:
+    """Скачать объект в локальный файл ``dest_path`` (для конвейера ingest)."""
+    bucket = bucket or settings.S3_BUCKET_UPLOADS
+    _client().download_file(bucket, key, dest_path)
+
+
+def upload_file(src_path: str, key: str, *, bucket: str | None = None,
+                content_type: str = 'image/tiff') -> None:
+    """Залить локальный файл ``src_path`` в объект ``key`` (напр. готовый COG)."""
+    bucket = bucket or settings.S3_BUCKET_COG
+    _client().upload_file(
+        src_path, bucket, key, ExtraArgs={'ContentType': content_type})
+
+
 def presign_get_url(key: str, *, bucket: str | None = None,
                     expires: int = DEFAULT_EXPIRES, public: bool = True) -> str:
     """Presigned URL для GET объекта (напр. скачать оригинал/COG)."""

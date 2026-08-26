@@ -51,6 +51,7 @@ TASK_COMMAND = {
     PipelineRun.TaskType.RASTER_NDVI: 'run_ndvi_pipeline',
     PipelineRun.TaskType.ARCHIVE_NDVI: 'run_archive_pipeline',
     PipelineRun.TaskType.GIS_OVERLAY: 'run_gis_overlay',
+    PipelineRun.TaskType.RASTER_INGEST: 'run_raster_ingest',
 }
 SUPPORTED_TASK_TYPES = set(TASK_COMMAND)
 

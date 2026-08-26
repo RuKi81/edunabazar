@@ -11,11 +11,23 @@
 
 Живой MinIO не требуется — boto3-клиент мокается.
 """
+import os as _os
+import shutil as _shutil
+import tempfile as _tempfile
+import unittest
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.utils import timezone
+
+try:  # rasterio/numpy для тестов конвейера ingest (Фаза 3)
+    import numpy as _np
+    import rasterio as _rio
+    from rasterio.transform import from_origin as _from_origin
+    _HAS_RASTERIO = True
+except Exception:  # pragma: no cover - окружения без rasterio
+    _HAS_RASTERIO = False
 
 from access.models import ResourceGrant
 from access.services import (
@@ -335,6 +347,7 @@ class RasterUploadEndpointsTest(TestCase):
 
     # ── complete ──
     def test_complete_finalizes_and_queues(self):
+        from agrocosmos.models import PipelineRun
         self._login_manager()
         layer = self._make_uploading_layer()
         with patch.object(s3_storage, 'complete_multipart_upload') as mock_c, \
@@ -350,6 +363,11 @@ class RasterUploadEndpointsTest(TestCase):
         self.assertEqual(layer.status, RasterLayer.Status.QUEUED)
         self.assertEqual(layer.upload_id, '')
         self.assertEqual(layer.size_bytes, 12345)
+        # Поставлена задача конвертации в COG для этого слоя.
+        run = PipelineRun.objects.filter(
+            task_type=PipelineRun.TaskType.RASTER_INGEST,
+            status=PipelineRun.Status.QUEUED).latest('pk')
+        self.assertEqual(run.launch_args.get('layer_id'), layer.pk)
 
     def test_complete_rejects_invalid_parts(self):
         self._login_manager()
@@ -392,3 +410,88 @@ class RasterUploadEndpointsTest(TestCase):
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertFalse(RasterLayer.objects.filter(pk=layer.pk).exists())
         self.assertEqual(mock_del.call_count, 2)  # upload_key + cog_key
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Конвейер ingest (Фаза 3): original → COG + метаданные.
+# Работает на локальном синтетическом GeoTIFF; S3 (download/upload) мокается.
+# ─────────────────────────────────────────────────────────────────────
+def _write_synthetic_tif(path, *, crs='EPSG:32637', nodata=0.0):
+    """32×32, 1 канал, UTM-37N; левый-верхний угол ~ (500000, 5500000)."""
+    data = _np.arange(1, 32 * 32 + 1, dtype='float32').reshape(32, 32)
+    data[0, 0] = nodata  # хотя бы один nodata-пиксель
+    transform = _from_origin(500000, 5500000, 10, 10)  # 10 м/пиксель
+    with _rio.open(
+        path, 'w', driver='GTiff', height=32, width=32, count=1,
+        dtype='float32', crs=crs, transform=transform, nodata=nodata,
+    ) as ds:
+        ds.write(data, 1)
+
+
+@unittest.skipUnless(_HAS_RASTERIO, 'rasterio недоступен')
+class RasterIngestServiceTest(TestCase):
+    def setUp(self):
+        self.tmp = _tempfile.mkdtemp(prefix='raster_ingest_test_')
+        self.addCleanup(lambda: _shutil.rmtree(self.tmp, ignore_errors=True))
+
+    def test_extract_metadata(self):
+        from my_fields.services import raster_ingest
+        src = _os.path.join(self.tmp, 'src.tif')
+        _write_synthetic_tif(src)
+        meta = raster_ingest.extract_metadata(src)
+        self.assertEqual(meta['srid'], 32637)
+        self.assertEqual(meta['band_count'], 1)
+        self.assertEqual(meta['nodata'], 0.0)
+        # bounds в 4326: долгота ~39°E, широта ~49°N (UTM 37N).
+        minx, miny, maxx, maxy = meta['bounds']
+        self.assertTrue(30 < minx < 45 and 30 < maxx < 45)
+        self.assertTrue(45 < miny < 55 and 45 < maxy < 55)
+        st = meta['stats'][0]
+        self.assertIn('p2', st)
+        self.assertIn('p98', st)
+        self.assertGreater(st['max'], st['min'])
+
+    def test_convert_to_cog_is_readable(self):
+        from my_fields.services import raster_ingest
+        src = _os.path.join(self.tmp, 'src.tif')
+        dst = _os.path.join(self.tmp, 'cog.tif')
+        _write_synthetic_tif(src)
+        raster_ingest.convert_to_cog(src, dst)
+        self.assertTrue(_os.path.exists(dst))
+        with _rio.open(dst) as ds:
+            self.assertEqual(ds.count, 1)
+            self.assertEqual(ds.crs.to_epsg(), 32637)
+
+    @override_settings(**_S3_SETTINGS)
+    def test_ingest_raster_layer_full(self):
+        from my_fields.services import raster_ingest
+        src = _os.path.join(self.tmp, 'src.tif')
+        _write_synthetic_tif(src)
+
+        layer = RasterLayer.objects.create(
+            title='ingest me', status=RasterLayer.Status.QUEUED,
+            upload_key='0/x/original.tif')
+
+        def fake_download(key, dest, bucket=None):
+            _shutil.copy(src, dest)
+
+        with patch.object(s3_storage, 'download_object',
+                          side_effect=fake_download), \
+                patch.object(s3_storage, 'upload_file') as mock_up:
+            raster_ingest.ingest_raster_layer(layer)
+
+        mock_up.assert_called_once()
+        layer.refresh_from_db()
+        self.assertEqual(layer.status, RasterLayer.Status.READY)
+        self.assertEqual(layer.cog_key, f'{layer.pk}/cog.tif')
+        self.assertEqual(layer.srid, 32637)
+        self.assertEqual(layer.band_count, 1)
+        self.assertEqual(len(layer.stats), 1)
+        self.assertEqual(layer.error, '')
+
+    def test_ingest_requires_upload_key(self):
+        from my_fields.services import raster_ingest
+        layer = RasterLayer.objects.create(
+            title='no key', status=RasterLayer.Status.QUEUED)
+        with self.assertRaises(raster_ingest.RasterIngestError):
+            raster_ingest.ingest_raster_layer(layer)
