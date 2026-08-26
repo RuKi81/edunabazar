@@ -24,10 +24,17 @@ services:
       # CORS: браузер грузит части multipart напрямую с origin портала.
       # Без этого PUT частей блокируется и ETag не доходит до финализации.
       MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_API_CORS_ALLOW_ORIGIN:-https://edunabazar.ru,https://www.edunabazar.ru}
+      # Алиас для healthcheck (`mc ready local`) без ручной настройки alias
+      # внутри контейнера. Хост localhost:9000 внутри контейнера всегда доступен.
+      MC_HOST_local: http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@localhost:9000
     command: server /data --console-address ":9001"
     ports:
-      # S3 API — открыт только с VM1 через UFW/файрвол на хосте VM2.
-      - "9000:9000"
+      # S3 API привязан к ВНУТРЕННЕМУ интерфейсу VM2 (10.0.0.11), НЕ к 0.0.0.0:
+      # у VM2 есть публичный IP (93.95.98.209), а docker публикует порты в
+      # обход UFW (правила в цепочке DOCKER идут раньше INPUT). Привязка к
+      # 10.0.0.11 гарантирует, что S3 доступен только из внутренней сети
+      # (VM1 → 10.0.0.11:9000), а не из интернета. См. deploy/minio/README.md.
+      - "10.0.0.11:9000:9000"
       # Web-консоль — слушаем на localhost VM2, доступ по SSH-туннелю.
       - "127.0.0.1:9001:9001"
     volumes:
