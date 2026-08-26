@@ -55,11 +55,11 @@ def has_resource_access(user, resource_type: str, resource_id=None,
     return False
 
 
-def accessible_gis_layer_ids(user):
-    """Множество id ГИС-слоёв, доступных на просмотр.
+def _accessible_resource_ids(user, resource_type: str):
+    """Множество id ресурсов ``resource_type``, доступных на просмотр.
 
-    Возвращает ``None`` — если доступны ВСЕ слои (админ или whole-class
-    грант), иначе ``set`` конкретных id (может быть пустым).
+    Возвращает ``None`` — если доступны ВСЕ ресурсы этого типа (админ или
+    whole-class грант), иначе ``set`` конкретных id (может быть пустым).
     """
     if is_admin_legacy_user(user):
         return None
@@ -68,18 +68,33 @@ def accessible_gis_layer_ids(user):
         return set()
     ids = set()
     grants = ResourceGrant.objects.filter(
-        legacy_user_id=uid,
-        resource_type=ResourceGrant.ResourceType.GIS_LAYER,
+        legacy_user_id=uid, resource_type=resource_type,
     ).values_list('resource_id', flat=True)
     for rid in grants:
         if rid is None:
-            return None  # whole-class → все слои
+            return None  # whole-class → все ресурсы типа
         ids.add(rid)
     return ids
 
 
+def accessible_gis_layer_ids(user):
+    """Множество id ГИС-слоёв (SHP), доступных на просмотр (см. helper)."""
+    return _accessible_resource_ids(
+        user, ResourceGrant.ResourceType.GIS_LAYER)
+
+
+def accessible_raster_layer_ids(user):
+    """Множество id растровых слоёв, доступных на просмотр (см. helper)."""
+    return _accessible_resource_ids(
+        user, ResourceGrant.ResourceType.RASTER_LAYER)
+
+
 def can_open_gis_page(user) -> bool:
-    """Пускать на /me/gis, если админ или есть хоть один ГИС-грант."""
+    """Пускать на /me/gis, если админ или есть хоть один ГИС/растровый грант.
+
+    Страница /me/gis хостит и векторные (SHP), и растровые слои, поэтому
+    достаточно любого гранта одного из этих типов.
+    """
     if is_admin_legacy_user(user):
         return True
     uid = getattr(user, 'id', None)
@@ -87,5 +102,8 @@ def can_open_gis_page(user) -> bool:
         return False
     return ResourceGrant.objects.filter(
         legacy_user_id=uid,
-        resource_type=ResourceGrant.ResourceType.GIS_LAYER,
+        resource_type__in=(
+            ResourceGrant.ResourceType.GIS_LAYER,
+            ResourceGrant.ResourceType.RASTER_LAYER,
+        ),
     ).exists()

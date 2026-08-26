@@ -20,6 +20,7 @@ from django.db import models
 class ResourceGrant(models.Model):
     class ResourceType(models.TextChoices):
         GIS_LAYER = 'gis_layer', 'ГИС-слой (SHP)'
+        RASTER_LAYER = 'raster_layer', 'Растровый слой (GeoTIFF/COG)'
         # Зарезервировано под фазу 2 (см. предложение по доступу):
         # FARMLAND = 'farmland', 'Слой ЗСН (farmland)'
         # FIELD = 'field', 'Поле пользователя'

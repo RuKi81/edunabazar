@@ -18,6 +18,9 @@ pandas>=2.2
 rasterio>=1.3
 # Pure-python shapefile writer: DJI Agras prescription map export (VRA).
 pyshp>=2.3
+# S3/MinIO client: presigned multipart upload + object ops for raster layers
+# (my_fields ГИС). GDAL /vsis3/ reads COG directly from S3 by range requests.
+boto3>=1.34
 # Required by `manage.py test --parallel`: serialises exception tracebacks
 # across worker processes (without it, failures raise "can't pickle traceback").
 tblib>=3.0

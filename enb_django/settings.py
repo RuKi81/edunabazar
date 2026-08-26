@@ -323,6 +323,20 @@ GEE_BACKOFF_BASE_SEC = float(os.getenv('GEE_BACKOFF_BASE_SEC', '2.0'))
 GEE_RATE_WAIT_SEC = float(os.getenv('GEE_RATE_WAIT_SEC', '1.0'))
 GEE_RATE_MAX_WAIT_SEC = float(os.getenv('GEE_RATE_MAX_WAIT_SEC', '30.0'))
 
+# ── Object storage: MinIO/S3 для растровых слоёв (my_fields ГИС) ──────────
+# Пусто = растровый модуль выключен (загрузка/тайлы недоступны, код no-op).
+# Два эндпоинта: внутренний (VM1→MinIO VM2, приватная сеть) для серверных
+# операций и чтения COG через GDAL /vsis3/; публичный (s3.edunabazar.ru) —
+# только для presigned URL, отдаваемых браузеру при прямой загрузке частей.
+# См. deploy/minio/README.md.
+S3_ENDPOINT_URL = os.getenv('S3_ENDPOINT_URL', '')
+S3_PUBLIC_ENDPOINT_URL = os.getenv('S3_PUBLIC_ENDPOINT_URL', '') or S3_ENDPOINT_URL
+S3_ACCESS_KEY = os.getenv('S3_ACCESS_KEY', '')
+S3_SECRET_KEY = os.getenv('S3_SECRET_KEY', '')
+S3_REGION = os.getenv('S3_REGION', 'us-east-1')
+S3_BUCKET_UPLOADS = os.getenv('S3_BUCKET_UPLOADS', 'raster-uploads')
+S3_BUCKET_COG = os.getenv('S3_BUCKET_COG', 'raster-cog')
+
 # ── Error tracking: GlitchTip (self-hosted, Sentry-compatible) ────────────
 # Enabled only when SENTRY_DSN is set (prod .env). Dev/CI without the var
 # run with the SDK fully inert. Covers web, worker and management commands —

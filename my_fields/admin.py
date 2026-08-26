@@ -9,8 +9,8 @@ from __future__ import annotations
 from django.contrib import admin
 
 from .models import (
-    FieldEvent, FieldPhoto, FieldSeason, GisFolder, GisLayer, Plan, UserField,
-    UserPlan,
+    FieldEvent, FieldPhoto, FieldSeason, GisFolder, GisLayer, Plan, RasterLayer,
+    UserField, UserPlan,
 )
 
 
@@ -118,3 +118,29 @@ class GisLayerAdmin(admin.ModelAdmin):
         from .services.shp_import import drop_layer
         for obj in queryset:
             drop_layer(obj)
+
+
+@admin.register(RasterLayer)
+class RasterLayerAdmin(admin.ModelAdmin):
+    """Реестр растровых слоёв (GeoTIFF/COG в MinIO/S3).
+
+    Файлы живут в объектном хранилище; здесь только мета-реестр. Удаление
+    S3-объектов (оригинал + COG) при удалении строки будет добавлено в
+    Фазе 5 — пока строка удаляется без чистки хранилища.
+    """
+    list_display = (
+        'id', 'title', 'status', 'band_count', 'srid', 'size_bytes',
+        'owner', 'created_at',
+    )
+    list_filter = ('status', 'created_at')
+    search_fields = ('title', 'original_filename', 'upload_key', 'cog_key')
+    readonly_fields = (
+        'status', 'original_filename', 'upload_key', 'cog_key', 'size_bytes',
+        'srid', 'bounds', 'band_count', 'nodata', 'stats', 'error',
+        'created_at', 'updated_at',
+    )
+    list_select_related = ('owner',)
+
+    def has_add_permission(self, request):
+        # Слои появляются только через загрузку в ГИС-окне, не вручную.
+        return False

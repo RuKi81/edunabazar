@@ -434,6 +434,96 @@ class GisLayer(models.Model):
         return f'{self.title} ({self.table_name}, {self.feature_count} об.)'
 
 
+class RasterLayer(models.Model):
+    """Реестр растровых слоёв (геокодированный GeoTIFF → Cloud-Optimized GeoTIFF).
+
+    В отличие от :class:`GisLayer` (векторные объекты в таблицах PostGIS),
+    растры хранятся как файлы в объектном хранилище (MinIO/S3), а в БД лежит
+    только МЕТА-реестр. Оригинал загружается напрямую из браузера (presigned
+    S3 Multipart Upload) в бакет ``S3_BUCKET_UPLOADS`` под ключом
+    ``upload_key``; фоновый конвейер (``PipelineRun`` task ``raster_ingest``)
+    конвертирует его в COG с оверзумами в бакет ``S3_BUCKET_COG`` под ключом
+    ``cog_key`` и заполняет геометрические/статистические поля. Отрисовка на
+    карте — динамический тайлинг из COG по range-запросам (GDAL ``/vsis3/``).
+
+    Крупные (десятки ГБ) файлы никогда не проходят через gunicorn: и загрузка
+    (presigned), и чтение (range) идут мимо приложения. Доступ управляется
+    грантами ``access.ResourceGrant`` c ``resource_type='raster_layer'``.
+    """
+
+    class Status(models.TextChoices):
+        UPLOADING = 'uploading', 'Загрузка'
+        QUEUED = 'queued', 'В очереди'
+        PROCESSING = 'processing', 'Обработка'
+        READY = 'ready', 'Готов'
+        FAILED = 'failed', 'Ошибка'
+
+    title = models.CharField(max_length=200, verbose_name='Название слоя')
+    status = models.CharField(
+        max_length=12, choices=Status.choices, default=Status.UPLOADING,
+        db_index=True, verbose_name='Статус',
+    )
+    original_filename = models.CharField(
+        max_length=255, blank=True, default='', verbose_name='Имя файла',
+    )
+    # Ключ оригинала в бакете S3_BUCKET_UPLOADS (напр. "8/<uuid>/original.tif").
+    upload_key = models.CharField(
+        max_length=512, blank=True, default='', verbose_name='Ключ оригинала (S3)',
+    )
+    # Ключ COG в бакете S3_BUCKET_COG (заполняется после ingest).
+    cog_key = models.CharField(
+        max_length=512, blank=True, default='', verbose_name='Ключ COG (S3)',
+    )
+    size_bytes = models.BigIntegerField(default=0, verbose_name='Размер, байт')
+
+    # ── Геометрия/метаданные (заполняются конвейером ingest) ──
+    srid = models.IntegerField(
+        default=0, verbose_name='SRID',
+        help_text='EPSG исходного растра (0 — не определён).',
+    )
+    # [minx, miny, maxx, maxy] в EPSG:4326 — для «зум к слою» и фильтра тайлов.
+    bounds = models.JSONField(null=True, blank=True, verbose_name='Охват (4326)')
+    band_count = models.IntegerField(default=0, verbose_name='Каналов')
+    nodata = models.FloatField(null=True, blank=True, verbose_name='NoData')
+    # Пер-канальная статистика: [{'min':…, 'max':…, 'p2':…, 'p98':…}, …] —
+    # для авто-контраста при рендере тайлов.
+    stats = models.JSONField(default=list, blank=True, verbose_name='Статистика каналов')
+
+    # Стиль отрисовки: {'mode':'singleband','colormap':'ndvi','min':…,'max':…}
+    # либо {'mode':'rgb','bands':[r,g,b]}; интерпретируется рендером тайлов.
+    style = models.JSONField(default=dict, blank=True, verbose_name='Стиль')
+    opacity = models.FloatField(default=1.0, verbose_name='Непрозрачность')
+
+    # Диагностика последнего сбоя конвейера (status=failed).
+    error = models.TextField(blank=True, default='', verbose_name='Ошибка')
+
+    sort_order = models.IntegerField(
+        default=0, verbose_name='Порядок',
+        help_text='Меньше — выше в списке слоёв и на карте.',
+    )
+    folder = models.ForeignKey(
+        GisFolder, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='raster_layers',
+        verbose_name='Папка',
+    )
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='raster_layers',
+        verbose_name='Загрузил',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'myf_raster_layer'
+        ordering = ['sort_order', '-created_at']
+        verbose_name = 'Растровый слой'
+        verbose_name_plural = 'Растровые слои'
+
+    def __str__(self):
+        return f'{self.title} ({self.get_status_display()})'
+
+
 class FieldPhoto(models.Model):
     """Фотография поля или события. GPS извлекается из EXIF при загрузке."""
 
