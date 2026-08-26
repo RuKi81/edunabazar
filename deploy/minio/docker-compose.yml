@@ -11,7 +11,12 @@
 
 services:
   minio:
-    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    # Суффикс -cpuv1: образ собран на старом glibc и работает на CPU без
+    # x86-64-v2. У VM2 тип CPU Proxmox (qemu64/kvm64) НЕ отдаёт x86-64-v2,
+    # обычный тег падает с "Fatal glibc error: CPU does not support x86-64-v2"
+    # (exit 127). Не переходить на тег без -cpuv1, пока CPU VM2 не сменён на
+    # host/x86-64-v2. См. https://github.com/minio/minio/issues/18365.
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z-cpuv1
     restart: always
     env_file: .env
     environment:

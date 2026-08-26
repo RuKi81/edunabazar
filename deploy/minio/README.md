@@ -58,6 +58,13 @@ docker compose up -d
 docker compose logs --tail=30 minio   # "API: ... Console: ..." = ок
 ```
 
+> ⚠️ Образ использует тег **`-cpuv1`**: у VM2 тип CPU Proxmox без x86-64-v2,
+> и обычный тег MinIO падает с `Fatal glibc error: CPU does not support
+> x86-64-v2` (exit 127, контейнер в цикле рестарта). См.
+> <https://github.com/minio/minio/issues/18365>. Переходить на тег без
+> `-cpuv1` можно только после смены CPU VM2 на `host`/`x86-64-v2`
+> (требует остановки VM2 → простой прод-Postgres).
+
 ### 2. Файрвол VM2 — порт 9000 только с VM1
 
 > ⚠️ У VM2 есть публичный IP (`93.95.98.209`), а docker публикует порты в
