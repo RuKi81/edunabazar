@@ -54,6 +54,8 @@ urlpatterns = [
     path('me/gis/api/rasters/upload/sign/', api.raster_upload_sign, name='api_raster_upload_sign'),
     path('me/gis/api/rasters/upload/complete/', api.raster_upload_complete, name='api_raster_upload_complete'),
     path('me/gis/api/rasters/upload/abort/', api.raster_upload_abort, name='api_raster_upload_abort'),
+    path('me/gis/api/rasters/<int:pk>/tiles/<int:z>/<int:x>/<int:y>.png',
+         api.raster_tile, name='api_raster_tile'),
     path('me/gis/api/rasters/<int:pk>/', api.raster_layer_detail, name='api_raster_layer_detail'),
 
     # ── UI ──

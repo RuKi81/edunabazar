@@ -2324,6 +2324,46 @@ def raster_layer_detail(request: HttpRequest, pk: int) -> JsonResponse:
     return _raster_layer_patch(request, layer)
 
 
+@require_http_methods(['GET'])
+def raster_tile(request: HttpRequest, pk: int, z: int, x: int,
+                y: int) -> HttpResponse:
+    """GET — PNG-тайл ``z/x/y`` растрового слоя (рендер из COG, кэш).
+
+    Уровень доступа ``view``. Тайл рендерится из COG в объектном хранилище
+    (перепроекция в Web Mercator + палитра/RGB по ``style``) и кэшируется.
+    Вне охвата / нет данных / слой не готов — ``204`` (MapLibre это ок).
+    """
+    gate = _require_raster_access(request, level='view', pk=pk)
+    if gate:
+        return gate
+
+    layer = get_object_or_404(RasterLayer, pk=pk)
+    if layer.status != RasterLayer.Status.READY or not layer.cog_key:
+        return HttpResponse(b'', content_type='image/png', status=204)
+    disabled = _raster_storage_gate()
+    if disabled:
+        return disabled
+
+    from django.core.cache import cache
+
+    from .services import raster_render
+
+    # Версия в ключе кэша = updated_at: смена стиля/повторный ingest сбрасывают
+    # старые тайлы автоматически.
+    ver = int(layer.updated_at.timestamp())
+    cache_key = f'rastile:{pk}:{ver}:{z}:{x}:{y}'
+    png = cache.get(cache_key)
+    if png is None:
+        png = raster_render.render_layer_tile(layer, z, x, y) or b''
+        cache.set(cache_key, png, 86400)
+    if not png:
+        return HttpResponse(b'', content_type='image/png', status=204)
+
+    resp = HttpResponse(png, content_type='image/png')
+    resp['Cache-Control'] = 'private, max-age=3600'
+    return resp
+
+
 def _patch_raster_title(data, layer, update_fields):
     if 'title' not in data:
         return None

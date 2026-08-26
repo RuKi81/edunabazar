@@ -8017,9 +8017,18 @@
         controls.innerHTML = '<span class="gis-layer__grip" title="Растровый слой">🗺️</span>';
         var iconsBox = document.createElement('div');
         iconsBox.className = 'gis-layer__icons';
+        var visBtn = document.createElement('button');
+        visBtn.className = 'gis-layer__btn gis-raster__vis disabled';
+        visBtn.type = 'button'; visBtn.title = 'Показать/скрыть на карте';
+        visBtn.textContent = '👁';
+        var zoomBtn = document.createElement('button');
+        zoomBtn.className = 'gis-layer__btn gis-raster__zoom disabled';
+        zoomBtn.type = 'button'; zoomBtn.title = 'Приблизить к слою';
+        zoomBtn.textContent = '⤢';
         var delBtn = document.createElement('button');
         delBtn.className = 'gis-layer__btn danger'; delBtn.type = 'button';
         delBtn.title = 'Удалить растровый слой'; delBtn.textContent = '🗑';
+        iconsBox.appendChild(visBtn); iconsBox.appendChild(zoomBtn);
         iconsBox.appendChild(delBtn);
         controls.appendChild(iconsBox);
 
@@ -8039,6 +8048,12 @@
         div.appendChild(head); div.appendChild(meta); div.appendChild(bar);
 
         delBtn.addEventListener('click', function () { deleteRaster(r.id); });
+        visBtn.addEventListener('click', function () {
+          if (!visBtn.classList.contains('disabled')) toggleRasterVisible(r.id);
+        });
+        zoomBtn.addEventListener('click', function () {
+          if (!zoomBtn.classList.contains('disabled')) zoomToRaster(r.id);
+        });
 
         if (atTop && listEl.firstChild) listEl.insertBefore(div, listEl.firstChild);
         else listEl.appendChild(div);
@@ -8061,6 +8076,27 @@
         if (meta) meta.innerHTML = parts.join(' · ');
         var name = row.querySelector('.gis-layer__name');
         if (name) { name.textContent = r.title; name.title = r.title; }
+
+        // Кнопки карты доступны только для готового слоя с охватом.
+        var ready = r.status === 'ready' && r.bounds && r.bounds.length === 4;
+        var visBtn = row.querySelector('.gis-raster__vis');
+        var zoomBtn = row.querySelector('.gis-raster__zoom');
+        if (visBtn) visBtn.classList.toggle('disabled', !ready);
+        if (zoomBtn) zoomBtn.classList.toggle('disabled', !ready);
+        // При первом переходе в «готов» показываем слой на карте автоматически.
+        if (ready && r._visible === undefined) {
+          r._visible = true;
+          addRasterToMap(r);
+        }
+        refreshRasterVisBtn(r.id);
+      }
+
+      function refreshRasterVisBtn(id) {
+        var row = document.getElementById('gisras-row-' + id);
+        var r = rasters[id];
+        if (!row || !r) return;
+        var visBtn = row.querySelector('.gis-raster__vis');
+        if (visBtn) visBtn.classList.toggle('active', !!r._visible);
       }
 
       function setRasterProgress(id, frac) {
@@ -8082,6 +8118,7 @@
           method: 'DELETE', credentials: 'same-origin', headers: RASTER_HDR,
         }).then(function (resp) {
           if (!resp.ok) throw new Error();
+          removeRasterFromMap(id);
           var row = document.getElementById('gisras-row-' + id);
           if (row) row.remove();
           delete rasters[id];
@@ -8226,6 +8263,65 @@
               if (!pending) { clearInterval(_rasterPoll); _rasterPoll = null; }
             }).catch(function () {});
         }, 8000);
+      }
+
+      /* ── Отрисовка растра на карте (MapLibre raster source из COG-тайлов) ── */
+      function rasterSrcId(id) { return 'gisras-src-' + id; }
+      function rasterLyrId(id) { return 'gisras-lyr-' + id; }
+      function rasterTileUrl(r) {
+        return location.origin + '/me/gis/api/rasters/' + r.id +
+               '/tiles/{z}/{x}/{y}.png';
+      }
+
+      /* Растр кладём НАД подложкой, но ПОД векторными данными (слой ЗСН —
+         первый векторный анкор, если он есть). */
+      function rasterBeforeId() {
+        try { if (map.getLayer('farmlands-fill')) return 'farmlands-fill'; }
+        catch (_) {}
+        return undefined;
+      }
+
+      function whenMapReady(fn) {
+        try {
+          if (map.isStyleLoaded && map.isStyleLoaded()) { fn(); return; }
+        } catch (_) {}
+        map.once('load', fn);
+      }
+
+      function addRasterToMap(r) {
+        if (!r || r.status !== 'ready' || !r.bounds || r.bounds.length !== 4) return;
+        whenMapReady(function () {
+          var sid = rasterSrcId(r.id), lid = rasterLyrId(r.id);
+          if (map.getSource(sid)) return;
+          var src = { type: 'raster', tileSize: 256,
+                      tiles: [rasterTileUrl(r)], bounds: r.bounds };
+          try {
+            map.addSource(sid, src);
+            map.addLayer({ id: lid, type: 'raster', source: sid,
+              paint: { 'raster-opacity': (r.opacity == null ? 1 : r.opacity) } },
+              rasterBeforeId());
+          } catch (_) {}
+        });
+      }
+
+      function removeRasterFromMap(id) {
+        try { if (map.getLayer(rasterLyrId(id))) map.removeLayer(rasterLyrId(id)); }
+        catch (_) {}
+        try { if (map.getSource(rasterSrcId(id))) map.removeSource(rasterSrcId(id)); }
+        catch (_) {}
+      }
+
+      function toggleRasterVisible(id) {
+        var r = rasters[id];
+        if (!r || r.status !== 'ready') return;
+        r._visible = !r._visible;
+        if (r._visible) addRasterToMap(r); else removeRasterFromMap(id);
+        refreshRasterVisBtn(id);
+      }
+
+      function zoomToRaster(id) {
+        var r = rasters[id];
+        if (r && r.bounds && r.bounds.length === 4) fitExtent(r.bounds);
       }
 
       /* ═════════════════ Модалка тематической раскраски ═════════════════ */

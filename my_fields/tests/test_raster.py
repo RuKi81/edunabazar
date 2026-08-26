@@ -411,6 +411,47 @@ class RasterUploadEndpointsTest(TestCase):
         self.assertFalse(RasterLayer.objects.filter(pk=layer.pk).exists())
         self.assertEqual(mock_del.call_count, 2)  # upload_key + cog_key
 
+    # ── tiles ──
+    def _tile_url(self, pk, z=0, x=0, y=0):
+        return f'/me/gis/api/rasters/{pk}/tiles/{z}/{x}/{y}.png'
+
+    def test_tile_not_ready_returns_204(self):
+        self._login_manager()
+        layer = RasterLayer.objects.create(
+            title='r', status=RasterLayer.Status.QUEUED)
+        resp = self.client.get(self._tile_url(layer.pk))
+        self.assertEqual(resp.status_code, 204)
+
+    def test_tile_ready_renders_png(self):
+        from my_fields.services import raster_render
+        self._login_manager()
+        layer = RasterLayer.objects.create(
+            title='r', status=RasterLayer.Status.READY, cog_key='9/cog.tif')
+        with patch.object(raster_render, 'render_layer_tile',
+                          return_value=b'\x89PNGDATA') as mock_render:
+            resp = self.client.get(self._tile_url(layer.pk, 3, 4, 2))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp['Content-Type'], 'image/png')
+        self.assertEqual(resp.content, b'\x89PNGDATA')
+        mock_render.assert_called_once()
+
+    def test_tile_empty_render_returns_204(self):
+        from my_fields.services import raster_render
+        self._login_manager()
+        layer = RasterLayer.objects.create(
+            title='r', status=RasterLayer.Status.READY, cog_key='9/cog.tif')
+        with patch.object(raster_render, 'render_layer_tile',
+                          return_value=None):
+            resp = self.client.get(self._tile_url(layer.pk, 5, 1, 1))
+        self.assertEqual(resp.status_code, 204)
+
+    def test_tile_forbidden_without_grant(self):
+        self._login(self.nobody_dj, self.nobody_lu)
+        layer = RasterLayer.objects.create(
+            title='r', status=RasterLayer.Status.READY, cog_key='9/cog.tif')
+        resp = self.client.get(self._tile_url(layer.pk))
+        self.assertEqual(resp.status_code, 403)
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Конвейер ingest (Фаза 3): original → COG + метаданные.
@@ -495,3 +536,74 @@ class RasterIngestServiceTest(TestCase):
             title='no key', status=RasterLayer.Status.QUEUED)
         with self.assertRaises(raster_ingest.RasterIngestError):
             raster_ingest.ingest_raster_layer(layer)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Рендер тайлов из COG (Фаза 4). Чистые функции + интеграция на локальном
+# синтетическом GeoTIFF (source_path в обход S3).
+# ─────────────────────────────────────────────────────────────────────
+@unittest.skipUnless(_HAS_RASTERIO, 'rasterio недоступен')
+class RasterRenderServiceTest(TestCase):
+    def setUp(self):
+        self.tmp = _tempfile.mkdtemp(prefix='raster_render_test_')
+        self.addCleanup(lambda: _shutil.rmtree(self.tmp, ignore_errors=True))
+
+    def test_mercator_tile_bounds_z0(self):
+        from my_fields.services import raster_render
+        xmin, ymin, xmax, ymax = raster_render._mercator_tile_bounds(0, 0, 0)
+        m = raster_render._MERC_MAX
+        self.assertAlmostEqual(xmin, -m, places=1)
+        self.assertAlmostEqual(ymax, m, places=1)
+        self.assertAlmostEqual(xmax, m, places=1)
+        self.assertAlmostEqual(ymin, -m, places=1)
+
+    def test_apply_singleband_shape_and_alpha(self):
+        from my_fields.services import raster_render
+        data = _np.array([[0.0, 128.0], [255.0, 64.0]])
+        valid = _np.array([[True, True], [True, False]])
+        rgba = raster_render._apply_singleband(data, valid, 0, 255, 'gray')
+        self.assertEqual(rgba.shape, (2, 2, 4))
+        self.assertEqual(int(rgba[0, 0, 3]), 255)
+        self.assertEqual(int(rgba[1, 1, 3]), 0)  # invalid → прозрачно
+
+    def _tile_covering_src(self, src, z):
+        """XYZ-тайл на зуме ``z``, накрывающий центр растра ``src``."""
+        import math
+
+        from rasterio.warp import transform_bounds
+        with _rio.open(src) as ds:
+            minx, miny, maxx, maxy = transform_bounds(
+                ds.crs, 'EPSG:4326', *ds.bounds)
+        lon = (minx + maxx) / 2.0
+        lat = (miny + maxy) / 2.0
+        n = 2 ** z
+        x = int((lon + 180.0) / 360.0 * n)
+        lat_r = math.radians(lat)
+        y = int((1.0 - math.asinh(math.tan(lat_r)) / math.pi) / 2.0 * n)
+        return z, x, y
+
+    def test_render_singleband_tile_png(self):
+        from my_fields.services import raster_render
+        src = _os.path.join(self.tmp, 'cog.tif')
+        _write_synthetic_tif(src)
+        layer = RasterLayer.objects.create(
+            title='t', status=RasterLayer.Status.READY, cog_key='9/cog.tif',
+            band_count=1)
+        # z=14: растр (~320 м) накрывает десятки пикселей тайла (~9.5 м/px).
+        z, x, y = self._tile_covering_src(src, 14)
+        png = raster_render.render_layer_tile(
+            layer, z, x, y, source_path=src, env={})
+        self.assertIsNotNone(png)
+        self.assertTrue(png.startswith(b'\x89PNG'))
+
+    def test_render_tile_outside_extent_none(self):
+        from my_fields.services import raster_render
+        src = _os.path.join(self.tmp, 'cog.tif')
+        _write_synthetic_tif(src)  # ~ lon 39°E / lat 49°N (восточное полушарие)
+        layer = RasterLayer.objects.create(
+            title='t', status=RasterLayer.Status.READY, cog_key='9/cog.tif',
+            band_count=1)
+        # z=1 tile (0,1) — западное южное полушарие, растр туда не попадает.
+        png = raster_render.render_layer_tile(
+            layer, 1, 0, 1, source_path=src, env={})
+        self.assertIsNone(png)
