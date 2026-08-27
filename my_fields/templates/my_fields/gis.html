@@ -125,11 +125,16 @@
       width: 26px; height: 26px; border-radius: 4px; border: 1px solid transparent;
       background: transparent; cursor: pointer; display: inline-flex;
       align-items: center; justify-content: center; font-size: 14px; color: #777;
-      transition: background .15s, color .15s, border-color .15s;
+      transition: background .15s, color .15s, border-color .15s, filter .15s;
+      /* Иконки-эмодзи в «выключенном» состоянии — чёрно-белые (серые); при
+         наведении/активации становятся цветными. */
+      filter: grayscale(1);
     }
+    .gis-layer__btn:hover:not(.disabled),
+    .gis-layer__btn.active { filter: none; }
     .gis-layer__btn:hover:not(.disabled) { background: #f5f5f5; }
     .gis-layer__btn.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
-    .gis-layer__btn.disabled { opacity: 0.35; cursor: not-allowed; }
+    .gis-layer__btn.disabled { opacity: 0.35; cursor: not-allowed; filter: grayscale(1); }
     /* Плавающее меню выбора формата скачивания слоя (крепится к body). */
     .gis-dl-menu {
       background: #fff; border: 1px solid #d0d0d0; border-radius: 8px;
@@ -8395,6 +8400,21 @@
       /* ── Отрисовка растра на карте (MapLibre raster source из COG-тайлов) ── */
       function rasterSrcId(id) { return 'gisras-src-' + id; }
       function rasterLyrId(id) { return 'gisras-lyr-' + id; }
+      /* Яркость b∈[-1,1] → пара raster-brightness-min/max (MapLibre 0..1).
+         b>0 поднимает тёмный край (светлее), b<0 опускает светлый (темнее). */
+      function _rasterBrightnessPaint(b) {
+        b = Math.max(-1, Math.min(1, b || 0));
+        return b >= 0 ? { min: b, max: 1 } : { min: 0, max: 1 + b };
+      }
+      function _applyRasterBrightness(lid, b) {
+        var p = _rasterBrightnessPaint(b);
+        try {
+          if (map.getLayer(lid)) {
+            map.setPaintProperty(lid, 'raster-brightness-min', p.min);
+            map.setPaintProperty(lid, 'raster-brightness-max', p.max);
+          }
+        } catch (_) {}
+      }
       function rasterTileUrl(r) {
         /* ?v=<token> сбрасывает кэш тайлов у браузера/MapLibre после смены
            стиля (сервер перерендерит по новому updated_at). */
@@ -8426,9 +8446,12 @@
                       tiles: [rasterTileUrl(r)], bounds: r.bounds };
           try {
             map.addSource(sid, src);
+            var bp = _rasterBrightnessPaint((r.style || {}).brightness || 0);
             map.addLayer({ id: lid, type: 'raster', source: sid,
               paint: { 'raster-opacity': (r.opacity == null ? 1 : r.opacity),
-                       'raster-contrast': ((r.style || {}).contrast || 0) } },
+                       'raster-contrast': ((r.style || {}).contrast || 0),
+                       'raster-brightness-min': bp.min,
+                       'raster-brightness-max': bp.max } },
               rasterBeforeId());
           } catch (_) {}
         });
@@ -8534,7 +8557,7 @@
           css: 'linear-gradient(to right,#440154,#3b528b,#21918c,#5ec962,#fde725)' },
       ];
       var _rsEditId = null, _rsOrigOpacity = null, _rsOrigContrast = null,
-          _rsWired = false;
+          _rsOrigBrightness = null, _rsWired = false;
 
       function _rsModal() { return document.getElementById('gis-rasterstyle-modal'); }
 
@@ -8615,6 +8638,7 @@
             '</select></label>'
           : '<input type="hidden" id="rs-mode" value="singleband">';
         var contrastPct = Math.round((st.contrast || 0) * 100);
+        var brightnessPct = Math.round((st.brightness || 0) * 100);
         body.innerHTML =
           '<div class="gis-rstyle-row">' + modeSel + '</div>' +
           '<div id="rs-mode-editor"></div>' +
@@ -8625,12 +8649,18 @@
           '<div class="gis-rstyle-row"><label style="width:100%">Контрастность: ' +
             '<span id="rs-ct-val">' + contrastPct + '%</span>' +
             '<input type="range" id="rs-ct" class="gis-rstyle-opacity" min="-100" ' +
-              'max="100" value="' + contrastPct + '"></label></div>';
+              'max="100" value="' + contrastPct + '"></label></div>' +
+          '<div class="gis-rstyle-row"><label style="width:100%">Яркость: ' +
+            '<span id="rs-br-val">' + brightnessPct + '%</span>' +
+            '<input type="range" id="rs-br" class="gis-rstyle-opacity" min="-100" ' +
+              'max="100" value="' + brightnessPct + '"></label></div>';
         var modeEl = document.getElementById('rs-mode');
         var opEl = document.getElementById('rs-op');
         var opVal = document.getElementById('rs-op-val');
         var ctEl = document.getElementById('rs-ct');
         var ctVal = document.getElementById('rs-ct-val');
+        var brEl = document.getElementById('rs-br');
+        var brVal = document.getElementById('rs-br-val');
         function renderModeEditor() {
           var ed = document.getElementById('rs-mode-editor');
           if (modeEl.value === 'rgb') {
@@ -8664,13 +8694,18 @@
             if (map.getLayer(lid)) map.setPaintProperty(lid, 'raster-contrast', ct);
           } catch (_) {}
         });
+        brEl.addEventListener('input', function () {
+          brVal.textContent = brEl.value + '%';
+          _applyRasterBrightness(rasterLyrId(r.id), parseInt(brEl.value, 10) / 100);
+        });
       }
 
       function _rsHide() {
         var m = _rsModal(); if (m) m.hidden = true;
         _rsEditId = null; _rsOrigOpacity = null; _rsOrigContrast = null;
+        _rsOrigBrightness = null;
       }
-      /* Отмена: вернуть живое превью прозрачности/контраста к исходным значениям. */
+      /* Отмена: вернуть живое превью прозрачности/контраста/яркости к исходным значениям. */
       function _rsCancel() {
         if (_rsEditId != null) {
           try {
@@ -8680,6 +8715,8 @@
                 map.setPaintProperty(lid, 'raster-opacity', _rsOrigOpacity);
               if (_rsOrigContrast != null)
                 map.setPaintProperty(lid, 'raster-contrast', _rsOrigContrast);
+              if (_rsOrigBrightness != null)
+                _applyRasterBrightness(lid, _rsOrigBrightness);
             }
           } catch (_) {}
         }
@@ -8702,6 +8739,7 @@
         _rsEditId = id;
         _rsOrigOpacity = (r.opacity == null ? 1 : r.opacity);
         _rsOrigContrast = ((r.style || {}).contrast || 0);
+        _rsOrigBrightness = ((r.style || {}).brightness || 0);
         _rsBuildEditor(r);
         var m = _rsModal(); if (m) m.hidden = false;
       }
@@ -8735,6 +8773,10 @@
         var contrast = ctEl ? (parseInt(ctEl.value, 10) / 100)
                             : ((r.style || {}).contrast || 0);
         if (contrast) style.contrast = contrast;   /* -1..1, MapLibre-only */
+        var brEl = document.getElementById('rs-br');
+        var brightness = brEl ? (parseInt(brEl.value, 10) / 100)
+                              : ((r.style || {}).brightness || 0);
+        if (brightness) style.brightness = brightness;   /* -1..1, MapLibre-only */
         rasterJson(RASTER_API + id + '/', {
           method: 'PATCH',
           body: JSON.stringify({ style: style, opacity: opacity }),
