@@ -484,6 +484,10 @@
       height: 100%; width: 0; background: #2e7d32;
       transition: width .2s ease;
     }
+    .gis-raster__speed {
+      font-size: 10px; color: #607d8b; margin-left: 6px; white-space: nowrap;
+    }
+    .gis-raster__speed[hidden] { display: none; }
 
     /* ── Папки-группы слоёв ── */
     .gis-folder-add { font-size: 13px !important; }
@@ -8082,7 +8086,7 @@
         var styleBtn = document.createElement('button');
         styleBtn.className = 'gis-layer__btn gis-raster__style disabled';
         styleBtn.type = 'button';
-        styleBtn.title = 'Стиль слоя (палитра / каналы / прозрачность)';
+        styleBtn.title = 'Стиль слоя (палитра / каналы / прозрачность / контраст)';
         styleBtn.textContent = '🎨';
         var retryBtn = document.createElement('button');
         retryBtn.className = 'gis-layer__btn gis-raster__retry';
@@ -8102,12 +8106,18 @@
         var meta = document.createElement('div');
         meta.className = 'gis-layer__meta';
 
+        var barWrap = document.createElement('div');
+        barWrap.style.cssText = 'display:flex;align-items:center;';
         var bar = document.createElement('div');
         bar.className = 'gis-raster__bar'; bar.hidden = true;
+        bar.style.flex = '1';
         var fill = document.createElement('div');
         fill.className = 'gis-raster__barfill'; bar.appendChild(fill);
+        var speed = document.createElement('span');
+        speed.className = 'gis-raster__speed'; speed.hidden = true;
+        barWrap.appendChild(bar); barWrap.appendChild(speed);
 
-        div.appendChild(head); div.appendChild(meta); div.appendChild(bar);
+        div.appendChild(head); div.appendChild(meta); div.appendChild(barWrap);
 
         delBtn.addEventListener('click', function () { deleteRaster(r.id); });
         visBtn.addEventListener('click', function () {
@@ -8181,9 +8191,21 @@
         var bar = row.querySelector('.gis-raster__bar');
         var fill = row.querySelector('.gis-raster__barfill');
         if (!bar || !fill) return;
-        if (frac == null) { bar.hidden = true; return; }
+        if (frac == null) { bar.hidden = true; setRasterSpeed(id, null); return; }
         bar.hidden = false;
         fill.style.width = Math.max(0, Math.min(100, frac * 100)).toFixed(1) + '%';
+      }
+
+      /* Скорость загрузки растра на сервер (МБ/с) рядом с лоадбаром.
+         null — скрыть индикатор. */
+      function setRasterSpeed(id, mbps) {
+        var row = document.getElementById('gisras-row-' + id);
+        if (!row) return;
+        var el = row.querySelector('.gis-raster__speed');
+        if (!el) return;
+        if (mbps == null || !isFinite(mbps)) { el.hidden = true; el.textContent = ''; return; }
+        el.hidden = false;
+        el.textContent = mbps.toFixed(mbps < 10 ? 1 : 0) + ' МБ/с';
       }
 
       function deleteRaster(id) {
@@ -8251,6 +8273,22 @@
         var numbers = [];
         for (var n = 1; n <= partCount; n++) numbers.push(n);
         var parts = [], uploadedBytes = 0;
+        /* Скорость загрузки: сглаженная оценка по интервалам между частями. */
+        var lastTs = (window.performance && performance.now) ? performance.now()
+                     : Date.now();
+        var lastBytes = 0, emaMbps = null;
+        function updateSpeed() {
+          var now = (window.performance && performance.now) ? performance.now()
+                    : Date.now();
+          var dt = (now - lastTs) / 1000;
+          var db = uploadedBytes - lastBytes;
+          if (dt >= 0.15 && db > 0) {
+            var mbps = (db / 1048576) / dt;   /* МБ/с */
+            emaMbps = (emaMbps == null) ? mbps : (emaMbps * 0.6 + mbps * 0.4);
+            setRasterSpeed(layerId, emaMbps);
+            lastTs = now; lastBytes = uploadedBytes;
+          }
+        }
 
         function signBatch(batch) {
           return rasterJson(RASTER_API + 'upload/sign/', {
@@ -8273,6 +8311,7 @@
                       parts.push({ PartNumber: num, ETag: etag });
                       uploadedBytes += blob.size;
                       setRasterProgress(layerId, uploadedBytes / file.size);
+                      updateSpeed();
                     });
                   });
                 });
@@ -8388,7 +8427,8 @@
           try {
             map.addSource(sid, src);
             map.addLayer({ id: lid, type: 'raster', source: sid,
-              paint: { 'raster-opacity': (r.opacity == null ? 1 : r.opacity) } },
+              paint: { 'raster-opacity': (r.opacity == null ? 1 : r.opacity),
+                       'raster-contrast': ((r.style || {}).contrast || 0) } },
               rasterBeforeId());
           } catch (_) {}
         });
@@ -8493,7 +8533,8 @@
         { key: 'viridis', label: 'Viridis',
           css: 'linear-gradient(to right,#440154,#3b528b,#21918c,#5ec962,#fde725)' },
       ];
-      var _rsEditId = null, _rsOrigOpacity = null, _rsWired = false;
+      var _rsEditId = null, _rsOrigOpacity = null, _rsOrigContrast = null,
+          _rsWired = false;
 
       function _rsModal() { return document.getElementById('gis-rasterstyle-modal'); }
 
@@ -8573,16 +8614,23 @@
                 '>Один канал + палитра</option>' +
             '</select></label>'
           : '<input type="hidden" id="rs-mode" value="singleband">';
+        var contrastPct = Math.round((st.contrast || 0) * 100);
         body.innerHTML =
           '<div class="gis-rstyle-row">' + modeSel + '</div>' +
           '<div id="rs-mode-editor"></div>' +
           '<div class="gis-rstyle-row"><label style="width:100%">Непрозрачность: ' +
             '<span id="rs-op-val">' + opacityPct + '%</span>' +
             '<input type="range" id="rs-op" class="gis-rstyle-opacity" min="0" ' +
-              'max="100" value="' + opacityPct + '"></label></div>';
+              'max="100" value="' + opacityPct + '"></label></div>' +
+          '<div class="gis-rstyle-row"><label style="width:100%">Контрастность: ' +
+            '<span id="rs-ct-val">' + contrastPct + '%</span>' +
+            '<input type="range" id="rs-ct" class="gis-rstyle-opacity" min="-100" ' +
+              'max="100" value="' + contrastPct + '"></label></div>';
         var modeEl = document.getElementById('rs-mode');
         var opEl = document.getElementById('rs-op');
         var opVal = document.getElementById('rs-op-val');
+        var ctEl = document.getElementById('rs-ct');
+        var ctVal = document.getElementById('rs-ct-val');
         function renderModeEditor() {
           var ed = document.getElementById('rs-mode-editor');
           if (modeEl.value === 'rgb') {
@@ -8608,18 +8656,31 @@
             if (map.getLayer(lid)) map.setPaintProperty(lid, 'raster-opacity', op);
           } catch (_) {}
         });
+        ctEl.addEventListener('input', function () {
+          ctVal.textContent = ctEl.value + '%';
+          var ct = parseInt(ctEl.value, 10) / 100;   /* MapLibre: -1..1 */
+          try {
+            var lid = rasterLyrId(r.id);
+            if (map.getLayer(lid)) map.setPaintProperty(lid, 'raster-contrast', ct);
+          } catch (_) {}
+        });
       }
 
       function _rsHide() {
         var m = _rsModal(); if (m) m.hidden = true;
-        _rsEditId = null; _rsOrigOpacity = null;
+        _rsEditId = null; _rsOrigOpacity = null; _rsOrigContrast = null;
       }
-      /* Отмена: вернуть живое превью прозрачности к исходному значению. */
+      /* Отмена: вернуть живое превью прозрачности/контраста к исходным значениям. */
       function _rsCancel() {
-        if (_rsEditId != null && _rsOrigOpacity != null) {
+        if (_rsEditId != null) {
           try {
             var lid = rasterLyrId(_rsEditId);
-            if (map.getLayer(lid)) map.setPaintProperty(lid, 'raster-opacity', _rsOrigOpacity);
+            if (map.getLayer(lid)) {
+              if (_rsOrigOpacity != null)
+                map.setPaintProperty(lid, 'raster-opacity', _rsOrigOpacity);
+              if (_rsOrigContrast != null)
+                map.setPaintProperty(lid, 'raster-contrast', _rsOrigContrast);
+            }
           } catch (_) {}
         }
         _rsHide();
@@ -8640,6 +8701,7 @@
         _rsWire();
         _rsEditId = id;
         _rsOrigOpacity = (r.opacity == null ? 1 : r.opacity);
+        _rsOrigContrast = ((r.style || {}).contrast || 0);
         _rsBuildEditor(r);
         var m = _rsModal(); if (m) m.hidden = false;
       }
@@ -8669,6 +8731,10 @@
         var opEl = document.getElementById('rs-op');
         var opacity = opEl ? (parseInt(opEl.value, 10) / 100)
                            : (r.opacity == null ? 1 : r.opacity);
+        var ctEl = document.getElementById('rs-ct');
+        var contrast = ctEl ? (parseInt(ctEl.value, 10) / 100)
+                            : ((r.style || {}).contrast || 0);
+        if (contrast) style.contrast = contrast;   /* -1..1, MapLibre-only */
         rasterJson(RASTER_API + id + '/', {
           method: 'PATCH',
           body: JSON.stringify({ style: style, opacity: opacity }),
