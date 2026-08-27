@@ -309,6 +309,16 @@
       border-radius: 5px; padding: 8px 16px; cursor: pointer; font-size: 13px; }
     .gis-modal__note { font-size: 12px; color: #777; margin: 10px 0 0; line-height: 1.4; }
 
+    /* Стиль растрового слоя. */
+    .gis-rstyle-row { display: flex; align-items: flex-end; gap: 12px; margin: 8px 0; flex-wrap: wrap; }
+    .gis-rstyle-row > label { font-size: 12px; color: #555; display: flex; flex-direction: column; gap: 3px; }
+    .gis-rstyle-row select.browser-default, .gis-rstyle-row input.browser-default {
+      height: 32px; padding: 2px 6px; border: 1px solid #ccc; border-radius: 5px; font-size: 13px; }
+    .gis-rstyle-row input[type="number"] { width: 96px; }
+    .gis-rstyle-swatch { display: inline-block; width: 96px; height: 16px; border-radius: 3px;
+      border: 1px solid #ccc; }
+    .gis-rstyle-opacity { width: 100%; }
+
     /* Редактор тематической раскраски слоя. */
     .gis-style-controls { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
     .gis-style-controls label { font-size: 12px; color: #555; font-weight: 500;
@@ -986,6 +996,21 @@
         <div class="gis-modal__foot">
           <button type="button" class="btn-secondary" data-style-close>Отмена</button>
           <button type="button" class="btn-primary" id="gis-stylemodal-apply">Сохранить</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="gis-modal" id="gis-rasterstyle-modal" hidden>
+      <div class="gis-modal__backdrop" data-rasterstyle-close></div>
+      <div class="gis-modal__box" role="dialog" aria-modal="true" aria-labelledby="gis-rasterstyle-title">
+        <div class="gis-modal__head">
+          <span id="gis-rasterstyle-title">Стиль растрового слоя</span>
+          <button type="button" class="gis-modal__x" data-rasterstyle-close title="Закрыть">✕</button>
+        </div>
+        <div class="gis-modal__body" id="gis-rasterstyle-body"></div>
+        <div class="gis-modal__foot">
+          <button type="button" class="btn-secondary" data-rasterstyle-close>Отмена</button>
+          <button type="button" class="btn-primary" id="gis-rasterstyle-apply">Сохранить</button>
         </div>
       </div>
     </div>
@@ -7254,6 +7279,15 @@
             if (map.getLayer(lid)) { try { map.moveLayer(lid); } catch (_) {} }
           });
         });
+        /* Растры держим ПОД векторными данными (rasterBeforeId), но в порядке
+           списка между собой: снизу вверх двигаем каждый под общий анкор. */
+        var rrows = listEl.querySelectorAll('.gis-layer[data-gisraster]');
+        Array.prototype.slice.call(rrows).reverse().forEach(function (row) {
+          var lid = rasterLyrId(row.getAttribute('data-gisraster'));
+          if (map.getLayer(lid)) {
+            try { map.moveLayer(lid, rasterBeforeId()); } catch (_) {}
+          }
+        });
         if (map.getLayer('snap-indicator')) { try { map.moveLayer('snap-indicator'); } catch (_) {} }
       }
       /* Собрать полный layout дерева (порядок папок + принадлежность/порядок
@@ -7273,7 +7307,15 @@
           if (L) L.folder = fid;
           return { id: parseInt(r.getAttribute('data-gisup'), 10), folder: fid };
         });
-        return { folders: folders, layers: layers };
+        var rasterEls = listEl.querySelectorAll('.gis-layer[data-gisraster]');
+        var rastersArr = Array.prototype.map.call(rasterEls, function (r) {
+          var fEl = r.closest('.gis-folder[data-gisfolder]');
+          var rr = rasters[r.getAttribute('data-gisraster')];
+          var fid = fEl ? parseInt(fEl.getAttribute('data-gisfolder'), 10) : null;
+          if (rr) rr.folder = fid;
+          return { id: parseInt(r.getAttribute('data-gisraster'), 10), folder: fid };
+        });
+        return { folders: folders, layers: layers, rasters: rastersArr };
       }
       function persistOrder() {
         fetch(API + 'reorder/', {
@@ -7376,7 +7418,7 @@
         });
       }
 
-      /* Видимость папки = видимость всех вложенных слоёв. */
+      /* Видимость папки = видимость всех вложенных слоёв (векторных и растровых). */
       function setFolderVisible(fEl, vis) {
         var boxes = fEl.querySelectorAll('.gis-layer[data-gisup]');
         Array.prototype.forEach.call(boxes, function (row) {
@@ -7385,6 +7427,10 @@
           setVisible(L, vis);
           var vb = row.querySelector('[data-a="vis"]');
           if (vb) vb.classList.toggle('active', vis);
+        });
+        var rboxes = fEl.querySelectorAll('.gis-layer[data-gisraster]');
+        Array.prototype.forEach.call(rboxes, function (row) {
+          setRasterVisible(row.getAttribute('data-gisraster'), vis);
         });
       }
 
@@ -7546,11 +7592,17 @@
             headers: { 'X-Requested-With': 'XMLHttpRequest' },
           }).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
             .then(function () {
-              /* Слои из тела папки возвращаем в корень (перед папкой). */
+              /* Слои и растры из тела папки возвращаем в корень (перед папкой). */
               Array.prototype.slice.call(body.querySelectorAll('.gis-layer[data-gisup]'))
                 .forEach(function (row) {
                   var L = uploaded[row.getAttribute('data-gisup')];
                   if (L) L.folder = null;
+                  listEl.insertBefore(row, fEl);
+                });
+              Array.prototype.slice.call(body.querySelectorAll('.gis-layer[data-gisraster]'))
+                .forEach(function (row) {
+                  var rr = rasters[row.getAttribute('data-gisraster')];
+                  if (rr) rr.folder = null;
                   listEl.insertBefore(row, fEl);
                 });
               delete folders[f.id];
@@ -8009,12 +8061,14 @@
         div.className = 'gis-layer gis-raster';
         div.id = 'gisras-row-' + r.id;
         div.setAttribute('data-gisraster', r.id);
+        div.setAttribute('draggable', 'true');
 
         var head = document.createElement('div');
         head.className = 'gis-layer__head';
         var controls = document.createElement('div');
         controls.className = 'gis-layer__controls';
-        controls.innerHTML = '<span class="gis-layer__grip" title="Растровый слой">🗺️</span>';
+        controls.innerHTML = '<span class="gis-layer__grip" ' +
+          'title="Перетащите: порядок / в папку">🗺️</span>';
         var iconsBox = document.createElement('div');
         iconsBox.className = 'gis-layer__icons';
         var visBtn = document.createElement('button');
@@ -8025,16 +8079,24 @@
         zoomBtn.className = 'gis-layer__btn gis-raster__zoom disabled';
         zoomBtn.type = 'button'; zoomBtn.title = 'Приблизить к слою';
         zoomBtn.textContent = '⤢';
+        var styleBtn = document.createElement('button');
+        styleBtn.className = 'gis-layer__btn gis-raster__style disabled';
+        styleBtn.type = 'button';
+        styleBtn.title = 'Стиль слоя (палитра / каналы / прозрачность)';
+        styleBtn.textContent = '🎨';
+        var retryBtn = document.createElement('button');
+        retryBtn.className = 'gis-layer__btn gis-raster__retry';
+        retryBtn.type = 'button'; retryBtn.hidden = true;
+        retryBtn.title = 'Повторить обработку'; retryBtn.textContent = '↻';
         var delBtn = document.createElement('button');
         delBtn.className = 'gis-layer__btn danger'; delBtn.type = 'button';
         delBtn.title = 'Удалить растровый слой'; delBtn.textContent = '🗑';
         iconsBox.appendChild(visBtn); iconsBox.appendChild(zoomBtn);
+        iconsBox.appendChild(styleBtn); iconsBox.appendChild(retryBtn);
         iconsBox.appendChild(delBtn);
         controls.appendChild(iconsBox);
 
-        var nameSpan = document.createElement('span');
-        nameSpan.className = 'gis-layer__name'; nameSpan.textContent = r.title;
-        nameSpan.title = r.title;
+        var nameSpan = makeRasterNameSpan(r);
         head.appendChild(controls); head.appendChild(nameSpan);
 
         var meta = document.createElement('div');
@@ -8054,9 +8116,18 @@
         zoomBtn.addEventListener('click', function () {
           if (!zoomBtn.classList.contains('disabled')) zoomToRaster(r.id);
         });
+        styleBtn.addEventListener('click', function () {
+          if (!styleBtn.classList.contains('disabled')) openRasterStyleModal(r.id);
+        });
+        retryBtn.addEventListener('click', function () {
+          if (!retryBtn.hidden) reprocessRaster(r.id);
+        });
 
-        if (atTop && listEl.firstChild) listEl.insertBefore(div, listEl.firstChild);
-        else listEl.appendChild(div);
+        // Растровые строки участвуют в общем DnD (порядок + перенос в папки).
+        wireDrag(div);
+        var container = layerContainer(r);   // r.folder → тело папки, иначе корень
+        if (atTop && container === listEl) listEl.insertBefore(div, listEl.firstChild);
+        else container.appendChild(div);
         updateRasterRow(r);
         return div;
       }
@@ -8081,8 +8152,13 @@
         var ready = r.status === 'ready' && r.bounds && r.bounds.length === 4;
         var visBtn = row.querySelector('.gis-raster__vis');
         var zoomBtn = row.querySelector('.gis-raster__zoom');
+        var styleBtn = row.querySelector('.gis-raster__style');
         if (visBtn) visBtn.classList.toggle('disabled', !ready);
         if (zoomBtn) zoomBtn.classList.toggle('disabled', !ready);
+        if (styleBtn) styleBtn.classList.toggle('disabled', !ready);
+        // Кнопка повтора — только для упавшего слоя с исходником.
+        var retryBtn = row.querySelector('.gis-raster__retry');
+        if (retryBtn) retryBtn.hidden = !(r.status === 'failed' && r.has_original !== false);
         // При первом переходе в «готов» показываем слой на карте автоматически.
         if (ready && r._visible === undefined) {
           r._visible = true;
@@ -8239,6 +8315,18 @@
             j.results.slice().sort(function (a, b) {
               return (a.sort_order - b.sort_order) || (a.id - b.id);
             }).forEach(function (r) { renderRasterRow(r, false); });
+            /* Видимость папок применялась к слоям ДО загрузки растров (их тел
+               тогда ещё не было) — повторяем для скрытых папок, чтобы погасить
+               вложенные растры. */
+            Object.keys(folders).forEach(function (fid) {
+              var f = folders[fid];
+              if (f && f.visible === false) {
+                var fEl = document.getElementById('gisfolder-' + fid);
+                if (fEl) setFolderVisible(fEl, false);
+              }
+            });
+            /* Z-order растров по порядку списка (под векторными данными). */
+            syncUploadedOrderFromDOM();
             /* Слои в обработке — периодически опрашиваем до готовности. */
             if (j.results.some(function (r) {
               return r.status === 'queued' || r.status === 'processing';
@@ -8269,8 +8357,10 @@
       function rasterSrcId(id) { return 'gisras-src-' + id; }
       function rasterLyrId(id) { return 'gisras-lyr-' + id; }
       function rasterTileUrl(r) {
+        /* ?v=<token> сбрасывает кэш тайлов у браузера/MapLibre после смены
+           стиля (сервер перерендерит по новому updated_at). */
         return location.origin + '/me/gis/api/rasters/' + r.id +
-               '/tiles/{z}/{x}/{y}.png';
+               '/tiles/{z}/{x}/{y}.png' + (r._ver ? ('?v=' + r._ver) : '');
       }
 
       /* Растр кладём НАД подложкой, но ПОД векторными данными (слой ЗСН —
@@ -8319,9 +8409,278 @@
         refreshRasterVisBtn(id);
       }
 
+      /* Задать видимость растра явно (используется видимостью папки). */
+      function setRasterVisible(id, vis) {
+        var r = rasters[id];
+        if (!r || r.status !== 'ready') return;
+        r._visible = !!vis;
+        if (r._visible) addRasterToMap(r); else removeRasterFromMap(id);
+        refreshRasterVisBtn(id);
+      }
+
       function zoomToRaster(id) {
         var r = rasters[id];
         if (r && r.bounds && r.bounds.length === 4) fitExtent(r.bounds);
+      }
+
+      /* ── Переименование растрового слоя (двойной клик по названию) ── */
+      function makeRasterNameSpan(r) {
+        var span = document.createElement('span');
+        span.className = 'gis-layer__name';
+        span.textContent = r.title;
+        span.title = r.title + ' · двойной клик — переименовать';
+        span.addEventListener('dblclick', function () {
+          startEditRasterName(r, span);
+        });
+        return span;
+      }
+
+      function startEditRasterName(r, span) {
+        var input = document.createElement('input');
+        input.type = 'text'; input.className = 'gis-layer__name-input';
+        input.value = r.title; input.maxLength = 200;
+        span.replaceWith(input); input.focus(); input.select();
+        var done = false;
+        function finish(save) {
+          if (done) return; done = true;
+          var val = input.value.trim();
+          var newSpan = makeRasterNameSpan(r);
+          input.replaceWith(newSpan);
+          if (save && val && val !== r.title) {
+            newSpan.textContent = val; newSpan.title = val;
+            rasterJson(RASTER_API + r.id + '/', {
+              method: 'PATCH', body: JSON.stringify({ title: val }),
+            }).then(function () {
+              r.title = val; toast('Слой переименован');
+            }).catch(function () {
+              newSpan.textContent = r.title;
+              newSpan.title = r.title + ' · двойной клик — переименовать';
+              toast('Не удалось переименовать', true);
+            });
+          }
+        }
+        input.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+          else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+        });
+        input.addEventListener('blur', function () { finish(true); });
+      }
+
+      /* ── Повторный запуск ingest для упавшего слоя ── */
+      function reprocessRaster(id) {
+        rasterJson(RASTER_API + id + '/reprocess/', { method: 'POST' })
+          .then(function (resp) {
+            if (resp && resp.layer) updateRasterRow(resp.layer);
+            else updateRasterRow({ id: id, status: 'queued', error: '' });
+            setRasterProgress(id, 0);
+            scheduleRasterPoll();
+            toast('Обработка запущена повторно');
+          }).catch(function (err) {
+            toast((err && err.detail) ? err.detail
+                  : 'Не удалось перезапустить обработку', true);
+          });
+      }
+
+      /* ══════════════ Стиль растрового слоя (модалка) ══════════════
+         Палитра/каналы/контраст → PATCH style; прозрачность → PATCH opacity
+         (+ живое превью через raster-opacity). После смены стиля тайлы
+         пересобираются (cache-bust ?v=, сервер рендерит по новому updated_at). */
+      var RASTER_COLORMAPS = [
+        { key: 'gray', label: 'Оттенки серого',
+          css: 'linear-gradient(to right,#000,#fff)' },
+        { key: 'ndvi', label: 'NDVI',
+          css: 'linear-gradient(to right,#a50026,#fdae61,#ffffbf,#a6d96a,#006837)' },
+        { key: 'viridis', label: 'Viridis',
+          css: 'linear-gradient(to right,#440154,#3b528b,#21918c,#5ec962,#fde725)' },
+      ];
+      var _rsEditId = null, _rsOrigOpacity = null, _rsWired = false;
+
+      function _rsModal() { return document.getElementById('gis-rasterstyle-modal'); }
+
+      function _rsCmSwatch(key) {
+        var cm = RASTER_COLORMAPS.filter(function (c) { return c.key === key; })[0] ||
+                 RASTER_COLORMAPS[0];
+        return '<span class="gis-rstyle-swatch" style="background:' + cm.css + '"></span>';
+      }
+
+      function _rsBandOptions(bands, sel) {
+        var o = '';
+        for (var i = 1; i <= bands; i++) {
+          o += '<option value="' + i + '"' + (i === sel ? ' selected' : '') +
+               '>Канал ' + i + '</option>';
+        }
+        return o;
+      }
+
+      function _rsSinglebandHtml(r, st) {
+        var bands = r.band_count || 1;
+        var band = st.band || 1;
+        var cm = st.colormap || 'gray';
+        var stats = (r.stats && r.stats[band - 1]) || {};
+        var minv = (st.min != null) ? st.min : '';
+        var maxv = (st.max != null) ? st.max : '';
+        var hint = (stats.p2 != null && stats.p98 != null)
+          ? 'Автоконтраст p2/p98: ' + (+stats.p2).toFixed(2) + ' … ' +
+            (+stats.p98).toFixed(2) + '. Оставьте Min/Max пустыми для авто.'
+          : 'Оставьте Min/Max пустыми для авто-контраста.';
+        var cmOpts = RASTER_COLORMAPS.map(function (c) {
+          return '<option value="' + c.key + '"' + (c.key === cm ? ' selected' : '') +
+                 '>' + c.label + '</option>';
+        }).join('');
+        return '<div class="gis-rstyle-row">' +
+            '<label>Канал<select id="rs-band" class="browser-default">' +
+              _rsBandOptions(bands, band) + '</select></label>' +
+            '<label>Палитра<select id="rs-cm" class="browser-default">' +
+              cmOpts + '</select></label>' +
+            '<span id="rs-cm-swatch">' + _rsCmSwatch(cm) + '</span>' +
+          '</div>' +
+          '<div class="gis-rstyle-row">' +
+            '<label>Min<input type="number" step="any" id="rs-min" ' +
+              'class="browser-default" value="' + minv + '" placeholder="авто"></label>' +
+            '<label>Max<input type="number" step="any" id="rs-max" ' +
+              'class="browser-default" value="' + maxv + '" placeholder="авто"></label>' +
+          '</div>' +
+          '<p class="gis-modal__note">' + hint + '</p>';
+      }
+
+      function _rsRgbHtml(r, st) {
+        var bands = r.band_count || 3;
+        var b = (st.bands && st.bands.length === 3) ? st.bands : [1, 2, 3];
+        function sel(id, cur) {
+          return '<select id="' + id + '" class="browser-default">' +
+                 _rsBandOptions(bands, cur) + '</select>';
+        }
+        return '<div class="gis-rstyle-row">' +
+            '<label>Красный (R)' + sel('rs-r', b[0]) + '</label>' +
+            '<label>Зелёный (G)' + sel('rs-g', b[1]) + '</label>' +
+            '<label>Синий (B)' + sel('rs-b', b[2]) + '</label>' +
+          '</div>' +
+          '<p class="gis-modal__note">Каждый канал нормируется по p2/p98 из статистики.</p>';
+      }
+
+      function _rsBuildEditor(r) {
+        var body = document.getElementById('gis-rasterstyle-body');
+        if (!body) return;
+        var bands = r.band_count || 1;
+        var st = r.style || {};
+        var mode = st.mode || (bands >= 3 ? 'rgb' : 'singleband');
+        var opacityPct = Math.round((r.opacity == null ? 1 : r.opacity) * 100);
+        var modeSel = bands >= 3
+          ? '<label>Режим<select id="rs-mode" class="browser-default">' +
+              '<option value="rgb"' + (mode === 'rgb' ? ' selected' : '') +
+                '>RGB (три канала)</option>' +
+              '<option value="singleband"' + (mode === 'singleband' ? ' selected' : '') +
+                '>Один канал + палитра</option>' +
+            '</select></label>'
+          : '<input type="hidden" id="rs-mode" value="singleband">';
+        body.innerHTML =
+          '<div class="gis-rstyle-row">' + modeSel + '</div>' +
+          '<div id="rs-mode-editor"></div>' +
+          '<div class="gis-rstyle-row"><label style="width:100%">Непрозрачность: ' +
+            '<span id="rs-op-val">' + opacityPct + '%</span>' +
+            '<input type="range" id="rs-op" class="gis-rstyle-opacity" min="0" ' +
+              'max="100" value="' + opacityPct + '"></label></div>';
+        var modeEl = document.getElementById('rs-mode');
+        var opEl = document.getElementById('rs-op');
+        var opVal = document.getElementById('rs-op-val');
+        function renderModeEditor() {
+          var ed = document.getElementById('rs-mode-editor');
+          if (modeEl.value === 'rgb') {
+            ed.innerHTML = _rsRgbHtml(r, st);
+          } else {
+            ed.innerHTML = _rsSinglebandHtml(r, st);
+            var cmEl = document.getElementById('rs-cm');
+            var sw = document.getElementById('rs-cm-swatch');
+            if (cmEl && sw) {
+              cmEl.addEventListener('change', function () {
+                sw.innerHTML = _rsCmSwatch(cmEl.value);
+              });
+            }
+          }
+        }
+        if (modeEl.tagName === 'SELECT') modeEl.addEventListener('change', renderModeEditor);
+        renderModeEditor();
+        opEl.addEventListener('input', function () {
+          opVal.textContent = opEl.value + '%';
+          var op = parseInt(opEl.value, 10) / 100;
+          try {
+            var lid = rasterLyrId(r.id);
+            if (map.getLayer(lid)) map.setPaintProperty(lid, 'raster-opacity', op);
+          } catch (_) {}
+        });
+      }
+
+      function _rsHide() {
+        var m = _rsModal(); if (m) m.hidden = true;
+        _rsEditId = null; _rsOrigOpacity = null;
+      }
+      /* Отмена: вернуть живое превью прозрачности к исходному значению. */
+      function _rsCancel() {
+        if (_rsEditId != null && _rsOrigOpacity != null) {
+          try {
+            var lid = rasterLyrId(_rsEditId);
+            if (map.getLayer(lid)) map.setPaintProperty(lid, 'raster-opacity', _rsOrigOpacity);
+          } catch (_) {}
+        }
+        _rsHide();
+      }
+      function _rsWire() {
+        if (_rsWired) return; _rsWired = true;
+        var m = _rsModal(); if (!m) return;
+        m.querySelectorAll('[data-rasterstyle-close]').forEach(function (el) {
+          el.addEventListener('click', _rsCancel);
+        });
+        var apply = document.getElementById('gis-rasterstyle-apply');
+        if (apply) apply.addEventListener('click', saveRasterStyle);
+      }
+
+      function openRasterStyleModal(id) {
+        var r = rasters[id];
+        if (!r || r.status !== 'ready') return;
+        _rsWire();
+        _rsEditId = id;
+        _rsOrigOpacity = (r.opacity == null ? 1 : r.opacity);
+        _rsBuildEditor(r);
+        var m = _rsModal(); if (m) m.hidden = false;
+      }
+
+      function saveRasterStyle() {
+        var id = _rsEditId; if (id == null) return;
+        var r = rasters[id]; if (!r) return;
+        var modeEl = document.getElementById('rs-mode');
+        var mode = modeEl ? modeEl.value : 'singleband';
+        var style;
+        if (mode === 'rgb') {
+          style = { mode: 'rgb', bands: [
+            parseInt(document.getElementById('rs-r').value, 10),
+            parseInt(document.getElementById('rs-g').value, 10),
+            parseInt(document.getElementById('rs-b').value, 10),
+          ] };
+        } else {
+          style = { mode: 'singleband',
+            band: parseInt(document.getElementById('rs-band').value, 10),
+            colormap: document.getElementById('rs-cm').value };
+          var mn = document.getElementById('rs-min').value;
+          var mx = document.getElementById('rs-max').value;
+          if (mn !== '' && mx !== '') {
+            style.min = parseFloat(mn); style.max = parseFloat(mx);
+          }
+        }
+        var opEl = document.getElementById('rs-op');
+        var opacity = opEl ? (parseInt(opEl.value, 10) / 100)
+                           : (r.opacity == null ? 1 : r.opacity);
+        rasterJson(RASTER_API + id + '/', {
+          method: 'PATCH',
+          body: JSON.stringify({ style: style, opacity: opacity }),
+        }).then(function (resp) {
+          if (resp && resp.layer) updateRasterRow(resp.layer);
+          var rr = rasters[id];
+          rr.style = style; rr.opacity = opacity;
+          rr._ver = Date.now();  /* cache-bust тайлов */
+          if (rr._visible) { removeRasterFromMap(id); addRasterToMap(rr); }
+          _rsHide();
+          toast('Стиль растра обновлён');
+        }).catch(function () { toast('Не удалось сохранить стиль', true); });
       }
 
       /* ═════════════════ Модалка тематической раскраски ═════════════════ */
@@ -8595,7 +8954,7 @@
 
       /* ── Загрузка существующих слоёв при старте ── */
       function loadLayers() {
-        fetch(API, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+        return fetch(API, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
           .then(function (r) { return r.json(); })
           .then(function (j) {
             /* Сначала папки (по sort_order) — чтобы их тела существовали к
@@ -8621,7 +8980,11 @@
           })
           .catch(function () {});
       }
-      function loadAll() { loadLayers(); loadRasters(); }
+      /* Растры грузим ПОСЛЕ слоёв: к этому моменту тела папок отрисованы,
+         поэтому растр с folder попадает в нужную папку (иначе в корень). */
+      function loadAll() {
+        loadLayers().then(loadRasters).catch(function () { loadRasters(); });
+      }
       if (map.loaded()) loadAll(); else map.on('load', loadAll);
 
       /* ── Кнопка «Добавить папку»: создаём папку на сервере и рисуем

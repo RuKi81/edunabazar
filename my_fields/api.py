@@ -1836,13 +1836,14 @@ def _resolve_folder_id(raw, valid_folder_ids: set):
 
 
 def _gis_layout_save(request: HttpRequest, data: dict) -> JsonResponse:
-    """Сохранить состав/порядок дерева: папки (порядок) + слои
+    """Сохранить состав/порядок дерева: папки (порядок) + слои + растры
     (порядок + принадлежность папке). Вызывается из :func:`gis_layers_reorder`
-    при наличии ключей ``folders``/``layers``."""
+    при наличии ключей ``folders``/``layers``/``rasters``."""
     from django.db import transaction
 
     folders = data.get('folders') or []
     layers = data.get('layers') or []
+    rasters = data.get('rasters') or []
     valid_folder_ids = set(GisFolder.objects.values_list('pk', flat=True))
 
     with transaction.atomic():
@@ -1858,6 +1859,17 @@ def _gis_layout_save(request: HttpRequest, data: dict) -> JsonResponse:
                 continue
             folder_id = _resolve_folder_id(item.get('folder'), valid_folder_ids)
             GisLayer.objects.filter(pk=lid).update(
+                sort_order=idx, folder_id=folder_id)
+        # Растровые слои — свой независимый порядок (sort_order), но общая
+        # система папок (folder_id) с векторными слоями.
+        for idx, item in enumerate(rasters):
+            if not isinstance(item, dict):
+                continue
+            rid = _coerce_int(item.get('id'))
+            if rid is None:
+                continue
+            folder_id = _resolve_folder_id(item.get('folder'), valid_folder_ids)
+            RasterLayer.objects.filter(pk=rid).update(
                 sort_order=idx, folder_id=folder_id)
 
     return JsonResponse({'ok': True})
@@ -1885,7 +1897,7 @@ def gis_layers_reorder(request: HttpRequest) -> JsonResponse:
         return JsonResponse(
             {'ok': False, 'error': 'invalid_json'}, status=400)
 
-    if 'layers' in data or 'folders' in data:
+    if 'layers' in data or 'folders' in data or 'rasters' in data:
         return _gis_layout_save(request, data)
 
     order = data.get('order')
@@ -2003,6 +2015,7 @@ def _raster_layer_to_dict(r: RasterLayer) -> dict:
         'opacity': r.opacity,
         'error': r.error,
         'sort_order': r.sort_order,
+        'has_original': bool(r.upload_key),
         'created_at': r.created_at.isoformat(),
     }
 
@@ -2322,6 +2335,47 @@ def raster_layer_detail(request: HttpRequest, pk: int) -> JsonResponse:
         return JsonResponse({'ok': True})
 
     return _raster_layer_patch(request, layer)
+
+
+@csrf_exempt
+@require_http_methods(['POST'])
+def raster_reprocess(request: HttpRequest, pk: int) -> JsonResponse:
+    """POST — повторно запустить конвейер ingest для слоя (напр. после failed).
+
+    Требует уровень ``manage`` и наличие исходного файла (``upload_key``).
+    Нельзя перезапускать слой, который сейчас грузится/в очереди/обрабатывается.
+    """
+    gate = _require_raster_access(request, level='manage', pk=pk)
+    if gate:
+        return gate
+    disabled = _raster_storage_gate()
+    if disabled:
+        return disabled
+
+    layer = get_object_or_404(RasterLayer, pk=pk)
+    if not layer.upload_key:
+        return JsonResponse(
+            {'ok': False, 'error': 'no_original',
+             'detail': 'Нет исходного файла для повторной обработки.'}, status=409)
+    if layer.status in (RasterLayer.Status.UPLOADING, RasterLayer.Status.QUEUED,
+                        RasterLayer.Status.PROCESSING):
+        return JsonResponse(
+            {'ok': False, 'error': 'busy',
+             'detail': 'Слой уже загружается или обрабатывается.'}, status=409)
+
+    layer.status = RasterLayer.Status.QUEUED
+    layer.error = ''
+    layer.save(update_fields=['status', 'error', 'updated_at'])
+
+    from agrocosmos.models import PipelineRun
+
+    PipelineRun.objects.create(
+        task_type=PipelineRun.TaskType.RASTER_INGEST,
+        status=PipelineRun.Status.QUEUED,
+        description=f'Повторная конвертация растра в COG: {layer.title}'[:500],
+        launch_args={'layer_id': layer.pk},
+    )
+    return JsonResponse({'ok': True, 'layer': _raster_layer_to_dict(layer)})
 
 
 @require_http_methods(['GET'])

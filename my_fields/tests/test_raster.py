@@ -29,6 +29,12 @@ try:  # rasterio/numpy для тестов конвейера ingest (Фаза 3
 except Exception:  # pragma: no cover - окружения без rasterio
     _HAS_RASTERIO = False
 
+try:
+    import boto3 as _boto3  # noqa: F401
+    _HAS_BOTO3 = True
+except Exception:  # pragma: no cover - окружения без boto3
+    _HAS_BOTO3 = False
+
 from access.models import ResourceGrant
 from access.services import (
     accessible_raster_layer_ids,
@@ -97,7 +103,8 @@ class S3StorageHelpersTest(TestCase):
             '/vsis3/raster-cog/42/cog.tif',
         )
 
-    @unittest.skipUnless(_HAS_RASTERIO, 'rasterio required')
+    @unittest.skipUnless(_HAS_RASTERIO and _HAS_BOTO3,
+                         'rasterio+boto3 required')
     @override_settings(**_S3_SETTINGS)
     def test_gdal_vsis3_env(self):
         from rasterio.session import AWSSession
@@ -394,6 +401,51 @@ class RasterUploadEndpointsTest(TestCase):
         self.assertEqual(resp.status_code, 200, resp.content)
         mock_a.assert_called_once()
         self.assertFalse(RasterLayer.objects.filter(pk=layer.pk).exists())
+
+    # ── reprocess ──
+    def _reprocess_url(self, pk):
+        return f'/me/gis/api/rasters/{pk}/reprocess/'
+
+    def test_reprocess_requeues_failed_layer(self):
+        from agrocosmos.models import PipelineRun
+        self._login_manager()
+        layer = RasterLayer.objects.create(
+            title='r', status=RasterLayer.Status.FAILED,
+            upload_key='0/x/original.tif', error='boom')
+        resp = self.client.post(self._reprocess_url(layer.pk))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        layer.refresh_from_db()
+        self.assertEqual(layer.status, RasterLayer.Status.QUEUED)
+        self.assertEqual(layer.error, '')
+        run = PipelineRun.objects.filter(
+            task_type=PipelineRun.TaskType.RASTER_INGEST,
+            status=PipelineRun.Status.QUEUED).latest('pk')
+        self.assertEqual(run.launch_args.get('layer_id'), layer.pk)
+
+    def test_reprocess_without_original_conflict(self):
+        self._login_manager()
+        layer = RasterLayer.objects.create(
+            title='r', status=RasterLayer.Status.FAILED, upload_key='')
+        resp = self.client.post(self._reprocess_url(layer.pk))
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()['error'], 'no_original')
+
+    def test_reprocess_busy_conflict(self):
+        self._login_manager()
+        layer = RasterLayer.objects.create(
+            title='r', status=RasterLayer.Status.PROCESSING,
+            upload_key='0/x/original.tif')
+        resp = self.client.post(self._reprocess_url(layer.pk))
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()['error'], 'busy')
+
+    def test_reprocess_forbidden_without_manage(self):
+        self._login(self.nobody_dj, self.nobody_lu)
+        layer = RasterLayer.objects.create(
+            title='r', status=RasterLayer.Status.FAILED,
+            upload_key='0/x/original.tif')
+        resp = self.client.post(self._reprocess_url(layer.pk))
+        self.assertEqual(resp.status_code, 403)
 
     # ── detail PATCH / DELETE ──
     def test_patch_title_and_opacity(self):
