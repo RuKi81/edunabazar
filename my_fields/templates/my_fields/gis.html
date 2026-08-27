@@ -1500,7 +1500,12 @@
       var bm = BASEMAPS[key];
       if (!bm) return;
       map.addSource('basemap', { type: 'raster', tileSize: 256, tiles: bm.tiles, attribution: bm.attribution });
-      map.addLayer({ id: 'basemap', type: 'raster', source: 'basemap' }, 'farmlands-fill');
+      /* Подложку кладём в самый НИЗ стека (перед текущим нижним слоем), а не
+         перед 'farmlands-fill': иначе она встаёт над уже добавленными растрами
+         (те лежат ниже 'farmlands-fill') и перекрывает их. */
+      var layers = (map.getStyle() && map.getStyle().layers) || [];
+      var beforeId = layers.length ? layers[0].id : undefined;
+      map.addLayer({ id: 'basemap', type: 'raster', source: 'basemap' }, beforeId);
     }
     function selectBasemap(key) {
       applyBasemap(key);
