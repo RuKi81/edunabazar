@@ -1136,8 +1136,12 @@
         <span class="gis-attrtable__edithint" id="gis-attrtable-edithint">✎ кликните ячейку с подсветкой — правка идёт в очередь (💾 сохранить, ↶ отменить)</span>
         <span class="gis-attrtable__spacer"></span>
         <label class="gis-attrtable__onlysel" id="gis-attrtable-selall-lbl"
-               title="Выделить все объекты таблицы (все страницы, с учётом фильтра и поиска)">
+               title="Выделить все объекты слоя (все страницы, без учёта фильтра/поиска)">
           <input type="checkbox" id="gis-attrtable-selall"> выделить все объекты
+        </label>
+        <label class="gis-attrtable__onlysel" id="gis-attrtable-selallf-lbl"
+               title="Выделить все объекты, удовлетворяющие текущему фильтру/поиску (все страницы)">
+          <input type="checkbox" id="gis-attrtable-selallf"> выделить все отфильтрованные
         </label>
         <label class="gis-attrtable__onlysel" id="gis-attrtable-onlysel-lbl"
                title="Показать на карте и в таблице только выбранные объекты">
@@ -1160,9 +1164,9 @@
         </div>
         <div class="gis-fp__rules" id="gis-fp-rules"></div>
         <div class="gis-fp__foot">
+          <span class="gis-fp__spacer"></span>
           <button type="button" class="gis-fp__btn gis-fp__btn--primary" id="gis-fp-apply">Применить</button>
           <button type="button" class="gis-fp__btn" id="gis-fp-reset">Сбросить</button>
-          <span class="gis-fp__spacer"></span>
           <button type="button" class="gis-fp__btn" id="gis-fp-save">Сохранить как слой…</button>
         </div>
       </div>
@@ -5147,6 +5151,8 @@
       var onlySelLbl = document.getElementById('gis-attrtable-onlysel-lbl');
       var selAllEl = document.getElementById('gis-attrtable-selall');
       var selAllLbl = document.getElementById('gis-attrtable-selall-lbl');
+      var selFiltEl = document.getElementById('gis-attrtable-selallf');
+      var selFiltLbl = document.getElementById('gis-attrtable-selallf-lbl');
       var closeBtn = document.getElementById('gis-attrtable-close');
       var searchEl = document.getElementById('gis-attrtable-search');
       var filterEl = document.getElementById('gis-attrtable-filter');
@@ -5364,14 +5370,8 @@
         if (onlySelLbl) onlySelLbl.style.display = canMultiSelect() ? '' : 'none';
         if (onlySelEl) onlySelEl.checked = state.onlySelected;
         if (onlySelLbl) onlySelLbl.classList.toggle('active', state.onlySelected);
-        /* Чекбокс «выделить все объекты таблицы» — тоже для мультивыбора.
-           Отмечен, если массвыбор покрывает весь набор (все страницы). */
-        if (selAllLbl) selAllLbl.style.display = canMultiSelect() ? '' : 'none';
-        var totalAll = serverPaged ? (state.total || 0) : state.rows.length;
-        var allChecked = massSel.layer === state.layer && totalAll > 0 &&
-                         massSel.ids.size >= totalAll;
-        if (selAllEl) selAllEl.checked = allChecked;
-        if (selAllLbl) selAllLbl.classList.toggle('active', allChecked);
+        /* Чекбоксы «выделить все …» — для мультивыбора. */
+        syncSelAllChecks();
 
         if (!state.rows.length) {
           var base;
@@ -5762,15 +5762,8 @@
         });
         var selAll = bodyEl.querySelector('.gis-attrtable__selall');
         if (selAll) selAll.checked = pageAll;
-        /* Головной чекбокс «выделить все объекты таблицы»: отмечен, если выбор
-           покрывает весь набор (все страницы). */
-        if (selAllEl) {
-          var totAll = isServerPaged() ? (state.total || 0) : state.rows.length;
-          var allChk = massSel.layer === state.layer && totAll > 0 &&
-                       massSel.ids.size >= totAll;
-          selAllEl.checked = allChk;
-          if (selAllLbl) selAllLbl.classList.toggle('active', allChk);
-        }
+        /* Головные чекбоксы «выделить все …»: синхронизируем с массвыбором. */
+        syncSelAllChecks();
       }
 
       /* Чекбокс строки (плоский выбор без модификаторов): добавить/убрать
@@ -5807,17 +5800,18 @@
         });
       }
 
-      /* Запросить с сервера ВСЕ id объектов текущего слоя под активным
-         фильтром/поиском (без пагинации). Для статических слоёв возвращаем id
+      /* Запросить с сервера ВСЕ id объектов текущего слоя (без пагинации).
+         useFilter=true — с учётом активного структурного фильтра и поиска;
+         false — все объекты слоя целиком. Для статических слоёв возвращаем id
          уже загруженных строк. */
-      function fetchAllTableIds(cb) {
+      function fetchAllTableIds(useFilter, cb) {
         if (!isServerPaged()) {
           cb(state.rows.map(function (r) { return r.id; }));
           return;
         }
         var lid = state.layer.slice('gisup:'.length);
         var req;
-        if (state.filter) {
+        if (useFilter && state.filter) {
           req = fetch('/me/gis/api/layers/' + lid + '/query/', {
             method: 'POST', credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
@@ -5825,38 +5819,61 @@
           });
         } else {
           var qs = '?ids_only=1';
-          if (state.query) qs += '&q=' + encodeURIComponent(state.query);
+          if (useFilter && state.query) qs += '&q=' + encodeURIComponent(state.query);
           req = fetch('/me/gis/api/layers/' + lid + '/features/' + qs, {
             credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' },
           });
         }
         req.then(function (r) { return r.ok ? r.json() : Promise.reject(); })
-          .then(function (j) { cb((j && j.ids) || []); })
+          .then(function (j) {
+            if (!useFilter && j && typeof j.total === 'number') state.fullCount = j.total;
+            cb((j && j.ids) || []);
+          })
           .catch(function () { cb(null); });
       }
 
-      /* Чекбокс «выделить все объекты таблицы»: выбрать/снять ВСЕ объекты слоя
-         (все страницы) с учётом текущего фильтра/поиска — минуя пагинацию. */
-      function selectAllInTable(on) {
+      /* Чекбоксы «выделить все объекты» (useFilter=false) и «выделить все
+         отфильтрованные» (useFilter=true): выбрать/снять объекты слоя на всех
+         страницах — минуя пагинацию. */
+      function selectAllInTable(on, useFilter) {
         if (!canMultiSelect()) return;
         if (!on) {
           if (massSel.layer === state.layer) clearMassSelection();
           if (state.onlySelected) { applyOnlySelectedMap(); render(); }
+          else syncSelAllChecks();
           return;
         }
-        fetchAllTableIds(function (ids) {
+        fetchAllTableIds(useFilter, function (ids) {
           if (!ids) {
-            toast('Не удалось выделить все объекты.', true);
-            if (selAllEl) selAllEl.checked = false;
+            toast('Не удалось выделить объекты.', true);
+            syncSelAllChecks();
             return;
           }
           bulkAddIds(state.layer, ids);
           updateMassBar();
           if (state.onlySelected) { applyOnlySelectedMap(); render(); }
           else applyActiveClasses();
-          if (selAllEl) selAllEl.checked = true;
-          if (selAllLbl) selAllLbl.classList.add('active');
+          syncSelAllChecks();
         });
+      }
+
+      /* Синхронизировать состояние обоих чекбоксов «выделить все …» с текущим
+         массвыбором. Отфильтрованный отмечен, когда выбор покрывает набор под
+         фильтром (state.total); полный — когда покрывает весь слой. */
+      function syncSelAllChecks() {
+        var multi = canMultiSelect();
+        if (selAllLbl) selAllLbl.style.display = multi ? '' : 'none';
+        if (selFiltLbl) selFiltLbl.style.display =
+          (multi && (state.filter || state.query)) ? '' : 'none';
+        var filtTot = isServerPaged() ? (state.total || 0) : state.rows.length;
+        if (!(state.filter || state.query)) state.fullCount = filtTot;
+        var mass = (massSel.layer === state.layer) ? massSel.ids.size : 0;
+        var filtChecked = filtTot > 0 && mass >= filtTot;
+        var fullChecked = (state.fullCount || 0) > 0 && mass >= state.fullCount;
+        if (selFiltEl) selFiltEl.checked = filtChecked;
+        if (selFiltLbl) selFiltLbl.classList.toggle('active', filtChecked);
+        if (selAllEl) selAllEl.checked = fullChecked;
+        if (selAllLbl) selAllLbl.classList.toggle('active', fullChecked);
       }
 
       /* Множество id выбранных объектов активного слоя (строки). Учитываем и
@@ -6419,7 +6436,10 @@
         render();
       });
       if (selAllEl) selAllEl.addEventListener('change', function () {
-        selectAllInTable(selAllEl.checked);
+        selectAllInTable(selAllEl.checked, false);
+      });
+      if (selFiltEl) selFiltEl.addEventListener('change', function () {
+        selectAllInTable(selFiltEl.checked, true);
       });
 
       /* Кнопка ▤ в плашке статического слоя (ЗСН / Мои поля) открывает его
