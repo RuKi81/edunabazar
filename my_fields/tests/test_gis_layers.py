@@ -717,6 +717,62 @@ class LayerQueryEndpointTests(GisLayersTestCase):
         self.assertEqual(resp.status_code, 403)
 
 
+class BulkDeleteEndpointTests(GisLayersTestCase):
+    """DELETE /me/gis/api/layers/<pk>/features/ — пакетное удаление по ids."""
+
+    def setUp(self):
+        self._login_admin()
+        self._upload(_make_shp_zip(shp_name='fields'))   # 1 объект: id=1
+        self.layer = GisLayer.objects.get()
+
+    def _delete(self, body):
+        return self.client.delete(
+            f'/me/gis/api/layers/{self.layer.pk}/features/',
+            data=json.dumps(body), content_type='application/json')
+
+    def _feature_total(self):
+        resp = self.client.get(
+            f'/me/gis/api/layers/{self.layer.pk}/features/')
+        return resp.json()['total']
+
+    def test_bulk_delete_removes_features(self):
+        self.assertEqual(self._feature_total(), 1)
+        resp = self._delete({'ids': [1]})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertTrue(body['ok'])
+        self.assertEqual(body['deleted'], 1)
+        self.assertEqual(self._feature_total(), 0)
+
+    def test_bulk_delete_empty_ids_noop(self):
+        resp = self._delete({'ids': []})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['deleted'], 0)
+        self.assertEqual(self._feature_total(), 1)
+
+    def test_bulk_delete_unknown_id_deletes_zero(self):
+        resp = self._delete({'ids': [999999]})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['deleted'], 0)
+        self.assertEqual(self._feature_total(), 1)
+
+    def test_bulk_delete_missing_ids_is_400(self):
+        resp = self._delete({})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()['error'], 'no_ids')
+
+    def test_bulk_delete_requires_auth(self):
+        self.client.logout()
+        resp = self._delete({'ids': [1]})
+        self.assertEqual(resp.status_code, 401)
+
+    def test_bulk_delete_non_admin_denied(self):
+        self.client.logout()
+        self._login_plain()
+        resp = self._delete({'ids': [1]})
+        self.assertEqual(resp.status_code, 403)
+
+
 class LayerDuplicateEndpointTests(GisLayersTestCase):
     """POST /me/gis/api/layers/<pk>/duplicate/ — полная копия слоя."""
 

@@ -6906,19 +6906,25 @@
               body: JSON.stringify({ props: props }),
             }).then(function (r) { cb(r.ok); }).catch(function () { cb(false); });
           },
-          /* Массовое удаление объектов слоя: DELETE каждого fid, затем
-             cache-bust тайлов (gupRefreshTiles), чтобы карта отразила правку. */
+          /* Массовое удаление объектов слоя ОДНИМ запросом (DELETE на
+             коллекцию с телом {ids}), затем cache-bust тайлов
+             (gupRefreshTiles), чтобы карта отразила правку. Раньше слался
+             отдельный DELETE на каждый объект — при «выделить все» тысячи
+             параллельных запросов частично падали и объекты оставались. */
           deleteMany: function (fids, cb) {
-            var done = 0;
-            Promise.all((fids || []).map(function (fid) {
-              return fetch(API + L.id + '/features/' + fid + '/', {
-                method: 'DELETE', credentials: 'same-origin',
-                headers: { 'X-Requested-With': 'XMLHttpRequest' },
-              }).then(function (r) { if (r.ok) done++; }).catch(function () {});
-            })).then(function () {
-              try { gupRefreshTiles(L); } catch (_) {}
-              if (cb) cb(done);
-            });
+            fetch(API + L.id + '/features/', {
+              method: 'DELETE', credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+              body: JSON.stringify({ ids: fids || [] }),
+            }).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+              .then(function (j) {
+                try { gupRefreshTiles(L); } catch (_) {}
+                if (cb) cb((j && j.deleted) || 0);
+              })
+              .catch(function () {
+                try { gupRefreshTiles(L); } catch (_) {}
+                if (cb) cb(0);
+              });
           },
         };
         window.__gisAttr.register('gisup:' + L.id, def);

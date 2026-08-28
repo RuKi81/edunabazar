@@ -941,6 +941,31 @@ def delete_feature(layer, fid: int) -> int:
     return rowcount
 
 
+def delete_features(layer, fids) -> int:
+    """Пакетно удалить объекты слоя по списку id (один SQL-запрос).
+
+    Заменяет пофайловое удаление на фронте: при «выделить все объекты» тысячи
+    параллельных DELETE-запросов упирались в лимит соединений и часть падала —
+    объекты «оставались» в таблице. Здесь удаляем всё одним ``id = ANY(%s)``.
+    """
+    ids = []
+    for f in (fids or []):
+        try:
+            ids.append(int(f))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return 0
+    query = sql.SQL('DELETE FROM {table} WHERE id = ANY(%s)').format(
+        table=sql.Identifier(layer.table_name))
+    with connection.cursor() as cur:
+        cur.execute(query, [ids])
+        rowcount = cur.rowcount
+    if rowcount:
+        recompute_layer_meta(layer)
+    return rowcount
+
+
 def recompute_layer_meta(layer) -> None:
     """Пересчитать ``extent`` и ``feature_count`` слоя после правки геометрии."""
     with connection.cursor() as cur:

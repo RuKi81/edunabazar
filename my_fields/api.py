@@ -1172,18 +1172,23 @@ def _gis_feature_rank(request: HttpRequest, layer, sort: str,
 
 
 @csrf_exempt
-@require_http_methods(['GET', 'POST'])
+@require_http_methods(['GET', 'POST', 'DELETE'])
 def gis_layer_features(request: HttpRequest, pk: int) -> JsonResponse:
-    """GET — список объектов слоя; POST — создать объект по геометрии.
+    """GET — список объектов слоя; POST — создать объект; DELETE — пакетно
+    удалить объекты.
 
     * ``GET`` (уровень ``view``): постранично id + атрибуты для таблицы. С
       ``?geometry=1`` — GeoJSON FeatureCollection (id + точная геометрия) для
       загрузки в редактор draw.
     * ``POST`` (уровень ``edit``): создать новый объект с переданной
       геометрией (атрибуты — NULL). Тело: ``{"geometry": <GeoJSON>}``.
+    * ``DELETE`` (уровень ``edit``): удалить объекты списком id одним запросом.
+      Тело: ``{"ids": [...]}``.
     """
     if request.method == 'POST':
         return _gis_feature_create(request, pk)
+    if request.method == 'DELETE':
+        return _gis_features_bulk_delete(request, pk)
 
     gate = _require_gis_access(request, level='view', pk=pk)
     if gate:
@@ -1703,6 +1708,36 @@ def _gis_feature_create(request: HttpRequest, pk: int) -> JsonResponse:
             status=400,
         )
     return JsonResponse({'ok': True, 'id': new_id}, status=201)
+
+
+def _gis_features_bulk_delete(request: HttpRequest, pk: int) -> JsonResponse:
+    """DELETE — пакетно удалить объекты слоя по списку id (уровень ``edit``).
+
+    Тело JSON: ``{"ids": [...]}``. Один SQL-запрос вместо пофайлового удаления —
+    иначе при «выделить все объекты» тысячи параллельных запросов частично
+    падали и объекты оставались в таблице.
+    """
+    gate = _require_gis_access(request, level='edit', pk=pk)
+    if gate:
+        return gate
+    layer = get_object_or_404(GisLayer, pk=pk)
+
+    try:
+        data = json.loads(request.body or b'{}')
+    except (ValueError, TypeError):
+        return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
+
+    ids = data.get('ids')
+    if not isinstance(ids, list):
+        return JsonResponse(
+            {'ok': False, 'error': 'no_ids',
+             'detail': 'Ожидается массив ids.'},
+            status=400,
+        )
+
+    from .services.shp_import import delete_features
+    deleted = delete_features(layer, ids)
+    return JsonResponse({'ok': True, 'deleted': deleted})
 
 
 @csrf_exempt
