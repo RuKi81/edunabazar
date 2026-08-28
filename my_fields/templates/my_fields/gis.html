@@ -649,7 +649,11 @@
     }
     .gis-fp__rule .gis-fp__field { min-width: 120px; }
     .gis-fp__rule .gis-fp__op { min-width: 130px; }
-    .gis-fp__rule .gis-fp__val { min-width: 120px; flex: 1; }
+    .gis-fp__rule .gis-fp__val { min-width: 120px; flex: 0 1 220px; }
+    /* Блок кнопок фильтра: переносится JS в строку последнего условия и
+       прижимается вправо (margin-left:auto). Без условий — обычный блок. */
+    .gis-fp__actions { display: inline-flex; align-items: center; gap: 8px; }
+    .gis-fp__rule .gis-fp__actions { margin-left: auto; }
     .gis-fp__rule .gis-fp__del {
       border: 1px solid #ef9a9a; background: #fff; color: #c62828; border-radius: 5px;
       height: 30px; width: 30px; cursor: pointer; font-size: 14px; padding: 0; flex: none;
@@ -1163,12 +1167,13 @@
           <button type="button" class="gis-fp__btn" id="gis-fp-add">+ условие</button>
         </div>
         <div class="gis-fp__rules" id="gis-fp-rules"></div>
-        <div class="gis-fp__foot">
-          <span class="gis-fp__spacer"></span>
+        <!-- Блок кнопок JS переносит вправо в строку последнего условия
+             (fpPlaceActions). Если условий нет — остаётся здесь. -->
+        <span class="gis-fp__actions" id="gis-fp-actions">
           <button type="button" class="gis-fp__btn gis-fp__btn--primary" id="gis-fp-apply">Применить</button>
           <button type="button" class="gis-fp__btn" id="gis-fp-reset">Сбросить</button>
           <button type="button" class="gis-fp__btn" id="gis-fp-save">Сохранить как слой…</button>
-        </div>
+        </span>
       </div>
       <div class="gis-attrtable__body" id="gis-attrtable-body"></div>
     </section>
@@ -5159,6 +5164,7 @@
       var fpToggle = document.getElementById('gis-attrtable-filter-toggle');
       var fpPanel  = document.getElementById('gis-attrtable-filterpanel');
       var fpRules  = document.getElementById('gis-fp-rules');
+      var fpActions = document.getElementById('gis-fp-actions');
       var fpMatch  = document.getElementById('gis-fp-match');
       var editHint = document.getElementById('gis-attrtable-edithint');
       var titleEl  = document.getElementById('gis-attrtable-title');
@@ -6561,13 +6567,33 @@
         var syncVal = function () { fpRenderVal(vWrap, oEl.value, fpFieldKind(fEl.value)); };
         fEl.addEventListener('change', syncVal);
         oEl.addEventListener('change', syncVal);
-        row.querySelector('.gis-fp__del').addEventListener('click', function () { row.remove(); });
+        row.querySelector('.gis-fp__del').addEventListener('click', function () {
+          row.remove();
+          fpPlaceActions();
+        });
         if (preset) {
           if (preset.field) fEl.value = preset.field;
           if (preset.op) oEl.value = preset.op;
         }
         syncVal();
         if (preset && preset.value != null) fpSetVal(vWrap, oEl.value, preset.value);
+        fpPlaceActions();
+      }
+
+      /* Перенести блок кнопок «Применить / Сбросить / Сохранить как слой» вправо
+         в строку последнего условия (по просьбе — экономия вертикали). Если
+         условий нет — блок остаётся в панели под списком правил. */
+      function fpPlaceActions() {
+        if (!fpActions || !fpRules) return;
+        var rows = fpRules.querySelectorAll('.gis-fp__rule');
+        if (!rows.length) {
+          if (fpActions.parentNode !== fpPanel) fpPanel.appendChild(fpActions);
+          return;
+        }
+        var last = rows[rows.length - 1];
+        var del = last.querySelector('.gis-fp__del');
+        if (del) last.insertBefore(fpActions, del);
+        else last.appendChild(fpActions);
       }
       /* Собрать filter_spec из UI → {spec} либо {error}. */
       function fpBuildSpec() {
@@ -6615,7 +6641,7 @@
         if (fpRules && !fpRules.querySelector('.gis-fp__rule')) fpAddRule();
       }
       function fpClosePanel() { if (fpPanel) fpPanel.hidden = true; }
-      function fpResetUI() { if (fpRules) fpRules.innerHTML = ''; }
+      function fpResetUI() { if (fpRules) fpRules.innerHTML = ''; fpPlaceActions(); }
 
       if (fpToggle) fpToggle.addEventListener('click', function () {
         if (!fpAvailable()) return;
