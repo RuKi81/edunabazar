@@ -1189,7 +1189,13 @@ def gis_layer_features(request: HttpRequest, pk: int) -> JsonResponse:
         return _gis_feature_create(request, pk)
     if request.method == 'DELETE':
         return _gis_features_bulk_delete(request, pk)
+    return _gis_features_list(request, pk)
 
+
+def _gis_features_list(request: HttpRequest, pk: int) -> JsonResponse:
+    """GET-ветка :func:`gis_layer_features`: список объектов слоя (постранично),
+    ``?geometry=1`` — GeoJSON, ``?rank_of=`` — позиция объекта, ``?ids_only=1`` —
+    все id (уровень ``view``)."""
     gate = _require_gis_access(request, level='view', pk=pk)
     if gate:
         return gate
