@@ -673,3 +673,56 @@ class LayerQueryEndpointTests(GisLayersTestCase):
         self._login_plain()
         resp = self._query({'filter': {'rules': []}})
         self.assertEqual(resp.status_code, 403)
+
+
+class LayerDuplicateEndpointTests(GisLayersTestCase):
+    """POST /me/gis/api/layers/<pk>/duplicate/ — полная копия слоя."""
+
+    def setUp(self):
+        self._login_admin()
+        self._upload(_make_shp_zip(shp_name='fields'))   # 1 объект: num=42
+        self.layer = GisLayer.objects.get()
+
+    def _dup(self, body=None):
+        return self.client.post(
+            f'/me/gis/api/layers/{self.layer.pk}/duplicate/',
+            data=json.dumps(body or {}), content_type='application/json')
+
+    def test_duplicate_creates_copy(self):
+        resp = self._dup()
+        self.assertEqual(resp.status_code, 201, resp.content)
+        body = resp.json()
+        self.assertTrue(body['ok'])
+        self.assertEqual(GisLayer.objects.count(), 2)
+        new_layer = GisLayer.objects.get(pk=body['layer']['id'])
+        self.assertNotEqual(new_layer.pk, self.layer.pk)
+        self.assertEqual(new_layer.title, f'копия_{self.layer.title}')
+        self.assertEqual(new_layer.feature_count, self.layer.feature_count)
+        self.assertEqual(new_layer.geom_kind, self.layer.geom_kind)
+        self.assertTrue(_table_exists(new_layer.table_name))
+        self.assertNotEqual(new_layer.table_name, self.layer.table_name)
+
+    def test_duplicate_copies_style_and_color(self):
+        self.layer.color = '#123456'
+        self.layer.style = {'mode': 'single', 'locked': True}
+        self.layer.save(update_fields=['color', 'style'])
+        resp = self._dup()
+        self.assertEqual(resp.status_code, 201, resp.content)
+        new_layer = GisLayer.objects.get(pk=resp.json()['layer']['id'])
+        self.assertEqual(new_layer.color, '#123456')
+        self.assertEqual(new_layer.style.get('locked'), True)
+
+    def test_duplicate_custom_title(self):
+        resp = self._dup({'title': 'Моя копия'})
+        self.assertEqual(resp.status_code, 201, resp.content)
+        new_layer = GisLayer.objects.get(pk=resp.json()['layer']['id'])
+        self.assertEqual(new_layer.title, 'Моя копия')
+
+    def test_anonymous_denied(self):
+        self.client.logout()
+        self.assertEqual(self._dup().status_code, 401)
+
+    def test_non_admin_denied(self):
+        self.client.logout()
+        self._login_plain()
+        self.assertEqual(self._dup().status_code, 403)

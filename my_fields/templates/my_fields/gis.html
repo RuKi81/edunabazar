@@ -6027,6 +6027,19 @@
         apply();
       }
 
+      /* Клик по объекту на карте: подсветить его на карте всегда (feature-state
+         'selected'), а строку в таблице — только если таблица открыта. Так
+         одиночный выбор объекта на карте виден и при закрытой таблице. */
+      function mapClickSelect(layer, id) {
+        if (id == null) return;
+        if (window.__gisSelectionActive && window.__gisSelectionActive()) return;
+        if (editingCell) return;
+        if (state.open) { selectFromMap(layer, id); return; }
+        clearSelHighlight();
+        state.sel = { layer: layer, id: id };
+        try { setSelState(layer, id, true); } catch (_) {}
+      }
+
       /* Перейти на страницу с объектом ``id`` активного SHP-слоя и подсветить
          его строку. Позицию (rank) считает сервер под текущую сортировку и
          поиск, поэтому подсветка работает на слоях любого размера. */
@@ -6219,6 +6232,10 @@
           if (!state.open || id == null) return;
           selectFromMap(layer, id);
         },
+        /* Клик по объекту на карте: подсветить его на карте всегда (даже при
+           закрытой таблице), строку — если таблица открыта. layer — ключ
+           слоя ('farmlands' / 'userfields' / 'gisup:<id>'). */
+        mapClick: function (layer, id) { mapClickSelect(layer, id); },
         /* Редактируемые столбцы SHP-слоя — для формы массовой правки атрибутов
            (модалка живёт во внешнем scope и не видит COLUMNS). */
         editableCols: function (layer) {
@@ -6560,21 +6577,22 @@
         });
       });
 
-      /* Двусторонняя синхронизация: клик по полигону на карте → строка.
-         Доп. слушатели (не мешают существующим обработчикам click). */
+      /* Двусторонняя синхронизация: клик по полигону на карте → подсветка
+         объекта (всегда) + строка (если таблица открыта). Доп. слушатели
+         (не мешают существующим обработчикам click). */
       map.on('click', 'farmlands-fill', function (e) {
         if (window.__gisSelectionActive && window.__gisSelectionActive()) return;
-        if (!state.open || !e.features.length) return;
+        if (!e.features.length) return;
         var ft = e.features[0];
         var id = (ft.id != null) ? ft.id : (ft.properties && ft.properties.id);
-        selectFromMap('farmlands', id);
+        mapClickSelect('farmlands', id);
       });
       map.on('click', 'userfields-fill', function (e) {
         if (window.__gisSelectionActive && window.__gisSelectionActive()) return;
-        if (!state.open || !e.features.length) return;
+        if (!e.features.length) return;
         var ft = e.features[0];
         var id = (ft.id != null) ? ft.id : (ft.properties && ft.properties.id);
-        selectFromMap('userfields', id);
+        mapClickSelect('userfields', id);
       });
 
       /* Авто-обновление ЗСН при перемещении карты (debounce). */
@@ -6918,11 +6936,11 @@
             var ft = e.features && e.features[0];
             if (!ft) return;
             showAttrs(ft.properties || {}, L);
-            /* Синхронизация с таблицей атрибутов: подсветить строку объекта
-               (если таблица открыта на этом слое). */
+            /* Подсветить объект на карте всегда (feature-state 'selected'),
+               а строку в таблице — если таблица открыта на этом слое. */
             var fid = (ft.id != null) ? ft.id : (ft.properties && ft.properties.id);
-            if (fid != null && window.__gisAttr && window.__gisAttr.select) {
-              window.__gisAttr.select(L.id, fid);
+            if (fid != null && window.__gisAttr && window.__gisAttr.mapClick) {
+              window.__gisAttr.mapClick('gisup:' + L.id, fid);
             }
           });
           map.on('mouseenter', lid, function () {
@@ -7811,10 +7829,17 @@
         dlBtn.className = 'gis-layer__btn'; dlBtn.type = 'button';
         dlBtn.setAttribute('data-a', 'download'); dlBtn.setAttribute('data-ord', '8');
         dlBtn.title = 'Скачать слой (SHP / GeoJSON / Excel)'; dlBtn.textContent = '⭳';
+        /* Дублировать слой: серверная копия всех объектов/атрибутов в новый
+           слой с префиксом «копия_». */
+        var dupBtn = document.createElement('button');
+        dupBtn.className = 'gis-layer__btn'; dupBtn.type = 'button';
+        dupBtn.setAttribute('data-a', 'duplicate'); dupBtn.setAttribute('data-ord', '9');
+        dupBtn.title = 'Дублировать слой (копия_)'; dupBtn.textContent = '⧉';
 
         iconsBox.appendChild(colorEl); iconsBox.appendChild(selEl); iconsBox.appendChild(zoomBtn);
         iconsBox.appendChild(geomBtn); iconsBox.appendChild(visEl); iconsBox.appendChild(styleBtn);
         iconsBox.appendChild(tableBtn); iconsBox.appendChild(lockBtn); iconsBox.appendChild(dlBtn);
+        iconsBox.appendChild(dupBtn);
         menuWrap.appendChild(kebab); menuWrap.appendChild(pop);
         controls.appendChild(iconsBox);
         controls.appendChild(menuWrap);
@@ -7891,6 +7916,32 @@
           /* Позицию меню считаем ДО скрытия кебаба (кнопка может жить в нём). */
           openDownloadMenu(dlBtn, L);
           pop.hidden = true;
+        });
+        dupBtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          pop.hidden = true;
+          if (dupBtn.disabled) return;
+          dupBtn.disabled = true;
+          toast('Дублирование слоя…');
+          fetch(API + L.id + '/duplicate/', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            body: '{}',
+          }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+            .then(function (o) {
+              dupBtn.disabled = false;
+              if (!o.ok || !o.j || !o.j.ok) {
+                toast((o.j && o.j.detail) || 'Не удалось дублировать слой.', true);
+                return;
+              }
+              if (window.__gisUpIngest && o.j.layer) window.__gisUpIngest(o.j.layer);
+              toast('Слой скопирован: ' + (o.j.layer ? o.j.layer.title : '') +
+                    (o.j.layer ? ' (' + o.j.layer.feature_count + ' об.)' : ''));
+            })
+            .catch(function () {
+              dupBtn.disabled = false;
+              toast('Ошибка сети при дублировании слоя.', true);
+            });
         });
         geomBtn.addEventListener('click', function () {
           pop.hidden = true;

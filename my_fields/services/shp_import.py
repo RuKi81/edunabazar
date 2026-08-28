@@ -478,6 +478,31 @@ def create_layer_from_query(layer, title: str, filter_spec=None,
     )
 
 
+def duplicate_layer(layer, *, owner=None, title: str = ''):
+    """Создать полную копию слоя (все объекты и атрибуты) в новый слой.
+
+    Копирует геометрию и все атрибуты через :func:`create_layer_from_query`
+    без фильтра, затем переносит оформление исходного слоя (цвет, стиль,
+    папку). Название по умолчанию — с префиксом ``копия_``.
+    """
+    new_title = (title or f'копия_{layer.title}').strip()
+    new_layer = create_layer_from_query(
+        layer, new_title, filter_spec=None, query_text='', owner=owner)
+    update_fields = []
+    if layer.color:
+        new_layer.color = layer.color
+        update_fields.append('color')
+    if isinstance(layer.style, dict) and layer.style:
+        new_layer.style = dict(layer.style)
+        update_fields.append('style')
+    if layer.folder_id:
+        new_layer.folder_id = layer.folder_id
+        update_fields.append('folder')
+    if update_fields:
+        new_layer.save(update_fields=update_fields)
+    return new_layer
+
+
 # ── Низкоуровневые операции с БД ────────────────────────────────────────
 
 def _create_table(table_name: str, columns) -> None:

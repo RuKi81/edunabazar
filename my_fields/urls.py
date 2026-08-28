@@ -39,6 +39,7 @@ urlpatterns = [
     path('me/gis/api/layers/<int:pk>/', api.gis_layer_detail, name='api_gis_layer_detail'),
     path('me/gis/api/layers/<int:pk>/features/', api.gis_layer_features, name='api_gis_layer_features'),
     path('me/gis/api/layers/<int:pk>/query/', api.gis_layer_query, name='api_gis_layer_query'),
+    path('me/gis/api/layers/<int:pk>/duplicate/', api.gis_layer_duplicate, name='api_gis_layer_duplicate'),
     path('me/gis/api/overlay/', api.gis_overlay_create, name='api_gis_overlay_create'),
     path('me/gis/api/overlay/<int:run_id>/', api.gis_overlay_status, name='api_gis_overlay_status'),
     path('me/gis/api/layers/<int:pk>/export/', api.gis_layer_export, name='api_gis_layer_export'),

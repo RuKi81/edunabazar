@@ -1357,6 +1357,41 @@ def _gis_query_save_as(request, layer, save_as, filter_spec, query_text):
     return JsonResponse({'ok': True, 'layer': _gis_layer_to_dict(new_layer)})
 
 
+@csrf_exempt
+@require_http_methods(['POST'])
+def gis_layer_duplicate(request: HttpRequest, pk: int) -> JsonResponse:
+    """POST — создать полную копию слоя (все объекты и атрибуты).
+
+    Название нового слоя — с префиксом ``копия_`` (можно переопределить полем
+    ``title`` в теле). Уровень доступа — как у создания слоя: whole-class
+    ``manage``.
+    """
+    from .services import shp_import
+
+    gate = _require_gis_access(request, level='manage')
+    if gate:
+        return gate
+    layer = get_object_or_404(GisLayer, pk=pk)
+
+    title = ''
+    if request.body:
+        try:
+            data = json.loads(request.body)
+            if isinstance(data, dict):
+                title = str(data.get('title', '') or '')
+        except (ValueError, TypeError):
+            pass
+    try:
+        new_layer = shp_import.duplicate_layer(
+            layer, owner=request.user, title=title)
+    except shp_import.ShapefileImportError as e:
+        return JsonResponse(
+            {'ok': False, 'error': 'duplicate_failed', 'detail': str(e)},
+            status=400)
+    return JsonResponse(
+        {'ok': True, 'layer': _gis_layer_to_dict(new_layer)}, status=201)
+
+
 def _gis_query_list(layer, data, sort, direction, query_text, filter_spec):
     """Постраничный список отфильтрованных объектов (как таблица атрибутов)."""
     from .services import shp_import
