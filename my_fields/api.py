@@ -1210,6 +1210,13 @@ def gis_layer_features(request: HttpRequest, pk: int) -> JsonResponse:
     if request.GET.get('rank_of') is not None:
         return _gis_feature_rank(request, layer, sort, direction, query_text)
 
+    # ids_only=1: все id объектов (с учётом поиска), без пагинации — для
+    # «выделить все объекты таблицы».
+    if request.GET.get('ids_only') in ('1', 'true', 'yes'):
+        from .services.shp_import import list_feature_ids
+        ids = list_feature_ids(layer, query_text=query_text)
+        return JsonResponse({'ok': True, 'ids': ids, 'total': len(ids)})
+
     from .services.shp_import import list_features
     try:
         limit = int(request.GET.get('limit', 1000))
@@ -1312,7 +1319,24 @@ def gis_layer_query(request: HttpRequest, pk: int) -> JsonResponse:
     if data.get('save_as') is not None:
         return _gis_query_save_as(
             request, layer, data.get('save_as'), filter_spec, query_text)
+    if data.get('ids_only'):
+        return _gis_query_ids(layer, query_text, filter_spec)
     return _gis_query_list(layer, data, sort, direction, query_text, filter_spec)
+
+
+def _gis_query_ids(layer, query_text, filter_spec):
+    """Все id объектов под текущим фильтром/поиском (без пагинации) — для
+    «выделить все объекты таблицы»."""
+    from .services import shp_import
+    from .services.layer_query import LayerQueryError
+
+    try:
+        ids = shp_import.list_feature_ids(
+            layer, query_text=query_text, filter_spec=filter_spec)
+    except LayerQueryError as e:
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_filter', 'detail': str(e)}, status=400)
+    return JsonResponse({'ok': True, 'ids': ids, 'total': len(ids)})
 
 
 def _gis_query_rank(layer, data, sort, direction, query_text, filter_spec):

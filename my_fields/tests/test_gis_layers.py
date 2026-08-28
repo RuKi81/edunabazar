@@ -663,6 +663,48 @@ class LayerQueryEndpointTests(GisLayersTestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.json()['error'], 'empty_title')
 
+    def test_ids_only_query_returns_matching_ids(self):
+        # Матч (num=42 > 0) → все id; без пагинации.
+        resp = self._query({
+            'ids_only': True,
+            'filter': {'rules': [{'field': 'num', 'op': 'gt', 'value': 0}]}})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertTrue(body['ok'])
+        self.assertEqual(body['total'], 1)
+        self.assertEqual(len(body['ids']), 1)
+
+    def test_ids_only_query_no_match(self):
+        resp = self._query({
+            'ids_only': True,
+            'filter': {'rules': [{'field': 'num', 'op': 'gt', 'value': 100}]}})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['ids'], [])
+
+    def test_ids_only_invalid_filter_is_400(self):
+        resp = self._query({
+            'ids_only': True,
+            'filter': {'rules': [{'field': 'nope', 'op': 'eq', 'value': 1}]}})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()['error'], 'invalid_filter')
+
+    def test_ids_only_features_get(self):
+        resp = self.client.get(
+            f'/me/gis/api/layers/{self.layer.pk}/features/?ids_only=1')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertTrue(body['ok'])
+        self.assertEqual(body['total'], 1)
+        self.assertEqual(len(body['ids']), 1)
+
+    def test_ids_only_features_get_search(self):
+        # Поиск по несуществующей подстроке → пустой набор id.
+        resp = self.client.get(
+            f'/me/gis/api/layers/{self.layer.pk}/features/'
+            '?ids_only=1&q=zzzнеттакого')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['ids'], [])
+
     def test_anonymous_denied(self):
         self.client.logout()
         resp = self._query({'filter': {'rules': []}})

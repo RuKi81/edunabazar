@@ -680,6 +680,26 @@ def list_features(layer, limit: int = 1000, offset: int = 0,
     return {'total': total, 'results': results}
 
 
+def list_feature_ids(layer, query_text: str = '', filter_spec=None) -> list:
+    """Все id объектов слоя, удовлетворяющих фильтру/поиску (без пагинации).
+
+    Используется для «выделить все объекты таблицы» — клиент получает полный
+    набор id (с учётом текущего структурного фильтра и подстрочного поиска),
+    минуя постраничную загрузку. Геометрию/атрибуты не отдаём — только id.
+    """
+    from .layer_query import build_where
+
+    types = _attr_db_types(layer)
+    cols = list(types.keys())
+    table = sql.Identifier(layer.table_name)
+    where_sql, where_params = build_where(layer, cols, filter_spec, query_text)
+    query = sql.SQL('SELECT id FROM {table}{where} ORDER BY id ASC').format(
+        table=table, where=where_sql)
+    with connection.cursor() as cur:
+        cur.execute(query, where_params)
+        return [row[0] for row in cur.fetchall()]
+
+
 def feature_rank(layer, fid: int, sort: str = 'id', direction: str = 'asc',
                  query_text: str = '', filter_spec=None) -> dict:
     """0-based позиция объекта ``fid`` в текущем порядке/фильтре.
