@@ -753,6 +753,14 @@
     .gis-attrtable tbody tr:hover .gis-attrtable__zoombtn { opacity: 1; }
     .gis-attrtable__zoombtn:hover { background: #e8f5e9; border-color: #a5d6a7; opacity: 1; }
 
+    /* Служебный столбец «№» — сквозная нумерация строк (1..N в текущем
+       порядке/фильтре, с учётом страницы для серверно-постраничных SHP). */
+    .gis-attrtable thead th.gis-attrtable__numh { width: 46px; cursor: default; text-align: right; }
+    .gis-attrtable thead th.gis-attrtable__numh:hover { background: #f1f8e9; }
+    .gis-attrtable tbody td.gis-attrtable__num {
+      text-align: right; color: #90a4ae; font-variant-numeric: tabular-nums; padding: 4px 8px;
+    }
+
     /* ── Загрузчик SHP (ZIP) ── */
     /* Подсказка о перетаскивании — закреплена внизу левого сайдбара. */
     .gis-upload-hint {
@@ -1380,9 +1388,13 @@
       ],
     };
 
+    /* Дефолтный охват — Тульская область (EPSG:4326, [[W,S],[E,N]]).
+       hash:true: если в URL есть #zoom/lat/lng — он приоритетнее bounds. */
+    var TULA_BOUNDS = [[35.85, 52.90], [38.95, 54.83]];
     var map = new maplibregl.Map({
       container: 'gis-map', style: style,
-      center: [37.62, 55.75], zoom: 9, hash: true,
+      bounds: TULA_BOUNDS, fitBoundsOptions: { padding: 20 },
+      hash: true,
     });
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), 'top-right');
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
@@ -5399,13 +5411,18 @@
           '<th class="gis-attrtable__selh" title="Выбрать все на странице">' +
             '<input type="checkbox" class="gis-attrtable__selall"' + (allSelected ? ' checked' : '') + '></th>' +
           '<th class="gis-attrtable__zoomh" title="Приблизить"></th>' +
+          '<th class="gis-attrtable__numh" title="Порядковый номер (сквозной)">№</th>' +
           cols.map(function (c) {
             var ind = '';
             if (c.key === state.sortKey) ind = '<span class="sort-ind">' + (state.sortDir === 1 ? '▲' : '▼') + '</span>';
             return '<th data-key="' + esc(c.key) + '">' + esc(c.label) + ind + '</th>';
           }).join('') + '</tr></thead>';
 
-        var tbody = '<tbody>' + state.rows.map(function (r) {
+        /* Сквозная нумерация «№»: для серверно-постраничных SHP учитываем
+           смещение текущей страницы (page*pageSize), для статических слоёв
+           нумеруем от 1 в текущем порядке отображения. */
+        var numBase = serverPaged ? state.page * state.pageSize : 0;
+        var tbody = '<tbody>' + state.rows.map(function (r, rowIdx) {
           var inMass = massSel.layer === state.layer && massSel.ids.has(String(r.id));
           var isActive = inMass ||
                          (state.sel.layer === state.layer && String(state.sel.id) === String(r.id));
@@ -5415,6 +5432,7 @@
             '<input type="checkbox" class="gis-attrtable__selbox"' + (inMass ? ' checked' : '') + '></td>';
           var zoomTd = '<td class="gis-attrtable__zoom">' +
             '<button type="button" class="gis-attrtable__zoombtn" title="Приблизить к объекту">🔍</button></td>';
+          var numTd = '<td class="gis-attrtable__num">' + (numBase + rowIdx + 1) + '</td>';
           var tds = cols.map(function (c) {
             var val = cellDisplay(c, r.props);
             var canEdit = !!c.edit;
@@ -5422,7 +5440,7 @@
             return '<td' + (tdCls ? ' class="' + tdCls + '"' : '') +
               ' data-key="' + esc(c.key) + '" title="' + esc(val) + '">' + esc(val) + '</td>';
           }).join('');
-          return '<tr data-id="' + esc(r.id) + '"' + cls + '>' + selTd + zoomTd + tds + '</tr>';
+          return '<tr data-id="' + esc(r.id) + '"' + cls + '>' + selTd + zoomTd + numTd + tds + '</tr>';
         }).join('') + '</tbody>';
 
         /* Футер пагинации — только для server-paged слоёв (SHP). Sticky снизу,
