@@ -170,6 +170,49 @@ class ImportTests(GisLayersTestCase):
         self.assertEqual(GisLayer.objects.count(), 2)
         self.assertEqual(len({x.table_name for x in GisLayer.objects.all()}), 2)
 
+    def test_cyrillic_field_name_truncated_in_dbf(self):
+        # Имя поля в DBF ограничено 10 байтами. Сторонние выгрузки (ArcGIS,
+        # Росреестр) обрезают кириллическое имя (UTF-8, 2 байта/символ) ПОСРЕДИ
+        # многобайтового символа, из-за чего штатный ``layer.fields`` падает
+        # UnicodeDecodeError ещё до импорта. Импорт должен это переживать.
+        # pyshp обрезает по границе символа (безопасно), поэтому портим
+        # 11-байтовый слот имени первого поля в .dbf вручную — так же, как это
+        # делают чужие инструменты.
+        tmp = tempfile.mkdtemp(prefix='gis_test_cyr_')
+        base = os.path.join(tmp, 'cyr')
+        w = shapefile.Writer(base, encoding='utf-8')
+        w.field('name', 'C', size=40)
+        w.field('num', 'N', size=10)
+        w.poly([RING])
+        w.record('поле-A', 7)
+        w.close()
+
+        # Патчим первое поле-дескриптор (offset 32, слот имени = байты 0..10).
+        # 'наименова'[:9] байт → обрыв посреди последнего символа.
+        with open(base + '.dbf', 'r+b') as fh:
+            data = bytearray(fh.read())
+            bad = 'наименование'.encode('utf-8')[:9]
+            name_slot = bad + b'\x00' * (11 - len(bad))
+            data[32:32 + 11] = name_slot
+            fh.seek(0)
+            fh.write(data)
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as zf:
+            for ext in ('shp', 'shx', 'dbf'):
+                zf.write(base + '.' + ext, arcname='cyr.' + ext)
+        buf.seek(0)
+
+        resp = self._upload(buf.read())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(GisLayer.objects.count(), 1)
+        layer = GisLayer.objects.get()
+        self.assertEqual(layer.feature_count, 1)
+        # Значения атрибутов прочитаны по индексу (устойчиво к битому имени).
+        with connection.cursor() as cur:
+            cur.execute(f'SELECT count(*) FROM "{layer.table_name}"')
+            self.assertEqual(cur.fetchone()[0], 1)
+
     def test_zip_without_shp_is_400(self):
         resp = self._upload(_make_shp_zip(with_shp=False))
         self.assertEqual(resp.status_code, 400)

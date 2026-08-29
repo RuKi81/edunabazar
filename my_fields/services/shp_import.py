@@ -114,6 +114,35 @@ def _geom_kind(ogr_geom_type: str) -> str:
     return 'other'
 
 
+def _layer_field_names(layer):
+    """Имена полей слоя с устойчивым декодированием.
+
+    Имя поля в DBF ограничено 10 БАЙТАМИ — кириллическое имя (UTF-8) может быть
+    обрезано посреди многобайтового символа, и штатный ``layer.fields`` падает
+    ``UnicodeDecodeError`` ещё до импорта. Читаем имена через тот же GDAL-capi,
+    но декодируем снисходительно (``errors='replace'``), чтобы импорт не
+    рушился (сами имена колонок в БД всё равно sanitized через slugify).
+    """
+    try:
+        return list(layer.fields)
+    except UnicodeDecodeError:
+        from django.contrib.gis.gdal.prototypes import ds as capi
+        names = []
+        for i in range(layer.num_fields):
+            try:
+                raw = capi.get_field_name(
+                    capi.get_field_defn(layer._ldefn, i))
+            except Exception:
+                raw = None
+            if isinstance(raw, (bytes, bytearray)):
+                names.append(bytes(raw).decode('utf-8', 'replace'))
+            elif raw is None:
+                names.append(f'attr_{i + 1}')
+            else:
+                names.append(str(raw))
+        return names
+
+
 def _build_columns(field_names, field_types):
     """Составить список колонок (dedup'нуть, обойти reserved id/geom).
 
@@ -219,7 +248,8 @@ def import_shapefile(shp_path: str, title: str, owner=None,
             except Exception:  # pragma: no cover — экзотические CRS
                 ct = None
 
-    columns, attr_meta = _build_columns(layer.fields, layer.field_types)
+    columns, attr_meta = _build_columns(
+        _layer_field_names(layer), layer.field_types)
     table_name = _unique_table_name(title)
     color = LAYER_COLORS[GisLayer.objects.count() % len(LAYER_COLORS)]
     next_order = (
@@ -530,7 +560,10 @@ def _copy_features(table_name: str, layer, columns, ct) -> int:
         sql.SQL(', ').join(col_idents + [sql.Identifier('geom')]),
         sql.SQL(', ').join(placeholders),
     )
-    ogr_names = [ogr for _, _, ogr in columns]
+    # Читаем значения по ИНДЕКСУ поля (columns[j] ↔ OGR-поле j), а не по имени:
+    # имя может быть обрезано/битым (10-байтный лимит DBF), и lookup по имени
+    # тогда не находит поле. Индекс устойчив к этому.
+    field_count = len(columns)
 
     count = 0
     batch = []
@@ -544,7 +577,7 @@ def _copy_features(table_name: str, layer, columns, ct) -> int:
                     geom.transform(ct)
                 except Exception:
                     continue
-            values = [_field_value(feat, name) for name in ogr_names]
+            values = [_field_value(feat, j) for j in range(field_count)]
             values.append(geom.wkt)
             batch.append(values)
             count += 1
@@ -1027,10 +1060,15 @@ def field_stats(layer, field: str, distinct_limit: int = 60):
 
 # ── Вспомогательное ─────────────────────────────────────────────────────
 
-def _field_value(feat, ogr_name):
-    """Безопасно достать значение атрибута (None при любой ошибке чтения)."""
+def _field_value(feat, field_ref):
+    """Безопасно достать значение атрибута (None при любой ошибке чтения).
+
+    ``field_ref`` — имя поля ИЛИ его целочисленный индекс. Индекс устойчив к
+    битым/обрезанным именам полей (10-байтный лимит DBF), поэтому импорт
+    читает значения именно по индексу.
+    """
     try:
-        return feat.get(ogr_name)
+        return feat.get(field_ref)
     except Exception:
         return None
 
