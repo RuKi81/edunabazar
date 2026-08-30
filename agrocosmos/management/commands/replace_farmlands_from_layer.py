@@ -153,6 +153,15 @@ class Command(BaseCommand):
             f'{boundary.feature_count} об.)  predicate={predicate}'
         ))
 
+        # Зависимые строки (NDVI/фенология/алерты и т.п.), которые будут
+        # удалены каскадом вместе с угодьями — сырой DELETE их не каскадит.
+        for tbl_name, col in self._referencing_fks():
+            cnt = self._child_count(boundary_tbl, predicate, tbl_name, col)
+            if cnt:
+                self.stdout.write(self.style.WARNING(
+                    f'[replace]   зависимые: {tbl_name}.{col} → удалить {cnt:,}'
+                ))
+
         # Параметры вставки готовим только если есть источник.
         source_tbl = region_id = source_tag = None
         crop_field = usage_field = cad_field = None
@@ -217,6 +226,47 @@ class Command(BaseCommand):
     def _count_delete(self, boundary_tbl, predicate) -> int:
         stmt = sql.SQL('{cte} SELECT count(*) FROM agro_farmland f, b WHERE {pred}').format(
             cte=self._boundary_cte(boundary_tbl), pred=self._predicate_sql(predicate),
+        )
+        with connection.cursor() as cur:
+            cur.execute(stmt)
+            return int(cur.fetchone()[0] or 0)
+
+    def _targets_cte(self, boundary_tbl, predicate):
+        """CTE ``b`` (контур) + ``t(id)`` — id угодий под удаление."""
+        return sql.SQL(
+            'WITH b AS (SELECT ST_Union(ST_MakeValid(ST_Force2D(geom))) AS g '
+            'FROM {tbl} WHERE geom IS NOT NULL), '
+            't AS (SELECT f.id FROM agro_farmland f, b WHERE {pred})'
+        ).format(tbl=boundary_tbl, pred=self._predicate_sql(predicate))
+
+    @staticmethod
+    def _referencing_fks():
+        """``[(table, column), ...]`` — все FK, ссылающиеся на agro_farmland.
+
+        Обнаруживаем зависимости динамически из каталога Postgres, чтобы
+        удалить дочерние строки перед удалением самих угодий (сырой SQL
+        DELETE не каскадит, а FK объявлены DEFERRED и падают на COMMIT).
+        """
+        q = (
+            "SELECT con.conrelid::regclass::text, att.attname "
+            "FROM pg_constraint con "
+            "JOIN pg_attribute att ON att.attrelid = con.conrelid "
+            "AND att.attnum = ANY(con.conkey) "
+            "WHERE con.contype = 'f' "
+            "AND con.confrelid = 'agro_farmland'::regclass "
+            "ORDER BY 1"
+        )
+        with connection.cursor() as cur:
+            cur.execute(q)
+            return [(r[0], r[1]) for r in cur.fetchall()]
+
+    def _child_count(self, boundary_tbl, predicate, child_tbl, child_col) -> int:
+        stmt = sql.SQL(
+            '{cte} SELECT count(*) FROM {child} c '
+            'WHERE c.{col} IN (SELECT id FROM t)'
+        ).format(
+            cte=self._targets_cte(boundary_tbl, predicate),
+            child=sql.SQL(child_tbl), col=sql.Identifier(child_col),
         )
         with connection.cursor() as cur:
             cur.execute(stmt)
@@ -289,20 +339,38 @@ class Command(BaseCommand):
     def _apply(self, boundary_tbl, source_tbl, predicate, region_id, source_tag,
                crop_field, usage_field, cad_field, default_crop, delete_only=False):
         t0 = time.monotonic()
-        del_stmt = sql.SQL('{cte} DELETE FROM agro_farmland f USING b WHERE {pred}').format(
-            cte=self._boundary_cte(boundary_tbl), pred=self._predicate_sql(predicate),
-        )
+        fks = self._referencing_fks()
         inserted = 0
+        child_deleted: dict[str, int] = {}
         with transaction.atomic():
             with connection.cursor() as cur:
-                cur.execute(del_stmt)
+                # 1) Материализуем id угодий под удаление во временную таблицу
+                #    (пространственный отбор считается один раз).
+                cur.execute(sql.SQL(
+                    'CREATE TEMP TABLE _fl_del ON COMMIT DROP AS {cte} SELECT id FROM t'
+                ).format(cte=self._targets_cte(boundary_tbl, predicate)))
+                cur.execute('CREATE INDEX ON _fl_del (id)')
+                # 2) Удаляем зависимые строки во всех ссылающихся таблицах —
+                #    иначе FK (DEFERRED) падает на COMMIT.
+                for tbl_name, col in fks:
+                    cur.execute(sql.SQL(
+                        'DELETE FROM {child} WHERE {col} IN (SELECT id FROM _fl_del)'
+                    ).format(child=sql.SQL(tbl_name), col=sql.Identifier(col)))
+                    child_deleted[f'{tbl_name}.{col}'] = cur.rowcount or 0
+                # 3) Удаляем сами угодья.
+                cur.execute(
+                    'DELETE FROM agro_farmland WHERE id IN (SELECT id FROM _fl_del)')
                 deleted = cur.rowcount or 0
+                # 4) Вставка из слоя-источника (если не delete-only).
                 if not delete_only:
                     cur.execute(self._insert_stmt(
                         source_tbl, region_id, source_tag,
                         crop_field, usage_field, cad_field, default_crop,
                     ))
                     inserted = cur.rowcount or 0
+        for key, cnt in child_deleted.items():
+            if cnt:
+                self.stdout.write(f'[replace]   зависимые удалены: {key} = {cnt:,}')
         self.stdout.write(self.style.SUCCESS(
             f'[replace] ГОТОВО за {time.monotonic() - t0:.1f}s: удалено '
             f'{deleted:,}, вставлено {inserted:,}.'
