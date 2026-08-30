@@ -5202,7 +5202,9 @@
         sortKey: 'id',
         sortDir: 1,              // 1 = asc, -1 = desc
         query: '',               // строка поиска
-        filter: null,            // структурный фильтр (SQL-выборка) или null
+        filter: null,            // ЭФФЕКТИВНЫЙ структурный фильтр (конструктор + столбцы)
+        advFilter: null,         // фильтр визуального конструктора (панель fp*)
+        colFilters: {},          // value-фильтры по столбцам (кебаб): db -> {vals,nul,numeric}
         usedFilter: '',          // фильтр is_used: '' | '1' | '0' | '-1'
         rows: [],
         sel: { layer: null, id: null },  // подсвеченная строка (на карте)
@@ -5212,6 +5214,41 @@
         total: 0,                // всего объектов на сервере (с учётом поиска)
         onlySelected: false,     // показывать только выбранные (карта + таблица)
       };
+
+      /* Собрать одно правило фильтра из выбора значений по столбцу (кебаб).
+         sel = {vals:[строки], nul:bool, numeric:bool}. Значения внутри столбца
+         объединяются через ИЛИ (op 'in'); «(пусто)» добавляется как is_null. */
+      function colFilterRule(db, sel) {
+        if (!sel) return null;
+        var vals = (sel.vals || []).slice();
+        var rules = [];
+        if (vals.length) {
+          rules.push({ field: db, op: 'in',
+                       value: sel.numeric ? vals.map(Number) : vals });
+        }
+        if (sel.nul) rules.push({ field: db, op: 'is_null' });
+        if (!rules.length) return null;
+        return rules.length === 1 ? rules[0] : { match: 'any', rules: rules };
+      }
+
+      /* Скомбинировать переданный фильтр конструктора с value-фильтрами по
+         столбцам (state.colFilters) через AND → единый spec или null. */
+      function combineFilters(advSpec) {
+        var groups = [];
+        if (advSpec && (advSpec.rules || []).length) groups.push(advSpec);
+        var cf = state.colFilters || {};
+        Object.keys(cf).forEach(function (db) {
+          var rule = colFilterRule(db, cf[db]);
+          if (rule) groups.push(rule);
+        });
+        return groups.length ? { match: 'all', rules: groups } : null;
+      }
+
+      /* Пересобрать ЭФФЕКТИВНЫЙ фильтр state.filter из визуального конструктора
+         (state.advFilter) И value-фильтров по столбцам (state.colFilters). */
+      function rebuildFilter() {
+        state.filter = combineFilters(state.advFilter);
+      }
 
       /* Активный слой грузится постранично с сервера (загруженный SHP)? */
       function isServerPaged() {
@@ -6246,8 +6283,10 @@
         state.page = 0;          // новая вкладка — с первой страницы (SHP)
         state.total = 0;
         /* Структурный фильтр привязан к колонкам конкретного слоя — при смене
-           слоя сбрасываем его и очищаем конструктор. */
+           слоя сбрасываем его (конструктор + value-фильтры по столбцам). */
         state.filter = null;
+        state.advFilter = null;
+        state.colFilters = {};
         if (typeof fpResetUI === 'function') fpResetUI();
         if (typeof fpClosePanel === 'function') fpClosePanel();
         syncTabs();
@@ -6651,7 +6690,7 @@
         var avail = fpAvailable();
         fpToggle.hidden = !avail;
         if (!avail) fpClosePanel();
-        fpToggle.classList.toggle('active', !!state.filter);
+        fpToggle.classList.toggle('active', !!state.advFilter);
       }
       function fpOpenPanel() {
         if (!fpPanel) return;
@@ -6671,8 +6710,9 @@
       if (fpApplyBtn) fpApplyBtn.addEventListener('click', function () {
         var res = fpBuildSpec();
         if (res.error) { toast(res.error, true); return; }
-        state.filter = res.spec.rules.length ? res.spec : null;
-        if (fpToggle) fpToggle.classList.toggle('active', !!state.filter);
+        state.advFilter = res.spec.rules.length ? res.spec : null;
+        rebuildFilter();
+        if (fpToggle) fpToggle.classList.toggle('active', !!state.advFilter);
         if (state.open) { state.page = 0; reloadDynPage(); }
         /* Режим «только выбранные» активен без ручного выбора → пересобрать
            гашение карты под новый фильтр (или снять, если фильтр убрали). */
@@ -6681,7 +6721,8 @@
       var fpResetBtn = document.getElementById('gis-fp-reset');
       if (fpResetBtn) fpResetBtn.addEventListener('click', function () {
         fpResetUI(); fpAddRule();
-        state.filter = null;
+        state.advFilter = null;
+        rebuildFilter();
         if (fpToggle) fpToggle.classList.remove('active');
         if (state.open) { state.page = 0; reloadDynPage(); }
         if (state.onlySelected) applyOnlySelectedMap();
@@ -6691,6 +6732,10 @@
         if (!dynLayers[state.layer]) return;
         var res = fpBuildSpec();
         if (res.error) { toast(res.error, true); return; }
+        /* Материализуем ЭФФЕКТИВНЫЙ фильтр (конструктор + value-фильтры по
+           столбцам), чтобы сохранённый слой совпал с тем, что видно в таблице. */
+        var saveAdv = res.spec.rules.length ? res.spec : null;
+        var saveFilter = combineFilters(saveAdv);
         var def = dynLayers[state.layer];
         var name = window.prompt('Название нового слоя из выборки:',
                                  (def.title || 'Слой') + ' (выборка)');
@@ -6702,7 +6747,7 @@
         fetch('/me/gis/api/layers/' + lid + '/query/', {
           method: 'POST', credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-          body: JSON.stringify({ filter: res.spec, q: (state.query || ''), save_as: name }),
+          body: JSON.stringify({ filter: saveFilter, q: (state.query || ''), save_as: name }),
         }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
           .then(function (o) {
             fpSaveBtn.disabled = false;

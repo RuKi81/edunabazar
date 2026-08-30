@@ -15,7 +15,7 @@ from psycopg import sql
 from my_fields.models import GisLayer
 from my_fields.services.layer_query import LayerQueryError, build_filter
 from my_fields.services.shp_import import (
-    create_empty_layer, create_layer_from_query, list_features,
+    create_empty_layer, create_layer_from_query, distinct_values, list_features,
 )
 
 User = get_user_model()
@@ -163,6 +163,58 @@ class LayerQueryTests(TestCase):
     def test_bad_match_rejected(self):
         with self.assertRaises(LayerQueryError):
             build_filter(self.layer, {'match': 'xor', 'rules': []})
+
+    # ── вложенные группы (value-фильтр по столбцам ∧ конструктор) ──
+    def test_nested_group_and_of_any(self):
+        # (num IN 10,20,30) AND (name = Alpha OR name = Beta) → Alpha, Beta.
+        spec = {'match': 'all', 'rules': [
+            {'field': 'num', 'op': 'in', 'value': [10, 20, 30]},
+            {'match': 'any', 'rules': [
+                {'field': 'name', 'op': 'eq', 'value': 'Alpha'},
+                {'field': 'name', 'op': 'eq', 'value': 'Beta'},
+            ]},
+        ]}
+        self.assertEqual(self._names(spec), ['Alpha', 'Beta'])
+
+    def test_nested_group_null_or_in(self):
+        # value-фильтр по столбцу с выбором «(пусто)»: (area IN 1.5) OR NULL.
+        spec = {'match': 'all', 'rules': [
+            {'match': 'any', 'rules': [
+                {'field': 'area', 'op': 'in', 'value': [1.5]},
+                {'field': 'area', 'op': 'is_null'},
+            ]},
+        ]}
+        self.assertEqual(self._names(spec), ['Alpha', 'Gamma'])
+
+    def test_nested_empty_group_ignored(self):
+        # Пустая под-группа не добавляет условий (эквивалент отсутствия фильтра).
+        self.assertEqual(self._count({'rules': [{'rules': []}]}), 3)
+
+    def test_nested_depth_limit_rejected(self):
+        spec = {'rules': []}
+        node = spec
+        for _ in range(7):
+            child = {'rules': []}
+            node['rules'].append(child)
+            node = child
+        node['rules'].append({'field': 'num', 'op': 'eq', 'value': 10})
+        with self.assertRaises(LayerQueryError):
+            build_filter(self.layer, spec)
+
+    # ── distinct_values (перечень значений для кебаб-фильтра) ──
+    def test_distinct_values_any_type(self):
+        info = distinct_values(self.layer, 'num')
+        self.assertEqual(
+            sorted(v['value'] for v in info['values']), ['10', '20', '30'])
+        self.assertFalse(info['has_null'])
+
+    def test_distinct_values_reports_null(self):
+        info = distinct_values(self.layer, 'area')
+        self.assertTrue(info['has_null'])
+        self.assertIn(None, [v['value'] for v in info['values']])
+
+    def test_distinct_values_unknown_field(self):
+        self.assertIsNone(distinct_values(self.layer, 'nope'))
 
     # ── материализация выборки в новый слой ──
     def test_create_layer_from_query(self):

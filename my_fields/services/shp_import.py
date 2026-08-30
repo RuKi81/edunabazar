@@ -1058,6 +1058,44 @@ def field_stats(layer, field: str, distinct_limit: int = 60):
     }
 
 
+def distinct_values(layer, field: str, limit: int = 500):
+    """Перечень уникальных значений колонки (для value-фильтра по чекбоксам).
+
+    В отличие от :func:`field_stats`, работает для колонок ЛЮБОГО типа (в т.ч.
+    числовых) — возвращает список ``{'value', 'count'}``, отсортированный по
+    частоте. Значение ``None`` (SQL ``NULL``) сохраняется как отдельный пункт,
+    чтобы в UI можно было отфильтровать пустые ячейки.
+
+    Возвращает ``None`` если ``field`` не является атрибутом слоя, иначе
+    ``{'field', 'type', 'values': [{'value', 'count'}], 'truncated': bool,
+    'has_null': bool}``.
+    """
+    types = _attr_db_types(layer)
+    pg_type = types.get(field)
+    if pg_type is None:
+        return None
+
+    table = sql.Identifier(layer.table_name)
+    col = sql.Identifier(field)
+    limit = max(1, min(int(limit), 2000))
+
+    with connection.cursor() as cur:
+        cur.execute(sql.SQL(
+            'SELECT {c}::text AS v, count(*) AS n FROM {t} '
+            'GROUP BY {c} ORDER BY n DESC, v LIMIT %s'
+        ).format(c=col, t=table), [limit + 1])
+        rows = cur.fetchall()
+
+    truncated = len(rows) > limit
+    rows = rows[:limit]
+    has_null = any(r[0] is None for r in rows)
+    values = [{'value': r[0], 'count': int(r[1])} for r in rows]
+    return {
+        'field': field, 'type': pg_type,
+        'values': values, 'truncated': truncated, 'has_null': has_null,
+    }
+
+
 # ── Вспомогательное ─────────────────────────────────────────────────────
 
 def _field_value(feat, field_ref):

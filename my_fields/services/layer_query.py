@@ -118,35 +118,62 @@ def _compile_rule(rule, types):
     return _rule_sql(sql.Identifier(field), types[field], op, value)
 
 
-def build_filter(layer, filter_spec):
-    """Скомпилировать структурный фильтр в ``(sql, params)`` или ``(None, [])``.
+def _compile_node(node, types, depth):
+    """Скомпилировать узел фильтра: вложенную группу ИЛИ листовое правило.
 
-    ``sql`` — условие без обёртки ``WHERE`` (или ``None``, если правил нет).
-    ``LayerQueryError`` — неизвестное поле/оператор или неверное значение.
+    Группа — это ``dict`` с ключом ``rules`` (список) и опциональным
+    ``match`` (``all``/``any``); листовое правило — ``{field, op, value}``.
+    Вложенность позволяет комбинировать разные источники условий (например,
+    визуальный конструктор AND value-фильтры по столбцам).
     """
-    if not filter_spec:
-        return None, []
-    if not isinstance(filter_spec, dict):
+    if isinstance(node, dict) and 'rules' in node:
+        return _compile_group(node, types, depth + 1)
+    return _compile_rule(node, types)
+
+
+def _compile_group(spec, types, depth=0):
+    """Скомпилировать группу условий в ``(sql, params)`` или ``(None, [])``."""
+    if depth > _MAX_DEPTH:
+        raise LayerQueryError('Слишком глубокая вложенность фильтра.')
+    if not isinstance(spec, dict):
         raise LayerQueryError('Фильтр должен быть объектом.')
 
-    match = str(filter_spec.get('match', 'all')).lower()
+    match = str(spec.get('match', 'all')).lower()
     if match not in ('all', 'any'):
         raise LayerQueryError('match должен быть "all" или "any".')
-    rules = filter_spec.get('rules') or []
+    rules = spec.get('rules') or []
     if not isinstance(rules, list):
         raise LayerQueryError('rules должен быть списком.')
 
-    types = _column_types(layer)
     parts, params = [], []
-    for rule in rules:
-        rule_sql, rule_params = _compile_rule(rule, types)
-        parts.append(rule_sql)
-        params.extend(rule_params)
+    for node in rules:
+        node_sql, node_params = _compile_node(node, types, depth)
+        if node_sql is None:
+            continue
+        parts.append(node_sql)
+        params.extend(node_params)
 
     if not parts:
         return None, []
     joiner = sql.SQL(' AND ') if match == 'all' else sql.SQL(' OR ')
     return sql.SQL('({})').format(joiner.join(parts)), params
+
+
+# Ограничение глубины вложенных групп — защита от чрезмерно сложных фильтров.
+_MAX_DEPTH = 5
+
+
+def build_filter(layer, filter_spec):
+    """Скомпилировать структурный фильтр в ``(sql, params)`` или ``(None, [])``.
+
+    ``sql`` — условие без обёртки ``WHERE`` (или ``None``, если правил нет).
+    Поддерживает вложенные группы (``rules`` может содержать под-группы).
+    ``LayerQueryError`` — неизвестное поле/оператор или неверное значение.
+    """
+    if not filter_spec:
+        return None, []
+    types = _column_types(layer)
+    return _compile_group(filter_spec, types, 0)
 
 
 def _search_sql(cols, query_text):

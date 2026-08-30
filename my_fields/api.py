@@ -1288,6 +1288,39 @@ def gis_layer_field_stats(request: HttpRequest, pk: int) -> JsonResponse:
 
 
 @csrf_exempt
+@require_http_methods(['GET'])
+def gis_layer_field_values(request: HttpRequest, pk: int) -> JsonResponse:
+    """GET — перечень уникальных значений колонки для value-фильтра (кебаб).
+
+    ``?field=<db>`` — обязателен. Работает для колонок любого типа (в т.ч.
+    числовых), возвращает ``{'ok', 'values': [{'value', 'count'}], 'truncated',
+    'has_null', 'type'}``. Уровень доступа ``view``.
+    """
+    gate = _require_gis_access(request, level='view', pk=pk)
+    if gate:
+        return gate
+    layer = get_object_or_404(GisLayer, pk=pk)
+
+    field = request.GET.get('field', '')
+    if not field:
+        return JsonResponse(
+            {'ok': False, 'error': 'no_field',
+             'detail': 'Укажите параметр field.'},
+            status=400,
+        )
+
+    from .services.shp_import import distinct_values
+    info = distinct_values(layer, field)
+    if info is None:
+        return JsonResponse(
+            {'ok': False, 'error': 'unknown_field',
+             'detail': 'Поле не найдено среди атрибутов слоя.'},
+            status=404,
+        )
+    return JsonResponse({'ok': True, **info})
+
+
+@csrf_exempt
 @require_http_methods(['POST'])
 def gis_layer_query(request: HttpRequest, pk: int) -> JsonResponse:
     """POST — SQL-выборка (визуальный конструктор) по таблице слоя.
