@@ -666,6 +666,45 @@
     .gis-fp__btn:hover { background: #f0f0f0; }
     .gis-fp__btn--primary { background: #2e7d32; color: #fff; border-color: #2e7d32; }
     .gis-fp__btn--primary:hover { background: #276a2b; }
+    /* Кебаб фильтра по значениям в заголовке колонки таблицы атрибутов. */
+    .gis-th-label { display: inline; }
+    .gis-th-kebab {
+      display: inline-block; margin-left: 4px; padding: 0 3px; cursor: pointer;
+      color: #b0b0b0; font-weight: 700; border-radius: 3px; user-select: none;
+    }
+    .gis-th-kebab:hover { background: rgba(0,0,0,.08); color: #555; }
+    .gis-th-kebab.active { color: #2e7d32; background: #c8e6c9; }
+    /* Плавающий попап выбора значений столбца (крепится к body). */
+    .gis-colmenu {
+      position: fixed; z-index: 80; background: #fff; border: 1px solid #d0d0d0;
+      border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.18);
+      width: 240px; display: flex; flex-direction: column; overflow: hidden;
+      font-size: 13px;
+    }
+    .gis-colmenu__search {
+      margin: 8px; padding: 5px 8px; border: 1px solid #ccc; border-radius: 6px;
+      font-size: 12px; box-sizing: border-box; width: calc(100% - 16px);
+    }
+    .gis-colmenu__list {
+      max-height: 260px; overflow-y: auto; padding: 0 8px;
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    .gis-colmenu__item {
+      display: flex; align-items: center; gap: 6px; padding: 3px 4px;
+      cursor: pointer; border-radius: 4px;
+    }
+    .gis-colmenu__item:hover { background: #f2f7f2; }
+    .gis-colmenu__item input { margin: 0; flex: none; }
+    .gis-colmenu__lbl {
+      flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .gis-colmenu__cnt { color: #999; font-size: 11px; flex: none; }
+    .gis-colmenu__empty { color: #999; padding: 6px 8px; }
+    .gis-colmenu__note { color: #b26a00; font-size: 11px; padding: 4px 8px 2px; }
+    .gis-colmenu__foot {
+      display: flex; align-items: center; gap: 6px; padding: 8px;
+      border-top: 1px solid #eee;
+    }
     /* Редактируемые ячейки (режим правки слоя). */
     .gis-attrtable td.editable { background: #fffef2; cursor: text; }
     .gis-attrtable td.editable:hover { background: #fff9d6; }
@@ -5250,6 +5289,150 @@
         state.filter = combineFilters(state.advFilter);
       }
 
+      /* ─── Кебаб-фильтр по значениям столбца (⋮ в заголовке колонки) ───
+         Открывает попап со списком уникальных значений колонки (с сервера,
+         эндпоинт field-values); отмеченные значения → state.colFilters[db]
+         и через rebuildFilter() применяются к таблице/карте. */
+      var colMenuEl = null;
+
+      function closeColMenu() {
+        if (colMenuEl) { colMenuEl.remove(); colMenuEl = null; }
+        document.removeEventListener('mousedown', onColMenuOutside, true);
+      }
+      function onColMenuOutside(e) {
+        if (!colMenuEl) return;
+        if (colMenuEl.contains(e.target)) return;
+        if (e.target.classList && e.target.classList.contains('gis-th-kebab')) return;
+        closeColMenu();
+      }
+      function colByKey(key) {
+        var cols = COLUMNS[state.layer] || [];
+        for (var i = 0; i < cols.length; i++) if (cols[i].key === key) return cols[i];
+        return null;
+      }
+
+      function openColMenu(anchor, db) {
+        closeColMenu();
+        var col = colByKey(db);
+        var numeric = !!(col && col.num);
+        var lid = state.layer.slice('gisup:'.length);
+        var cur = state.colFilters[db] || { vals: [], nul: false, numeric: numeric };
+        /* chosen/wantNull — рабочее состояние выбора (переживает ре-рендер
+           списка при поиске). */
+        var chosen = {};
+        (cur.vals || []).forEach(function (v) { chosen[String(v)] = true; });
+        var wantNull = !!cur.nul;
+
+        var menu = document.createElement('div');
+        menu.className = 'gis-colmenu';
+        menu.innerHTML =
+          '<input type="text" class="gis-colmenu__search browser-default" ' +
+            'placeholder="Поиск значения…">' +
+          '<div class="gis-colmenu__list">' +
+            '<div class="gis-colmenu__empty">Загрузка…</div></div>' +
+          '<div class="gis-colmenu__foot">' +
+            '<button type="button" class="gis-fp__btn" data-cm="clear">Сбросить</button>' +
+            '<span class="gis-fp__spacer"></span>' +
+            '<button type="button" class="gis-fp__btn gis-fp__btn--primary" ' +
+              'data-cm="apply">Применить</button>' +
+          '</div>';
+        document.body.appendChild(menu);
+        colMenuEl = menu;
+
+        /* Позиционируем под кебабом, не вылезая за правый край окна. */
+        var r = anchor.getBoundingClientRect();
+        var left = Math.min(r.left, window.innerWidth - 250);
+        menu.style.left = Math.max(6, left) + 'px';
+        menu.style.top = (r.bottom + 4) + 'px';
+
+        var listEl = menu.querySelector('.gis-colmenu__list');
+        var searchInp = menu.querySelector('.gis-colmenu__search');
+        var loaded = { values: [], hasNull: false, truncated: false };
+
+        function renderList() {
+          var q = (searchInp.value || '').trim().toLowerCase();
+          var html = '';
+          if (loaded.hasNull && (!q || '(пусто)'.indexOf(q) >= 0)) {
+            html += '<label class="gis-colmenu__item">' +
+              '<input type="checkbox" data-null="1"' + (wantNull ? ' checked' : '') +
+              '><span class="gis-colmenu__lbl"><i>(пусто)</i></span></label>';
+          }
+          loaded.values.forEach(function (item) {
+            if (item.value == null) return;
+            var s = String(item.value);
+            if (q && s.toLowerCase().indexOf(q) < 0) return;
+            html += '<label class="gis-colmenu__item">' +
+              '<input type="checkbox" data-val="' + esc(s) + '"' +
+              (chosen[s] ? ' checked' : '') + '>' +
+              '<span class="gis-colmenu__lbl" title="' + esc(s) + '">' + esc(s) + '</span>' +
+              '<span class="gis-colmenu__cnt">' + item.count + '</span></label>';
+          });
+          if (!html) html = '<div class="gis-colmenu__empty">Нет значений</div>';
+          if (loaded.truncated) {
+            html += '<div class="gis-colmenu__note">Показаны частые значения; ' +
+              'уточните поиском.</div>';
+          }
+          listEl.innerHTML = html;
+        }
+
+        fetch('/me/gis/api/layers/' + lid + '/field-values/?field=' +
+              encodeURIComponent(db), {
+          credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        }).then(function (rr) { return rr.json(); })
+          .then(function (j) {
+            if (!colMenuEl) return;
+            if (!j.ok) {
+              listEl.innerHTML = '<div class="gis-colmenu__empty">' +
+                esc(j.detail || 'Не удалось загрузить значения') + '</div>';
+              return;
+            }
+            loaded = {
+              values: j.values || [], hasNull: !!j.has_null,
+              truncated: !!j.truncated,
+            };
+            renderList();
+          })
+          .catch(function () {
+            if (colMenuEl) {
+              listEl.innerHTML =
+                '<div class="gis-colmenu__empty">Ошибка загрузки</div>';
+            }
+          });
+
+        searchInp.addEventListener('input', renderList);
+        /* Делегированный change: список пере-рендерится при поиске, поэтому
+           фиксируем выбор в chosen/wantNull, а не в DOM. */
+        listEl.addEventListener('change', function (e) {
+          var cb = e.target;
+          if (cb.hasAttribute('data-null')) wantNull = cb.checked;
+          else if (cb.hasAttribute('data-val')) chosen[cb.getAttribute('data-val')] = cb.checked;
+        });
+
+        function apply(clear) {
+          if (clear) {
+            delete state.colFilters[db];
+          } else {
+            var vals = Object.keys(chosen).filter(function (k) { return chosen[k]; });
+            if (vals.length || wantNull) {
+              state.colFilters[db] = { vals: vals, nul: wantNull, numeric: numeric };
+            } else {
+              delete state.colFilters[db];
+            }
+          }
+          rebuildFilter();
+          closeColMenu();
+          state.page = 0;
+          if (isServerPaged()) reloadDynPage(); else render();
+        }
+        menu.querySelector('[data-cm="apply"]').addEventListener('click', function () { apply(false); });
+        menu.querySelector('[data-cm="clear"]').addEventListener('click', function () { apply(true); });
+
+        setTimeout(function () {
+          document.addEventListener('mousedown', onColMenuOutside, true);
+          searchInp.focus();
+        }, 0);
+      }
+
       /* Активный слой грузится постранично с сервера (загруженный SHP)? */
       function isServerPaged() {
         var d = dynLayers[state.layer];
@@ -5452,7 +5635,16 @@
           cols.map(function (c) {
             var ind = '';
             if (c.key === state.sortKey) ind = '<span class="sort-ind">' + (state.sortDir === 1 ? '▲' : '▼') + '</span>';
-            return '<th data-key="' + esc(c.key) + '">' + esc(c.label) + ind + '</th>';
+            /* Кебаб фильтра по значениям столбца — только для загруженных
+               SHP-слоёв (есть эндпоинт field-values) и не для служебного id. */
+            var kebab = '';
+            if (serverPaged && c.key !== 'id') {
+              var act = state.colFilters[c.key] ? ' active' : '';
+              kebab = '<span class="gis-th-kebab' + act + '" data-colkebab="' +
+                esc(c.key) + '" title="Фильтр по значениям столбца">⋮</span>';
+            }
+            return '<th data-key="' + esc(c.key) + '"><span class="gis-th-label">' +
+              esc(c.label) + ind + '</span>' + kebab + '</th>';
           }).join('') + '</tr></thead>';
 
         /* Сквозная нумерация «№»: для серверно-постраничных SHP учитываем
@@ -5511,6 +5703,15 @@
                перезагружаем; статические — клиентский ре-рендер. */
             if (serverPaged) { state.page = 0; reloadDynPage(); }
             else render();
+          });
+        });
+
+        /* Кебаб (⋮) в заголовке столбца — фильтр по значениям (SHP-слои).
+           stopPropagation, чтобы клик не запускал сортировку по столбцу. */
+        bodyEl.querySelectorAll('.gis-th-kebab[data-colkebab]').forEach(function (kb) {
+          kb.addEventListener('click', function (e) {
+            e.stopPropagation();
+            openColMenu(kb, kb.getAttribute('data-colkebab'));
           });
         });
 
@@ -6287,6 +6488,7 @@
         state.filter = null;
         state.advFilter = null;
         state.colFilters = {};
+        if (typeof closeColMenu === 'function') closeColMenu();
         if (typeof fpResetUI === 'function') fpResetUI();
         if (typeof fpClosePanel === 'function') fpClosePanel();
         syncTabs();
@@ -6306,6 +6508,7 @@
       }
       function closePanel() {
         state.open = false;
+        closeColMenu();
         panel.classList.remove('open');
         if (uiEl) uiEl.classList.remove('attrtable-open');
         if (toggleBtn) toggleBtn.classList.remove('active');
