@@ -778,8 +778,8 @@
 
     /* ── 3 basemaps ── */
     var osmLayer = L.tileLayer(
-      'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-      { maxZoom: 19, attribution: '&copy; OSM &copy; CARTO', pane: 'basemapPane' }
+      'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+      { maxZoom: 19, subdomains: 'abc', attribution: '&copy; OpenStreetMap', pane: 'basemapPane' }
     ).addTo(map);
     var satLayer = L.tileLayer(
       'https://mt{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
@@ -790,8 +790,8 @@
       { maxZoom: 20, subdomains: '0123', attribution: '&copy; Google', pane: 'basemapPane' }
     );
     var hybridLabels = L.tileLayer(
-      'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png',
-      { maxZoom: 19, attribution: '&copy; CARTO', pane: 'overlayPane' }
+      'https://mt{s}.google.com/vt/lyrs=h&x={x}&y={y}&z={z}',
+      { maxZoom: 20, subdomains: '0123', attribution: '&copy; Google', pane: 'overlayPane' }
     );
     function switchBase(mode) {
       [osmLayer, satLayer, hybridSat, hybridLabels].forEach(function (l) { map.removeLayer(l); });

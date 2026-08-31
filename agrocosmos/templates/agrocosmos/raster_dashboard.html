@@ -454,8 +454,8 @@
     map.createPane('basemapPane');
     map.getPane('basemapPane').style.zIndex = 150;
 
-    var osmLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-      maxZoom: 19, attribution: '&copy; OSM &copy; CARTO', pane: 'basemapPane'
+    var osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, subdomains: 'abc', attribution: '&copy; OpenStreetMap', pane: 'basemapPane'
     }).addTo(map);
 
     var satLayer = L.tileLayer(
@@ -464,8 +464,8 @@
     );
 
     var hybridLabels = L.tileLayer(
-      'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png',
-      { maxZoom: 19, attribution: '&copy; CARTO', pane: 'overlayPane' }
+      'https://mt{s}.google.com/vt/lyrs=h&x={x}&y={y}&z={z}',
+      { maxZoom: 20, subdomains: '0123', attribution: '&copy; Google', pane: 'overlayPane' }
     );
 
     var satLayerHybrid = L.tileLayer(
