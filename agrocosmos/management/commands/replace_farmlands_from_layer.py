@@ -44,6 +44,13 @@
         --crop-field vid_ugod --usage-field fact_isp \\
         --cadastral-field kadastr --source-tag "gis_layer/tula_2026" --yes
 
+    # 4) Только вставка (территория без ЗСН, напр. новый субъект) —
+    #    граница/union/delete пропускаются, работает быстро:
+    python manage.py replace_farmlands_from_layer --insert-only \\
+        --source-layer 38 --region "Тульская область" \\
+        --crop-field s_vid_n --usage-field fact_isp \\
+        --cadastral-field cad_num --source-tag "gis_layer/tula_l38" --yes
+
 После применения имеет смысл проставить районы:
 ``python manage.py assign_farmland_district --region "Тульская область"``.
 """
@@ -71,8 +78,9 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument(
-            '--boundary-layer', required=True,
-            help='Слой-граница территории (id или подстрока названия).',
+            '--boundary-layer', default=None,
+            help='Слой-граница территории (id или подстрока названия). '
+                 'Обязателен, кроме режима --insert-only.',
         )
         parser.add_argument(
             '--source-layer', default=None,
@@ -82,6 +90,13 @@ class Command(BaseCommand):
         parser.add_argument(
             '--delete-only', action='store_true',
             help='Только удалить ЗСН в границах, без вставки (источник не нужен).',
+        )
+        parser.add_argument(
+            '--insert-only', action='store_true',
+            help='Только вставить полигоны из слоя-источника, без удаления и '
+                 'без расчёта контура границы (быстро). Используйте, когда на '
+                 'территории ещё нет ЗСН — например, новый субъект. '
+                 'Граница не нужна.',
         )
         parser.add_argument(
             '--region', default=None,
@@ -131,18 +146,33 @@ class Command(BaseCommand):
 
     # ------------------------------------------------------------------
     def handle(self, *args, **opts):
-        boundary = self._resolve_layer(opts['boundary_layer'], 'boundary-layer')
+        insert_only = bool(opts.get('insert_only'))
         source = None
         if opts.get('source_layer'):
             source = self._resolve_layer(opts['source_layer'], 'source-layer')
-        # Режим только-удаление: явный флаг ИЛИ отсутствие слоя-источника.
-        delete_only = bool(opts.get('delete_only')) or source is None
+        boundary = None
+        if opts.get('boundary_layer'):
+            boundary = self._resolve_layer(opts['boundary_layer'], 'boundary-layer')
 
         if opts['inspect']:
-            self._print_layer(boundary, 'ГРАНИЦА')
+            if boundary is not None:
+                self._print_layer(boundary, 'ГРАНИЦА')
             if source is not None:
                 self._print_layer(source, 'ИСТОЧНИК')
             return
+
+        if insert_only:
+            if bool(opts.get('delete_only')):
+                raise CommandError('--insert-only и --delete-only несовместимы.')
+            self._handle_insert_only(source, opts)
+            return
+
+        if boundary is None:
+            raise CommandError(
+                '--boundary-layer обязателен (кроме режима --insert-only).'
+            )
+        # Режим только-удаление: явный флаг ИЛИ отсутствие слоя-источника.
+        delete_only = bool(opts.get('delete_only')) or source is None
 
         predicate = opts['delete_predicate']
         boundary_tbl = sql.Identifier(boundary.table_name)
@@ -202,6 +232,48 @@ class Command(BaseCommand):
             boundary_tbl, source_tbl, predicate, region_id, source_tag,
             crop_field, usage_field, cad_field, opts['default_crop'],
             delete_only=delete_only,
+        )
+
+    # ------------------------------------------------------------------
+    def _handle_insert_only(self, source, opts):
+        """Только вставка из слоя-источника (без границы/union/delete).
+
+        Быстрый путь для территорий, где ЗСН ещё нет (новый субъект):
+        расчёт контура границы пропускается целиком.
+        """
+        if source is None:
+            raise CommandError('--insert-only требует --source-layer.')
+        crop_field = self._check_field(source, opts.get('crop_field'), 'crop-field')
+        usage_field = self._check_field(source, opts.get('usage_field'), 'usage-field')
+        cad_field = self._check_field(source, opts.get('cadastral_field'), 'cadastral-field')
+        region = self._resolve_region(opts.get('region'))
+        region_id = region.id if region else None
+        source_tag = opts.get('source_tag') or f'gis_layer/{source.table_name}'
+        source_tbl = sql.Identifier(source.table_name)
+        ins_count = self._count_source(source_tbl)
+        self.stdout.write(self.style.NOTICE(
+            f'[replace] РЕЖИМ ВСТАВКИ (без удаления). источник={source.title!r} '
+            f'({source.table_name}, {source.feature_count} об.)  регион='
+            f'{region.name if region else "—"} (region_id={region_id})  '
+            f'source={source_tag!r}'
+        ))
+        self.stdout.write(self.style.WARNING(
+            f'[replace] ВСТАВИТЬ из источника: {ins_count:,}'
+        ))
+
+        if opts['dry_run']:
+            self.stdout.write(self.style.NOTICE('[replace] dry-run — БД не изменена.'))
+            return
+        if not opts['yes']:
+            raise CommandError(
+                'Отказ: реальное изменение общего датасета требует флага --yes. '
+                'Сначала прогоните с --dry-run.'
+            )
+
+        self._apply(
+            None, source_tbl, None, region_id, source_tag,
+            crop_field, usage_field, cad_field, opts['default_crop'],
+            insert_only=True,
         )
 
     # ------------------------------------------------------------------
@@ -337,30 +409,34 @@ class Command(BaseCommand):
 
     # ------------------------------------------------------------------
     def _apply(self, boundary_tbl, source_tbl, predicate, region_id, source_tag,
-               crop_field, usage_field, cad_field, default_crop, delete_only=False):
+               crop_field, usage_field, cad_field, default_crop, delete_only=False,
+               insert_only=False):
         t0 = time.monotonic()
         fks = self._referencing_fks()
         inserted = 0
+        deleted = 0
         child_deleted: dict[str, int] = {}
         with transaction.atomic():
             with connection.cursor() as cur:
-                # 1) Материализуем id угодий под удаление во временную таблицу
-                #    (пространственный отбор считается один раз).
-                cur.execute(sql.SQL(
-                    'CREATE TEMP TABLE _fl_del ON COMMIT DROP AS {cte} SELECT id FROM t'
-                ).format(cte=self._targets_cte(boundary_tbl, predicate)))
-                cur.execute('CREATE INDEX ON _fl_del (id)')
-                # 2) Удаляем зависимые строки во всех ссылающихся таблицах —
-                #    иначе FK (DEFERRED) падает на COMMIT.
-                for tbl_name, col in fks:
+                if not insert_only:
+                    # 1) Материализуем id угодий под удаление во временную
+                    #    таблицу (пространственный отбор считается один раз).
                     cur.execute(sql.SQL(
-                        'DELETE FROM {child} WHERE {col} IN (SELECT id FROM _fl_del)'
-                    ).format(child=sql.SQL(tbl_name), col=sql.Identifier(col)))
-                    child_deleted[f'{tbl_name}.{col}'] = cur.rowcount or 0
-                # 3) Удаляем сами угодья.
-                cur.execute(
-                    'DELETE FROM agro_farmland WHERE id IN (SELECT id FROM _fl_del)')
-                deleted = cur.rowcount or 0
+                        'CREATE TEMP TABLE _fl_del ON COMMIT DROP AS {cte} '
+                        'SELECT id FROM t'
+                    ).format(cte=self._targets_cte(boundary_tbl, predicate)))
+                    cur.execute('CREATE INDEX ON _fl_del (id)')
+                    # 2) Удаляем зависимые строки во всех ссылающихся таблицах —
+                    #    иначе FK (DEFERRED) падает на COMMIT.
+                    for tbl_name, col in fks:
+                        cur.execute(sql.SQL(
+                            'DELETE FROM {child} WHERE {col} IN (SELECT id FROM _fl_del)'
+                        ).format(child=sql.SQL(tbl_name), col=sql.Identifier(col)))
+                        child_deleted[f'{tbl_name}.{col}'] = cur.rowcount or 0
+                    # 3) Удаляем сами угодья.
+                    cur.execute(
+                        'DELETE FROM agro_farmland WHERE id IN (SELECT id FROM _fl_del)')
+                    deleted = cur.rowcount or 0
                 # 4) Вставка из слоя-источника (если не delete-only).
                 if not delete_only:
                     cur.execute(self._insert_stmt(
