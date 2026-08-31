@@ -36,6 +36,7 @@ import traceback
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
 from django.db import close_old_connections
+from django.db.models import Case, IntegerField, Value, When
 from django.utils import timezone
 
 from agrocosmos.models import PipelineRun
@@ -54,6 +55,16 @@ TASK_COMMAND = {
     PipelineRun.TaskType.RASTER_INGEST: 'run_raster_ingest',
 }
 SUPPORTED_TASK_TYPES = set(TASK_COMMAND)
+
+# Быстрые интерактивные задачи (секунды–минуты): конвертация растра в COG и
+# оверлей ГИС-слоёв. Их забираем из очереди РАНЬШЕ длинных bulk-прогонов
+# (raster_ndvi / archive_ndvi / monitoring могут идти часами), иначе такая
+# задача голодает за многочасовым мониторингом. Внутри одного приоритета
+# порядок остаётся FIFO (по started_at, pk).
+QUICK_TASK_TYPES = {
+    PipelineRun.TaskType.GIS_OVERLAY,
+    PipelineRun.TaskType.RASTER_INGEST,
+}
 
 
 class Command(BaseCommand):
@@ -97,11 +108,19 @@ class Command(BaseCommand):
         workers were ever started in parallel.
         """
         close_old_connections()
+        # Приоритет: быстрые интерактивные задачи (COG-конвертация, оверлей)
+        # забираем раньше длинных bulk-прогонов, иначе они голодают за
+        # многочасовым мониторингом. Внутри приоритета — FIFO (started_at, pk).
         candidate = (
             PipelineRun.objects
             .filter(status=PipelineRun.Status.QUEUED,
                     task_type__in=list(SUPPORTED_TASK_TYPES))
-            .order_by('started_at', 'pk')
+            .annotate(_prio=Case(
+                When(task_type__in=list(QUICK_TASK_TYPES), then=Value(0)),
+                default=Value(10),
+                output_field=IntegerField(),
+            ))
+            .order_by('_prio', 'started_at', 'pk')
             .values_list('pk', flat=True)
             .first()
         )
