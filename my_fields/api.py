@@ -1183,23 +1183,30 @@ def gis_layer_column_detail(request: HttpRequest, pk: int, db: str) -> JsonRespo
         return gate
     layer = get_object_or_404(GisLayer, pk=pk)
 
-    from .services.shp_import import (
-        ShapefileImportError, drop_layer_column, rename_layer_column)
-
     if request.method == 'DELETE':
-        try:
-            ok = drop_layer_column(layer, db)
-        except Exception as e:  # noqa: BLE001
-            return JsonResponse(
-                {'ok': False, 'error': 'drop_failed',
-                 'detail': f'Ошибка удаления столбца: {e}'}, status=400)
-        if not ok:
-            return JsonResponse(
-                {'ok': False, 'error': 'unknown_column',
-                 'detail': 'Столбец не найден.'}, status=404)
-        return JsonResponse({'ok': True, 'layer': _gis_layer_to_dict(layer)})
+        return _gis_column_delete(layer, db)
+    return _gis_column_rename(request, layer, db)
 
-    # PATCH — переименование отображаемого имени.
+
+def _gis_column_delete(layer, db: str) -> JsonResponse:
+    """DELETE-ветка :func:`gis_layer_column_detail` — удаление столбца."""
+    from .services.shp_import import drop_layer_column
+    try:
+        ok = drop_layer_column(layer, db)
+    except Exception as e:  # noqa: BLE001
+        return JsonResponse(
+            {'ok': False, 'error': 'drop_failed',
+             'detail': f'Ошибка удаления столбца: {e}'}, status=400)
+    if not ok:
+        return JsonResponse(
+            {'ok': False, 'error': 'unknown_column',
+             'detail': 'Столбец не найден.'}, status=404)
+    return JsonResponse({'ok': True, 'layer': _gis_layer_to_dict(layer)})
+
+
+def _gis_column_rename(request, layer, db: str) -> JsonResponse:
+    """PATCH-ветка :func:`gis_layer_column_detail` — переименование столбца."""
+    from .services.shp_import import ShapefileImportError, rename_layer_column
     try:
         data = json.loads(request.body or b'{}')
     except (ValueError, TypeError):
