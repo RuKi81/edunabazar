@@ -867,3 +867,157 @@ class LayerDuplicateEndpointTests(GisLayersTestCase):
         self.client.logout()
         self._login_plain()
         self.assertEqual(self._dup().status_code, 403)
+
+
+def _table_columns(name):
+    """Множество имён колонок физической таблицы слоя."""
+    with connection.cursor() as cur:
+        cur.execute(
+            'SELECT column_name FROM information_schema.columns '
+            'WHERE table_schema = %s AND table_name = %s',
+            ['public', name])
+        return {row[0] for row in cur.fetchall()}
+
+
+class ColumnManagementTests(GisLayersTestCase):
+    """Добавление / переименование / удаление атрибутивных столбцов слоя."""
+
+    def setUp(self):
+        self._login_admin()
+        self._upload(_make_shp_zip(shp_name='fields'))   # атрибуты name, num
+        self.layer = GisLayer.objects.get()
+
+    def _add(self, body):
+        return self.client.post(
+            f'/me/gis/api/layers/{self.layer.pk}/columns/',
+            data=json.dumps(body), content_type='application/json')
+
+    def _col_url(self, db):
+        return f'/me/gis/api/layers/{self.layer.pk}/columns/{db}/'
+
+    def _attr_db(self, name):
+        self.layer.refresh_from_db()
+        for a in self.layer.attributes:
+            if a['name'] == name:
+                return a['db']
+        return None
+
+    # ── Добавление ──
+    def test_add_column_creates_meta_and_physical_column(self):
+        resp = self._add({'name': 'Примечание', 'type': 'text'})
+        self.assertEqual(resp.status_code, 201, resp.content)
+        body = resp.json()
+        self.assertTrue(body['ok'])
+        db = body['column']['db']
+        self.assertEqual(body['column']['type'], 'text')
+        self.layer.refresh_from_db()
+        names = [a['name'] for a in self.layer.attributes]
+        self.assertIn('Примечание', names)
+        self.assertIn(db, _table_columns(self.layer.table_name))
+
+    def test_add_column_numeric_type(self):
+        resp = self._add({'name': 'Урожай', 'type': 'double precision'})
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertEqual(resp.json()['column']['type'], 'double precision')
+
+    def test_add_column_dedup_db_name(self):
+        # Повторное добавление того же отображаемого имени → уникальный db.
+        db1 = self._add({'name': 'note', 'type': 'text'}).json()['column']['db']
+        db2 = self._add({'name': 'note', 'type': 'text'}).json()['column']['db']
+        self.assertNotEqual(db1, db2)
+        cols = _table_columns(self.layer.table_name)
+        self.assertIn(db1, cols)
+        self.assertIn(db2, cols)
+
+    def test_add_column_empty_name_400(self):
+        self.assertEqual(self._add({'name': '  ', 'type': 'text'}).status_code, 400)
+
+    def test_add_column_invalid_type_400(self):
+        self.assertEqual(self._add({'name': 'x', 'type': 'bogus'}).status_code, 400)
+
+    # ── Переименование (имя + физическая колонка) ──
+    def test_rename_column_renames_physical_column(self):
+        old_db = self._attr_db('num')
+        resp = self.client.patch(
+            self._col_url(old_db), data=json.dumps({'name': 'quantity'}),
+            content_type='application/json')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        new_db = resp.json()['layer']['attributes']
+        new_db = next(a['db'] for a in new_db if a['name'] == 'quantity')
+        self.assertNotEqual(new_db, old_db)
+        cols = _table_columns(self.layer.table_name)
+        self.assertIn(new_db, cols)
+        self.assertNotIn(old_db, cols)
+        self.layer.refresh_from_db()
+        attr = next(a for a in self.layer.attributes if a['db'] == new_db)
+        self.assertEqual(attr['name'], 'quantity')
+
+    def test_rename_cyrillic_name_slugs_physical_column(self):
+        old_db = self._attr_db('num')
+        resp = self.client.patch(
+            self._col_url(old_db), data=json.dumps({'name': 'Номер'}),
+            content_type='application/json')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.layer.refresh_from_db()
+        attr = next(a for a in self.layer.attributes if a['name'] == 'Номер')
+        self.assertNotEqual(attr['db'], old_db)   # 'num' → slug (кириллица)
+        cols = _table_columns(self.layer.table_name)
+        self.assertIn(attr['db'], cols)
+        self.assertNotIn(old_db, cols)
+
+    def test_rename_updates_style_field(self):
+        old_db = self._attr_db('num')
+        self.layer.style = {'mode': 'graduated', 'field': old_db, 'stops': []}
+        self.layer.save(update_fields=['style'])
+        resp = self.client.patch(
+            self._col_url(old_db), data=json.dumps({'name': 'quantity'}),
+            content_type='application/json')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.layer.refresh_from_db()
+        new_db = next(a['db'] for a in self.layer.attributes if a['name'] == 'quantity')
+        self.assertEqual(self.layer.style.get('field'), new_db)
+
+    def test_rename_empty_name_400(self):
+        db = self._attr_db('num')
+        resp = self.client.patch(
+            self._col_url(db), data=json.dumps({'name': ''}),
+            content_type='application/json')
+        self.assertEqual(resp.status_code, 400)
+
+    def test_rename_unknown_column_404(self):
+        resp = self.client.patch(
+            self._col_url('nope'), data=json.dumps({'name': 'X'}),
+            content_type='application/json')
+        self.assertEqual(resp.status_code, 404)
+
+    # ── Удаление ──
+    def test_delete_column_drops_meta_and_physical_column(self):
+        db = self._attr_db('num')
+        resp = self.client.delete(self._col_url(db))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.layer.refresh_from_db()
+        self.assertNotIn(db, [a['db'] for a in self.layer.attributes])
+        self.assertNotIn(db, _table_columns(self.layer.table_name))
+
+    def test_delete_column_resets_style_using_it(self):
+        db = self._attr_db('num')
+        self.layer.style = {'mode': 'graduated', 'field': db, 'stops': []}
+        self.layer.save(update_fields=['style'])
+        self.client.delete(self._col_url(db))
+        self.layer.refresh_from_db()
+        self.assertEqual(self.layer.style, {})
+
+    def test_delete_unknown_column_404(self):
+        self.assertEqual(self.client.delete(self._col_url('nope')).status_code, 404)
+
+    # ── Доступ ──
+    def test_add_requires_login(self):
+        self.client.logout()
+        self.assertEqual(self._add({'name': 'x', 'type': 'text'}).status_code, 401)
+
+    def test_non_admin_denied(self):
+        self.client.logout()
+        self._login_plain()
+        self.assertEqual(self._add({'name': 'x', 'type': 'text'}).status_code, 403)
+        db = self._attr_db('num')
+        self.assertEqual(self.client.delete(self._col_url(db)).status_code, 403)

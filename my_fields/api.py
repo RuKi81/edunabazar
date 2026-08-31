@@ -1136,6 +1136,86 @@ def _gis_layer_patch(request: HttpRequest, layer: GisLayer) -> JsonResponse:
     return JsonResponse({'ok': True, 'layer': _gis_layer_to_dict(layer)})
 
 
+@csrf_exempt
+@require_http_methods(['POST'])
+def gis_layer_columns(request: HttpRequest, pk: int) -> JsonResponse:
+    """POST JSON — добавить атрибутивный столбец слою (``ALTER TABLE``).
+
+    Body: ``{name, type}`` (type из NEW_LAYER_ATTR_TYPES). Схему меняет —
+    нужен уровень ``manage`` (как загрузка SHP / создание слоя).
+    """
+    gate = _require_gis_access(request, level='manage', pk=pk)
+    if gate:
+        return gate
+    layer = get_object_or_404(GisLayer, pk=pk)
+
+    try:
+        data = json.loads(request.body or b'{}')
+    except (ValueError, TypeError):
+        return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
+
+    name = str(data.get('name', '')).strip()
+    col_type = data.get('type', 'text')
+
+    from .services.shp_import import ShapefileImportError, add_layer_column
+    try:
+        column = add_layer_column(layer, name, col_type)
+    except ShapefileImportError as e:
+        return JsonResponse(
+            {'ok': False, 'error': 'add_failed', 'detail': str(e)}, status=400)
+    except Exception as e:  # noqa: BLE001
+        return JsonResponse(
+            {'ok': False, 'error': 'add_failed',
+             'detail': f'Ошибка добавления столбца: {e}'}, status=400)
+    return JsonResponse(
+        {'ok': True, 'column': column, 'layer': _gis_layer_to_dict(layer)},
+        status=201)
+
+
+@csrf_exempt
+@require_http_methods(['PATCH', 'DELETE'])
+def gis_layer_column_detail(request: HttpRequest, pk: int, db: str) -> JsonResponse:
+    """PATCH — переименовать столбец (уровень ``edit``); DELETE — удалить
+    столбец (уровень ``manage``). ``db`` — физическое имя колонки."""
+    level = 'manage' if request.method == 'DELETE' else 'edit'
+    gate = _require_gis_access(request, level=level, pk=pk)
+    if gate:
+        return gate
+    layer = get_object_or_404(GisLayer, pk=pk)
+
+    from .services.shp_import import (
+        ShapefileImportError, drop_layer_column, rename_layer_column)
+
+    if request.method == 'DELETE':
+        try:
+            ok = drop_layer_column(layer, db)
+        except Exception as e:  # noqa: BLE001
+            return JsonResponse(
+                {'ok': False, 'error': 'drop_failed',
+                 'detail': f'Ошибка удаления столбца: {e}'}, status=400)
+        if not ok:
+            return JsonResponse(
+                {'ok': False, 'error': 'unknown_column',
+                 'detail': 'Столбец не найден.'}, status=404)
+        return JsonResponse({'ok': True, 'layer': _gis_layer_to_dict(layer)})
+
+    # PATCH — переименование отображаемого имени.
+    try:
+        data = json.loads(request.body or b'{}')
+    except (ValueError, TypeError):
+        return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
+    try:
+        ok = rename_layer_column(layer, db, str(data.get('name', '')))
+    except ShapefileImportError as e:
+        return JsonResponse(
+            {'ok': False, 'error': 'rename_failed', 'detail': str(e)}, status=400)
+    if not ok:
+        return JsonResponse(
+            {'ok': False, 'error': 'unknown_column',
+             'detail': 'Столбец не найден.'}, status=404)
+    return JsonResponse({'ok': True, 'layer': _gis_layer_to_dict(layer)})
+
+
 def _parse_bbox(raw):
     """Разобрать ``bbox=minx,miny,maxx,maxy`` (EPSG:4326) в кортеж float.
 

@@ -814,6 +814,126 @@ def update_feature(layer, fid: int, props: dict) -> int:
         return cur.rowcount
 
 
+# ── Управление АТРИБУТИВНЫМИ СТОЛБЦАМИ слоя ─────────────────────────────
+
+def _unique_column_db(layer, name: str, exclude: str = None) -> str:
+    """Уникальное db-имя для столбца слоя (не пересекается с id/geom и
+    существующими колонками). ``exclude`` — db переименовываемого столбца,
+    который не учитываем при проверке коллизий (иначе к своему же имени
+    пришился бы суффикс _1)."""
+    used = {'id', 'geom'}
+    for a in (layer.attributes or []):
+        if a.get('db') and a['db'] != exclude:
+            used.add(a['db'])
+    db = slugify_identifier(name, fallback='attr')[:MAX_IDENT]
+    base = db
+    i = 1
+    while db in used:
+        suffix = f'_{i}'
+        db = f'{base[:MAX_IDENT - len(suffix)]}{suffix}'
+        i += 1
+    return db
+
+
+def add_layer_column(layer, name: str, col_type: str) -> dict:
+    """Добавить атрибутивный столбец слою: ``ALTER TABLE ADD COLUMN`` + meta.
+
+    Args:
+        name: отображаемое имя атрибута (непустое).
+        col_type: тип из :data:`NEW_LAYER_ATTR_TYPES`.
+
+    Returns:
+        Мета нового атрибута ``{'name', 'db', 'type'}``.
+
+    Raises:
+        ShapefileImportError: пустое имя / недопустимый тип.
+    """
+    name = (name or '').strip()
+    if not name:
+        raise ShapefileImportError('Укажите имя столбца.')
+    pg_type = NEW_LAYER_ATTR_TYPES.get(col_type)
+    if pg_type is None:
+        raise ShapefileImportError(f'Недопустимый тип атрибута: {col_type!r}.')
+
+    db = _unique_column_db(layer, name)
+    with connection.cursor() as cur:
+        cur.execute(sql.SQL('ALTER TABLE {t} ADD COLUMN {c} {ty}').format(
+            t=sql.Identifier(layer.table_name),
+            c=sql.Identifier(db),
+            ty=sql.SQL(pg_type)))
+
+    entry = {'name': name[:200], 'db': db, 'type': pg_type}
+    layer.attributes = list(layer.attributes or []) + [entry]
+    layer.save(update_fields=['attributes'])
+    return entry
+
+
+def drop_layer_column(layer, db: str) -> bool:
+    """Удалить атрибутивный столбец слоя: ``ALTER TABLE DROP COLUMN`` + meta.
+
+    Возвращает ``False``, если столбца с таким ``db`` нет в meta слоя.
+    Если удалённая колонка использовалась в тематической раскраске
+    (``layer.style.field``) — раскраска сбрасывается.
+    """
+    meta = list(layer.attributes or [])
+    idx = next((i for i, a in enumerate(meta) if a.get('db') == db), None)
+    if idx is None:
+        return False
+    with connection.cursor() as cur:
+        cur.execute(sql.SQL('ALTER TABLE {t} DROP COLUMN IF EXISTS {c}').format(
+            t=sql.Identifier(layer.table_name),
+            c=sql.Identifier(db)))
+    meta.pop(idx)
+    layer.attributes = meta
+    update_fields = ['attributes']
+    if isinstance(layer.style, dict) and layer.style.get('field') == db:
+        layer.style = {}
+        update_fields.append('style')
+    layer.save(update_fields=update_fields)
+    return True
+
+
+def rename_layer_column(layer, db: str, new_name: str) -> bool:
+    """Переименовать атрибут: отображаемое имя (``meta['name']``) И физическую
+    колонку в PostGIS (``ALTER TABLE RENAME COLUMN``).
+
+    Новое db-имя выводится из ``new_name`` (slugify) и делается уникальным.
+    Если оно совпадает с текущим (напр. кириллица → тот же fallback), физическое
+    имя не трогаем — меняем только отображаемое. Ссылку на колонку в тематической
+    раскраске (``layer.style.field``) при смене db обновляем.
+
+    Возвращает ``False``, если столбца нет.
+
+    Raises:
+        ShapefileImportError: пустое новое имя.
+    """
+    new_name = (new_name or '').strip()
+    if not new_name:
+        raise ShapefileImportError('Укажите новое имя столбца.')
+    meta = list(layer.attributes or [])
+    attr = next((a for a in meta if a.get('db') == db), None)
+    if attr is None:
+        return False
+
+    new_db = _unique_column_db(layer, new_name, exclude=db)
+    update_fields = ['attributes']
+    if new_db != db:
+        with connection.cursor() as cur:
+            cur.execute(sql.SQL('ALTER TABLE {t} RENAME COLUMN {old} TO {new}').format(
+                t=sql.Identifier(layer.table_name),
+                old=sql.Identifier(db),
+                new=sql.Identifier(new_db)))
+        attr['db'] = new_db
+        if isinstance(layer.style, dict) and layer.style.get('field') == db:
+            layer.style = {**layer.style, 'field': new_db}
+            update_fields.append('style')
+
+    attr['name'] = new_name[:200]
+    layer.attributes = meta
+    layer.save(update_fields=update_fields)
+    return True
+
+
 # ── Правка ГЕОМЕТРИИ объектов слоя ──────────────────────────────────────
 
 # Допустимые GeoJSON-типы геометрии для каждого geom_kind слоя. ``other`` —

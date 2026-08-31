@@ -633,6 +633,8 @@
     /* Конструктор выборки (фильтр по атрибутам). */
     .gis-attrtable__filtertoggle { padding: 5px 8px; white-space: nowrap; }
     .gis-attrtable__filtertoggle.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
+    /* Кнопка «Добавить столбец» (только для загруженных SHP-слоёв). */
+    .gis-attrtable__addcol { padding: 5px 8px; white-space: nowrap; }
     .gis-attrtable__filterpanel {
       border-bottom: 1px solid rgba(0,0,0,.12); background: #fafafa;
       padding: 8px 10px; display: flex; flex-direction: column; gap: 8px;
@@ -705,6 +707,18 @@
       display: flex; align-items: center; gap: 6px; padding: 8px;
       border-top: 1px solid #eee;
     }
+    /* Блок действий над столбцом (переименовать / удалить) в шапке попапа. */
+    .gis-colmenu__actions {
+      display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid #eee;
+    }
+    .gis-colmenu__act {
+      flex: 1; padding: 5px 6px; font-size: 12px; border: 1px solid #d0d0d0;
+      border-radius: 6px; background: #fff; cursor: pointer; white-space: nowrap;
+    }
+    .gis-colmenu__act:hover { background: #f2f7f2; }
+    .gis-colmenu__act--danger { color: #c62828; border-color: #ef9a9a; }
+    .gis-colmenu__act--danger:hover { background: #fdeaea; }
+    .gis-colmenu__filterhint { color: #999; font-size: 11px; padding: 6px 8px 2px; }
     /* Редактируемые ячейки (режим правки слоя). */
     .gis-attrtable td.editable { background: #fffef2; cursor: text; }
     .gis-attrtable td.editable:hover { background: #fff9d6; }
@@ -1176,6 +1190,8 @@
                placeholder="поиск по строкам…" autocomplete="off" hidden>
         <button type="button" class="gis-attrtable__btn gis-attrtable__filtertoggle" id="gis-attrtable-filter-toggle"
                 title="Конструктор выборки (фильтр по атрибутам)" hidden>⚟ Фильтр</button>
+        <button type="button" class="gis-attrtable__btn gis-attrtable__addcol" id="gis-attrtable-addcol"
+                title="Добавить атрибутивный столбец" hidden>➕ столбец</button>
         <span class="gis-attrtable__title" id="gis-attrtable-title">ЗСН (Росреестр)</span>
         <span class="gis-attrtable__count" id="gis-attrtable-count"></span>
         <select class="gis-attrtable__filter browser-default" id="gis-attrtable-filter" title="Фильтр по использованию">
@@ -5213,6 +5229,7 @@
       var searchEl = document.getElementById('gis-attrtable-search');
       var filterEl = document.getElementById('gis-attrtable-filter');
       var fpToggle = document.getElementById('gis-attrtable-filter-toggle');
+      var addColBtn = document.getElementById('gis-attrtable-addcol');
       var fpPanel  = document.getElementById('gis-attrtable-filterpanel');
       var fpRules  = document.getElementById('gis-fp-rules');
       var fpActions = document.getElementById('gis-fp-actions');
@@ -5325,7 +5342,20 @@
 
         var menu = document.createElement('div');
         menu.className = 'gis-colmenu';
+        /* Действия над столбцом (переименовать / удалить) — только для
+           загруженных SHP-слоёв (у них есть эндпоинт columns/ и числовой id).
+           Для farmlands/userfields блок не рендерим, иначе кнопки были бы
+           видны, но при клике улетели бы битым запросом. */
+        var isDynLayer = !!dynLayers[state.layer];
+        var actionsHtml = isDynLayer
+          ? ('<div class="gis-colmenu__actions">' +
+              '<button type="button" class="gis-colmenu__act" data-col="rename">✎ Переименовать</button>' +
+              '<button type="button" class="gis-colmenu__act gis-colmenu__act--danger" data-col="delete">🗑 Удалить</button>' +
+            '</div>' +
+            '<div class="gis-colmenu__filterhint">Фильтр по значениям:</div>')
+          : '';
         menu.innerHTML =
+          actionsHtml +
           '<input type="text" class="gis-colmenu__search browser-default" ' +
             'placeholder="Поиск значения…">' +
           '<div class="gis-colmenu__list">' +
@@ -5338,6 +5368,26 @@
           '</div>';
         document.body.appendChild(menu);
         colMenuEl = menu;
+
+        /* Переименование / удаление столбца через мост upload-модуля. */
+        var idNum = parseInt(lid, 10);
+        var curLabel = (col && col.label) || db;
+        var renameBtn = menu.querySelector('[data-col="rename"]');
+        var deleteBtn = menu.querySelector('[data-col="delete"]');
+        if (renameBtn) renameBtn.addEventListener('click', function () {
+          var name = window.prompt('Новое имя столбца:', curLabel);
+          if (name == null) return;
+          name = name.trim();
+          if (!name) { toast('Имя столбца не может быть пустым', true); return; }
+          closeColMenu();
+          if (window.__gisUpColumns) window.__gisUpColumns.rename(idNum, db, name);
+        });
+        if (deleteBtn) deleteBtn.addEventListener('click', function () {
+          if (!window.confirm('Удалить столбец «' + curLabel +
+              '»? Данные в нём будут потеряны безвозвратно.')) return;
+          closeColMenu();
+          if (window.__gisUpColumns) window.__gisUpColumns.remove(idNum, db);
+        });
 
         /* Позиционируем под кебабом, не вылезая за правый край окна. */
         var r = anchor.getBoundingClientRect();
@@ -5420,6 +5470,9 @@
             }
           }
           rebuildFilter();
+          /* Карта следует за value-фильтром так же, как таблица — независимо
+             от режима «только выбранные». */
+          try { applyOnlySelectedMap(); } catch (_) {}
           closeColMenu();
           state.page = 0;
           if (isServerPaged()) reloadDynPage(); else render();
@@ -6181,9 +6234,10 @@
             /* Есть ручной выбор — гасим карту по выбранным. */
             if (window.__gisUpShowOnlyIds) window.__gisUpShowOnlyIds(lid, null);
             if (window.__gisUpOnlySelected) window.__gisUpOnlySelected(lid, ids);
-          } else if (state.onlySelected && state.filter) {
-            /* Ручного выбора нет, но активна SQL-выборка — гасим по её
-               результату (id тянем с сервера, режим — feature-state 'infilter'). */
+          } else if (state.filter) {
+            /* Ручного выбора нет, но активна выборка (value-фильтр столбца или
+               конструктор) — гасим карту по её результату независимо от режима
+               «только выбранные» (id тянем с сервера, feature-state 'infilter'). */
             if (window.__gisUpOnlySelected) window.__gisUpOnlySelected(lid, null);
             applyFilterDimForMap(lid);
           } else {
@@ -6227,7 +6281,7 @@
         }).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
           .then(function (j) {
             /* Ответ устарел (сменили слой / выключили режим / убрали фильтр). */
-            if (state.layer !== reqKey || !state.onlySelected || !state.filter) return;
+            if (state.layer !== reqKey || !state.filter) return;
             var ids = (j.results || []).map(function (x) { return x.id; });
             filterIdCache = { key: keyAtRequest, ids: ids.map(String) };
             if (window.__gisUpShowOnlyIds) window.__gisUpShowOnlyIds(lid, ids);
@@ -6521,6 +6575,8 @@
       function syncTabs() {
         if (titleEl) titleEl.textContent = layerTitleFor(state.layer);
         if (typeof fpSyncToggle === 'function') fpSyncToggle();
+        /* «Добавить столбец» — только для загруженных SHP-слоёв. */
+        if (addColBtn) addColBtn.hidden = !dynLayers[state.layer];
       }
       function loadDyn(key, after) {
         var def = dynLayers[key];
@@ -6713,6 +6769,79 @@
       document.querySelectorAll('.gis-layer[data-layer] .gis-layer__btn[data-action="table"]').forEach(function (btn) {
         var layerKey = btn.closest('.gis-layer[data-layer]').getAttribute('data-layer');
         btn.addEventListener('click', function () { window.__gisAttr.open(layerKey); });
+      });
+
+      /* ─── Добавление атрибутивного столбца (SHP-слои) ───
+         Попап с именем + типом, крепится к body под кнопкой «➕ столбец».
+         Использует те же .gis-colmenu-стили. */
+      var addColMenuEl = null;
+      function closeAddColMenu() {
+        if (addColMenuEl) { addColMenuEl.remove(); addColMenuEl = null; }
+        document.removeEventListener('mousedown', onAddColOutside, true);
+      }
+      function onAddColOutside(e) {
+        if (!addColMenuEl) return;
+        if (addColMenuEl.contains(e.target)) return;
+        if (addColBtn && addColBtn.contains(e.target)) return;
+        closeAddColMenu();
+      }
+      function openAddColMenu() {
+        closeAddColMenu();
+        if (!dynLayers[state.layer]) return;
+        var lid = parseInt(state.layer.slice('gisup:'.length), 10);
+        var menu = document.createElement('div');
+        menu.className = 'gis-colmenu';
+        menu.innerHTML =
+          '<div class="gis-colmenu__filterhint">Новый столбец:</div>' +
+          '<input type="text" class="gis-colmenu__search browser-default" ' +
+            'data-ac="name" placeholder="Имя столбца…" maxlength="200">' +
+          '<div style="padding:0 8px 4px;">' +
+            '<select class="browser-default" data-ac="type" ' +
+              'style="width:100%;display:block;height:auto;padding:5px 8px;' +
+              'border:1px solid #ccc;border-radius:6px;font-size:12px;">' +
+              '<option value="text">Текст</option>' +
+              '<option value="integer">Целое число</option>' +
+              '<option value="double precision">Дробное число</option>' +
+              '<option value="date">Дата</option>' +
+            '</select></div>' +
+          '<div class="gis-colmenu__foot">' +
+            '<button type="button" class="gis-fp__btn" data-ac="cancel">Отмена</button>' +
+            '<span class="gis-fp__spacer"></span>' +
+            '<button type="button" class="gis-fp__btn gis-fp__btn--primary" ' +
+              'data-ac="create">Добавить</button>' +
+          '</div>';
+        document.body.appendChild(menu);
+        addColMenuEl = menu;
+
+        var r = addColBtn.getBoundingClientRect();
+        var left = Math.min(r.left, window.innerWidth - 250);
+        menu.style.left = Math.max(6, left) + 'px';
+        menu.style.top = (r.bottom + 4) + 'px';
+
+        var nameInp = menu.querySelector('[data-ac="name"]');
+        var typeSel = menu.querySelector('[data-ac="type"]');
+        function submit() {
+          var name = (nameInp.value || '').trim();
+          if (!name) { toast('Укажите имя столбца', true); nameInp.focus(); return; }
+          closeAddColMenu();
+          if (window.__gisUpColumns) {
+            window.__gisUpColumns.add(lid, name, typeSel.value);
+          }
+        }
+        menu.querySelector('[data-ac="create"]').addEventListener('click', submit);
+        menu.querySelector('[data-ac="cancel"]').addEventListener('click', closeAddColMenu);
+        nameInp.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); submit(); }
+          else if (e.key === 'Escape') closeAddColMenu();
+        });
+        setTimeout(function () {
+          document.addEventListener('mousedown', onAddColOutside, true);
+          nameInp.focus();
+        }, 0);
+      }
+      if (addColBtn) addColBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (addColMenuEl) closeAddColMenu(); else openAddColMenu();
       });
 
       /* Лупа-переключатель: разворачивает/сворачивает поле поиска по клику. */
@@ -7201,6 +7330,85 @@
          перезагрузки страницы. L — dict слоя из API (как в loadLayers). */
       window.__gisUpIngest = function (L) {
         try { ingest(L, true, true); } catch (_) {}
+      };
+
+      /* Применить обновлённый dict слоя (после операции со столбцами):
+         синхронизировать attributes/style в uploaded[id], перерегистрировать
+         столбцы таблицы (registerAttr пересобирает def.columns) и, если стиль
+         сбросился (удалили колонку раскраски), перекрасить слой. Затем
+         перезагрузить страницу открытой таблицы. */
+      function applyLayerAttrsUpdate(id, layerDict) {
+        var L = uploaded[id];
+        if (!L || !layerDict) return;
+        L.attributes = layerDict.attributes || [];
+        L.style = layerDict.style || {};
+        registerAttr(L);
+        try { applyStyle(L); } catch (_) {}
+        if (window.__gisAttr && window.__gisAttr.reload) window.__gisAttr.reload();
+      }
+
+      /* Мост для модуля таблицы: управление атрибутивными столбцами слоя
+         (добавить / переименовать / удалить). id — числовой id слоя. cb(ok). */
+      window.__gisUpColumns = {
+        add: function (id, name, type, cb) {
+          fetch(API + id + '/columns/', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({ name: name, type: type }),
+          }).then(function (r) {
+            return r.json().then(function (j) { return { ok: r.ok, j: j }; });
+          }).then(function (res) {
+            if (res.ok && res.j.ok) {
+              applyLayerAttrsUpdate(id, res.j.layer);
+              toast('Столбец добавлен');
+              if (cb) cb(true);
+            } else {
+              toast((res.j && res.j.detail) || 'Не удалось добавить столбец', true);
+              if (cb) cb(false);
+            }
+          }).catch(function () {
+            toast('Не удалось добавить столбец', true); if (cb) cb(false);
+          });
+        },
+        rename: function (id, db, name, cb) {
+          fetch(API + id + '/columns/' + encodeURIComponent(db) + '/', {
+            method: 'PATCH', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({ name: name }),
+          }).then(function (r) {
+            return r.json().then(function (j) { return { ok: r.ok, j: j }; });
+          }).then(function (res) {
+            if (res.ok && res.j.ok) {
+              applyLayerAttrsUpdate(id, res.j.layer);
+              toast('Столбец переименован');
+              if (cb) cb(true);
+            } else {
+              toast((res.j && res.j.detail) || 'Не удалось переименовать столбец', true);
+              if (cb) cb(false);
+            }
+          }).catch(function () {
+            toast('Не удалось переименовать столбец', true); if (cb) cb(false);
+          });
+        },
+        remove: function (id, db, cb) {
+          fetch(API + id + '/columns/' + encodeURIComponent(db) + '/', {
+            method: 'DELETE', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          }).then(function (r) {
+            return r.json().then(function (j) { return { ok: r.ok, j: j }; });
+          }).then(function (res) {
+            if (res.ok && res.j.ok) {
+              applyLayerAttrsUpdate(id, res.j.layer);
+              toast('Столбец удалён');
+              if (cb) cb(true);
+            } else {
+              toast((res.j && res.j.detail) || 'Не удалось удалить столбец', true);
+              if (cb) cb(false);
+            }
+          }).catch(function () {
+            toast('Не удалось удалить столбец', true); if (cb) cb(false);
+          });
+        },
       };
 
       function fitExtent(ext) {
