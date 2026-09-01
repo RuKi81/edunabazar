@@ -7737,9 +7737,22 @@
                   Array.isArray(s.categories) && s.categories.length);
       }
 
+      /* Предикат типа геометрии как ВЫРАЖЕНИЕ (не легаси $type): базовый
+         фильтр слоя хранится в легаси-форме ['==','$type','Polygon'], но её
+         нельзя вкладывать в expression-фильтр ['all', …, <expr>] — MapLibre
+         отвергнет весь фильтр. Здесь пересобираем проверку типа через
+         ['geometry-type'] с учётом Multi-вариантов (SHP-полигоны часто
+         приходят как MultiPolygon). */
+      function gisUpGeomTypeExpr(gtype) {
+        var arr = gtype === 'Polygon' ? ['Polygon', 'MultiPolygon']
+                : gtype === 'LineString' ? ['LineString', 'MultiLineString']
+                : gtype === 'Point' ? ['Point', 'MultiPoint'] : null;
+        return arr ? ['match', ['geometry-type'], arr, true, false] : null;
+      }
+
       /* Применить фильтр видимости категорий к базовым слоям L на карте.
          Нет категориального стиля / нет скрытых категорий → восстанавливаем
-         только базовый $type-фильтр. */
+         только базовый $type-фильтр (легаси-форма, валидна сама по себе). */
       function gisUpApplyCatFilter(L) {
         var base = L._baseFilter || {};
         var hidden = L._hiddenCats;
@@ -7758,9 +7771,13 @@
             var inHidden = hiddenKnown.length ? ['in', val, ['literal', hiddenKnown]] : false;
             /* видим = известная категория ? не в списке скрытых : «прочие» не скрыты */
             var vis = ['case', isKnown, ['!', inHidden], !otherHidden];
-            flt = bf ? ['all', bf, vis] : vis;
+            /* Тип геометрии базового фильтра → выражение (см. выше). */
+            var gtype = (bf && bf[0] === '==' && bf[1] === '$type') ? bf[2] : null;
+            var typeExpr = gisUpGeomTypeExpr(gtype);
+            flt = typeExpr ? ['all', typeExpr, vis] : vis;
           }
-          try { map.setFilter(lid, flt); } catch (_) {}
+          try { map.setFilter(lid, flt); }
+          catch (e) { if (window.console) console.warn('GIS: фильтр категорий отклонён', L && L.id, lid, e); }
         });
       }
 
