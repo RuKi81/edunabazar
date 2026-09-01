@@ -996,33 +996,54 @@
     var rasterInfo = document.getElementById('raster-info');
     var rasterLegend = document.getElementById('raster-legend');
 
+    // Scope resolved by loadRasterComposites — the one that actually has
+    // composites. Растры генерируются по региону (scope = id региона), поэтому
+    // при выборе района district-scope может быть пуст → откатываемся к
+    // региону (растр региона покрывает район).
+    var rasterActiveScope = null;
+
     function getRasterScope() {
       var districtId = districtSel.value;
       return districtId ? 'd' + districtId : regionSel.value;
     }
 
-    function loadRasterComposites() {
-      var sensor = rasterSensorSel.value;
-      var scope = getRasterScope();
-      var years = getSelectedYears();
-      if (!scope || !years.length) return;
-
-      rasterDateSel.innerHTML = '<option value="">Загрузка…</option>';
-      rasterInfo.textContent = '';
-
-      // Load composites for all selected years
-      var allComposites = [];
+    // Fetch composites for one scope across all selected years → Promise<array>.
+    function fetchCompositesForScope(sensor, scope, years) {
+      var acc = [];
       var promises = years.map(function (yr) {
         return fetch('/agrocosmos/api/raster-composites/?sensor=' + sensor + '&scope=' + scope + '&year=' + yr)
           .then(function (r) { return r.json(); })
           .then(function (resp) {
             if (resp.ok && resp.composites) {
-              resp.composites.forEach(function (c) { allComposites.push(c); });
+              resp.composites.forEach(function (c) { acc.push(c); });
             }
           }).catch(function () {});
       });
+      return Promise.all(promises).then(function () { return acc; });
+    }
 
-      Promise.all(promises).then(function () {
+    function loadRasterComposites() {
+      var sensor = rasterSensorSel.value;
+      var districtScope = getRasterScope();
+      var regionScope = regionSel.value;
+      var years = getSelectedYears();
+      if (!districtScope || !years.length) return;
+
+      rasterDateSel.innerHTML = '<option value="">Загрузка…</option>';
+      rasterInfo.textContent = '';
+
+      // Prefer the district-scoped composites; if none exist, fall back to
+      // the region-scoped raster (covers the district anyway).
+      fetchCompositesForScope(sensor, districtScope, years).then(function (comps) {
+        if (comps.length || districtScope === regionScope || !regionScope) {
+          rasterActiveScope = districtScope;
+          return comps;
+        }
+        return fetchCompositesForScope(sensor, regionScope, years).then(function (regionComps) {
+          rasterActiveScope = regionComps.length ? regionScope : districtScope;
+          return regionComps;
+        });
+      }).then(function (allComposites) {
         rasterDateSel.innerHTML = '<option value="">— Выберите композит —</option>';
         if (!allComposites.length) {
           rasterInfo.textContent = 'Нет растров для выбранного сенсора/района/года.';
@@ -1046,7 +1067,9 @@
     function addRasterLayer() {
       removeRasterLayer();
       var sensor = rasterSensorSel.value;
-      var scope = getRasterScope();
+      // Use the scope that actually has composites (resolved by
+      // loadRasterComposites — may be the region if the district has none).
+      var scope = rasterActiveScope || getRasterScope();
       var dateRange = rasterDateSel.value;
       if (!scope || !dateRange) return;
 
