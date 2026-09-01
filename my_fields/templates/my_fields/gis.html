@@ -121,6 +121,26 @@
       background: #f1f8e9; color: #1b5e20; outline: none;
     }
     .gis-layer__meta { font-size: 11px; color: #777; margin-top: 4px; }
+    /* Легенда категориальной раскраски: список кликабельных квадратиков
+       внизу плашки слоя. Клик по элементу гасит/возвращает категорию. */
+    .gis-layer__legend {
+      margin-top: 6px; padding-top: 6px; border-top: 1px dashed rgba(0,0,0,.12);
+      display: flex; flex-direction: column; gap: 3px;
+      max-height: 180px; overflow-y: auto;
+    }
+    .gis-legend-item {
+      display: flex; align-items: center; gap: 6px; font-size: 11px;
+      color: #555; cursor: pointer; user-select: none; line-height: 1.3;
+    }
+    .gis-legend-item:hover { color: #1b5e20; }
+    .gis-legend-swatch {
+      width: 13px; height: 13px; border-radius: 3px; flex: 0 0 auto;
+      border: 1px solid rgba(0,0,0,.28); box-sizing: border-box;
+    }
+    .gis-legend-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .gis-legend-item--off { opacity: .5; }
+    .gis-legend-item--off .gis-legend-label { text-decoration: line-through; }
+    .gis-legend-item--off .gis-legend-swatch { background: transparent !important; }
     .gis-layer__btn {
       width: 26px; height: 26px; border-radius: 4px; border: 1px solid transparent;
       background: transparent; cursor: pointer; display: inline-flex;
@@ -7703,6 +7723,104 @@
         if (map.getSource(sid)) map.removeSource(sid);
       }
 
+      /* ══════════════ Легенда категориальной раскраски ══════════════
+         Динамическая легенда внизу плашки слоя для style.mode ==
+         'categorical'. Квадратики кликабельны: клик гасит/возвращает
+         категорию объектов на карте (фильтрация через setFilter,
+         скомбинированный с базовым $type-фильтром слоя). Скрытые
+         категории хранятся в L._hiddenCats (Set значений + спецтокен
+         '__other__' для «прочих/пусто»). Пересобирается при изменении
+         оформления (см. вызов gisUpSyncLegend после сохранения стиля). */
+      function gisUpIsCategorical(L) {
+        var s = L && L.style;
+        return !!(s && s.mode === 'categorical' && s.field &&
+                  Array.isArray(s.categories) && s.categories.length);
+      }
+
+      /* Применить фильтр видимости категорий к базовым слоям L на карте.
+         Нет категориального стиля / нет скрытых категорий → восстанавливаем
+         только базовый $type-фильтр. */
+      function gisUpApplyCatFilter(L) {
+        var base = L._baseFilter || {};
+        var hidden = L._hiddenCats;
+        var cat = gisUpIsCategorical(L) ? L.style : null;
+        (L._layerIds || []).forEach(function (lid) {
+          if (!map.getLayer(lid)) return;
+          var bf = base[lid] || null;
+          var flt = bf;
+          if (cat && hidden && hidden.size) {
+            var known = cat.categories.map(function (c) { return String(c.value); });
+            var hiddenKnown = [];
+            hidden.forEach(function (v) { if (v !== '__other__') hiddenKnown.push(v); });
+            var otherHidden = hidden.has('__other__');
+            var val = ['to-string', ['get', cat.field]];
+            var isKnown = ['in', val, ['literal', known]];
+            var inHidden = hiddenKnown.length ? ['in', val, ['literal', hiddenKnown]] : false;
+            /* видим = известная категория ? не в списке скрытых : «прочие» не скрыты */
+            var vis = ['case', isKnown, ['!', inHidden], !otherHidden];
+            flt = bf ? ['all', bf, vis] : vis;
+          }
+          try { map.setFilter(lid, flt); } catch (_) {}
+        });
+      }
+
+      /* Отрисовать содержимое панели легенды для слоя L. */
+      function gisUpRenderLegend(L, panel) {
+        panel.innerHTML = '';
+        if (!gisUpIsCategorical(L)) { panel.hidden = true; return; }
+        if (!L._hiddenCats) L._hiddenCats = new Set();
+        var s = L.style;
+        var frag = document.createDocumentFragment();
+        function addItem(value, label, color) {
+          var item = document.createElement('div');
+          item.className = 'gis-legend-item';
+          if (L._hiddenCats.has(value)) item.classList.add('gis-legend-item--off');
+          var sw = document.createElement('span');
+          sw.className = 'gis-legend-swatch';
+          sw.style.background = color;
+          var lab = document.createElement('span');
+          lab.className = 'gis-legend-label';
+          lab.textContent = label;
+          item.appendChild(sw); item.appendChild(lab);
+          item.title = 'Показать/скрыть на карте: ' + label;
+          item.addEventListener('click', function () {
+            if (L._hiddenCats.has(value)) L._hiddenCats.delete(value);
+            else L._hiddenCats.add(value);
+            item.classList.toggle('gis-legend-item--off', L._hiddenCats.has(value));
+            gisUpApplyCatFilter(L);
+          });
+          frag.appendChild(item);
+        }
+        s.categories.forEach(function (c) {
+          var v = String(c.value);
+          addItem(v, v === '' ? '(пусто)' : v, c.color);
+        });
+        addItem('__other__', 'Прочие / пусто', s.other_color || '#cccccc');
+        panel.appendChild(frag);
+        panel.hidden = false;
+      }
+
+      /* Синхронизировать кнопку и панель легенды в плашке слоя с текущим
+         L.style (после сохранения раскраски: показать/скрыть кнопку,
+         пересобрать открытую панель). */
+      function gisUpSyncLegend(L) {
+        var row = document.getElementById('gisup-row-' + L.id);
+        if (!row) return;
+        var isCat = gisUpIsCategorical(L);
+        var btn = row.querySelector('[data-a="legend"]');
+        var panel = row.querySelector('.gis-layer__legend');
+        if (btn) {
+          btn.style.display = isCat ? '' : 'none';
+          btn.classList.toggle('active', isCat && !!L._legendOpen);
+        }
+        if (panel) {
+          if (isCat && L._legendOpen) gisUpRenderLegend(L, panel);
+          else { panel.hidden = true; panel.innerHTML = ''; }
+        }
+        if (typeof distributeChipIcons === 'function') distributeChipIcons(row);
+      }
+      window.__gisUpSyncLegend = gisUpSyncLegend;
+
       /* ══════════════ Правка геометрии загруженного слоя ══════════════
          Переиспользуем общий редактор draw (mapbox-gl-draw) и ТУ ЖЕ модель
          «очередь + 💾», что у «Мои поля»/ЗСН (см. gupPending во внешнем scope).
@@ -8432,6 +8550,16 @@
         styleBtn.className = 'gis-layer__btn' + (themed ? ' active' : '');
         styleBtn.type = 'button'; styleBtn.setAttribute('data-a', 'style');
         styleBtn.setAttribute('data-ord', '5'); styleBtn.title = 'Раскраска'; styleBtn.textContent = '🎨';
+        /* Легенда: видна только у слоёв с категориальной раскраской. Клик —
+           показать/скрыть панель легенды внизу плашки (data-ord 5.5 ставит
+           её сразу за «Раскраской»). */
+        var isCat0 = gisUpIsCategorical(L);
+        var legendBtn = document.createElement('button');
+        legendBtn.className = 'gis-layer__btn' + (isCat0 && L._legendOpen ? ' active' : '');
+        legendBtn.type = 'button'; legendBtn.setAttribute('data-a', 'legend');
+        legendBtn.setAttribute('data-ord', '5.5'); legendBtn.title = 'Легенда категорий';
+        legendBtn.textContent = '☰';
+        legendBtn.style.display = isCat0 ? '' : 'none';
         var tableBtn = document.createElement('button');
         tableBtn.className = 'gis-layer__btn'; tableBtn.type = 'button';
         tableBtn.setAttribute('data-a', 'attrs'); tableBtn.setAttribute('data-ord', '6');
@@ -8458,6 +8586,7 @@
 
         iconsBox.appendChild(colorEl); iconsBox.appendChild(selEl); iconsBox.appendChild(zoomBtn);
         iconsBox.appendChild(geomBtn); iconsBox.appendChild(visEl); iconsBox.appendChild(styleBtn);
+        iconsBox.appendChild(legendBtn);
         iconsBox.appendChild(tableBtn); iconsBox.appendChild(lockBtn); iconsBox.appendChild(dlBtn);
         iconsBox.appendChild(dupBtn);
         menuWrap.appendChild(kebab); menuWrap.appendChild(pop);
@@ -8485,7 +8614,15 @@
         meta.textContent = (KIND_LABEL[L.geom_kind] || 'Слой') + ' · ' +
           L.feature_count + ' об. · ' + L.table_name;
 
-        div.appendChild(head); div.appendChild(meta);
+        /* Панель легенды (внизу плашки). Рисуется по клику на «☰»; для
+           категориального слоя, у которого легенда была открыта, — сразу. */
+        var legendPanel = document.createElement('div');
+        legendPanel.className = 'gis-layer__legend';
+        legendPanel.hidden = true;
+
+        div.appendChild(head); div.appendChild(meta); div.appendChild(legendPanel);
+
+        if (isCat0 && L._legendOpen) gisUpRenderLegend(L, legendPanel);
 
         var visBtn = head.querySelector('[data-a="vis"]');
         visBtn.addEventListener('click', function () {
@@ -8495,6 +8632,13 @@
         });
         zoomBtn.addEventListener('click', function () { pop.hidden = true; fitExtent(L.extent); });
         styleBtn.addEventListener('click', function () { pop.hidden = true; openStyleModal(L); });
+        legendBtn.addEventListener('click', function (e) {
+          e.stopPropagation(); pop.hidden = true;
+          L._legendOpen = !L._legendOpen;
+          legendBtn.classList.toggle('active', L._legendOpen);
+          if (L._legendOpen) gisUpRenderLegend(L, legendPanel);
+          else { legendPanel.hidden = true; legendPanel.innerHTML = ''; }
+        });
         lockBtn.addEventListener('click', function () {
           pop.hidden = true;
           var newLocked = !(L.style && L.style.locked);
@@ -9715,6 +9859,12 @@
           .then(function (j) {
             L.style = (j.layer && j.layer.style) || s;
             applyStyle(L);
+            /* Категории могли измениться (набор/поле) — сбрасываем фильтр по
+               категориям и приводим карту к новому стилю, затем синхронизируем
+               кнопку/панель легенды. */
+            L._hiddenCats = new Set();
+            gisUpApplyCatFilter(L);
+            gisUpSyncLegend(L);
             var themed = !!(L.style.mode && L.style.mode !== 'single');
             var row = document.getElementById('gisup-row-' + L.id);
             if (row) {
