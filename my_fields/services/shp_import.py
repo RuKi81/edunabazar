@@ -1236,30 +1236,42 @@ def _iter_features(layer):
     а остальные импортируются. Для драйверов без RandomRead — последовательный
     фолбэк, который тоже не даёт одной ошибке прервать всё чтение.
     """
-    from django.contrib.gis.gdal.feature import Feature
-    from django.contrib.gis.gdal.prototypes import ds as capi
-
     try:
         n = layer.num_feat
     except Exception:  # noqa: BLE001
         n = 0
-
-    if n and layer.test_capability(b'RandomRead'):
-        skipped = 0
-        for fid in range(n):
-            try:
-                yield layer[fid]
-            except Exception as e:  # noqa: BLE001 — GDALException/IndexError и пр.
-                skipped += 1
-                logger.warning('Skipping unreadable feature fid=%s: %s', fid, e)
-                continue
-        if skipped:
-            logger.warning('Layer %s: skipped %s unreadable feature(s).',
-                           getattr(layer, 'name', '?'), skipped)
+    if not n:
         return
 
-    # Фолбэк: последовательное чтение. Битая запись обрывает поток
-    # GDAL-исключением — ловим и завершаем, отдав то, что успели прочитать.
+    if layer.test_capability(b'RandomRead'):
+        yield from _iter_features_random(layer, n)
+    else:
+        yield from _iter_features_sequential(layer, n)
+
+
+def _iter_features_random(layer, n):
+    """Чтение по FID: битая запись пропускается, остальные импортируются."""
+    skipped = 0
+    for fid in range(n):
+        try:
+            yield layer[fid]
+        except Exception as e:  # noqa: BLE001 — GDALException/IndexError и пр.
+            skipped += 1
+            logger.warning('Skipping unreadable feature fid=%s: %s', fid, e)
+    if skipped:
+        logger.warning('Layer %s: skipped %s unreadable feature(s).',
+                       getattr(layer, 'name', '?'), skipped)
+
+
+def _iter_features_sequential(layer, n):
+    """Фолбэк для драйверов без RandomRead: последовательное чтение.
+
+    Битая запись обрывает поток GDAL-исключением — ловим и завершаем, отдав
+    то, что успели прочитать.
+    """
+    from django.contrib.gis.gdal.feature import Feature
+    from django.contrib.gis.gdal.prototypes import ds as capi
+
     capi.reset_reading(layer._ptr)
     for _ in range(n):
         try:
