@@ -362,7 +362,7 @@ def admin_campaign_detail(request: HttpRequest, campaign_id: int) -> HttpRespons
     all_logs = list(
         EmailLog.objects.filter(campaign=campaign)
         .order_by('id')
-        .values_list('id', 'status', named=True)
+        .values_list('id', 'status', 'sent_at', named=True)
     )
     batches = []
     for i in range(0, len(all_logs), BATCH_SIZE):
@@ -370,6 +370,7 @@ def admin_campaign_detail(request: HttpRequest, campaign_id: int) -> HttpRespons
         b_sent = sum(1 for r in chunk if r.status == EmailLog.STATUS_SENT)
         b_failed = sum(1 for r in chunk if r.status == EmailLog.STATUS_FAILED)
         b_pending = sum(1 for r in chunk if r.status == EmailLog.STATUS_PENDING)
+        sent_ats = [r.sent_at for r in chunk if r.sent_at]
         batch_num = (i // BATCH_SIZE) + 1
         first_id = chunk[0].id
         last_id = chunk[-1].id
@@ -379,6 +380,7 @@ def admin_campaign_detail(request: HttpRequest, campaign_id: int) -> HttpRespons
             'sent': b_sent,
             'failed': b_failed,
             'pending': b_pending,
+            'sent_at': max(sent_ats) if sent_ats else None,
             'first_id': first_id,
             'last_id': last_id,
             'done': b_pending == 0,

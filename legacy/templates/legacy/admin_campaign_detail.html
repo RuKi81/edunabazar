@@ -118,6 +118,7 @@
                 <th style="text-align:center; padding:8px;">✓ Отправлено</th>
                 <th style="text-align:center; padding:8px;">✗ Ошибки</th>
                 <th style="text-align:center; padding:8px;">⏳ Ожидает</th>
+                <th style="text-align:center; padding:8px;">Дата отправки</th>
                 <th style="text-align:center; padding:8px;">Статус</th>
                 <th style="text-align:center; padding:8px;">Действие</th>
               </tr>
@@ -130,6 +131,7 @@
                 <td style="padding:8px; text-align:center; color:#4caf50; font-weight:700;" id="batch-sent-{{ b.num }}">{{ b.sent }}</td>
                 <td style="padding:8px; text-align:center; color:#b00020; font-weight:700;" id="batch-failed-{{ b.num }}">{{ b.failed }}</td>
                 <td style="padding:8px; text-align:center; color:#999;" id="batch-pending-{{ b.num }}">{{ b.pending }}</td>
+                <td style="padding:8px; text-align:center; color:#555;" id="batch-sentat-{{ b.num }}">{% if b.sent_at %}{{ b.sent_at|date:"d.m.Y H:i" }}{% else %}<span style="color:#bbb;">—</span>{% endif %}</td>
                 <td style="padding:8px; text-align:center;" id="batch-status-{{ b.num }}">
                   {% if b.done %}
                     <span style="background:#4caf50; color:#fff; padding:2px 10px; border-radius:10px; font-size:11px; font-weight:700;">Готово</span>
@@ -278,6 +280,13 @@
         document.getElementById('batch-sent-' + num).textContent = parseInt(document.getElementById('batch-sent-' + num).textContent) + data.sent;
         document.getElementById('batch-failed-' + num).textContent = parseInt(document.getElementById('batch-failed-' + num).textContent) + data.failed;
         document.getElementById('batch-pending-' + num).textContent = '0';
+        var nowEl = document.getElementById('batch-sentat-' + num);
+        if (nowEl) {
+          var d = new Date();
+          var pad = function(n) { return (n < 10 ? '0' : '') + n; };
+          nowEl.textContent = pad(d.getDate()) + '.' + pad(d.getMonth() + 1) + '.' + d.getFullYear() + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+          nowEl.style.color = '#555';
+        }
         statusEl.innerHTML = '<span style="background:#4caf50; color:#fff; padding:2px 10px; border-radius:10px; font-size:11px; font-weight:700;">Готово</span>';
         btn.style.display = 'none';
       } else {
