@@ -1083,6 +1083,13 @@
               <span class="gis-style-opacity-note">0% — только контур</span>
               <input type="range" id="gis-style-opacity" min="0" max="100" step="5" value="100">
             </label>
+            <label class="gis-style-opacity gis-style-outline">
+              <input type="checkbox" id="gis-style-outline-only" style="width:auto;margin-right:6px;vertical-align:middle;">
+              Только границы контуров (без заливки)
+            </label>
+            <label class="gis-style-opacity">Толщина границ: <span id="gis-style-linew-val">1.2</span> px
+              <input type="range" id="gis-style-linew" min="0.5" max="10" step="0.5" value="1.2">
+            </label>
           </div>
           <div id="gis-style-editor" class="gis-style-editor"></div>
           <p id="gis-style-hint" class="gis-modal__note"></p>
@@ -7637,7 +7644,8 @@
           if (!lyr) return;
           try {
             if (lyr.type === 'fill') {
-              var fop = (st.opacity != null) ? st.opacity : 0.35;
+              var fop = st.outline_only ? 0
+                : ((st.opacity != null) ? st.opacity : 0.35);
               map.setPaintProperty(lid, 'fill-opacity',
                 active ? ['case', okCase, fop, 0] : fop);
             } else if (lyr.type === 'line') {
@@ -7698,6 +7706,10 @@
         var col2 = { fill: 'fill-color', line: 'line-color', circle: 'circle-color' };
         var opProp = { fill: 'fill-opacity', circle: 'circle-opacity' };
         var opDefault = { fill: 0.35, circle: 1 };
+        /* «Только границы»: заливка полигонов гасится (fill-opacity 0), контур
+           остаётся. Толщина границ (line_width) применяется к line-слоям. */
+        var outlineOnly = !!effStyle.outline_only;
+        var lineW = (effStyle.line_width != null) ? effStyle.line_width : null;
         (L._layerIds || []).forEach(function (lid) {
           var lyr = map.getLayer(lid);
           if (!lyr) return;
@@ -7713,7 +7725,11 @@
           }
           if (opProp[lyr.type]) {
             var op = (effStyle.opacity != null) ? effStyle.opacity : opDefault[lyr.type];
+            if (outlineOnly && lyr.type === 'fill') op = 0;
             try { map.setPaintProperty(lid, opProp[lyr.type], op); } catch (_) {}
+          }
+          if (lyr.type === 'line' && lineW != null) {
+            try { map.setPaintProperty(lid, 'line-width', lineW); } catch (_) {}
           }
         });
       }
@@ -9644,6 +9660,9 @@
       var styleApplyBtn = document.getElementById('gis-stylemodal-apply');
       var styleOpacityInp = document.getElementById('gis-style-opacity');
       var styleOpacityVal = document.getElementById('gis-style-opacity-val');
+      var styleOutlineOnly = document.getElementById('gis-style-outline-only');
+      var styleLineWInp = document.getElementById('gis-style-linew');
+      var styleLineWVal = document.getElementById('gis-style-linew-val');
       var styleLayer = null;   /* редактируемый слой */
       var styleOtherColor = '#cccccc';
 
@@ -9652,6 +9671,12 @@
         var pct = parseInt(styleOpacityInp.value, 10);
         if (isNaN(pct)) pct = 100;
         return Math.max(0, Math.min(100, pct)) / 100;
+      }
+      /* Текущая толщина границ (px) со слайдера. */
+      function styleLineWidthValue() {
+        var w = parseFloat(styleLineWInp.value);
+        if (isNaN(w)) w = 1.2;
+        return Math.max(0.1, Math.min(20, w));
       }
 
       function isNumericType(t) { return !!NUMERIC_TYPES[t]; }
@@ -9696,6 +9721,8 @@
           }
         }
         base.opacity = styleOpacityValue();
+        base.outline_only = !!(styleOutlineOnly && styleOutlineOnly.checked);
+        base.line_width = styleLineWidthValue();
         /* Сохранить текущее состояние замочка — иначе сохранение раскраски
            (полная замена style) сбросило бы блокировку. */
         if (styleLayer && styleLayer.style && styleLayer.style.locked) base.locked = true;
@@ -9705,7 +9732,9 @@
       function previewStyle() {
         if (!styleLayer) return;
         var s = collectStyle();
-        applyStyle(styleLayer, s || { mode: 'single', opacity: styleOpacityValue() });
+        applyStyle(styleLayer, s || { mode: 'single', opacity: styleOpacityValue(),
+          outline_only: !!(styleOutlineOnly && styleOutlineOnly.checked),
+          line_width: styleLineWidthValue() });
       }
 
       function catRow(value, label, count, color) {
@@ -9832,6 +9861,10 @@
       function syncStyleOpacityLabel() {
         if (styleOpacityVal) styleOpacityVal.textContent = styleOpacityInp.value + '%';
       }
+      /* Обновить подпись толщины границ. */
+      function syncStyleLineWLabel() {
+        if (styleLineWVal) styleLineWVal.textContent = styleLineWInp.value;
+      }
 
       function openStyleModal(L) {
         styleLayer = L;
@@ -9843,6 +9876,11 @@
         var op = (s.opacity != null) ? s.opacity : defOp;
         styleOpacityInp.value = Math.round(Math.max(0, Math.min(1, op)) * 100);
         syncStyleOpacityLabel();
+        /* Только границы + толщина: из style, иначе дефолт (линии 2px, иначе 1.2). */
+        if (styleOutlineOnly) styleOutlineOnly.checked = !!s.outline_only;
+        var defLw = (L.geom_kind === 'line') ? 2 : 1.2;
+        styleLineWInp.value = (s.line_width != null) ? s.line_width : defLw;
+        syncStyleLineWLabel();
         document.getElementById('gis-stylemodal-title').textContent = 'Раскраска слоя: ' + L.title;
         renderStyleEditor();
         styleModal.hidden = false;
@@ -9859,6 +9897,11 @@
         syncStyleOpacityLabel();
         previewStyle();
       });
+      if (styleLineWInp) styleLineWInp.addEventListener('input', function () {
+        syncStyleLineWLabel();
+        previewStyle();
+      });
+      if (styleOutlineOnly) styleOutlineOnly.addEventListener('change', previewStyle);
       styleModal.querySelectorAll('[data-style-close]').forEach(function (el) {
         el.addEventListener('click', function () { closeStyleModal(true); });
       });

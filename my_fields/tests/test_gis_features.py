@@ -319,6 +319,47 @@ class GisFeaturesTestCase(TestCase):
         self.layer.refresh_from_db()
         self.assertFalse(self.layer.style['locked'])
 
+    def test_style_outline_only_stored(self):
+        self._login('editor')
+        r = self._patch_layer({'style': {'mode': 'single', 'outline_only': True}})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.layer.refresh_from_db()
+        self.assertTrue(self.layer.style['outline_only'])
+        # Сбрасывается в False.
+        self._patch_layer({'style': {'mode': 'single', 'outline_only': False}})
+        self.layer.refresh_from_db()
+        self.assertFalse(self.layer.style['outline_only'])
+
+    def test_style_line_width_stored_and_clamped(self):
+        self._login('editor')
+        r = self._patch_layer({'style': {'mode': 'single', 'line_width': 3.5}})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.layer.refresh_from_db()
+        self.assertEqual(self.layer.style['line_width'], 3.5)
+        # Вне [0.1, 20] — клипуется.
+        self._patch_layer({'style': {'mode': 'single', 'line_width': 999}})
+        self.layer.refresh_from_db()
+        self.assertEqual(self.layer.style['line_width'], 20.0)
+
+    def test_style_invalid_line_width_ignored(self):
+        self._login('editor')
+        r = self._patch_layer({'style': {'mode': 'single', 'line_width': 'nope'}})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.layer.refresh_from_db()
+        self.assertNotIn('line_width', self.layer.style)
+
+    def test_style_outline_with_categorical(self):
+        self._login('editor')
+        r = self._patch_layer({'style': {
+            'mode': 'categorical', 'field': 'name',
+            'outline_only': True, 'line_width': 2,
+            'categories': [{'value': 'Первое', 'color': '#FF0000'}]}})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.layer.refresh_from_db()
+        self.assertEqual(self.layer.style['mode'], 'categorical')
+        self.assertTrue(self.layer.style['outline_only'])
+        self.assertEqual(self.layer.style['line_width'], 2.0)
+
     # ── field-stats endpoint ─────────────────────────────────────────────
     def test_field_stats_numeric(self):
         self._login('viewer')

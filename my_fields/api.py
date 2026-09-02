@@ -813,9 +813,11 @@ def _attach_display_opts(style: dict, value: dict) -> dict:
     """Добавить к нормализованному стилю сквозные опции отображения слоя.
 
     ``opacity`` — прозрачность заливки полигонов/точек (float, клипуется в
-    [0, 1]); ``locked`` — запрет выбора объектов слоя по клику на карте (bool).
-    Обе опции не зависят от режима раскраски. Некорректная ``opacity`` тихо
-    игнорируется (не роняем сохранение стиля).
+    [0, 1]); ``locked`` — запрет выбора объектов слоя по клику на карте (bool);
+    ``outline_only`` — рисовать только границы контуров без заливки (bool);
+    ``line_width`` — толщина границ/линий в px (float, клипуется в [0.1, 20]).
+    Опции не зависят от режима раскраски. Некорректные значения тихо
+    игнорируются (не роняем сохранение стиля).
     """
     opacity = value.get('opacity')
     if opacity is not None:
@@ -825,6 +827,14 @@ def _attach_display_opts(style: dict, value: dict) -> dict:
             pass
     if 'locked' in value:
         style['locked'] = bool(value.get('locked'))
+    if 'outline_only' in value:
+        style['outline_only'] = bool(value.get('outline_only'))
+    line_width = value.get('line_width')
+    if line_width is not None:
+        try:
+            style['line_width'] = max(0.1, min(20.0, float(line_width)))
+        except (TypeError, ValueError):
+            pass
     return style
 
 
