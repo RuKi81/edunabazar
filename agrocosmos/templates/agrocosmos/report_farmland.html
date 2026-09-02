@@ -369,12 +369,20 @@
 
   function esc(s) { return (s || '').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
+  var navLinks = document.querySelectorAll('.report-nav a');
+
   function updateUrl() {
     var params = new URLSearchParams();
     if (farmlandInput.value) params.set('farmland', farmlandInput.value);
     if (yearSel.value) params.set('year', yearSel.value);
     var qs = params.toString();
     history.replaceState(null, '', location.pathname + (qs ? '?' + qs : ''));
+    // Сохранить выбор поля/года при переключении вкладок отчётов.
+    var tabQs = qs ? '?' + qs : '';
+    navLinks.forEach(function (a) {
+      var base = a.getAttribute('href').split('?')[0];
+      a.setAttribute('href', base + tabQs);
+    });
   }
   document.getElementById('btn-copy').addEventListener('click', function () {
     navigator.clipboard.writeText(location.href).then(function () {
@@ -896,6 +904,7 @@
   btnGen.addEventListener('click', generate);
   farmlandInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') generate(); });
   yearSel.addEventListener('change', updateUrl);
+  updateUrl();
 
   if (farmlandInput.value) generate();
 })();

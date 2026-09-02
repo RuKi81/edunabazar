@@ -236,6 +236,8 @@
 
   function esc(s) { return (s || '').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
+  var navLinks = document.querySelectorAll('.report-nav a');
+
   function updateUrl() {
     var params = new URLSearchParams();
     if (regionSel.value) params.set('region', regionSel.value);
@@ -243,6 +245,12 @@
     if (yearSel.value) params.set('year', yearSel.value);
     var qs = params.toString();
     history.replaceState(null, '', location.pathname + (qs ? '?' + qs : ''));
+    // Сохранить выбор региона/района/года при переключении вкладок отчётов.
+    var tabQs = qs ? '?' + qs : '';
+    navLinks.forEach(function (a) {
+      var base = a.getAttribute('href').split('?')[0];
+      a.setAttribute('href', base + tabQs);
+    });
   }
   regionSel.addEventListener('change', updateUrl);
   districtSel.addEventListener('change', updateUrl);
