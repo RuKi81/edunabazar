@@ -568,17 +568,21 @@ def _copy_features(table_name: str, layer, columns, ct) -> int:
     count = 0
     batch = []
     with transaction.atomic(), connection.cursor() as cur:
-        for feat in layer:
-            geom = feat.geom
-            if geom is None:
+        for feat in _iter_features(layer):
+            if feat is None:
                 continue
-            if ct is not None:
-                try:
-                    geom.transform(ct)
-                except Exception:
+            try:
+                geom = feat.geom
+                if geom is None:
                     continue
-            values = [_field_value(feat, j) for j in range(field_count)]
-            values.append(geom.wkt)
+                if ct is not None:
+                    geom.transform(ct)
+                wkt = geom.wkt
+                values = [_field_value(feat, j) for j in range(field_count)]
+            except Exception as e:  # noqa: BLE001 — битая геометрия/атрибут
+                logger.warning('Skipping corrupt feature in %s: %s', table_name, e)
+                continue
+            values.append(wkt)
             batch.append(values)
             count += 1
             if len(batch) >= 1000:
@@ -1217,6 +1221,53 @@ def distinct_values(layer, field: str, limit: int = 500):
 
 
 # ── Вспомогательное ─────────────────────────────────────────────────────
+
+def _iter_features(layer):
+    """Итерировать объекты слоя, ПРОПУСКАЯ битые записи.
+
+    Штатный итератор GeoDjango (``for feat in layer``) читает через
+    ``OGR_L_GetNextFeature`` и роняет ВЕСЬ слой исключением
+    ``GDALException`` ('Invalid pointer returned from OGR_L_GetNextFeature'),
+    как только попадается повреждённая запись — теряются все объекты после
+    неё. Это и есть причина ошибки импорта отдельных .shp.
+
+    Когда драйвер поддерживает произвольный доступ (шейп-файлы — да), читаем
+    каждую запись по FID (``OGR_L_GetFeature``): одна битая запись пропускается,
+    а остальные импортируются. Для драйверов без RandomRead — последовательный
+    фолбэк, который тоже не даёт одной ошибке прервать всё чтение.
+    """
+    from django.contrib.gis.gdal.feature import Feature
+    from django.contrib.gis.gdal.prototypes import ds as capi
+
+    try:
+        n = layer.num_feat
+    except Exception:  # noqa: BLE001
+        n = 0
+
+    if n and layer.test_capability(b'RandomRead'):
+        skipped = 0
+        for fid in range(n):
+            try:
+                yield layer[fid]
+            except Exception as e:  # noqa: BLE001 — GDALException/IndexError и пр.
+                skipped += 1
+                logger.warning('Skipping unreadable feature fid=%s: %s', fid, e)
+                continue
+        if skipped:
+            logger.warning('Layer %s: skipped %s unreadable feature(s).',
+                           getattr(layer, 'name', '?'), skipped)
+        return
+
+    # Фолбэк: последовательное чтение. Битая запись обрывает поток
+    # GDAL-исключением — ловим и завершаем, отдав то, что успели прочитать.
+    capi.reset_reading(layer._ptr)
+    for _ in range(n):
+        try:
+            yield Feature(capi.get_next_feature(layer._ptr), layer)
+        except Exception as e:  # noqa: BLE001
+            logger.warning('Sequential read stopped on corrupt feature: %s', e)
+            return
+
 
 def _field_value(feat, field_ref):
     """Безопасно достать значение атрибута (None при любой ошибке чтения).

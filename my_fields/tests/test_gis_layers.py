@@ -1021,3 +1021,51 @@ class ColumnManagementTests(GisLayersTestCase):
         self.assertEqual(self._add({'name': 'x', 'type': 'text'}).status_code, 403)
         db = self._attr_db('num')
         self.assertEqual(self.client.delete(self._col_url(db)).status_code, 403)
+
+
+class _FakeLayer:
+    """Мини-заглушка OGR-слоя для проверки :func:`_iter_features`.
+
+    ``bad`` — множество FID, чтение которых бросает исключение (эмуляция
+    'Invalid pointer returned from OGR_L_GetNextFeature' на битой записи).
+    """
+
+    def __init__(self, n, bad=(), random_read=True):
+        self._n = n
+        self._bad = set(bad)
+        self._random_read = random_read
+        self.name = 'fake'
+
+    @property
+    def num_feat(self):
+        return self._n
+
+    def test_capability(self, cap):
+        return self._random_read
+
+    def __getitem__(self, fid):
+        if fid in self._bad:
+            raise Exception('Invalid pointer returned from OGR_L_GetNextFeature')
+        return f'feat{fid}'
+
+
+class IterFeaturesRobustTests(TestCase):
+    """Битая запись в .shp не должна ронять импорт остальных объектов."""
+
+    def test_skips_corrupt_feature_random_read(self):
+        from my_fields.services.shp_import import _iter_features
+        layer = _FakeLayer(5, bad={2})
+        self.assertEqual(
+            list(_iter_features(layer)),
+            ['feat0', 'feat1', 'feat3', 'feat4'],
+        )
+
+    def test_all_features_when_clean(self):
+        from my_fields.services.shp_import import _iter_features
+        layer = _FakeLayer(3)
+        self.assertEqual(list(_iter_features(layer)), ['feat0', 'feat1', 'feat2'])
+
+    def test_multiple_corrupt_features_skipped(self):
+        from my_fields.services.shp_import import _iter_features
+        layer = _FakeLayer(6, bad={0, 3, 5})
+        self.assertEqual(list(_iter_features(layer)), ['feat1', 'feat2', 'feat4'])
