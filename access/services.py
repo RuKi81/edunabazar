@@ -83,27 +83,69 @@ def accessible_gis_layer_ids(user):
         user, ResourceGrant.ResourceType.GIS_LAYER)
 
 
+def _public_raster_layer_ids():
+    """id всех публичных растровых слоёв (``RasterLayer.is_public=True``).
+
+    Импорт ленивый: ``access`` не должен зависеть от ``my_fields`` на уровне
+    модуля (иначе циклический импорт).
+    """
+    from my_fields.models import RasterLayer
+    return set(
+        RasterLayer.objects.filter(is_public=True).values_list('id', flat=True)
+    )
+
+
 def accessible_raster_layer_ids(user):
-    """Множество id растровых слоёв, доступных на просмотр (см. helper)."""
-    return _accessible_resource_ids(
+    """Множество id растровых слоёв, доступных пользователю на просмотр.
+
+    Помимо грантов, ВСЕГДА включает публичные слои (``is_public=True``) —
+    они видны всем. Возвращает ``None``, если доступны ВСЕ слои (админ или
+    whole-class грант).
+    """
+    base = _accessible_resource_ids(
         user, ResourceGrant.ResourceType.RASTER_LAYER)
+    if base is None:
+        return None
+    return base | _public_raster_layer_ids()
+
+
+def raster_view_allowed(user, resource_id) -> bool:
+    """True, если пользователь может просматривать растровый слой ``resource_id``.
+
+    Доступ даёт админ-статус, грант (view/edit/manage) ИЛИ публичность слоя.
+    """
+    if has_resource_access(
+            user, ResourceGrant.ResourceType.RASTER_LAYER, resource_id, 'view'):
+        return True
+    from my_fields.models import RasterLayer
+    return RasterLayer.objects.filter(
+        pk=resource_id, is_public=True).exists()
+
+
+def has_any_public_raster() -> bool:
+    """True, если существует хотя бы один публичный растровый слой."""
+    from my_fields.models import RasterLayer
+    return RasterLayer.objects.filter(is_public=True).exists()
 
 
 def can_open_gis_page(user) -> bool:
-    """Пускать на /me/gis, если админ или есть хоть один ГИС/растровый грант.
+    """Пускать на /me/gis, если админ, есть ГИС/растровый грант ИЛИ есть
+    публичные растры.
 
-    Страница /me/gis хостит и векторные (SHP), и растровые слои, поэтому
-    достаточно любого гранта одного из этих типов.
+    Страница /me/gis хостит и векторные (SHP), и растровые слои. Публичные
+    растры (``is_public=True``) видны всем, поэтому наличие хотя бы одного
+    такого слоя открывает страницу любому авторизованному пользователю.
     """
     if is_admin_legacy_user(user):
         return True
     uid = getattr(user, 'id', None)
     if not uid:
         return False
-    return ResourceGrant.objects.filter(
+    has_grant = ResourceGrant.objects.filter(
         legacy_user_id=uid,
         resource_type__in=(
             ResourceGrant.ResourceType.GIS_LAYER,
             ResourceGrant.ResourceType.RASTER_LAYER,
         ),
     ).exists()
+    return has_grant or has_any_public_raster()

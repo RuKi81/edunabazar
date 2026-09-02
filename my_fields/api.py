@@ -910,8 +910,32 @@ def _require_gis_access(request: HttpRequest, *, level: str = 'view',
 
 def _require_raster_access(request: HttpRequest, *, level: str = 'view',
                            pk: int | None = None):
-    """Гейт доступа к растровым слоям. См. :func:`_require_resource_access`."""
-    return _require_resource_access(request, _RASTER_RESOURCE, level=level, pk=pk)
+    """Гейт доступа к растровым слоям.
+
+    Отличается от :func:`_require_resource_access` тем, что уровень ``view``
+    дополнительно пускает к ПУБЛИЧНЫМ слоям (``RasterLayer.is_public=True``)
+    без явного гранта — они видны всем. ``edit``/``manage`` остаются строгими
+    (только админ/грант).
+    """
+    if level != 'view':
+        return _require_resource_access(
+            request, _RASTER_RESOURCE, level=level, pk=pk)
+
+    from access.services import (
+        can_open_gis_page, is_admin_legacy_user, raster_view_allowed,
+    )
+
+    auth = _require_gis_authenticated(request)
+    if auth:
+        return auth
+    user = getattr(request, 'legacy_user', None)
+    if is_admin_legacy_user(user):
+        return None
+    if pk is not None:
+        allowed = raster_view_allowed(user, pk)
+    else:
+        allowed = can_open_gis_page(user)
+    return None if allowed else JsonResponse({'error': 'forbidden'}, status=403)
 
 
 def _gis_folder_to_dict(folder) -> dict:
@@ -2234,6 +2258,7 @@ def _raster_layer_to_dict(r: RasterLayer) -> dict:
         'style': r.style or {},
         'opacity': r.opacity,
         'error': r.error,
+        'is_public': r.is_public,
         'sort_order': r.sort_order,
         'has_original': bool(r.upload_key),
         'created_at': r.created_at.isoformat(),
@@ -2678,15 +2703,23 @@ def _patch_raster_opacity(data, layer, update_fields):
     return None
 
 
+def _patch_raster_is_public(data, layer, update_fields):
+    if 'is_public' not in data:
+        return None
+    layer.is_public = bool(data.get('is_public'))
+    update_fields.append('is_public')
+    return None
+
+
 def _raster_layer_patch(request: HttpRequest, layer: RasterLayer) -> JsonResponse:
-    """PATCH-часть :func:`raster_layer_detail`: title / style / opacity."""
+    """PATCH-часть :func:`raster_layer_detail`: title / style / opacity / is_public."""
     data, err = _parse_json(request)
     if err:
         return err
 
     update_fields: list[str] = []
     for handler in (_patch_raster_title, _patch_raster_style,
-                    _patch_raster_opacity):
+                    _patch_raster_opacity, _patch_raster_is_public):
         err = handler(data, layer, update_fields)
         if err:
             return err

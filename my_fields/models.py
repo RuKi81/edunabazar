@@ -502,6 +502,15 @@ class RasterLayer(models.Model):
     # Диагностика последнего сбоя конвейера (status=failed).
     error = models.TextField(blank=True, default='', verbose_name='Ошибка')
 
+    # Публичность: True — слой виден ВСЕМ пользователям портала (доступ view
+    # без явного гранта). False — только админам и тем, кому выдан грант
+    # ``access.ResourceGrant`` (resource_type='raster_layer'). По умолчанию
+    # растры публичны — их назначение обычно общедоступные подложки/снимки.
+    is_public = models.BooleanField(
+        default=True, verbose_name='Доступен всем',
+        help_text='Виден всем пользователям без выдачи гранта.',
+    )
+
     sort_order = models.IntegerField(
         default=0, verbose_name='Порядок',
         help_text='Меньше — выше в списке слоёв и на карте.',

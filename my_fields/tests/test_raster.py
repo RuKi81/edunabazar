@@ -40,6 +40,7 @@ from access.services import (
     accessible_raster_layer_ids,
     can_open_gis_page,
     has_resource_access,
+    raster_view_allowed,
 )
 from legacy.models import LegacyUser
 from my_fields.models import RasterLayer
@@ -204,8 +205,9 @@ class RasterAccessTest(TestCase):
     @classmethod
     def setUpTestData(cls):
         cls.RL = ResourceGrant.ResourceType.RASTER_LAYER
-        cls.layer_a = RasterLayer.objects.create(title='A')
-        cls.layer_b = RasterLayer.objects.create(title='B')
+        # НЕпубличные слои — здесь проверяется именно грантовая семантика.
+        cls.layer_a = RasterLayer.objects.create(title='A', is_public=False)
+        cls.layer_b = RasterLayer.objects.create(title='B', is_public=False)
         cls.viewer = _mk_legacy('r_viewer')     # whole-class view
         cls.perlayer = _mk_legacy('r_perlayer')  # только layer_a
         cls.nobody = _mk_legacy('r_nobody')
@@ -240,6 +242,37 @@ class RasterAccessTest(TestCase):
             self.nobody, self.RL, self.layer_a.pk, 'view'))
         self.assertEqual(accessible_raster_layer_ids(self.nobody), set())
         self.assertFalse(can_open_gis_page(self.nobody))
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Публичные растры (is_public=True) — видны всем по умолчанию
+# ─────────────────────────────────────────────────────────────────────
+class PublicRasterTest(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.RL = ResourceGrant.ResourceType.RASTER_LAYER
+        cls.public = RasterLayer.objects.create(title='Pub')  # is_public=True
+        cls.private = RasterLayer.objects.create(
+            title='Priv', is_public=False)
+        cls.nobody = _mk_legacy('pub_nobody')  # без единого гранта
+
+    def test_default_is_public(self):
+        self.assertTrue(self.public.is_public)
+
+    def test_public_view_allowed_without_grant(self):
+        self.assertTrue(raster_view_allowed(self.nobody, self.public.pk))
+
+    def test_private_view_denied_without_grant(self):
+        self.assertFalse(raster_view_allowed(self.nobody, self.private.pk))
+
+    def test_public_id_in_accessible(self):
+        ids = accessible_raster_layer_ids(self.nobody)
+        self.assertIn(self.public.pk, ids)
+        self.assertNotIn(self.private.pk, ids)
+
+    def test_page_open_with_public_raster(self):
+        # Любой авторизованный юзер попадает на /me/gis, если есть публичный растр.
+        self.assertTrue(can_open_gis_page(self.nobody))
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -507,11 +540,24 @@ class RasterUploadEndpointsTest(TestCase):
         self.assertEqual(resp.status_code, 204)
 
     def test_tile_forbidden_without_grant(self):
+        # НЕпубличный слой без гранта — 403.
+        self._login(self.nobody_dj, self.nobody_lu)
+        layer = RasterLayer.objects.create(
+            title='r', status=RasterLayer.Status.READY, cog_key='9/cog.tif',
+            is_public=False)
+        resp = self.client.get(self._tile_url(layer.pk))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_tile_public_allowed_without_grant(self):
+        # Публичный слой (по умолчанию) виден любому авторизованному юзеру.
+        from my_fields.services import raster_render
         self._login(self.nobody_dj, self.nobody_lu)
         layer = RasterLayer.objects.create(
             title='r', status=RasterLayer.Status.READY, cog_key='9/cog.tif')
-        resp = self.client.get(self._tile_url(layer.pk))
-        self.assertEqual(resp.status_code, 403)
+        with patch.object(raster_render, 'render_layer_tile',
+                          return_value=b'\x89PNGDATA'):
+            resp = self.client.get(self._tile_url(layer.pk, 3, 4, 2))
+        self.assertEqual(resp.status_code, 200)
 
 
 # ─────────────────────────────────────────────────────────────────────
