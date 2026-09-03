@@ -23,6 +23,25 @@
     .gis-ui { position: fixed; left: 0; right: 0; top: 0; bottom: 0; min-height: 600px;
       --gis-left-w: 285px; --gis-attrtable-h: 40vh; }
     #gis-map { position: absolute; left: 0; right: 0; top: 0; bottom: 0; }
+
+    /* Coordinate search */
+    .coord-search {
+      position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+      z-index: 5; display: flex; gap: 4px; align-items: center;
+      background: rgba(255,255,255,.95); border-radius: 6px;
+      box-shadow: 0 1px 6px rgba(0,0,0,.2); padding: 4px 6px;
+    }
+    .coord-search input {
+      border: 1px solid #cfd8dc; border-radius: 4px; height: 30px; margin: 0;
+      padding: 0 8px; font-size: 12px; width: 240px; box-sizing: border-box;
+      background: #fff; color: #333;
+    }
+    .coord-search button {
+      border: none; background: #2e7d32; color: #fff; border-radius: 4px;
+      cursor: pointer; height: 30px; padding: 0 10px; font-size: 12px;
+      font-weight: 600; display: flex; align-items: center; gap: 4px;
+    }
+    .coord-search button:hover { background: #256628; }
     /* Когда активен инструмент рисования/редактирования (на карте класс
        gis-tool-active) — курсор всегда дефолтная стрелка Windows, а не
        grab/crosshair от MapLibre / mapbox-gl-draw. */
@@ -901,6 +920,14 @@
   <div class="gis-ui">
     <div id="gis-map"></div>
 
+    <!-- Coordinate search -->
+    <div class="coord-search">
+      <input type="text" class="browser-default" id="coord-search-input"
+             placeholder="Широта, долгота (54.19, 37.61)"
+             title="Поддерживаются десятичные градусы (54.19, 37.61) и градусы/минуты/секунды (54°11'34″N 37°37'2″E)">
+      <button id="coord-search-btn" type="button" title="Перейти к координатам"><i class="material-icons" style="font-size:16px;">my_location</i> Найти</button>
+    </div>
+
     <aside class="gis-ui__left" id="gis-left">
       <div class="gis-topbar">
         <a href="{% url 'legacy_me' %}" title="Назад в кабинет">← Кабинет</a>
@@ -1346,8 +1373,14 @@
          свежие данные после reload и после правок, не ловя устаревший кэш. */
       return {
         type: 'vector',
+        /* minzoom: 11 — тайлы ЗСН запрашиваются без фильтра region/district,
+           т.е. это общероссийская выборка. Ниже z11 bbox тайла охватывает
+           огромную площадь, ST_AsMVT по миллионам полигонов не укладывается
+           в таймаут шлюза (504), а сами контуры на таких зумах субпиксельны.
+           Сервер (agrocosmos.views.tiles.MIN_TILE_ZOOM_UNFILTERED) для z<11
+           всё равно отдаёт пустой тайл — держим клиент в согласии с ним. */
         tiles: [FARMLAND_TILE_BASE + '?v=' + version],
-        minzoom: 6, maxzoom: 14,
+        minzoom: 11, maxzoom: 14,
         promoteId: { farmlands: 'id' },
       };
     }
@@ -1480,6 +1513,84 @@
     });
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), 'top-right');
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
+
+    /* ───────────── Поиск по координатам ───────────── */
+    (function () {
+      var input = document.getElementById('coord-search-input');
+      var cbtn = document.getElementById('coord-search-btn');
+      if (!input || !cbtn) return;
+      var marker = null;
+
+      /* Разбор "широта, долгота": десятичные градусы и Г/М/С, с
+         полушариями N/S/E/W и С/Ю/В/З, разделители запятая/пробел. */
+      function dmsToDeg(nums) {
+        var d = nums[0] || 0, m = nums[1] || 0, s = nums[2] || 0;
+        return (d < 0 ? -1 : 1) * (Math.abs(d) + m / 60 + s / 3600);
+      }
+      function hemi(ch) {
+        ch = ch.toUpperCase();
+        if (ch === 'N' || ch === 'С') return { axis: 'lat', sign: 1 };
+        if (ch === 'S' || ch === 'Ю') return { axis: 'lat', sign: -1 };
+        if (ch === 'E' || ch === 'В') return { axis: 'lng', sign: 1 };
+        if (ch === 'W' || ch === 'З') return { axis: 'lng', sign: -1 };
+        return null;
+      }
+      function parseLatLng(raw) {
+        if (raw == null) return null;
+        var s = String(raw).trim();
+        if (!s) return null;
+        s = s.replace(/[°º]/g, ' ').replace(/['′’`]/g, ' ').replace(/["″”]/g, ' ');
+        s = s.replace(/([NSEWНСЮВЗ])/gi, ' $1 ');
+        var commaCount = (s.match(/,/g) || []).length;
+        s = commaCount >= 2 ? s.replace(/,/g, '.') : s.replace(/,/g, ' ');
+        var toks = s.trim().split(/\s+/).filter(Boolean);
+        var groups = [], cur = { nums: [], sign: 1, axis: null }, sawLetter = false;
+        for (var i = 0; i < toks.length; i++) {
+          var h = hemi(toks[i]);
+          if (h) { sawLetter = true; cur.sign = h.sign; cur.axis = h.axis; groups.push(cur); cur = { nums: [], sign: 1, axis: null }; }
+          else { var v = parseFloat(toks[i]); if (isNaN(v)) return null; cur.nums.push(v); }
+        }
+        if (cur.nums.length) groups.push(cur);
+        var lat = null, lng = null;
+        if (sawLetter) {
+          for (var g = 0; g < groups.length; g++) {
+            var grp = groups[g];
+            if (!grp.nums.length) continue;
+            var deg = dmsToDeg(grp.nums) * grp.sign;
+            if (grp.axis === 'lng') lng = deg;
+            else if (grp.axis === 'lat') lat = deg;
+            else if (lat == null) lat = deg; else lng = deg;
+          }
+        } else {
+          var nums = [];
+          groups.forEach(function (grp2) { nums = nums.concat(grp2.nums); });
+          if (nums.length === 2) { lat = nums[0]; lng = nums[1]; }
+          else if (nums.length === 4) { lat = dmsToDeg(nums.slice(0, 2)); lng = dmsToDeg(nums.slice(2, 4)); }
+          else if (nums.length === 6) { lat = dmsToDeg(nums.slice(0, 3)); lng = dmsToDeg(nums.slice(3, 6)); }
+          else return null;
+        }
+        if (lat == null || lng == null || isNaN(lat) || isNaN(lng)) return null;
+        if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+        return { lat: lat, lng: lng };
+      }
+
+      function go() {
+        var c = parseLatLng(input.value);
+        if (!c) {
+          input.style.borderColor = '#c62828';
+          input.title = 'Не удалось распознать координаты. Пример: 54.19, 37.61';
+          return;
+        }
+        input.style.borderColor = '#cfd8dc';
+        map.flyTo({ center: [c.lng, c.lat], zoom: Math.max(map.getZoom(), 14) });
+        if (!marker) { marker = new maplibregl.Marker({ color: '#e91e63' }); }
+        marker.setLngLat([c.lng, c.lat]).addTo(map);
+      }
+      cbtn.addEventListener('click', go);
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); go(); }
+      });
+    })();
 
     /* ───────────── Панорамирование средней кнопкой мыши ─────────────
        Штатный dragPan реагирует только на ЛКМ, а её во время рисования
