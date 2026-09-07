@@ -275,6 +275,14 @@ class ClassifyWinterSpringCommandTests(TestCase):
             {'Пшеница озимая', 'Соя', 'не используется/ неудобья'},
         )
 
+    def test_missing_shp_fails_fast(self):
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            self._run(
+                region_id=self.region.pk, year=YEAR,
+                reference_shp='/no/such/kultury_2026.shp',
+            )
+
     def test_dry_run_writes_nothing(self):
         self._run(region_id=self.region.pk, year=YEAR, dry_run=True)
         self.assertEqual(FarmlandCropSeason.objects.count(), 0)

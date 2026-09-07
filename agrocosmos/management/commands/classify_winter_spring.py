@@ -33,7 +33,7 @@ from operator import itemgetter
 
 import numpy as np
 from django.contrib.gis.geos import GEOSGeometry
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import connection
 
 from agrocosmos.models import District, Farmland, FarmlandCropSeason, Region
@@ -81,6 +81,12 @@ class Command(BaseCommand):
         source = options['source']
         satellites = FUSED_SATELLITES if source == 'fused' else RASTER_SATELLITES
 
+        # --- Опорные точки культур (для калибровки/валидации) ---
+        # Резолвим ДО тяжёлой загрузки NDVI: чтение SHP/слоя и spatial-join
+        # не зависят от NDVI, а битый путь к SHP валится за секунды, а не
+        # после многоминутной выборки временных рядов.
+        ref_map = self._reference_farmlands(region, district, options)
+
         self.stdout.write(f'Loading {source} NDVI series (year {year})...')
         t0 = time.time()
         series = self._load_series(region, district, year, satellites)
@@ -90,9 +96,6 @@ class Command(BaseCommand):
         if not series:
             self.stdout.write(self.style.WARNING('No data — nothing to do.'))
             return
-
-        # --- Опорные точки культур (для калибровки/валидации) ---
-        ref_map = self._reference_farmlands(region, district, options)
 
         # --- Порог: ручной / калибровка / по умолчанию ---
         threshold = options['threshold']
@@ -231,7 +234,21 @@ class Command(BaseCommand):
 
     def _points_from_shp(self, path, attr):
         """[(GEOSGeometry point 4326, value), ...] из shapefile."""
+        import os
+
         from django.contrib.gis.gdal import DataSource
+        if not os.path.exists(path):
+            raise CommandError(
+                f'SHP не найден: {path}. Проверьте, что файл (и компаньоны '
+                '.shx/.dbf/.prj) лежит в смонтированном томе '
+                '(./import_data → /data/import).'
+            )
+        for ext in ('.shx', '.dbf'):
+            companion = os.path.splitext(path)[0] + ext
+            if not os.path.exists(companion):
+                raise CommandError(
+                    f'Отсутствует обязательный файл shapefile: {companion}'
+                )
         ds = DataSource(path)
         layer = ds[0]
         if attr not in layer.fields:
