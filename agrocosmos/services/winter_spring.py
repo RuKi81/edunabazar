@@ -68,11 +68,41 @@ MAX_PEAK_DOY_THRESHOLD = 215       # ~3 августа
 # Масштаб «перехода» уверенности по пику (в днях).
 PEAK_CONFIDENCE_SCALE_DOY = 30.0
 
+# ── ГЕЙТ УБОРКИ: отсев необрабатываемых угодий ───────────────────────
+# Обрабатываемая культура убирается — после пика NDVI РЕЗКО падает к
+# уровню голой почвы / стерни (озимые к июлю, яровые к августу-сентябрю).
+# Необрабатываемые земли (залежь, многолетние травы, сенокос без укоса,
+# сидеральный пар) дают вегетационный цикл БЕЗ уборочного обвала: NDVI
+# после пика снижается плавно и остаётся высоким. Поэтому наличие
+# «уборочного» спада — надёжный признак того, что поле реально
+# обрабатывается. Контуры без спада относим к классу ``unused``.
+#
+# Окно поиска уборки — от дня пика вперёд (уборка обычно в пределах ~3
+# месяцев после максимума). Спад меряем до МИНИМУМА в окне, а не до конца
+# ряда: так повторный рост сорняков ПОСЛЕ уборки не «прячет» событие.
+HARVEST_WINDOW_DAYS = 90
+# Минимум наблюдений после пика, чтобы вообще судить об уборке.
+HARVEST_MIN_POST_OBS = 2
+# Абсолютный спад NDVI (пик − минимум после пика) для «уборки».
+HARVEST_MIN_DROP = 0.20
+# Доля падения относительно амплитуды (пик − baseline): культура падает
+# минимум наполовину к базовой линии, трава — почти не падает.
+HARVEST_MIN_DROP_RATIO = 0.50
+
+
+@dataclass
+class HarvestSignal:
+    """Результат :func:`detect_harvest` — признак уборочного спада NDVI."""
+    has_harvest: bool
+    harvest_doy: Optional[int]
+    drop_abs: Optional[float]     # пик − минимум после пика (в NDVI)
+    drop_ratio: Optional[float]   # drop_abs / амплитуда (0..1+)
+
 
 @dataclass
 class SeasonProfile:
     """Результат :func:`classify_profile` — класс + фичи + диагностика."""
-    season_class: str            # 'winter' | 'spring' | 'unknown'
+    season_class: str            # 'winter' | 'spring' | 'unused' | 'unknown'
     confidence: float            # 0..1
     early_spring_ndvi: Optional[float]
     winter_baseline: Optional[float]
@@ -80,6 +110,8 @@ class SeasonProfile:
     peak_doy: Optional[int]
     peak_ndvi: Optional[float]
     n_obs: int
+    harvest_doy: Optional[int] = None
+    harvest_drop: Optional[float] = None   # доля спада (drop_ratio)
 
     def as_dict(self) -> dict:
         return {
@@ -99,6 +131,11 @@ class SeasonProfile:
                 None if self.peak_ndvi is None else round(self.peak_ndvi, 4)
             ),
             'n_obs': self.n_obs,
+            'harvest_doy': self.harvest_doy,
+            'harvest_drop': (
+                None if self.harvest_drop is None
+                else round(self.harvest_drop, 4)
+            ),
         }
 
 
@@ -143,6 +180,43 @@ def _detect_peak_sos(doys: np.ndarray, vals: np.ndarray, baseline: float):
     return peak_doy, peak_ndvi, sos_doy
 
 
+def detect_harvest(
+    doys: np.ndarray, vals: np.ndarray, peak_doy: int, peak_ndvi: float,
+    baseline: float,
+    min_drop: float = HARVEST_MIN_DROP,
+    min_drop_ratio: float = HARVEST_MIN_DROP_RATIO,
+    window_days: int = HARVEST_WINDOW_DAYS,
+) -> HarvestSignal:
+    """Есть ли «уборочный» спад NDVI после пика.
+
+    Смотрим МИНИМУМ сглаженного ряда в окне ``(peak_doy, peak_doy +
+    window_days]``. Уборка засчитывается, если спад к этому минимуму
+    достаточно глубокий и в абсолюте (``min_drop``), и относительно
+    амплитуды сезона (``min_drop_ratio``). Минимум (а не последнее
+    значение) делает признак устойчивым к повторному росту сорняков
+    после уборки. При нехватке наблюдений после пика (< ``HARVEST_MIN_POST_OBS``)
+    — считаем, что уборки нет (``has_harvest=False``, метрики None).
+    """
+    amplitude = peak_ndvi - baseline
+    if amplitude <= 0:
+        return HarvestSignal(False, None, None, None)
+
+    post = (doys > peak_doy) & (doys <= peak_doy + window_days)
+    if int(post.sum()) < HARVEST_MIN_POST_OBS:
+        return HarvestSignal(False, None, None, None)
+
+    p_doys = doys[post]
+    p_vals = vals[post]
+    trough_idx = int(np.argmin(p_vals))
+    trough = float(p_vals[trough_idx])
+    drop_abs = peak_ndvi - trough
+    drop_ratio = drop_abs / amplitude
+
+    has = drop_abs >= min_drop and drop_ratio >= min_drop_ratio
+    harvest_doy = int(p_doys[trough_idx]) if has else None
+    return HarvestSignal(has, harvest_doy, float(drop_abs), float(drop_ratio))
+
+
 def _confidence(peak_doy: int, peak_threshold: float,
                 early_spring: Optional[float], es_threshold: float,
                 sos_doy: Optional[int], season_class: str) -> float:
@@ -178,10 +252,25 @@ def _confidence(peak_doy: int, peak_threshold: float,
     return float(np.clip(conf, 0.5, 0.99))
 
 
+def _unused_confidence(drop_ratio: Optional[float],
+                       min_drop_ratio: float) -> float:
+    """Уверенность класса ``unused``: чем меньше спад, тем увереннее.
+
+    ``drop_ratio=None`` (нет наблюдений после пика) — умеренная уверенность.
+    """
+    if drop_ratio is None:
+        return 0.6
+    conf = 0.5 + (min_drop_ratio - drop_ratio)
+    return float(np.clip(conf, 0.5, 0.95))
+
+
 def classify_profile(
     doys: Sequence[int], ndvi: Sequence[float],
     peak_doy_threshold: float = PEAK_DOY_THRESHOLD_DEFAULT,
     early_spring_threshold: float = DEFAULT_EARLY_SPRING_THRESHOLD,
+    require_harvest: bool = True,
+    harvest_min_drop: float = HARVEST_MIN_DROP,
+    harvest_min_drop_ratio: float = HARVEST_MIN_DROP_RATIO,
 ) -> SeasonProfile:
     """Классифицировать один сезонный NDVI-ряд угодья.
 
@@ -190,14 +279,23 @@ def classify_profile(
     Ранневесенний NDVI (``early_spring_threshold``) — ВТОРИЧНЫЙ сигнал,
     влияет только на уверенность.
 
+    **Гейт уборки** (``require_harvest=True``, по умолчанию): перед бинарной
+    классификацией проверяем, что после пика был уборочный спад NDVI
+    (:func:`detect_harvest`). Если спада нет — угодье не обрабатывается
+    (залежь, многолетние травы), класс ``unused`` вместо winter/spring.
+
     Args:
         doys: дни года наблюдений (1..366).
         ndvi: значения NDVI (сырые или сглаженные) в том же порядке.
         peak_doy_threshold: порог дня пика (winter, если пик < порога).
         early_spring_threshold: порог ранневесеннего NDVI (корроборация).
+        require_harvest: включить гейт уборки (отсев необрабатываемых).
+        harvest_min_drop: абсолютный порог уборочного спада NDVI.
+        harvest_min_drop_ratio: относительный порог спада (к амплитуде).
 
     Возвращает :class:`SeasonProfile`. ``season_class='unknown'`` — данных
-    недостаточно (мало точек, нет вег. цикла, слабая амплитуда).
+    недостаточно (мало точек, нет вег. цикла, слабая амплитуда); ``unused``
+    — вег. цикл есть, но нет уборочного спада (не обрабатывается).
     """
     doys = np.asarray(doys, dtype=np.int32)
     ndvi = np.asarray(ndvi, dtype=np.float64)
@@ -234,6 +332,18 @@ def classify_profile(
             sos_doy, peak_doy, peak_ndvi, n_obs,
         )
 
+    # Гейт уборки: вег. цикл есть, но без уборочного спада → не обрабатывается.
+    harvest = detect_harvest(
+        doys, smoothed, peak_doy, peak_ndvi, winter_baseline,
+        min_drop=harvest_min_drop, min_drop_ratio=harvest_min_drop_ratio,
+    )
+    if require_harvest and not harvest.has_harvest:
+        return SeasonProfile(
+            'unused', _unused_confidence(harvest.drop_ratio, harvest_min_drop_ratio),
+            early_spring, winter_baseline, sos_doy, peak_doy, peak_ndvi, n_obs,
+            harvest_doy=None, harvest_drop=harvest.drop_ratio,
+        )
+
     season_class = 'winter' if peak_doy < peak_doy_threshold else 'spring'
     confidence = _confidence(
         peak_doy, peak_doy_threshold, early_spring, early_spring_threshold,
@@ -242,6 +352,7 @@ def classify_profile(
     return SeasonProfile(
         season_class, confidence, early_spring, winter_baseline,
         sos_doy, peak_doy, peak_ndvi, n_obs,
+        harvest_doy=harvest.harvest_doy, harvest_drop=harvest.drop_ratio,
     )
 
 

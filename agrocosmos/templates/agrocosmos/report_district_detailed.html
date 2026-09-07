@@ -430,6 +430,7 @@
   var SEASON_META = [
     { key: 'winter', label: 'Озимые', color: '#1565C0' },
     { key: 'spring', label: 'Яровые', color: '#F57C00' },
+    { key: 'unused', label: 'Не обрабатывается', color: '#795548' },
     { key: 'unknown', label: 'Не определено', color: '#9E9E9E' }
   ];
 
@@ -456,7 +457,8 @@
     var srcLabel = cs.source === 'fused' ? 'HLS (S2+L)' : 'Sentinel-2 / Landsat';
     document.getElementById('crop-season-note').textContent =
       'Классификация по профилю NDVI (' + srcLabel + '). '
-      + 'Озимые — ранневесенний рост и ранний SOS; яровые — поздний единственный пик.';
+      + 'Озимые — ранневесенний рост и ранний SOS; яровые — поздний единственный пик. '
+      + '«Не обрабатывается» — вег. цикл есть, но нет уборочного спада NDVI (гейт уборки).';
   }
 
   function renderAlerts(resp) {

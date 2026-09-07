@@ -709,7 +709,8 @@
     var cs = resp.crop_season;
     var seasonCard = '';
     if (cs && cs.season_class && cs.season_class !== 'unknown') {
-      var seasonColor = cs.season_class === 'winter' ? '#1565C0' : '#F57C00';
+      var seasonColor = cs.season_class === 'winter' ? '#1565C0'
+        : cs.season_class === 'unused' ? '#795548' : '#F57C00';
       var confStr = (cs.confidence !== null && cs.confidence !== undefined)
         ? ' · ' + Math.round(cs.confidence * 100) + '%' : '';
       seasonCard =

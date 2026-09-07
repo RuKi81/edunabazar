@@ -37,9 +37,10 @@ from django.db import connection
 
 from agrocosmos.models import District, Farmland, FarmlandCropSeason, Region
 from agrocosmos.services.winter_spring import (
-    DEFAULT_EARLY_SPRING_THRESHOLD, PEAK_DOY_THRESHOLD_DEFAULT,
-    calibrate_peak_doy_threshold, calibrate_threshold_separating,
-    classify_crop_value, classify_profile, evaluate_predictions,
+    DEFAULT_EARLY_SPRING_THRESHOLD, HARVEST_MIN_DROP, HARVEST_MIN_DROP_RATIO,
+    PEAK_DOY_THRESHOLD_DEFAULT, calibrate_peak_doy_threshold,
+    calibrate_threshold_separating, classify_crop_value, classify_profile,
+    evaluate_predictions,
 )
 
 RASTER_SATELLITES = ('sentinel2', 'landsat8', 'landsat9')
@@ -71,6 +72,15 @@ class Command(BaseCommand):
         parser.add_argument('--crop-types', type=str, default='arable',
                             help='Виды угодий через запятую (по умолч. arable). '
                                  '"all"/пусто — без фильтра (все угодья).')
+        parser.add_argument('--no-harvest-gate', action='store_true',
+                            help='Отключить гейт уборки (не отсеивать '
+                                 'необрабатываемые угодья в класс unused).')
+        parser.add_argument('--harvest-min-drop', type=float, default=None,
+                            help='Порог абсолютного уборочного спада NDVI '
+                                 f'(по умолч. {HARVEST_MIN_DROP}).')
+        parser.add_argument('--harvest-drop-ratio', type=float, default=None,
+                            help='Порог доли спада к амплитуде '
+                                 f'(по умолч. {HARVEST_MIN_DROP_RATIO}).')
         parser.add_argument('--reference-shp', type=str, default=None,
                             help='Путь к shapefile опорных точек культур')
         parser.add_argument('--reference-layer', type=str, default=None,
@@ -129,15 +139,40 @@ class Command(BaseCommand):
             f'вторичный early_spring_ndvi = {es_threshold:.3f}'
         )
 
+        # --- Гейт уборки (отсев необрабатываемых угодий) ---
+        gate = self._harvest_gate(options)
+        if gate['require_harvest']:
+            self.stdout.write(
+                f'  Гейт уборки ВКЛ: спад ≥ {gate["harvest_min_drop"]:.2f} '
+                f'и доля ≥ {gate["harvest_min_drop_ratio"]:.2f} → иначе unused'
+            )
+        else:
+            self.stdout.write('  Гейт уборки ВЫКЛ')
+
         # --- Классификация + запись ---
         counts = self._classify_all(
             series, peak_threshold, es_threshold, year, source, ref_map,
-            options['dry_run'],
+            gate, options['dry_run'],
         )
         self._report(
-            counts, series, ref_map, peak_threshold, es_threshold,
+            counts, series, ref_map, peak_threshold, es_threshold, gate,
             options['dry_run'],
         )
+
+    @staticmethod
+    def _harvest_gate(options):
+        """Параметры гейта уборки из CLI (с дефолтами сервиса)."""
+        return {
+            'require_harvest': not options['no_harvest_gate'],
+            'harvest_min_drop': (
+                HARVEST_MIN_DROP if options['harvest_min_drop'] is None
+                else options['harvest_min_drop']
+            ),
+            'harvest_min_drop_ratio': (
+                HARVEST_MIN_DROP_RATIO if options['harvest_drop_ratio'] is None
+                else options['harvest_drop_ratio']
+            ),
+        }
 
     @staticmethod
     def _parse_crop_types(raw):
@@ -385,13 +420,13 @@ class Command(BaseCommand):
         return peak_thr, es_thr
 
     def _classify_all(self, series, peak_threshold, es_threshold, year,
-                      source, ref_map, dry_run):
-        counts = {'winter': 0, 'spring': 0, 'unknown': 0}
+                      source, ref_map, gate, dry_run):
+        counts = {'winter': 0, 'spring': 0, 'unused': 0, 'unknown': 0}
         batch = []
         for fl_id, (doys, ndvi) in series.items():
             prof = classify_profile(
                 doys, ndvi, peak_doy_threshold=peak_threshold,
-                early_spring_threshold=es_threshold,
+                early_spring_threshold=es_threshold, **gate,
             )
             counts[prof.season_class] += 1
             if dry_run:
@@ -404,6 +439,7 @@ class Command(BaseCommand):
                 winter_baseline=prof.winter_baseline,
                 sos_doy=prof.sos_doy, peak_doy=prof.peak_doy,
                 peak_ndvi=prof.peak_ndvi,
+                harvest_doy=prof.harvest_doy, harvest_drop=prof.harvest_drop,
                 is_reference=ref is not None,
                 reference_crop=(ref['value'] if ref else ''),
                 threshold=es_threshold,
@@ -425,6 +461,7 @@ class Command(BaseCommand):
             update_fields=[
                 'season_class', 'confidence', 'early_spring_ndvi',
                 'winter_baseline', 'sos_doy', 'peak_doy', 'peak_ndvi',
+                'harvest_doy', 'harvest_drop',
                 'is_reference', 'reference_crop', 'threshold',
                 'peak_doy_threshold',
             ],
@@ -433,31 +470,35 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------ report
 
     def _report(self, counts, series, ref_map, peak_threshold, es_threshold,
-                dry_run):
+                gate, dry_run):
         total = sum(counts.values())
         self.stdout.write(
             f'\n{"[DRY RUN] " if dry_run else ""}Классифицировано {total}: '
             f'озимые={counts["winter"]}, яровые={counts["spring"]}, '
+            f'не обрабатывается={counts["unused"]}, '
             f'не определено={counts["unknown"]}'
         )
         if not ref_map:
             return
 
         # Валидация: матрица ошибок по эталонам озимых/яровых.
-        pairs, unused = [], {'n': 0, 'as_winter': 0, 'as_spring': 0, 'unknown': 0}
+        pairs = []
+        unused = {'n': 0, 'as_winter': 0, 'as_spring': 0,
+                  'as_unused': 0, 'unknown': 0}
         for fid, ref in ref_map.items():
             data = series.get(fid)
             if not data:
                 continue
             prof = classify_profile(
                 data[0], data[1], peak_doy_threshold=peak_threshold,
-                early_spring_threshold=es_threshold,
+                early_spring_threshold=es_threshold, **gate,
             )
             if ref['class'] in ('winter', 'spring'):
                 pairs.append((ref['class'], prof.season_class))
             elif ref['class'] == 'unused':
                 unused['n'] += 1
                 unused[{'winter': 'as_winter', 'spring': 'as_spring',
+                        'unused': 'as_unused',
                         'unknown': 'unknown'}[prof.season_class]] += 1
 
         ev = evaluate_predictions(pairs)
@@ -477,9 +518,12 @@ class Command(BaseCommand):
                 f'(n={ev["total"]})'
             )
         if unused['n']:
+            correct = unused['as_unused'] + unused['unknown']
             self.stdout.write(
-                f'  Эталоны «не обрабатываемые» (для контроля ЗСН): '
-                f'n={unused["n"]}, распознаны NDVI-классификатором как '
-                f'озимые={unused["as_winter"]}, яровые={unused["as_spring"]}, '
-                f'не определено={unused["unknown"]}'
+                f'  Эталоны «не обрабатываемые» (контроль гейта уборки): '
+                f'n={unused["n"]}, отсеяно в unused={unused["as_unused"]}, '
+                f'не определено={unused["unknown"]} '
+                f'(верно {correct}/{unused["n"]}), '
+                f'просочились: озимые={unused["as_winter"]}, '
+                f'яровые={unused["as_spring"]}'
             )

@@ -258,6 +258,7 @@ class FarmlandCropSeason(models.Model):
     class SeasonClass(models.TextChoices):
         WINTER = 'winter', 'Озимые'
         SPRING = 'spring', 'Яровые'
+        UNUSED = 'unused', 'Не обрабатывается'
         UNKNOWN = 'unknown', 'Не определено'
 
     class Source(models.TextChoices):
@@ -297,6 +298,17 @@ class FarmlandCropSeason(models.Model):
     )
     peak_ndvi = models.FloatField(
         null=True, blank=True, verbose_name='Пиковый NDVI',
+    )
+    # Гейт уборки: день уборочного спада NDVI и глубина спада (доля к
+    # амплитуде). У необрабатываемых (``season_class='unused'``) уборки нет
+    # — ``harvest_doy`` пуст, ``harvest_drop`` мал.
+    harvest_doy = models.IntegerField(
+        null=True, blank=True, verbose_name='Уборка (день года)',
+        help_text='День уборочного спада NDVI после пика.',
+    )
+    harvest_drop = models.FloatField(
+        null=True, blank=True, verbose_name='Глубина уборочного спада',
+        help_text='Доля спада NDVI после пика к амплитуде сезона (0..1+).',
     )
 
     # ``is_reference`` — угодье попало под опорную точку известной культуры

@@ -26,7 +26,7 @@ from agrocosmos.models import (
 from agrocosmos.services.winter_spring import (
     calibrate_peak_doy_threshold, calibrate_threshold,
     calibrate_threshold_separating, classify_crop_value, classify_profile,
-    evaluate_predictions,
+    detect_harvest, evaluate_predictions,
 )
 
 YEAR = 2026
@@ -54,6 +54,34 @@ def _spring_ndvi(doy):
     if doy < 270:
         return 0.85 - (doy - 220) / 50 * 0.60
     return 0.20
+
+
+def _grassland_ndvi(doy):
+    """Многолетние травы / залежь: вег. цикл есть, но БЕЗ уборочного спада.
+
+    NDVI плавно нарастает к лету и так же плавно снижается — обвала к
+    голой почве (стерне) нет, поэтому гейт уборки относит контур к unused.
+    """
+    if doy < 60:
+        return 0.35
+    if doy < 170:
+        return 0.35 + (doy - 60) / 110 * 0.45   # рост к 0.80 к DOY170
+    if doy < 300:
+        return 0.80 - (doy - 170) / 130 * 0.18  # медленный спад до ~0.62
+    return 0.62
+
+
+def _winter_regrowth_ndvi(doy):
+    """Озимые: ранний пик, уборочный обвал, затем повторный рост сорняков."""
+    if doy < 60:
+        return 0.32
+    if doy < 150:
+        return 0.32 + (doy - 60) / 90 * 0.53    # рост к 0.85 к DOY150
+    if doy < 190:
+        return 0.85 - (doy - 150) / 40 * 0.65   # уборочный обвал к 0.20 (~190)
+    if doy < 250:
+        return 0.20 + (doy - 190) / 60 * 0.35   # повторный рост сорняков к 0.55
+    return 0.45
 
 
 def _profile(fn, step=8):
@@ -109,6 +137,55 @@ class WinterSpringServiceTests(SimpleTestCase):
         prof = classify_profile(doys, vals)
         self.assertEqual(prof.season_class, 'spring')
         self.assertIsNone(prof.early_spring_ndvi)
+
+    # -- гейт уборки --
+    def test_grassland_gated_to_unused(self):
+        # Есть вег. цикл, но нет уборочного обвала → не обрабатывается.
+        doys, vals, _ = _profile(_grassland_ndvi)
+        prof = classify_profile(doys, vals)
+        self.assertEqual(prof.season_class, 'unused')
+        self.assertIsNotNone(prof.peak_doy)      # цикл есть
+        self.assertIsNone(prof.harvest_doy)      # уборки нет
+        self.assertLess(prof.harvest_drop, 0.5)  # мелкий спад
+
+    def test_grassland_without_gate_falls_through(self):
+        # С отключённым гейтом трава классифицируется как озимая/яровая.
+        doys, vals, _ = _profile(_grassland_ndvi)
+        prof = classify_profile(doys, vals, require_harvest=False)
+        self.assertIn(prof.season_class, ('winter', 'spring'))
+
+    def test_winter_passes_gate(self):
+        doys, vals, _ = _profile(_winter_ndvi)
+        prof = classify_profile(doys, vals)
+        self.assertEqual(prof.season_class, 'winter')
+        self.assertIsNotNone(prof.harvest_doy)
+        self.assertGreaterEqual(prof.harvest_drop, 0.5)
+
+    def test_harvest_survives_weed_regrowth(self):
+        # Обвал уборки + повторный рост сорняков → уборка всё равно найдена.
+        doys, vals, _ = _profile(_winter_regrowth_ndvi)
+        prof = classify_profile(doys, vals)
+        self.assertEqual(prof.season_class, 'winter')
+        self.assertIsNotNone(prof.harvest_doy)
+        self.assertLess(prof.harvest_doy, 220)   # обвал ~190, не поздний рост
+
+    def test_detect_harvest_direct(self):
+        import numpy as np
+        doys = np.array([100, 140, 170, 200, 230], dtype=np.int32)
+        vals = np.array([0.4, 0.85, 0.8, 0.25, 0.2], dtype=np.float64)
+        sig = detect_harvest(doys, vals, peak_doy=140, peak_ndvi=0.85,
+                             baseline=0.3)
+        self.assertTrue(sig.has_harvest)
+        self.assertEqual(sig.harvest_doy, 230)
+
+    def test_detect_harvest_no_post_obs(self):
+        import numpy as np
+        doys = np.array([100, 140], dtype=np.int32)
+        vals = np.array([0.4, 0.85], dtype=np.float64)
+        sig = detect_harvest(doys, vals, peak_doy=140, peak_ndvi=0.85,
+                             baseline=0.3)
+        self.assertFalse(sig.has_harvest)
+        self.assertIsNone(sig.drop_ratio)
 
     # -- раскладка crop → класс (реальные значения kultury_2026) --
     def test_classify_crop_value_real_labels(self):
@@ -197,8 +274,10 @@ class ClassifyWinterSpringCommandTests(TestCase):
 
         for fl in cls.winter:
             cls._series(fl, _winter_ndvi)
-        for fl in cls.spring + [cls.unused]:
+        for fl in cls.spring:
             cls._series(fl, _spring_ndvi)
+        # «Не используется» — профиль травы без уборки: гейт → unused.
+        cls._series(cls.unused, _grassland_ndvi)
 
         # Точечный ГИС-слой: озимые/яровые/не обрабатываемые эталоны.
         cls._make_points_layer(
@@ -266,12 +345,16 @@ class ClassifyWinterSpringCommandTests(TestCase):
             set(winter.values_list('farmland_id', flat=True)),
             {fl.pk for fl in self.winter},
         )
-        # 3 яровых + 1 «не используется» (профиль яровой) = 4 spring.
         self.assertEqual(
             FarmlandCropSeason.objects.filter(
                 year=YEAR, season_class='spring').count(),
-            4,
+            3,
         )
+        # Профиль травы без уборки отсеян гейтом уборки в unused.
+        unused = FarmlandCropSeason.objects.filter(
+            year=YEAR, season_class='unused')
+        self.assertEqual(unused.count(), 1)
+        self.assertEqual(unused.first().farmland_id, self.unused.pk)
 
     def test_reference_calibration_and_confusion(self):
         out = self._run(
@@ -284,6 +367,9 @@ class ClassifyWinterSpringCommandTests(TestCase):
         self.assertIn('яровые:  3/3', out)
         self.assertIn('общая точность: 100.0%', out)
         self.assertIn('не обрабатываемые', out)
+        # Эталон «не используется» отсеян гейтом уборки.
+        self.assertIn('отсеяно в unused=1', out)
+        self.assertIn('Гейт уборки ВКЛ', out)
 
         refs = FarmlandCropSeason.objects.filter(is_reference=True, year=YEAR)
         self.assertEqual(refs.count(), 7)  # 3+3+1
@@ -327,7 +413,8 @@ class ClassifyWinterSpringCommandTests(TestCase):
         self.assertIsNotNone(cs)
         self.assertEqual(cs['source'], 'raster')
         self.assertEqual(cs['classes']['winter']['count'], 3)
-        self.assertEqual(cs['classes']['spring']['count'], 4)
+        self.assertEqual(cs['classes']['spring']['count'], 3)
+        self.assertEqual(cs['classes']['unused']['count'], 1)
 
     def test_report_farmland_includes_crop_season(self):
         self._run(region_id=self.region.pk, year=YEAR)

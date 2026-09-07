@@ -791,6 +791,8 @@ def _farmland_crop_season(farmland, year):
         'confidence': _safe_round(rec.confidence),
         'early_spring_ndvi': _safe_round(rec.early_spring_ndvi),
         'sos_doy': rec.sos_doy,
+        'harvest_doy': rec.harvest_doy,
+        'harvest_drop': _safe_round(rec.harvest_drop),
         'is_reference': rec.is_reference,
         'reference_crop': rec.reference_crop or None,
     }
@@ -1198,7 +1200,7 @@ def _district_crop_season_summary(district_id, year):
         return None
     classes = {
         c: {'count': 0, 'area_ha': 0.0, 'avg_confidence': None}
-        for c in ('winter', 'spring', 'unknown')
+        for c in ('winter', 'spring', 'unused', 'unknown')
     }
     rows = (
         base.filter(source=source)
