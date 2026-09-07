@@ -313,6 +313,11 @@ class FarmlandCropSeason(models.Model):
         null=True, blank=True,
         verbose_name='Порог early_spring_ndvi на прогоне',
     )
+    peak_doy_threshold = models.FloatField(
+        null=True, blank=True,
+        verbose_name='Порог дня пика на прогоне',
+        help_text='Основной признак: пик раньше порога ⇒ озимые.',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

@@ -20,9 +20,9 @@ NDVI ранней весной (апрель) и ранний SOS, яровые 
     python manage.py classify_winter_spring --region-id 71 --year 2026 \
         --reference-layer kultury_2026 --reference-attr crop
 
-    # Ручной порог, источник — слитый HLS-ряд
+    # Ручной порог дня пика (озимые < 185), классифицировать все угодья
     python manage.py classify_winter_spring --region-id 71 --year 2026 \
-        --source fused --threshold 0.4
+        --peak-threshold 185 --crop-types all
 
     # Только посчитать и показать статистику, без записи в БД
     python manage.py classify_winter_spring --region-id 71 --year 2026 --dry-run
@@ -31,20 +31,23 @@ import time
 from itertools import groupby
 from operator import itemgetter
 
-import numpy as np
 from django.contrib.gis.geos import GEOSGeometry
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection
 
 from agrocosmos.models import District, Farmland, FarmlandCropSeason, Region
 from agrocosmos.services.winter_spring import (
-    DEFAULT_EARLY_SPRING_THRESHOLD, EARLY_SPRING_DOY_END,
-    EARLY_SPRING_DOY_START, calibrate_threshold_separating,
+    DEFAULT_EARLY_SPRING_THRESHOLD, PEAK_DOY_THRESHOLD_DEFAULT,
+    calibrate_peak_doy_threshold, calibrate_threshold_separating,
     classify_crop_value, classify_profile, evaluate_predictions,
 )
 
 RASTER_SATELLITES = ('sentinel2', 'landsat8', 'landsat9')
 FUSED_SATELLITES = ('hls_fused',)
+
+# По умолчанию классифицируем только ПАШНЮ: озимые/яровые — это пашня, а
+# луга/пастбища/многолетние/сады зеленеют рано и раздувают «озимые».
+DEFAULT_CROP_TYPES = ('arable',)
 
 DB_BATCH = 2000
 
@@ -59,9 +62,15 @@ class Command(BaseCommand):
         parser.add_argument('--source', choices=['raster', 'fused'],
                             default='raster',
                             help='raster = S2/L8 (по умолчанию), fused = HLS')
+        parser.add_argument('--peak-threshold', type=float, default=None,
+                            help='Ручной порог дня пика (озимые < порога). '
+                                 'Переопределяет калибровку.')
         parser.add_argument('--threshold', type=float, default=None,
-                            help='Ручной порог early_spring_ndvi (переопределяет '
-                                 'калибровку и значение по умолчанию)')
+                            help='Ручной порог early_spring_ndvi (вторичный '
+                                 'сигнал; переопределяет калибровку)')
+        parser.add_argument('--crop-types', type=str, default='arable',
+                            help='Виды угодий через запятую (по умолч. arable). '
+                                 '"all"/пусто — без фильтра (все угодья).')
         parser.add_argument('--reference-shp', type=str, default=None,
                             help='Путь к shapefile опорных точек культур')
         parser.add_argument('--reference-layer', type=str, default=None,
@@ -80,6 +89,7 @@ class Command(BaseCommand):
         year = options['year']
         source = options['source']
         satellites = FUSED_SATELLITES if source == 'fused' else RASTER_SATELLITES
+        crop_types = self._parse_crop_types(options['crop_types'])
 
         # --- Опорные точки культур (для калибровки/валидации) ---
         # Резолвим ДО тяжёлой загрузки NDVI: чтение SHP/слоя и spatial-join
@@ -87,9 +97,13 @@ class Command(BaseCommand):
         # после многоминутной выборки временных рядов.
         ref_map = self._reference_farmlands(region, district, options)
 
-        self.stdout.write(f'Loading {source} NDVI series (year {year})...')
+        scope_msg = ('все угодья' if crop_types is None
+                     else ', '.join(crop_types))
+        self.stdout.write(
+            f'Loading {source} NDVI series (year {year}; виды: {scope_msg})...'
+        )
         t0 = time.time()
-        series = self._load_series(region, district, year, satellites)
+        series = self._load_series(region, district, year, satellites, crop_types)
         self.stdout.write(
             f'  {len(series)} farmlands with NDVI in {time.time() - t0:.1f}s'
         )
@@ -97,19 +111,43 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING('No data — nothing to do.'))
             return
 
-        # --- Порог: ручной / калибровка / по умолчанию ---
-        threshold = options['threshold']
-        if threshold is None and ref_map:
-            threshold = self._calibrate(series, ref_map)
-        elif threshold is None:
-            threshold = DEFAULT_EARLY_SPRING_THRESHOLD
-        self.stdout.write(f'  Порог early_spring_ndvi = {threshold:.3f}')
+        # --- Пороги: ручные / калибровка / по умолчанию ---
+        peak_threshold = options['peak_threshold']
+        es_threshold = options['threshold']
+        if (peak_threshold is None or es_threshold is None) and ref_map:
+            cal_peak, cal_es = self._calibrate(series, ref_map)
+            if peak_threshold is None:
+                peak_threshold = cal_peak
+            if es_threshold is None:
+                es_threshold = cal_es
+        if peak_threshold is None:
+            peak_threshold = PEAK_DOY_THRESHOLD_DEFAULT
+        if es_threshold is None:
+            es_threshold = DEFAULT_EARLY_SPRING_THRESHOLD
+        self.stdout.write(
+            f'  Порог дня пика = {peak_threshold:.0f} (озимые < порога), '
+            f'вторичный early_spring_ndvi = {es_threshold:.3f}'
+        )
 
         # --- Классификация + запись ---
         counts = self._classify_all(
-            series, threshold, year, source, ref_map, options['dry_run'],
+            series, peak_threshold, es_threshold, year, source, ref_map,
+            options['dry_run'],
         )
-        self._report(counts, series, ref_map, threshold, options['dry_run'])
+        self._report(
+            counts, series, ref_map, peak_threshold, es_threshold,
+            options['dry_run'],
+        )
+
+    @staticmethod
+    def _parse_crop_types(raw):
+        """'arable,fallow' → ['arable','fallow']; 'all'/'' → None (все)."""
+        if raw is None:
+            return list(DEFAULT_CROP_TYPES)
+        raw = raw.strip().lower()
+        if raw in ('', 'all'):
+            return None
+        return [c.strip() for c in raw.split(',') if c.strip()]
 
     # ------------------------------------------------------------------ scope
 
@@ -135,7 +173,7 @@ class Command(BaseCommand):
 
     # ------------------------------------------------------------------ data
 
-    def _load_series(self, region, district, year, satellites):
+    def _load_series(self, region, district, year, satellites, crop_types):
         """{farmland_id: (doys[list], ndvi[list])} по не-выбросам за год."""
         where = [
             "vi.index_type = 'ndvi'",
@@ -152,6 +190,10 @@ class Command(BaseCommand):
                 'f.district_id IN (SELECT id FROM agro_district WHERE region_id = %s)'
             )
             params.append(region.pk)
+        if crop_types:
+            ct_ph = ', '.join(['%s'] * len(crop_types))
+            where.append(f'f.crop_type IN ({ct_ph})')
+            params.extend(crop_types)
         placeholders = ', '.join(['%s'] * len(satellites))
         where.append(f'sc.satellite IN ({placeholders})')
         params.extend(satellites)
@@ -309,38 +351,48 @@ class Command(BaseCommand):
 
     # ------------------------------------------------------------------ calc
 
-    @staticmethod
-    def _early_spring_mean(data):
-        doys, ndvi = np.asarray(data[0]), np.asarray(data[1])
-        mask = (doys >= EARLY_SPRING_DOY_START) & (doys <= EARLY_SPRING_DOY_END)
-        return float(np.mean(ndvi[mask])) if mask.any() else None
-
     def _calibrate(self, series, ref_map):
-        """Двусторонняя калибровка порога по эталонам озимых и яровых."""
-        winter_vals, spring_vals = [], []
+        """Калибровка обоих порогов по эталонам озимых и яровых.
+
+        Основной — день пика (:func:`calibrate_peak_doy_threshold`),
+        вторичный — ранневесенний NDVI (:func:`calibrate_threshold_separating`).
+        Фичи (peak_doy, early_spring) не зависят от порогов, поэтому берём
+        их из :func:`classify_profile` с параметрами по умолчанию.
+        """
+        w_peak, s_peak, w_es, s_es = [], [], [], []
         for fid, ref in ref_map.items():
             data = series.get(fid)
             if not data:
                 continue
-            es = self._early_spring_mean(data)
-            if es is None:
-                continue
+            prof = classify_profile(data[0], data[1])
             if ref['class'] == 'winter':
-                winter_vals.append(es)
+                if prof.peak_doy is not None:
+                    w_peak.append(prof.peak_doy)
+                if prof.early_spring_ndvi is not None:
+                    w_es.append(prof.early_spring_ndvi)
             elif ref['class'] == 'spring':
-                spring_vals.append(es)
-        thr = calibrate_threshold_separating(winter_vals, spring_vals)
+                if prof.peak_doy is not None:
+                    s_peak.append(prof.peak_doy)
+                if prof.early_spring_ndvi is not None:
+                    s_es.append(prof.early_spring_ndvi)
+        peak_thr = calibrate_peak_doy_threshold(w_peak, s_peak)
+        es_thr = calibrate_threshold_separating(w_es, s_es)
         self.stdout.write(
-            f'  Калибровка: озимых эталонов={len(winter_vals)}, '
-            f'яровых={len(spring_vals)} → порог {thr:.3f}'
+            f'  Калибровка: озимых эталонов с рядом={len(w_peak)}, '
+            f'яровых={len(s_peak)} → день пика {peak_thr:.0f}, '
+            f'early_spring {es_thr:.3f}'
         )
-        return thr
+        return peak_thr, es_thr
 
-    def _classify_all(self, series, threshold, year, source, ref_map, dry_run):
+    def _classify_all(self, series, peak_threshold, es_threshold, year,
+                      source, ref_map, dry_run):
         counts = {'winter': 0, 'spring': 0, 'unknown': 0}
         batch = []
         for fl_id, (doys, ndvi) in series.items():
-            prof = classify_profile(doys, ndvi, threshold=threshold)
+            prof = classify_profile(
+                doys, ndvi, peak_doy_threshold=peak_threshold,
+                early_spring_threshold=es_threshold,
+            )
             counts[prof.season_class] += 1
             if dry_run:
                 continue
@@ -354,7 +406,8 @@ class Command(BaseCommand):
                 peak_ndvi=prof.peak_ndvi,
                 is_reference=ref is not None,
                 reference_crop=(ref['value'] if ref else ''),
-                threshold=threshold,
+                threshold=es_threshold,
+                peak_doy_threshold=peak_threshold,
             ))
             if len(batch) >= DB_BATCH:
                 self._flush(batch)
@@ -373,12 +426,14 @@ class Command(BaseCommand):
                 'season_class', 'confidence', 'early_spring_ndvi',
                 'winter_baseline', 'sos_doy', 'peak_doy', 'peak_ndvi',
                 'is_reference', 'reference_crop', 'threshold',
+                'peak_doy_threshold',
             ],
         )
 
     # ------------------------------------------------------------------ report
 
-    def _report(self, counts, series, ref_map, threshold, dry_run):
+    def _report(self, counts, series, ref_map, peak_threshold, es_threshold,
+                dry_run):
         total = sum(counts.values())
         self.stdout.write(
             f'\n{"[DRY RUN] " if dry_run else ""}Классифицировано {total}: '
@@ -394,7 +449,10 @@ class Command(BaseCommand):
             data = series.get(fid)
             if not data:
                 continue
-            prof = classify_profile(data[0], data[1], threshold=threshold)
+            prof = classify_profile(
+                data[0], data[1], peak_doy_threshold=peak_threshold,
+                early_spring_threshold=es_threshold,
+            )
             if ref['class'] in ('winter', 'spring'):
                 pairs.append((ref['class'], prof.season_class))
             elif ref['class'] == 'unused':

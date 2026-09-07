@@ -7,8 +7,9 @@
 3. Проброс сводки озимые/яровые в отчёты (district-detailed + паспорт поля).
 
 Профили тюнингованы под среднюю полосу РФ (Тула):
-* озимые — зелёное поле уже в апреле (высокий ранневесенний NDVI), ранний SOS;
-* яровые — голая почва весной, поздний единственный пик.
+* озимые — ранний пик NDVI (конец мая–июнь), зелёное поле уже в апреле;
+* яровые — голая почва весной, поздний пик (июль–август).
+Основной дискриминатор — день пика; ранневесенний NDVI вторичный.
 """
 from datetime import date, timedelta
 from io import StringIO
@@ -23,8 +24,9 @@ from agrocosmos.models import (
     VegetationIndex,
 )
 from agrocosmos.services.winter_spring import (
-    calibrate_threshold, calibrate_threshold_separating, classify_crop_value,
-    classify_profile, evaluate_predictions,
+    calibrate_peak_doy_threshold, calibrate_threshold,
+    calibrate_threshold_separating, classify_crop_value, classify_profile,
+    evaluate_predictions,
 )
 
 YEAR = 2026
@@ -72,6 +74,7 @@ class WinterSpringServiceTests(SimpleTestCase):
         doys, vals, _ = _profile(_winter_ndvi)
         prof = classify_profile(doys, vals)
         self.assertEqual(prof.season_class, 'winter')
+        self.assertLess(prof.peak_doy, 185)          # ранний пик
         self.assertGreater(prof.early_spring_ndvi, 0.35)
         self.assertGreater(prof.confidence, 0.5)
 
@@ -79,11 +82,13 @@ class WinterSpringServiceTests(SimpleTestCase):
         doys, vals, _ = _profile(_spring_ndvi)
         prof = classify_profile(doys, vals)
         self.assertEqual(prof.season_class, 'spring')
+        self.assertGreaterEqual(prof.peak_doy, 185)  # поздний пик
         self.assertLess(prof.early_spring_ndvi, 0.35)
 
-    def test_threshold_moves_boundary(self):
+    def test_peak_threshold_moves_boundary(self):
+        # Тот же ранний пик озимых, но порог сдвинут раньше пика → spring.
         doys, vals, _ = _profile(_winter_ndvi)
-        prof = classify_profile(doys, vals, threshold=0.95)
+        prof = classify_profile(doys, vals, peak_doy_threshold=140)
         self.assertEqual(prof.season_class, 'spring')
 
     def test_flat_signal_unknown(self):
@@ -96,10 +101,14 @@ class WinterSpringServiceTests(SimpleTestCase):
         self.assertEqual(prof.season_class, 'unknown')
         self.assertEqual(prof.confidence, 0.0)
 
-    def test_no_early_spring_obs_unknown(self):
-        doys = list(range(160, 260, 8))
-        vals = [0.8] * len(doys)
-        self.assertEqual(classify_profile(doys, vals).season_class, 'unknown')
+    def test_no_early_spring_obs_still_classifies_by_peak(self):
+        # Нет ранневесенних наблюдений, но есть поздний пик → яровые
+        # (ранневесенний NDVI теперь вторичный, не обязателен).
+        doys = list(range(150, 270, 8))
+        vals = [_spring_ndvi(d) for d in doys]
+        prof = classify_profile(doys, vals)
+        self.assertEqual(prof.season_class, 'spring')
+        self.assertIsNone(prof.early_spring_ndvi)
 
     # -- раскладка crop → класс (реальные значения kultury_2026) --
     def test_classify_crop_value_real_labels(self):
@@ -142,6 +151,14 @@ class WinterSpringServiceTests(SimpleTestCase):
 
     def test_calibrate_separating_empty_default(self):
         self.assertEqual(calibrate_threshold_separating([], []), 0.35)
+
+    def test_calibrate_peak_doy_between_classes(self):
+        thr = calibrate_peak_doy_threshold([150, 155, 148], [215, 220, 225])
+        self.assertGreaterEqual(thr, 160)
+        self.assertLessEqual(thr, 215)
+
+    def test_calibrate_peak_doy_empty_default(self):
+        self.assertEqual(calibrate_peak_doy_threshold([], []), 185)
 
     def test_evaluate_predictions(self):
         pairs = [('winter', 'winter'), ('winter', 'spring'),
@@ -287,8 +304,9 @@ class ClassifyWinterSpringCommandTests(TestCase):
         self._run(region_id=self.region.pk, year=YEAR, dry_run=True)
         self.assertEqual(FarmlandCropSeason.objects.count(), 0)
 
-    def test_manual_threshold_overrides(self):
-        self._run(region_id=self.region.pk, year=YEAR, threshold=0.99)
+    def test_manual_peak_threshold_overrides(self):
+        # Порог дня пика = 140 (раньше пика озимых ~150) → 0 озимых.
+        self._run(region_id=self.region.pk, year=YEAR, peak_threshold=140)
         self.assertEqual(
             FarmlandCropSeason.objects.filter(season_class='winter').count(), 0,
         )

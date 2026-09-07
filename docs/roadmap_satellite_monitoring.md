@@ -65,13 +65,16 @@
   (ранневесенний NDVI, зимний baseline, SOS, пик), опорная разметка.
   Миграция `agrocosmos/0038`.
 - [x] Сервис `services/winter_spring.py`: правило по профилю NDVI —
-  ключевой признак `early_spring_ndvi` (окно ≈ 1 апр – 15 мая), вторичный
-  сигнал SOS; калибровка порога по перцентилю опорных озимых.
+  ОСНОВНОЙ признак `peak_doy` (день пика: озимые — конец мая–июнь, яровые —
+  июль–август), вторичные сигналы `early_spring_ndvi` (окно ≈ 1 апр – 15 мая)
+  и SOS. Калибровка обоих порогов по опорным точкам
+  (`calibrate_peak_doy_threshold` + `calibrate_threshold_separating`).
 - [x] Команда `classify_winter_spring --region-id/--district-id --year`
   (`--source raster|fused`, `--reference-shp <path>` ИЛИ `--reference-layer
-  <слой>` + `--reference-attr crop`, `--threshold`, `--dry-run`). Опорные
-  точки читаются прямо из shapefile (GDAL) или из ГИС-слоя; каждая точка
-  относится к угодью через `geom__contains`.
+  <слой>` + `--reference-attr crop`, `--peak-threshold`, `--threshold`,
+  `--crop-types arable` (по умолч. только пашня), `--dry-run`). Опорные точки
+  читаются прямо из shapefile (GDAL) или из ГИС-слоя; каждая точка относится к
+  угодью через `geom__contains`.
 - [x] Раскладка `crop` → 3 класса (`services.winter_spring.classify_crop_value`)
   по факт. значениям слоя `kultury_2026` (210 точек, атрибут `crop`):
   **озимые** = «озим» (Пшеница озимая — 14); **не обрабатываемые** =

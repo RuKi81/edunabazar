@@ -8,11 +8,12 @@
 * **Яровые** сеют весной; в апреле поле — голая почва (низкий NDVI),
   всходы и рост начинаются в мае-июне (поздний SOS, единственный пик).
 
-Ключевой дискриминатор — **средний NDVI ранней весны** (окно
-``EARLY_SPRING_*``, ≈ 1 апреля – 15 мая для средней полосы РФ / Тулы).
-Порог по нему калибруется по опорным точкам известных озимых
-(слой ``kultury_2026``): берём такой порог, чтобы подавляющее большинство
-эталонных озимых полей оказалось выше него.
+ОСНОВНОЙ дискриминатор — **день пика NDVI**: озимые достигают максимума
+рано (конец мая – июнь) и убираются к июлю, яровые — позже (июль – август).
+Порог дня пика калибруется по опорным точкам (слой ``kultury_2026``):
+раньше порога ⇒ озимые, позже ⇒ яровые. **Средний NDVI ранней весны**
+(окно ``EARLY_SPRING_*``, ≈ 1 апреля – 15 мая) — ВТОРИЧНЫЙ сигнал: озимые
+уже зелены в апреле, яровые — голая почва; он корректирует уверенность.
 
 Все функции — чистые (numpy), без обращений к БД: их удобно тестировать на
 синтетических профилях и переиспользовать в команде и в отчётах.
@@ -55,6 +56,17 @@ SPRING_SOS_MIN_DOY = 130      # SOS ≥ ~10 мая — уверенно яров
 
 # Ширина «перехода» уверенности вокруг порога (в единицах NDVI).
 CONFIDENCE_SCALE = 0.15
+
+# ── ОСНОВНОЙ дискриминатор: время пика NDVI ──────────────────────────
+# Озимые достигают максимума рано (конец мая – июнь), к июлю их убирают;
+# яровые набирают максимум позже (июль – август). Поэтому день пика —
+# физически устойчивый признак: раньше порога ⇒ озимые, позже ⇒ яровые.
+# Ранневесенний NDVI остаётся ВТОРИЧНЫМ (корроборация + уверенность).
+PEAK_DOY_THRESHOLD_DEFAULT = 185   # ~4 июля
+MIN_PEAK_DOY_THRESHOLD = 160       # ~9 июня
+MAX_PEAK_DOY_THRESHOLD = 215       # ~3 августа
+# Масштаб «перехода» уверенности по пику (в днях).
+PEAK_CONFIDENCE_SCALE_DOY = 30.0
 
 
 @dataclass
@@ -131,39 +143,61 @@ def _detect_peak_sos(doys: np.ndarray, vals: np.ndarray, baseline: float):
     return peak_doy, peak_ndvi, sos_doy
 
 
-def _confidence(early_spring_ndvi: float, threshold: float,
+def _confidence(peak_doy: int, peak_threshold: float,
+                early_spring: Optional[float], es_threshold: float,
                 sos_doy: Optional[int], season_class: str) -> float:
-    """Уверенность в [0.5..0.99] по удалённости от порога + согласие SOS."""
-    d = abs(early_spring_ndvi - threshold) / CONFIDENCE_SCALE
+    """Уверенность в [0.5..0.99].
+
+    База — удалённость дня пика от порога (основной признак). Затем
+    корректируется вторичными сигналами: ранневесенним NDVI и SOS —
+    согласие повышает, противоречие снижает.
+    """
+    d = abs(peak_doy - peak_threshold) / PEAK_CONFIDENCE_SCALE_DOY
     conf = 0.5 + 0.4 * (1.0 - np.exp(-d))  # 0.5 → 0.9 по мере удаления
-    # Вторичный сигнал SOS: согласуется — поднимаем, противоречит — снижаем.
+
+    # Вторичный сигнал: ранневесенний NDVI (озимые зелены в апреле).
+    if early_spring is not None:
+        es_winter = early_spring >= es_threshold
+        agree = es_winter == (season_class == 'winter')
+        conf += 0.08 if agree else -0.15
+    else:
+        conf -= 0.05  # нет ранневесенней корроборации
+
+    # Вторичный сигнал SOS: ранний ⇒ озимые, поздний ⇒ яровые.
     if sos_doy is not None:
         if season_class == 'winter':
             if sos_doy <= WINTER_SOS_MAX_DOY:
-                conf += 0.08
+                conf += 0.05
             elif sos_doy >= SPRING_SOS_MIN_DOY:
-                conf -= 0.12
+                conf -= 0.10
         else:  # spring
             if sos_doy >= SPRING_SOS_MIN_DOY:
-                conf += 0.08
+                conf += 0.05
             elif sos_doy <= WINTER_SOS_MAX_DOY:
-                conf -= 0.12
+                conf -= 0.10
     return float(np.clip(conf, 0.5, 0.99))
 
 
 def classify_profile(
     doys: Sequence[int], ndvi: Sequence[float],
-    threshold: float = DEFAULT_EARLY_SPRING_THRESHOLD,
+    peak_doy_threshold: float = PEAK_DOY_THRESHOLD_DEFAULT,
+    early_spring_threshold: float = DEFAULT_EARLY_SPRING_THRESHOLD,
 ) -> SeasonProfile:
     """Классифицировать один сезонный NDVI-ряд угодья.
+
+    ОСНОВНОЙ признак — день пика NDVI: пик раньше ``peak_doy_threshold``
+    ⇒ озимые (ранний максимум конца мая–июня), позже ⇒ яровые (июль–август).
+    Ранневесенний NDVI (``early_spring_threshold``) — ВТОРИЧНЫЙ сигнал,
+    влияет только на уверенность.
 
     Args:
         doys: дни года наблюдений (1..366).
         ndvi: значения NDVI (сырые или сглаженные) в том же порядке.
-        threshold: порог ранневесеннего NDVI (winter, если ≥ порога).
+        peak_doy_threshold: порог дня пика (winter, если пик < порога).
+        early_spring_threshold: порог ранневесеннего NDVI (корроборация).
 
     Возвращает :class:`SeasonProfile`. ``season_class='unknown'`` — данных
-    недостаточно (мало точек, нет наблюдений ранней весной, слабая амплитуда).
+    недостаточно (мало точек, нет вег. цикла, слабая амплитуда).
     """
     doys = np.asarray(doys, dtype=np.int32)
     ndvi = np.asarray(ndvi, dtype=np.float64)
@@ -187,8 +221,9 @@ def classify_profile(
         doys, smoothed, EARLY_SPRING_DOY_START, EARLY_SPRING_DOY_END,
     )
 
-    # Без ранневесенних наблюдений или без вег. цикла — класс не определён.
-    if early_spring is None or peak_doy is None:
+    # Без вег. цикла или со слабой амплитудой — класс не определён
+    # (голая почва, вода, застройка, шум).
+    if peak_doy is None:
         return SeasonProfile(
             'unknown', 0.0, early_spring, winter_baseline,
             sos_doy, peak_doy, peak_ndvi, n_obs,
@@ -199,8 +234,11 @@ def classify_profile(
             sos_doy, peak_doy, peak_ndvi, n_obs,
         )
 
-    season_class = 'winter' if early_spring >= threshold else 'spring'
-    confidence = _confidence(early_spring, threshold, sos_doy, season_class)
+    season_class = 'winter' if peak_doy < peak_doy_threshold else 'spring'
+    confidence = _confidence(
+        peak_doy, peak_doy_threshold, early_spring, early_spring_threshold,
+        sos_doy, season_class,
+    )
     return SeasonProfile(
         season_class, confidence, early_spring, winter_baseline,
         sos_doy, peak_doy, peak_ndvi, n_obs,
@@ -270,6 +308,47 @@ def calibrate_threshold_separating(
         if score > best_score:
             best_score, best_thr = score, float(thr)
     return float(np.clip(best_thr, MIN_THRESHOLD, MAX_THRESHOLD))
+
+
+def calibrate_peak_doy_threshold(
+    winter_peaks: Sequence[float],
+    spring_peaks: Sequence[float],
+    default: float = PEAK_DOY_THRESHOLD_DEFAULT,
+) -> float:
+    """Калибровка порога ДНЯ ПИКА по эталонам озимых и яровых.
+
+    Озимые должны оказаться НИЖЕ порога (ранний пик), яровые — ВЫШЕ
+    (поздний пик). При наличии обоих классов перебираем кандидатов и
+    максимизируем сбалансированную точность. Деградации:
+    - только озимые → 90-й перцентиль их пиков (порог выше почти всех);
+    - только яровые → 10-й перцентиль их пиков (порог ниже почти всех);
+    - нет данных → ``default``.
+    Итог зажимается в [``MIN_PEAK_DOY_THRESHOLD``, ``MAX_PEAK_DOY_THRESHOLD``].
+    """
+    w = [v for v in winter_peaks if v is not None]
+    s = [v for v in spring_peaks if v is not None]
+    if not w and not s:
+        return default
+    lo, hi = MIN_PEAK_DOY_THRESHOLD, MAX_PEAK_DOY_THRESHOLD
+    if w and not s:
+        return float(np.clip(np.percentile(w, 90), lo, hi))
+    if s and not w:
+        return float(np.clip(np.percentile(s, 10), lo, hi))
+
+    w_arr = np.asarray(w, dtype=np.float64)
+    s_arr = np.asarray(s, dtype=np.float64)
+    uniq = np.unique(np.concatenate([w_arr, s_arr]))
+    candidates = list(uniq)
+    candidates += [(uniq[i] + uniq[i + 1]) / 2 for i in range(len(uniq) - 1)]
+
+    best_thr, best_score = default, -1.0
+    for thr in candidates:
+        tpr = float(np.mean(w_arr < thr))    # доля озимых верно (ранний пик)
+        tnr = float(np.mean(s_arr >= thr))   # доля яровых верно (поздний пик)
+        score = (tpr + tnr) / 2
+        if score > best_score:
+            best_score, best_thr = score, float(thr)
+    return float(np.clip(best_thr, lo, hi))
 
 
 # ── Сопоставление названия культуры → класс сезона (ground truth) ────
