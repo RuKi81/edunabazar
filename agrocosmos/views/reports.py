@@ -10,8 +10,8 @@ from django.http import HttpRequest, JsonResponse
 from django.views.decorators.cache import cache_page
 
 from ..models import (
-    Region, District, DistrictNdviSeries, Farmland, FarmlandPhenology,
-    NdviBaseline, VegetationAlert, VegetationIndex,
+    Region, District, DistrictNdviSeries, Farmland, FarmlandCropSeason,
+    FarmlandPhenology, NdviBaseline, VegetationAlert, VegetationIndex,
 )
 # ``ndvi_assessment`` реэкспортируется под историческим именем: хелпер
 # вынесен в сервис-слой, но импортируется извне через agrocosmos.views
@@ -775,6 +775,27 @@ def _farmland_phenology(farmland, year):
     return own, district_avg
 
 
+def _farmland_crop_season(farmland, year):
+    """Классификация озимая/яровая угодья за год (raster приоритетнее fused)."""
+    rows = {
+        r.source: r
+        for r in FarmlandCropSeason.objects.filter(farmland=farmland, year=year)
+    }
+    rec = rows.get('raster') or rows.get('fused')
+    if rec is None:
+        return None
+    return {
+        'source': rec.source,
+        'season_class': rec.season_class,
+        'season_label': rec.get_season_class_display(),
+        'confidence': _safe_round(rec.confidence),
+        'early_spring_ndvi': _safe_round(rec.early_spring_ndvi),
+        'sos_doy': rec.sos_doy,
+        'is_reference': rec.is_reference,
+        'reference_crop': rec.reference_crop or None,
+    }
+
+
 def _farmland_alerts(farmland, year):
     """Алерты за сезон: per-farmland + district-level по культуре угодья."""
     scope = Q(farmland=farmland)
@@ -859,6 +880,7 @@ def api_report_farmland(request: HttpRequest) -> JsonResponse:
     )
 
     phenology, district_phenology = _farmland_phenology(farmland, year)
+    crop_season = _farmland_crop_season(farmland, year)
     alerts = _farmland_alerts(farmland, year)
 
     district = farmland.district
@@ -890,6 +912,7 @@ def api_report_farmland(request: HttpRequest) -> JsonResponse:
         },
         'phenology': phenology,
         'district_phenology': district_phenology,
+        'crop_season': crop_season,
         'alerts': alerts,
         'last_period_end': modis_last_period_end(modis),
     })
@@ -1157,6 +1180,44 @@ def _district_alerts_summary(district_id, year):
     return {'active_total': sum(t['count'] for t in by_type), 'by_type': by_type}
 
 
+def _district_crop_season_summary(district_id, year):
+    """Сводка озимые/яровые по району: count, площадь и ср. уверенность.
+
+    Берём наиболее полный источник детального мониторинга: сначала
+    ``raster`` (S2/L8), при отсутствии записей — ``fused``. ``None`` —
+    классификация ещё не считалась (нет запусков ``classify_winter_spring``).
+    """
+    base = FarmlandCropSeason.objects.filter(
+        farmland__district_id=district_id, year=year,
+    )
+    source = next(
+        (s for s in ('raster', 'fused') if base.filter(source=s).exists()),
+        None,
+    )
+    if source is None:
+        return None
+    classes = {
+        c: {'count': 0, 'area_ha': 0.0, 'avg_confidence': None}
+        for c in ('winter', 'spring', 'unknown')
+    }
+    rows = (
+        base.filter(source=source)
+        .values('season_class')
+        .annotate(
+            count=Count('id'),
+            area_ha=Sum('farmland__area_ha'),
+            avg_conf=Avg('confidence'),
+        )
+    )
+    for r in rows:
+        classes[r['season_class']] = {
+            'count': r['count'],
+            'area_ha': _safe_round(r['area_ha'] or 0, 1),
+            'avg_confidence': _safe_round(r['avg_conf']),
+        }
+    return {'source': source, 'classes': classes}
+
+
 @rate_limit('30/m')
 @cache_page(60 * 10)
 def api_report_district_detailed(request: HttpRequest) -> JsonResponse:
@@ -1268,6 +1329,7 @@ def api_report_district_detailed(request: HttpRequest) -> JsonResponse:
         'overall_series': overall_series,
         'baseline': _bl_to_series(bl_lookup.get('') or {}, year),
         'crops': crops,
+        'crop_season': _district_crop_season_summary(district.pk, year),
         'alerts_summary': _district_alerts_summary(district.pk, year),
     })
 

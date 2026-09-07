@@ -242,6 +242,99 @@ class FarmlandPhenology(models.Model):
         return f'Phenology {self.farmland_id} {self.year} ({self.source})'
 
 
+class FarmlandCropSeason(models.Model):
+    """Классификация угодья на озимые / яровые по профилю NDVI на сезон.
+
+    Строится поверх детального мониторинга (S2/L8, ``source='raster'`` или
+    ``'fused'``) правилом по профилю NDVI: озимые дают ранневесенний рост
+    (высокий NDVI в апреле, до всходов яровых) и ранний SOS; яровые — голая
+    почва весной и поздний единственный пик. Порог ``early_spring_ndvi``
+    калибруется по опорным точкам известных озимых (слой ``kultury_2026``).
+
+    Это НЕ определение культуры (пшеница/ячмень), а бинарный признак
+    озимая/яровая — подмножество направления «распознавание культур».
+    """
+
+    class SeasonClass(models.TextChoices):
+        WINTER = 'winter', 'Озимые'
+        SPRING = 'spring', 'Яровые'
+        UNKNOWN = 'unknown', 'Не определено'
+
+    class Source(models.TextChoices):
+        RASTER = 'raster', 'S2/L8'
+        FUSED = 'fused', 'HLS Fused'
+
+    farmland = models.ForeignKey(
+        Farmland, on_delete=models.CASCADE, related_name='crop_seasons',
+    )
+    year = models.IntegerField(verbose_name='Год')
+    source = models.CharField(
+        max_length=10, choices=Source.choices, default=Source.RASTER,
+        verbose_name='Источник',
+    )
+    season_class = models.CharField(
+        max_length=10, choices=SeasonClass.choices,
+        default=SeasonClass.UNKNOWN, verbose_name='Класс сезона',
+    )
+    confidence = models.FloatField(
+        default=0, verbose_name='Уверенность (0..1)',
+    )
+
+    # Диагностические фичи классификатора (для аудита и пересчёта порогов).
+    early_spring_ndvi = models.FloatField(
+        null=True, blank=True,
+        verbose_name='Средний NDVI ранней весны',
+        help_text='Ключевой признак озимых: рост в апреле до всходов яровых.',
+    )
+    winter_baseline = models.FloatField(
+        null=True, blank=True, verbose_name='Зимний baseline NDVI',
+    )
+    sos_doy = models.IntegerField(
+        null=True, blank=True, verbose_name='SOS (день года)',
+    )
+    peak_doy = models.IntegerField(
+        null=True, blank=True, verbose_name='Пик (день года)',
+    )
+    peak_ndvi = models.FloatField(
+        null=True, blank=True, verbose_name='Пиковый NDVI',
+    )
+
+    # ``is_reference`` — угодье попало под опорную точку известной культуры
+    # (обучающая/валидационная разметка), ``reference_crop`` — её значение.
+    is_reference = models.BooleanField(
+        default=False, verbose_name='Опорное (по разметке)',
+    )
+    reference_crop = models.CharField(
+        max_length=120, blank=True, default='',
+        verbose_name='Культура по разметке',
+    )
+
+    threshold = models.FloatField(
+        null=True, blank=True,
+        verbose_name='Порог early_spring_ndvi на прогоне',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'agro_farmland_crop_season'
+        ordering = ['-year']
+        verbose_name = 'Озимые/яровые угодья'
+        verbose_name_plural = 'Озимые/яровые угодий'
+        unique_together = [('farmland', 'year', 'source')]
+        indexes = [
+            models.Index(fields=['farmland', 'year'],
+                         name='crop_season_fl_year_idx'),
+            models.Index(fields=['year', 'source', 'season_class'],
+                         name='crop_season_yr_src_cls_idx'),
+        ]
+
+    def __str__(self):
+        return (
+            f'CropSeason {self.farmland_id} {self.year} '
+            f'{self.season_class} ({self.confidence:.2f})'
+        )
+
+
 class MonitoringTask(models.Model):
     """Задача мониторинга NDVI для региона (опционально — конкретного района)."""
 

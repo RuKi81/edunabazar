@@ -706,13 +706,24 @@
       zStr = (latest.z_score >= 0 ? '+' : '') + latest.z_score.toFixed(2);
     }
     var usedStr = f.is_used === true ? 'Используется' : f.is_used === false ? 'Не используется' : '—';
+    var cs = resp.crop_season;
+    var seasonCard = '';
+    if (cs && cs.season_class && cs.season_class !== 'unknown') {
+      var seasonColor = cs.season_class === 'winter' ? '#1565C0' : '#F57C00';
+      var confStr = (cs.confidence !== null && cs.confidence !== undefined)
+        ? ' · ' + Math.round(cs.confidence * 100) + '%' : '';
+      seasonCard =
+        '<div class="summary-card"><div class="val" style="font-size:15px; color:' + seasonColor + ';">'
+        + esc(cs.season_label) + '</div><div class="lbl">Озимая/яровая (NDVI)' + confStr + '</div></div>';
+    }
     summaryEl.innerHTML =
       '<div class="summary-card"><div class="val">' + esc(f.crop_type_label) + '</div><div class="lbl">Вид угодья</div></div>'
       + '<div class="summary-card"><div class="val">' + f.area_ha.toLocaleString('ru', {maximumFractionDigits:1}) + ' га</div><div class="lbl">Площадь</div></div>'
       + '<div class="summary-card"><div class="val">' + (latest.mean_ndvi !== null && latest.mean_ndvi !== undefined ? latest.mean_ndvi.toFixed(3) : '—') + '</div><div class="lbl">NDVI ' + esc(latest.date || '') + '</div></div>'
       + '<div class="summary-card"><div class="val">' + zStr + '</div><div class="lbl">z-score vs норма</div></div>'
       + '<div class="summary-card"><div class="val" style="font-size:13px; padding-top:3px;"><span class="assessment-badge ' + ndviBadgeClass(latest.mean_ndvi) + '">' + esc(latest.assessment || 'Нет данных') + '</span></div><div class="lbl">Оценка</div></div>'
-      + '<div class="summary-card"><div class="val" style="font-size:14px;">' + usedStr + '</div><div class="lbl">Факт использования</div></div>';
+      + '<div class="summary-card"><div class="val" style="font-size:14px;">' + usedStr + '</div><div class="lbl">Факт использования</div></div>'
+      + seasonCard;
 
     var bbox = renderContourSvg(f.geometry);
     var cap = [];

@@ -15,8 +15,9 @@ from django.utils.functional import cached_property
 from django.utils.html import format_html
 
 from .models import (
-    AgroSubscription, District, Farmland, GeeApiMetric, MonitoringTask, PipelineRun,
-    Region, SatelliteScene, VegetationAlert, VegetationIndex,
+    AgroSubscription, District, Farmland, FarmlandCropSeason, GeeApiMetric,
+    MonitoringTask, PipelineRun, Region, SatelliteScene, VegetationAlert,
+    VegetationIndex,
 )
 
 import logging
@@ -117,6 +118,20 @@ class VegetationIndexAdmin(admin.ModelAdmin):
     list_select_related = ('farmland',)
     raw_id_fields = ('farmland', 'scene')
     search_fields = ('farmland__cadastral_number',)
+    ordering = ('-id',)
+    paginator = _NoCountPaginator
+    show_full_result_count = False
+
+
+@admin.register(FarmlandCropSeason)
+class FarmlandCropSeasonAdmin(admin.ModelAdmin):
+    """Классификация озимые/яровые по угодьям (результат classify_winter_spring)."""
+    list_display = ('id', 'farmland', 'year', 'source', 'season_class',
+                    'confidence', 'early_spring_ndvi', 'is_reference')
+    list_filter = ('year', 'source', 'season_class', 'is_reference')
+    list_select_related = ('farmland',)
+    raw_id_fields = ('farmland',)
+    search_fields = ('farmland__cadastral_number', 'reference_crop')
     ordering = ('-id',)
     paginator = _NoCountPaginator
     show_full_result_count = False

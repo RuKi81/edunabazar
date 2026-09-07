@@ -220,6 +220,12 @@
       </div>
     </div>
 
+    <div class="pp-section" id="crop-season-section" style="display:none;">
+      <h2><i class="material-icons">ac_unit</i> Озимые и яровые</h2>
+      <div class="report-summary" id="crop-season-cards" style="margin-bottom:0;"></div>
+      <div class="empty-note" id="crop-season-note" style="margin-top:8px;"></div>
+    </div>
+
     <div class="pp-section" id="alerts-section" style="display:none;">
       <h2><i class="material-icons">warning</i> Неразрешённые алерты за сезон</h2>
       <table class="alerts-sum-table">
@@ -421,6 +427,38 @@
     }).join('');
   }
 
+  var SEASON_META = [
+    { key: 'winter', label: 'Озимые', color: '#1565C0' },
+    { key: 'spring', label: 'Яровые', color: '#F57C00' },
+    { key: 'unknown', label: 'Не определено', color: '#9E9E9E' }
+  ];
+
+  function renderCropSeason(resp) {
+    var section = document.getElementById('crop-season-section');
+    var cs = resp.crop_season;
+    if (!cs || !cs.classes) {
+      section.style.display = 'none';
+      return;
+    }
+    section.style.display = 'block';
+    var classes = cs.classes;
+    document.getElementById('crop-season-cards').innerHTML = SEASON_META.map(function (m) {
+      var c = classes[m.key] || { count: 0, area_ha: 0, avg_confidence: null };
+      var conf = (c.avg_confidence !== null && c.avg_confidence !== undefined)
+        ? ' · увер. ' + Math.round(c.avg_confidence * 100) + '%' : '';
+      return '<div class="summary-card">'
+        + '<div class="val" style="color:' + m.color + ';">'
+        + (c.count || 0).toLocaleString('ru') + '</div>'
+        + '<div class="lbl">' + m.label + '<br>'
+        + (c.area_ha || 0).toLocaleString('ru', {maximumFractionDigits:0}) + ' га' + conf
+        + '</div></div>';
+    }).join('');
+    var srcLabel = cs.source === 'fused' ? 'HLS (S2+L)' : 'Sentinel-2 / Landsat';
+    document.getElementById('crop-season-note').textContent =
+      'Классификация по профилю NDVI (' + srcLabel + '). '
+      + 'Озимые — ранневесенний рост и ранний SOS; яровые — поздний единственный пик.';
+  }
+
   function renderAlerts(resp) {
     var section = document.getElementById('alerts-section');
     var sum = resp.alerts_summary || { active_total: 0, by_type: [] };
@@ -454,6 +492,7 @@
     renderCategories(resp);
     renderOverallChart(resp);
     renderCrops(resp);
+    renderCropSeason(resp);
     renderAlerts(resp);
   }
 
