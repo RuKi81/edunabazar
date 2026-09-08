@@ -406,7 +406,10 @@ class ClassifyWinterSpringCommandTests(TestCase):
 
     # -- tests --
     def test_classifies_winter_and_spring(self):
-        self._run(region_id=self.region.pk, year=YEAR, harvest_gate=True)
+        # cover_gate=False: изолируем гейт уборки; синтетический spring
+        # намеренно «острый» (доля зелёных < 0.33), на реале spring ~0.58.
+        self._run(region_id=self.region.pk, year=YEAR, harvest_gate=True,
+                  cover_gate=False)
         winter = FarmlandCropSeason.objects.filter(
             year=YEAR, season_class='winter')
         self.assertEqual(winter.count(), 3)
@@ -428,6 +431,7 @@ class ClassifyWinterSpringCommandTests(TestCase):
     def test_reference_calibration_and_confusion(self):
         out = self._run(
             district_id=self.district.pk, year=YEAR, harvest_gate=True,
+            cover_gate=False,
             reference_layer='kultury_2026', reference_attr='crop',
         )
         self.assertIn('Опорных угодий', out)
@@ -478,6 +482,16 @@ class ClassifyWinterSpringCommandTests(TestCase):
             FarmlandCropSeason.objects.filter(
                 year=YEAR, season_class__in=('winter', 'spring')).count(), 7)
 
+    def test_cover_gate_on_by_default(self):
+        # Гейт покрова включён по умолчанию (без явных cover-аргументов).
+        out = self._run(region_id=self.region.pk, year=YEAR)
+        self.assertIn('Гейт покрова ВКЛ', out)
+
+    def test_cover_gate_can_be_disabled(self):
+        # --no-cover-gate (cover_gate=False) выключает гейт покрова.
+        out = self._run(region_id=self.region.pk, year=YEAR, cover_gate=False)
+        self.assertIn('Гейт покрова ВЫКЛ', out)
+
     def test_missing_shp_fails_fast(self):
         from django.core.management.base import CommandError
         with self.assertRaises(CommandError):
@@ -492,7 +506,8 @@ class ClassifyWinterSpringCommandTests(TestCase):
 
     def test_manual_peak_threshold_overrides(self):
         # Порог дня пика = 140 (раньше пика озимых ~150) → 0 озимых.
-        self._run(region_id=self.region.pk, year=YEAR, peak_threshold=140)
+        self._run(region_id=self.region.pk, year=YEAR, peak_threshold=140,
+                  cover_gate=False)
         self.assertEqual(
             FarmlandCropSeason.objects.filter(season_class='winter').count(), 0,
         )
@@ -503,7 +518,8 @@ class ClassifyWinterSpringCommandTests(TestCase):
         self.assertEqual(FarmlandCropSeason.objects.filter(year=YEAR).count(), 7)
 
     def test_report_district_detailed_includes_crop_season(self):
-        self._run(region_id=self.region.pk, year=YEAR, harvest_gate=True)
+        self._run(region_id=self.region.pk, year=YEAR, harvest_gate=True,
+                  cover_gate=False)
         resp = self.client.get(
             '/agrocosmos/api/report/district-detailed/',
             {'district': self.district.pk, 'year': YEAR},
@@ -517,7 +533,7 @@ class ClassifyWinterSpringCommandTests(TestCase):
         self.assertEqual(cs['classes']['unused']['count'], 1)
 
     def test_report_farmland_includes_crop_season(self):
-        self._run(region_id=self.region.pk, year=YEAR)
+        self._run(region_id=self.region.pk, year=YEAR, cover_gate=False)
         resp = self.client.get(
             '/agrocosmos/api/report/farmland/',
             {'farmland': self.winter[0].pk, 'year': YEAR},

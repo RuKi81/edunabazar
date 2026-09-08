@@ -27,6 +27,7 @@ NDVI ранней весной (апрель) и ранний SOS, яровые 
     # Только посчитать и показать статистику, без записи в БД
     python manage.py classify_winter_spring --region-id 71 --year 2026 --dry-run
 """
+import argparse
 import time
 from itertools import groupby
 from operator import itemgetter
@@ -84,11 +85,13 @@ class Command(BaseCommand):
         parser.add_argument('--harvest-drop-ratio', type=float, default=None,
                             help='Порог доли спада к амплитуде '
                                  f'(по умолч. {HARVEST_MIN_DROP_RATIO}).')
-        parser.add_argument('--cover-gate', action='store_true',
-                            help='Включить гейт покрова: отсев '
-                                 'необрабатываемых по НИЗКОЙ доле зелёных '
-                                 'наблюдений (залежь/неудобья) в класс '
-                                 'unused. Работает и в середине сезона.')
+        parser.add_argument('--cover-gate', action=argparse.BooleanOptionalAction,
+                            default=True,
+                            help='Гейт покрова: отсев необрабатываемых '
+                                 'по НИЗКОЙ доле зелёных наблюдений '
+                                 '(залежь/неудобья) в класс unused. ВКЛЮЧЁН ПО '
+                                 'УМОЛЧАНИЮ (сезон-агностичен, работает и '
+                                 'в середине сезона); выключить — --no-cover-gate.')
         parser.add_argument('--cover-min', type=float, default=None,
                             help='Порог доли зелёных наблюдений (ниже — '
                                  f'unused; по умолч. {GREEN_FRACTION_MIN} или '
