@@ -89,6 +89,16 @@ HARVEST_MIN_DROP = 0.20
 # минимум наполовину к базовой линии, трава — почти не падает.
 HARVEST_MIN_DROP_RATIO = 0.50
 
+# ── Диагностические окна для отбора признаков «не обрабатывается» ─────
+# Кандидаты в дискриминаторы залежи/трав против культур (см.
+# :func:`profile_features`). Работают и в середине сезона, т.к. не требуют
+# состоявшейся уборки.
+GREEN_NDVI_THRESHOLD = 0.40      # «зелёное» наблюдение (есть растительность)
+SUMMER_DOY_START = 196           # ~15 июля
+SUMMER_DOY_END = 243             # ~31 августа
+AUTUMN_DOY_START = 258           # ~15 сентября
+AUTUMN_DOY_END = 305             # ~1 ноября
+
 
 @dataclass
 class HarvestSignal:
@@ -358,6 +368,63 @@ def classify_profile(
         sos_doy, peak_doy, peak_ndvi, n_obs,
         harvest_doy=harvest.harvest_doy, harvest_drop=harvest.drop_ratio,
     )
+
+
+def profile_features(doys: Sequence[int], ndvi: Sequence[float]) -> dict:
+    """Кандидатные признаки для отделения «не обрабатывается» от культур.
+
+    Диагностическая функция (не влияет на классификацию): считает набор
+    сезон-агностичных признаков, разделяющих залежь/многолетние травы от
+    убираемых культур. В отличие от гейта уборки НЕ требует состоявшейся
+    уборки, поэтому применима и в середине сезона.
+
+    Гипотезы разделения (проверяются на эталонах командой
+    ``--reference-features``):
+
+    * ``season_min`` — минимум NDVI за год. У культур есть период голой
+      почвы (низкий минимум); залежь/трава держат высокий «пол».
+    * ``amplitude`` — размах (пик − минимум). У травы ниже (пологий профиль).
+    * ``green_fraction`` — доля «зелёных» наблюдений (NDVI ≥ порога). У
+      постоянной растительности высокая.
+    * ``early_spring`` / ``summer`` / ``autumn`` — средний NDVI в окнах;
+      трава остаётся зелёной поздним летом и осенью.
+
+    Возвращает dict с признаками (значения могут быть ``None`` при нехватке
+    наблюдений в окне) и ``n_obs``.
+    """
+    doys = np.asarray(doys, dtype=np.int32)
+    ndvi = np.asarray(ndvi, dtype=np.float64)
+    n_obs = int(len(doys))
+    feats = {
+        'n_obs': n_obs, 'season_min': None, 'peak_ndvi': None,
+        'amplitude': None, 'green_fraction': None, 'early_spring': None,
+        'summer': None, 'autumn': None, 'winter_baseline': None,
+    }
+    if n_obs == 0:
+        return feats
+
+    order = np.argsort(doys)
+    doys = doys[order]
+    ndvi = ndvi[order]
+    smoothed = _smooth(ndvi)
+
+    season = (doys >= SEASON_DOY_START) & (doys <= SEASON_DOY_END)
+    s_vals = smoothed[season] if season.any() else smoothed
+    peak = float(np.max(s_vals))
+    floor = float(np.min(smoothed))
+    feats['season_min'] = floor
+    feats['peak_ndvi'] = peak
+    feats['amplitude'] = peak - floor
+    feats['green_fraction'] = float(np.mean(smoothed >= GREEN_NDVI_THRESHOLD))
+    feats['early_spring'] = _window_mean(
+        doys, smoothed, EARLY_SPRING_DOY_START, EARLY_SPRING_DOY_END,
+    )
+    feats['summer'] = _window_mean(doys, smoothed, SUMMER_DOY_START,
+                                   SUMMER_DOY_END)
+    feats['autumn'] = _window_mean(doys, smoothed, AUTUMN_DOY_START,
+                                   AUTUMN_DOY_END)
+    feats['winter_baseline'] = _window_mean(doys, smoothed, 1, WINTER_DOY_END)
+    return feats
 
 
 def calibrate_threshold(

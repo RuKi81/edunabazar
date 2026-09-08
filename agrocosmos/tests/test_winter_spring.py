@@ -26,7 +26,7 @@ from agrocosmos.models import (
 from agrocosmos.services.winter_spring import (
     calibrate_peak_doy_threshold, calibrate_threshold,
     calibrate_threshold_separating, classify_crop_value, classify_profile,
-    detect_harvest, evaluate_predictions,
+    detect_harvest, evaluate_predictions, profile_features,
 )
 
 YEAR = 2026
@@ -192,6 +192,20 @@ class WinterSpringServiceTests(SimpleTestCase):
                              baseline=0.3)
         self.assertFalse(sig.has_harvest)
         self.assertIsNone(sig.drop_ratio)
+
+    # -- диагностические признаки (profile_features) --
+    def test_profile_features_grass_vs_spring(self):
+        # Залежь/трава: высокий «пол» и малая амплитуда; яровые наоборот.
+        g = profile_features(*_profile(_grassland_ndvi)[:2])
+        s = profile_features(*_profile(_spring_ndvi)[:2])
+        self.assertGreater(g['season_min'], s['season_min'])   # трава не голая
+        self.assertLess(g['amplitude'], s['amplitude'])        # трава пологая
+        self.assertGreater(g['green_fraction'], s['green_fraction'])
+
+    def test_profile_features_empty(self):
+        feats = profile_features([], [])
+        self.assertEqual(feats['n_obs'], 0)
+        self.assertIsNone(feats['season_min'])
 
     # -- раскладка crop → класс (реальные значения kultury_2026) --
     def test_classify_crop_value_real_labels(self):
@@ -383,6 +397,17 @@ class ClassifyWinterSpringCommandTests(TestCase):
             set(refs.values_list('reference_crop', flat=True)),
             {'Пшеница озимая', 'Соя', 'не используется/ неудобья'},
         )
+
+    def test_reference_features_diagnostic(self):
+        out = self._run(
+            district_id=self.district.pk, year=YEAR, reference_features=True,
+            reference_layer='kultury_2026', reference_attr='crop',
+        )
+        self.assertIn('Признаки по эталонным классам', out)
+        self.assertIn('мин NDVI (пол)', out)
+        self.assertIn('доля зелёных', out)
+        # Диагностика ничего не пишет в БД.
+        self.assertEqual(FarmlandCropSeason.objects.count(), 0)
 
     def test_missing_shp_fails_fast(self):
         from django.core.management.base import CommandError

@@ -40,7 +40,7 @@ from agrocosmos.services.winter_spring import (
     DEFAULT_EARLY_SPRING_THRESHOLD, HARVEST_MIN_DROP, HARVEST_MIN_DROP_RATIO,
     PEAK_DOY_THRESHOLD_DEFAULT, calibrate_peak_doy_threshold,
     calibrate_threshold_separating, classify_crop_value, classify_profile,
-    evaluate_predictions,
+    evaluate_predictions, profile_features,
 )
 
 RASTER_SATELLITES = ('sentinel2', 'landsat8', 'landsat9')
@@ -91,6 +91,11 @@ class Command(BaseCommand):
                             help='Атрибут культуры (по умолч. crop)')
         parser.add_argument('--dry-run', action='store_true',
                             help='Не писать в БД, только показать сводку')
+        parser.add_argument('--reference-features', action='store_true',
+                            help='Диагностика: вывести распределения '
+                                 'признаков по эталонным классам '
+                                 '(winter/spring/unused) и выйти без записи. '
+                                 'Для подбора дискриминатора «не обрабатыв.».')
 
     # ------------------------------------------------------------------ main
 
@@ -121,6 +126,16 @@ class Command(BaseCommand):
         )
         if not series:
             self.stdout.write(self.style.WARNING('No data — nothing to do.'))
+            return
+
+        # --- Диагностика признаков по эталонам (без записи) ---
+        if options['reference_features']:
+            if not ref_map:
+                raise CommandError(
+                    '--reference-features требует опорные точки '
+                    '(--reference-shp / --reference-layer).'
+                )
+            self._reference_features_report(series, ref_map)
             return
 
         # --- Пороги: ручные / калибровка / по умолчанию ---
@@ -467,6 +482,59 @@ class Command(BaseCommand):
                 'is_reference', 'reference_crop', 'threshold',
                 'peak_doy_threshold',
             ],
+        )
+
+    # ------------------------------------------------- reference features
+
+    # Признаки, печатаемые в диагностике (ключ profile_features → подпись).
+    FEATURE_LABELS = [
+        ('season_min', 'мин NDVI (пол)'),
+        ('amplitude', 'амплитуда'),
+        ('green_fraction', 'доля зелёных'),
+        ('peak_ndvi', 'пик NDVI'),
+        ('early_spring', 'ранняя весна'),
+        ('summer', 'лето'),
+        ('autumn', 'осень'),
+        ('winter_baseline', 'зимний baseline'),
+    ]
+
+    def _reference_features_report(self, series, ref_map):
+        """Распределения признаков по эталонным классам (для подбора порога).
+
+        Для каждого ground-truth класса (winter/spring/unused) печатает
+        по каждому признаку p25/медиану/p75. Разнесённые медианы у
+        unused vs winter/spring подсказывают дискриминатор и порог.
+        """
+        import numpy as np
+
+        buckets = {'winter': [], 'spring': [], 'unused': []}
+        for fid, ref in ref_map.items():
+            data = series.get(fid)
+            if not data or ref['class'] not in buckets:
+                continue
+            buckets[ref['class']].append(profile_features(data[0], data[1]))
+
+        self.stdout.write('\nПризнаки по эталонным классам (p25 / медиана / p75):')
+        header = '  {:<18}'.format('признак')
+        for cls in ('winter', 'spring', 'unused'):
+            header += '{:<26}'.format(f'{cls} (n={len(buckets[cls])})')
+        self.stdout.write(header)
+
+        for key, label in self.FEATURE_LABELS:
+            row = '  {:<18}'.format(label)
+            for cls in ('winter', 'spring', 'unused'):
+                vals = [f[key] for f in buckets[cls] if f[key] is not None]
+                if vals:
+                    a = np.asarray(vals, dtype=np.float64)
+                    p25, p50, p75 = np.percentile(a, [25, 50, 75])
+                    cell = f'{p25:.2f}/{p50:.2f}/{p75:.2f}'
+                else:
+                    cell = '—'
+                row += '{:<26}'.format(cell)
+            self.stdout.write(row)
+        self.stdout.write(
+            '\n  Подсказка: ищите признак, где медиана unused заметно '
+            'отличается от winter И spring — это кандидат в дискриминатор.'
         )
 
     # ------------------------------------------------------------------ report
