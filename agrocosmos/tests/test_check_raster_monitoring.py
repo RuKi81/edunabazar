@@ -85,6 +85,7 @@ class CheckRasterMonitoringTests(TestCase):
         self.assertEqual(names, [
             'fetch_raster_ndvi', 'fetch_raster_ndvi',
             'compute_fused_ndvi', 'ndvi_postprocess',
+            'classify_winter_spring',
         ])
         sensors = [c.kwargs['sensor'] for c in mock_cc.call_args_list[:2]]
         self.assertEqual(sensors, ['s2', 'l8'])

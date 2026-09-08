@@ -75,8 +75,12 @@ class RunNdviPipelineTests(TestCase):
     def test_stage_routing_and_kwargs(self):
         _, _, mock_cc = self._run(region_id=self.region.pk)
         names = [c.args[0] for c in mock_cc.call_args_list]
-        self.assertEqual(names, ['fetch_raster_ndvi', 'fetch_raster_ndvi'])
-        sensors = [c.kwargs['sensor'] for c in mock_cc.call_args_list]
+        self.assertEqual(names, [
+            'fetch_raster_ndvi', 'fetch_raster_ndvi',
+            'classify_winter_spring',
+        ])
+        sensors = [c.kwargs['sensor'] for c in mock_cc.call_args_list
+                   if 'sensor' in c.kwargs]
         self.assertEqual(sensors, ['s2', 'l8'])
         kw = mock_cc.call_args_list[0].kwargs
         self.assertEqual(kw['year'], 2025)
@@ -85,7 +89,8 @@ class RunNdviPipelineTests(TestCase):
 
     def test_skip_flags(self):
         _, _, mock_cc = self._run(region_id=self.region.pk, skip_s2=True)
-        sensors = [c.kwargs['sensor'] for c in mock_cc.call_args_list]
+        sensors = [c.kwargs['sensor'] for c in mock_cc.call_args_list
+                   if 'sensor' in c.kwargs]
         self.assertEqual(sensors, ['l8'])
 
     def test_fusion_stages(self):
@@ -93,7 +98,10 @@ class RunNdviPipelineTests(TestCase):
             region_id=self.region.pk, skip_s2=True, skip_l8=True,
             fusion=True)
         names = [c.args[0] for c in mock_cc.call_args_list]
-        self.assertEqual(names, ['compute_fused_ndvi', 'ndvi_postprocess'])
+        self.assertEqual(names, [
+            'compute_fused_ndvi', 'ndvi_postprocess',
+            'classify_winter_spring',
+        ])
         self.assertEqual(mock_cc.call_args_list[0].kwargs['overwrite'], True)
         self.assertEqual(mock_cc.call_args_list[1].kwargs['source'], 'fused')
 

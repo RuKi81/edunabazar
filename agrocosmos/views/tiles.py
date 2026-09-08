@@ -74,26 +74,14 @@ def api_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
     return _api_tile_cached(request, z, x, y)
 
 
-@cache_page(60 * 10)  # 10 min in Redis; admin-only by the time we get here.
-def _api_tile_cached(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
-    """The actual MVT producer. Wrapped by ``api_tile`` for auth gating."""
-    logger = logging.getLogger('agrocosmos')
+def _tile_filter(region_id, district_id):
+    """Build the WHERE fragment, extra CTEs and params for the MVT query.
 
-    region_id = request.GET.get('region')
-    district_id = request.GET.get('district')
-
-    # Zoom floor: at low zoom the tile bbox is enormous. An unfiltered
-    # (nationwide) request would scan millions of ``agro_farmland`` polygons
-    # and blow the gateway timeout (504); a region/district-filtered request
-    # is bounded by an indexed FK and stays cheap. Parcels are sub-pixel at
-    # these zooms anyway, so we short-circuit with an empty (but cacheable)
-    # tile instead of running the query.
-    min_zoom = MIN_TILE_ZOOM_FILTERED if (region_id or district_id) else MIN_TILE_ZOOM_UNFILTERED
-    if z < min_zoom:
-        empty = HttpResponse(b'', content_type='application/x-protobuf')
-        empty['Cache-Control'] = 'public, max-age=600'
-        return empty
-
+    Returns ``(where_sql, extra_ctes, params)``. District filtering is a
+    hybrid FK-or-spatial match (newly imported parcels may have
+    ``district_id = NULL`` until ``assign_farmland_district`` runs); region
+    filtering uses ``f.region_id`` for the same reason.
+    """
     where_clauses = []
     params = []
     extra_ctes = ""
@@ -130,6 +118,30 @@ def _api_tile_cached(request: HttpRequest, z: int, x: int, y: int) -> HttpRespon
             pass
 
     where_sql = ("AND " + " AND ".join(where_clauses)) if where_clauses else ""
+    return where_sql, extra_ctes, params
+
+
+@cache_page(60 * 10)  # 10 min in Redis; admin-only by the time we get here.
+def _api_tile_cached(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
+    """The actual MVT producer. Wrapped by ``api_tile`` for auth gating."""
+    logger = logging.getLogger('agrocosmos')
+
+    region_id = request.GET.get('region')
+    district_id = request.GET.get('district')
+
+    # Zoom floor: at low zoom the tile bbox is enormous. An unfiltered
+    # (nationwide) request would scan millions of ``agro_farmland`` polygons
+    # and blow the gateway timeout (504); a region/district-filtered request
+    # is bounded by an indexed FK and stays cheap. Parcels are sub-pixel at
+    # these zooms anyway, so we short-circuit with an empty (but cacheable)
+    # tile instead of running the query.
+    min_zoom = MIN_TILE_ZOOM_FILTERED if (region_id or district_id) else MIN_TILE_ZOOM_UNFILTERED
+    if z < min_zoom:
+        empty = HttpResponse(b'', content_type='application/x-protobuf')
+        empty['Cache-Control'] = 'public, max-age=600'
+        return empty
+
+    where_sql, extra_ctes, params = _tile_filter(region_id, district_id)
 
     xmin, ymin, xmax, ymax = _tile_bbox(z, x, y)
 
