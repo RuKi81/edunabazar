@@ -37,8 +37,9 @@ from django.db import connection
 
 from agrocosmos.models import District, Farmland, FarmlandCropSeason, Region
 from agrocosmos.services.winter_spring import (
-    DEFAULT_EARLY_SPRING_THRESHOLD, HARVEST_MIN_DROP, HARVEST_MIN_DROP_RATIO,
-    PEAK_DOY_THRESHOLD_DEFAULT, calibrate_peak_doy_threshold,
+    DEFAULT_EARLY_SPRING_THRESHOLD, GREEN_FRACTION_MIN, HARVEST_MIN_DROP,
+    HARVEST_MIN_DROP_RATIO, PEAK_DOY_THRESHOLD_DEFAULT,
+    calibrate_cover_threshold, calibrate_peak_doy_threshold,
     calibrate_threshold_separating, classify_crop_value, classify_profile,
     evaluate_predictions, profile_features,
 )
@@ -83,6 +84,15 @@ class Command(BaseCommand):
         parser.add_argument('--harvest-drop-ratio', type=float, default=None,
                             help='Порог доли спада к амплитуде '
                                  f'(по умолч. {HARVEST_MIN_DROP_RATIO}).')
+        parser.add_argument('--cover-gate', action='store_true',
+                            help='Включить гейт покрова: отсев '
+                                 'необрабатываемых по НИЗКОЙ доле зелёных '
+                                 'наблюдений (залежь/неудобья) в класс '
+                                 'unused. Работает и в середине сезона.')
+        parser.add_argument('--cover-min', type=float, default=None,
+                            help='Порог доли зелёных наблюдений (ниже — '
+                                 f'unused; по умолч. {GREEN_FRACTION_MIN} или '
+                                 'калибровка по эталонам).')
         parser.add_argument('--reference-shp', type=str, default=None,
                             help='Путь к shapefile опорных точек культур')
         parser.add_argument('--reference-layer', type=str, default=None,
@@ -156,8 +166,23 @@ class Command(BaseCommand):
             f'вторичный early_spring_ndvi = {es_threshold:.3f}'
         )
 
-        # --- Гейт уборки (отсев необрабатываемых угодий) ---
-        gate = self._harvest_gate(options)
+        # --- Гейты отсева необрабатываемых угодий ---
+        gate = self._gate_params(options)
+        # Гейт покрова: резолвим порог доли зелёных (калибровка / дефолт).
+        if gate['require_cover'] and gate['cover_min'] is None:
+            gate['cover_min'] = (
+                self._calibrate_cover(series, ref_map) if ref_map
+                else GREEN_FRACTION_MIN
+            )
+        if gate['cover_min'] is None:
+            gate['cover_min'] = GREEN_FRACTION_MIN
+        if gate['require_cover']:
+            self.stdout.write(
+                f'  Гейт покрова ВКЛ: доля зелёных < {gate["cover_min"]:.2f} '
+                '→ unused'
+            )
+        else:
+            self.stdout.write('  Гейт покрова ВЫКЛ')
         if gate['require_harvest']:
             self.stdout.write(
                 f'  Гейт уборки ВКЛ: спад ≥ {gate["harvest_min_drop"]:.2f} '
@@ -177,8 +202,12 @@ class Command(BaseCommand):
         )
 
     @staticmethod
-    def _harvest_gate(options):
-        """Параметры гейта уборки из CLI (с дефолтами сервиса)."""
+    def _gate_params(options):
+        """Параметры гейтов (уборки и покрова) из CLI (с дефолтами сервиса).
+
+        ``cover_min`` может быть ``None`` — тогда он резолвится в
+        :meth:`handle` (калибровка по эталонам либо дефолт).
+        """
         return {
             'require_harvest': options['harvest_gate'],
             'harvest_min_drop': (
@@ -189,7 +218,34 @@ class Command(BaseCommand):
                 HARVEST_MIN_DROP_RATIO if options['harvest_drop_ratio'] is None
                 else options['harvest_drop_ratio']
             ),
+            'require_cover': options['cover_gate'],
+            'cover_min': options['cover_min'],
         }
+
+    def _calibrate_cover(self, series, ref_map):
+        """Подобрать порог доли зелёных по эталонам культур и «не обраб.».
+
+        Культуры (winter+spring) должны оказаться ВЫШЕ порога, «не
+        обрабатываемые» — НИЖЕ (:func:`calibrate_cover_threshold`).
+        """
+        crop, unused = [], []
+        for fid, ref in ref_map.items():
+            data = series.get(fid)
+            if not data:
+                continue
+            gf = profile_features(data[0], data[1]).get('green_fraction')
+            if gf is None:
+                continue
+            if ref['class'] in ('winter', 'spring'):
+                crop.append(gf)
+            elif ref['class'] == 'unused':
+                unused.append(gf)
+        thr = calibrate_cover_threshold(crop, unused)
+        self.stdout.write(
+            f'  Калибровка покрова: культур с рядом={len(crop)}, '
+            f'не обраб.={len(unused)} → порог доли зелёных {thr:.2f}'
+        )
+        return thr
 
     @staticmethod
     def _parse_crop_types(raw):
@@ -590,7 +646,7 @@ class Command(BaseCommand):
         if unused['n']:
             correct = unused['as_unused'] + unused['unknown']
             self.stdout.write(
-                f'  Эталоны «не обрабатываемые» (контроль гейта уборки): '
+                f'  Эталоны «не обрабатываемые» (контроль гейтов отсева): '
                 f'n={unused["n"]}, отсеяно в unused={unused["as_unused"]}, '
                 f'не определено={unused["unknown"]} '
                 f'(верно {correct}/{unused["n"]}), '

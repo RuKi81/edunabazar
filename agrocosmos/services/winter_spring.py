@@ -99,6 +99,18 @@ SUMMER_DOY_END = 243             # ~31 августа
 AUTUMN_DOY_START = 258           # ~15 сентября
 AUTUMN_DOY_END = 305             # ~1 ноября
 
+# ── ГЕЙТ ПОКРОВА (cover gate): отсев необрабатываемых по доле зелени ──
+# На реальных данных (Тула-2026) лучший сезон-агностичный дискриминатор —
+# ДОЛЯ ЗЕЛЁНЫХ наблюдений (NDVI ≥ GREEN_NDVI_THRESHOLD за весь ряд):
+# у культур медиана 0.47–0.58 (p25 ≥ 0.38), у «не обрабатываемых» (залежь,
+# неудобья, разреженный покров) — 0.19 (p75 ≤ 0.26). Порог между кластерами
+# ≈ 0.33 чисто разделяет классы и, в отличие от гейта уборки, НЕ требует
+# состоявшейся уборки — применим и в середине сезона.
+GREEN_FRACTION_MIN = 0.33
+# Диапазон калиброванного порога (защита от вырожденной выборки эталонов).
+MIN_COVER_THRESHOLD = 0.20
+MAX_COVER_THRESHOLD = 0.50
+
 
 @dataclass
 class HarvestSignal:
@@ -122,6 +134,7 @@ class SeasonProfile:
     n_obs: int
     harvest_doy: Optional[int] = None
     harvest_drop: Optional[float] = None   # доля спада (drop_ratio)
+    green_fraction: Optional[float] = None  # доля зелёных наблюдений (покров)
 
     def as_dict(self) -> dict:
         return {
@@ -145,6 +158,10 @@ class SeasonProfile:
             'harvest_drop': (
                 None if self.harvest_drop is None
                 else round(self.harvest_drop, 4)
+            ),
+            'green_fraction': (
+                None if self.green_fraction is None
+                else round(self.green_fraction, 4)
             ),
         }
 
@@ -281,6 +298,8 @@ def classify_profile(
     require_harvest: bool = False,
     harvest_min_drop: float = HARVEST_MIN_DROP,
     harvest_min_drop_ratio: float = HARVEST_MIN_DROP_RATIO,
+    require_cover: bool = False,
+    cover_min: float = GREEN_FRACTION_MIN,
 ) -> SeasonProfile:
     """Классифицировать один сезонный NDVI-ряд угодья.
 
@@ -297,6 +316,13 @@ def classify_profile(
     ВНИМАНИЕ: гейт корректен ТОЛЬКО для ЗАВЕРШЁННОГО сезона. В середине
     сезона уборка ещё не произошла (или не попала в ряд) — включать нельзя,
     иначе почти всё уйдёт в ``unused``. Поэтому по умолчанию выключен.
+
+    **Гейт покрова** (``require_cover``, по умолчанию ВЫКЛ): если доля
+    «зелёных» наблюдений (NDVI ≥ ``GREEN_NDVI_THRESHOLD``) за ряд ниже
+    ``cover_min`` — угодье большую часть сезона не покрыто растительностью
+    (залежь, неудобья, разреженный покров) ⇒ класс ``unused``. В отличие от
+    гейта уборки этот признак НЕ требует состоявшейся уборки, поэтому
+    корректен и в середине сезона. Проверяется ПЕРЕД гейтом уборки.
 
     Args:
         doys: дни года наблюдений (1..366).
@@ -323,6 +349,8 @@ def classify_profile(
     ndvi = ndvi[order]
     smoothed = _smooth(ndvi)
 
+    green_fraction = float(np.mean(smoothed >= GREEN_NDVI_THRESHOLD))
+
     winter_baseline = _window_mean(doys, smoothed, 1, WINTER_DOY_END)
     if winter_baseline is None:
         winter_baseline = float(np.min(smoothed))
@@ -338,12 +366,22 @@ def classify_profile(
     if peak_doy is None:
         return SeasonProfile(
             'unknown', 0.0, early_spring, winter_baseline,
-            sos_doy, peak_doy, peak_ndvi, n_obs,
+            sos_doy, peak_doy, peak_ndvi, n_obs, green_fraction=green_fraction,
         )
     if peak_ndvi is not None and (peak_ndvi - winter_baseline) < MIN_AMPLITUDE:
         return SeasonProfile(
             'unknown', 0.0, early_spring, winter_baseline,
-            sos_doy, peak_doy, peak_ndvi, n_obs,
+            sos_doy, peak_doy, peak_ndvi, n_obs, green_fraction=green_fraction,
+        )
+
+    # Гейт покрова: мало «зелёных» наблюдений за сезон → большую часть года
+    # поле без растительности (залежь, неудобья) → не обрабатывается. Работает
+    # и в середине сезона (не требует состоявшейся уборки).
+    if require_cover and green_fraction < cover_min:
+        return SeasonProfile(
+            'unused', _unused_confidence(green_fraction, cover_min),
+            early_spring, winter_baseline, sos_doy, peak_doy, peak_ndvi, n_obs,
+            green_fraction=green_fraction,
         )
 
     # Гейт уборки: вег. цикл есть, но без уборочного спада → не обрабатывается.
@@ -356,6 +394,7 @@ def classify_profile(
             'unused', _unused_confidence(harvest.drop_ratio, harvest_min_drop_ratio),
             early_spring, winter_baseline, sos_doy, peak_doy, peak_ndvi, n_obs,
             harvest_doy=None, harvest_drop=harvest.drop_ratio,
+            green_fraction=green_fraction,
         )
 
     season_class = 'winter' if peak_doy < peak_doy_threshold else 'spring'
@@ -367,6 +406,7 @@ def classify_profile(
         season_class, confidence, early_spring, winter_baseline,
         sos_doy, peak_doy, peak_ndvi, n_obs,
         harvest_doy=harvest.harvest_doy, harvest_drop=harvest.drop_ratio,
+        green_fraction=green_fraction,
     )
 
 
@@ -527,6 +567,47 @@ def calibrate_peak_doy_threshold(
     for thr in candidates:
         tpr = float(np.mean(w_arr < thr))    # доля озимых верно (ранний пик)
         tnr = float(np.mean(s_arr >= thr))   # доля яровых верно (поздний пик)
+        score = (tpr + tnr) / 2
+        if score > best_score:
+            best_score, best_thr = score, float(thr)
+    return float(np.clip(best_thr, lo, hi))
+
+
+def calibrate_cover_threshold(
+    crop_green_fractions: Sequence[float],
+    unused_green_fractions: Sequence[float],
+    default: float = GREEN_FRACTION_MIN,
+) -> float:
+    """Калибровка порога ДОЛИ ЗЕЛЁНЫХ по эталонам культур и «не обраб.».
+
+    Культуры (озимые+яровые) должны оказаться ВЫШЕ порога (много зелени за
+    сезон), «не обрабатываемые» — НИЖЕ. При наличии обоих классов перебираем
+    кандидатов и максимизируем сбалансированную точность. Деградации:
+    - только культуры → 10-й перцентиль их долей (порог ниже почти всех);
+    - только «не обраб.» → 90-й перцентиль их долей (порог выше почти всех);
+    - нет данных → ``default``.
+    Итог зажимается в [``MIN_COVER_THRESHOLD``, ``MAX_COVER_THRESHOLD``].
+    """
+    c = [v for v in crop_green_fractions if v is not None]
+    u = [v for v in unused_green_fractions if v is not None]
+    if not c and not u:
+        return default
+    lo, hi = MIN_COVER_THRESHOLD, MAX_COVER_THRESHOLD
+    if c and not u:
+        return float(np.clip(np.percentile(c, 10), lo, hi))
+    if u and not c:
+        return float(np.clip(np.percentile(u, 90), lo, hi))
+
+    c_arr = np.asarray(c, dtype=np.float64)
+    u_arr = np.asarray(u, dtype=np.float64)
+    uniq = np.unique(np.concatenate([c_arr, u_arr]))
+    candidates = list(uniq)
+    candidates += [(uniq[i] + uniq[i + 1]) / 2 for i in range(len(uniq) - 1)]
+
+    best_thr, best_score = default, -1.0
+    for thr in candidates:
+        tpr = float(np.mean(c_arr >= thr))   # доля культур верно (много зелени)
+        tnr = float(np.mean(u_arr < thr))    # доля «не обраб.» верно (мало)
         score = (tpr + tnr) / 2
         if score > best_score:
             best_score, best_thr = score, float(thr)

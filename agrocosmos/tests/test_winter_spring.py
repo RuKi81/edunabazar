@@ -24,9 +24,9 @@ from agrocosmos.models import (
     VegetationIndex,
 )
 from agrocosmos.services.winter_spring import (
-    calibrate_peak_doy_threshold, calibrate_threshold,
-    calibrate_threshold_separating, classify_crop_value, classify_profile,
-    detect_harvest, evaluate_predictions, profile_features,
+    calibrate_cover_threshold, calibrate_peak_doy_threshold,
+    calibrate_threshold, calibrate_threshold_separating, classify_crop_value,
+    classify_profile, detect_harvest, evaluate_predictions, profile_features,
 )
 
 YEAR = 2026
@@ -69,6 +69,21 @@ def _grassland_ndvi(doy):
     if doy < 300:
         return 0.80 - (doy - 170) / 130 * 0.18  # медленный спад до ~0.62
     return 0.62
+
+
+def _unused_cover_ndvi(doy):
+    """Залежь/неудобья: почти весь год NDVI < 0.4, короткий слабый всплеск.
+
+    Имеет уборко-подобный спад (проходит гейт уборки), но НИЗКУЮ долю
+    зелёных наблюдений → ловится гейтом покрова.
+    """
+    if doy < 170:
+        return 0.22
+    if doy < 210:
+        return 0.22 + (doy - 170) / 40 * 0.30   # к 0.52
+    if doy < 250:
+        return 0.52 - (doy - 210) / 40 * 0.30   # спад к 0.22
+    return 0.22
 
 
 def _winter_regrowth_ndvi(doy):
@@ -206,6 +221,40 @@ class WinterSpringServiceTests(SimpleTestCase):
         feats = profile_features([], [])
         self.assertEqual(feats['n_obs'], 0)
         self.assertIsNone(feats['season_min'])
+
+    # -- гейт покрова (доля зелёных) --
+    def test_cover_gate_low_green_to_unused(self):
+        # Разреженный покров (мало зелени за год) → unused при гейте покрова.
+        doys, vals, _ = _profile(_unused_cover_ndvi)
+        prof = classify_profile(doys, vals, require_cover=True)
+        self.assertEqual(prof.season_class, 'unused')
+        self.assertLess(prof.green_fraction, 0.33)
+
+    def test_cover_gate_off_by_default(self):
+        doys, vals, _ = _profile(_unused_cover_ndvi)
+        prof = classify_profile(doys, vals)
+        self.assertIn(prof.season_class, ('winter', 'spring'))
+
+    def test_cover_gate_keeps_high_cover(self):
+        # Высоко-покровный профиль (много зелени весь сезон) НЕ отсеивается.
+        doys, vals, _ = _profile(_grassland_ndvi)
+        prof = classify_profile(doys, vals, require_cover=True)
+        self.assertNotEqual(prof.season_class, 'unused')
+        self.assertGreaterEqual(prof.green_fraction, 0.33)
+
+    def test_calibrate_cover_threshold_separates(self):
+        crop = [0.50, 0.58, 0.62, 0.47]
+        unused = [0.10, 0.19, 0.22, 0.15]
+        thr = calibrate_cover_threshold(crop, unused)
+        self.assertTrue(0.20 <= thr <= 0.50)
+        self.assertTrue(all(c >= thr for c in crop))
+        self.assertTrue(all(u < thr for u in unused))
+
+    def test_calibrate_cover_threshold_degenerate(self):
+        self.assertEqual(calibrate_cover_threshold([], []), 0.33)
+        # Только культуры → порог ниже почти всех.
+        thr = calibrate_cover_threshold([0.5, 0.6], [])
+        self.assertLessEqual(thr, 0.5)
 
     # -- раскладка crop → класс (реальные значения kultury_2026) --
     def test_classify_crop_value_real_labels(self):
@@ -408,6 +457,26 @@ class ClassifyWinterSpringCommandTests(TestCase):
         self.assertIn('доля зелёных', out)
         # Диагностика ничего не пишет в БД.
         self.assertEqual(FarmlandCropSeason.objects.count(), 0)
+
+    def test_cover_gate_status_and_calibration(self):
+        # Гейт покрова ВКЛ без явного порога → калибровка по эталонам.
+        out = self._run(
+            district_id=self.district.pk, year=YEAR, cover_gate=True,
+            reference_layer='kultury_2026', reference_attr='crop',
+        )
+        self.assertIn('Гейт покрова ВКЛ', out)
+        self.assertIn('Калибровка покрова', out)
+
+    def test_cover_gate_explicit_threshold_no_false_unused(self):
+        # Явный низкий порог: высоко-покровные синтетики НЕ уходят в unused.
+        self._run(region_id=self.region.pk, year=YEAR, cover_gate=True,
+                  cover_min=0.05)
+        self.assertEqual(
+            FarmlandCropSeason.objects.filter(
+                year=YEAR, season_class='unused').count(), 0)
+        self.assertEqual(
+            FarmlandCropSeason.objects.filter(
+                year=YEAR, season_class__in=('winter', 'spring')).count(), 7)
 
     def test_missing_shp_fails_fast(self):
         from django.core.management.base import CommandError
