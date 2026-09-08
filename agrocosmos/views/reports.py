@@ -776,12 +776,17 @@ def _farmland_phenology(farmland, year):
 
 
 def _farmland_crop_season(farmland, year):
-    """Классификация озимая/яровая угодья за год (raster приоритетнее fused)."""
+    """Классификация озимая/яровая угодья за год (fused приоритетнее raster).
+
+    Сглаженный fused-ряд (HLS без облачных провалов) даёт более надёжную
+    фазовую классификацию, чем сырой raster (S2/L8); raster — fallback для
+    угодий/регионов без fused.
+    """
     rows = {
         r.source: r
         for r in FarmlandCropSeason.objects.filter(farmland=farmland, year=year)
     }
-    rec = rows.get('raster') or rows.get('fused')
+    rec = rows.get('fused') or rows.get('raster')
     if rec is None:
         return None
     return {
@@ -1186,15 +1191,15 @@ def _district_alerts_summary(district_id, year):
 def _district_crop_season_summary(district_id, year):
     """Сводка озимые/яровые по району: count, площадь и ср. уверенность.
 
-    Берём наиболее полный источник детального мониторинга: сначала
-    ``raster`` (S2/L8), при отсутствии записей — ``fused``. ``None`` —
+    Берём наиболее надёжный источник: сначала сглаженный ``fused`` (HLS),
+    при отсутствии записей — сырой ``raster`` (S2/L8). ``None`` —
     классификация ещё не считалась (нет запусков ``classify_winter_spring``).
     """
     base = FarmlandCropSeason.objects.filter(
         farmland__district_id=district_id, year=year,
     )
     source = next(
-        (s for s in ('raster', 'fused') if base.filter(source=s).exists()),
+        (s for s in ('fused', 'raster') if base.filter(source=s).exists()),
         None,
     )
     if source is None:
