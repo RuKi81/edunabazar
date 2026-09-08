@@ -197,7 +197,7 @@ class Command(BaseCommand):
         return records
 
     def _run_fusion(self, task: MonitoringTask) -> None:
-        """Full-year fusion & postprocess (идемпотентно, ~1-2 мин)."""
+        """Full-year fusion, postprocess & классификация (идемпотентно)."""
         call_command(
             'compute_fused_ndvi',
             year=task.year, overwrite=True, **self._scope_kwargs(task),
@@ -205,6 +205,13 @@ class Command(BaseCommand):
         call_command(
             'ndvi_postprocess',
             region_id=task.region.pk, year=task.year, source='fused',
+        )
+        # Классификация озимые/яровые/сенокос + признак «убрано» поверх
+        # сглаженного fused-ряда. Гейты по умолчанию (покров ВКЛ, уборка
+        # ВЫКЛ) корректны и для незавершённого сезона.
+        call_command(
+            'classify_winter_spring',
+            year=task.year, source='fused', **self._scope_kwargs(task),
         )
 
     @staticmethod

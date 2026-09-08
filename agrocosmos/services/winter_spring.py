@@ -134,6 +134,7 @@ class SeasonProfile:
     n_obs: int
     harvest_doy: Optional[int] = None
     harvest_drop: Optional[float] = None   # доля спада (drop_ratio)
+    is_harvested: bool = False   # «угодье убрано» — есть уборочный спад
     green_fraction: Optional[float] = None  # доля зелёных наблюдений (покров)
 
     def as_dict(self) -> dict:
@@ -159,6 +160,7 @@ class SeasonProfile:
                 None if self.harvest_drop is None
                 else round(self.harvest_drop, 4)
             ),
+            'is_harvested': self.is_harvested,
             'green_fraction': (
                 None if self.green_fraction is None
                 else round(self.green_fraction, 4)
@@ -300,6 +302,7 @@ def classify_profile(
     harvest_min_drop_ratio: float = HARVEST_MIN_DROP_RATIO,
     require_cover: bool = False,
     cover_min: float = GREEN_FRACTION_MIN,
+    hayfield: bool = False,
 ) -> SeasonProfile:
     """Классифицировать один сезонный NDVI-ряд угодья.
 
@@ -377,7 +380,7 @@ def classify_profile(
     # Гейт покрова: мало «зелёных» наблюдений за сезон → большую часть года
     # поле без растительности (залежь, неудобья) → не обрабатывается. Работает
     # и в середине сезона (не требует состоявшейся уборки).
-    if require_cover and green_fraction < cover_min:
+    if require_cover and not hayfield and green_fraction < cover_min:
         return SeasonProfile(
             'unused', _unused_confidence(green_fraction, cover_min),
             early_spring, winter_baseline, sos_doy, peak_doy, peak_ndvi, n_obs,
@@ -389,6 +392,19 @@ def classify_profile(
         doys, smoothed, peak_doy, peak_ndvi, winter_baseline,
         min_drop=harvest_min_drop, min_drop_ratio=harvest_min_drop_ratio,
     )
+
+    # Сенокос: винтер/яровые неприменимы (land-use известен из кадастра).
+    # Класс фиксируем как 'hayfield', а из ряда берём только признак
+    # «убрано» (укос = уборочный спад NDVI). Гейты покрова/уборки не
+    # переводят сенокос в 'unused'.
+    if hayfield:
+        return SeasonProfile(
+            'hayfield', 0.9, early_spring, winter_baseline,
+            sos_doy, peak_doy, peak_ndvi, n_obs,
+            harvest_doy=harvest.harvest_doy, harvest_drop=harvest.drop_ratio,
+            is_harvested=harvest.has_harvest, green_fraction=green_fraction,
+        )
+
     if require_harvest and not harvest.has_harvest:
         return SeasonProfile(
             'unused', _unused_confidence(harvest.drop_ratio, harvest_min_drop_ratio),
@@ -406,7 +422,7 @@ def classify_profile(
         season_class, confidence, early_spring, winter_baseline,
         sos_doy, peak_doy, peak_ndvi, n_obs,
         harvest_doy=harvest.harvest_doy, harvest_drop=harvest.drop_ratio,
-        green_fraction=green_fraction,
+        is_harvested=harvest.has_harvest, green_fraction=green_fraction,
     )
 
 

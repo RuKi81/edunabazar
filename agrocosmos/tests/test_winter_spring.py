@@ -208,6 +208,34 @@ class WinterSpringServiceTests(SimpleTestCase):
         self.assertFalse(sig.has_harvest)
         self.assertIsNone(sig.drop_ratio)
 
+    # -- признак «убрано» (is_harvested) + сенокос (hayfield) --
+    def test_is_harvested_true_for_winter(self):
+        # Пашня с уборочным обвалом NDVI → «убрано».
+        doys, vals, _ = _profile(_winter_ndvi)
+        prof = classify_profile(doys, vals)
+        self.assertTrue(prof.is_harvested)
+        self.assertIsNotNone(prof.harvest_doy)
+
+    def test_is_harvested_false_for_grassland(self):
+        # Трава без уборки → не убрано.
+        doys, vals, _ = _profile(_grassland_ndvi)
+        prof = classify_profile(doys, vals)
+        self.assertFalse(prof.is_harvested)
+
+    def test_hayfield_classified_hayfield_with_harvest(self):
+        # Сенокос с укосом (обвал NDVI) → класс hayfield, убрано=True.
+        doys, vals, _ = _profile(_winter_ndvi)
+        prof = classify_profile(doys, vals, hayfield=True)
+        self.assertEqual(prof.season_class, 'hayfield')
+        self.assertTrue(prof.is_harvested)
+
+    def test_hayfield_skips_cover_gate(self):
+        # Сенокос НЕ уходит в unused даже при низкой доле зелёных.
+        doys, vals, _ = _profile(_unused_cover_ndvi)
+        prof = classify_profile(doys, vals, hayfield=True, require_cover=True)
+        self.assertEqual(prof.season_class, 'hayfield')
+        self.assertLess(prof.green_fraction, 0.33)
+
     # -- диагностические признаки (profile_features) --
     def test_profile_features_grass_vs_spring(self):
         # Залежь/трава: высокий «пол» и малая амплитуда; яровые наоборот.
@@ -541,3 +569,25 @@ class ClassifyWinterSpringCommandTests(TestCase):
         self.assertTrue(resp['ok'])
         self.assertIsNotNone(resp['crop_season'])
         self.assertEqual(resp['crop_season']['season_class'], 'winter')
+        self.assertTrue(resp['crop_season']['is_harvested'])
+
+    def test_hayfield_classified_and_harvested(self):
+        # Сенокосное угодье → класс hayfield + признак «убрано».
+        hay = Farmland.objects.create(
+            region=self.region, district=self.district,
+            crop_type=Farmland.CropType.HAYFIELD, area_ha=50,
+            geom=_square(33.1, 50.2),
+        )
+        self._series(hay, _winter_ndvi)  # укос = уборочный спад
+        self._run(region_id=self.region.pk, year=YEAR, cover_gate=False)
+        rec = FarmlandCropSeason.objects.get(farmland=hay, year=YEAR)
+        self.assertEqual(rec.season_class, 'hayfield')
+        self.assertTrue(rec.is_harvested)
+
+        resp = self.client.get(
+            '/agrocosmos/api/report/district-detailed/',
+            {'district': self.district.pk, 'year': YEAR},
+        ).json()
+        cs = resp['crop_season']
+        self.assertEqual(cs['classes']['hayfield']['count'], 1)
+        self.assertGreaterEqual(cs['harvested']['count'], 1)

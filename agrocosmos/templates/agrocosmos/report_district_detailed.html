@@ -430,6 +430,7 @@
   var SEASON_META = [
     { key: 'winter', label: 'Озимые', color: '#1565C0' },
     { key: 'spring', label: 'Яровые', color: '#F57C00' },
+    { key: 'hayfield', label: 'Сенокос', color: '#2E7D32' },
     { key: 'unused', label: 'Не обрабатывается', color: '#795548' },
     { key: 'unknown', label: 'Не определено', color: '#9E9E9E' }
   ];
@@ -455,10 +456,17 @@
         + '</div></div>';
     }).join('');
     var srcLabel = cs.source === 'fused' ? 'HLS (S2+L)' : 'Sentinel-2 / Landsat';
+    var harvStr = '';
+    if (cs.harvested) {
+      harvStr = ' Убрано (пашня/сенокос): '
+        + (cs.harvested.count || 0).toLocaleString('ru') + ' угодий, '
+        + (cs.harvested.area_ha || 0).toLocaleString('ru', {maximumFractionDigits:0}) + ' га.';
+    }
     document.getElementById('crop-season-note').textContent =
       'Классификация по профилю NDVI (' + srcLabel + '). '
       + 'Озимые — ранневесенний рост и ранний SOS; яровые — поздний единственный пик. '
-      + '«Не обрабатывается» — вег. цикл есть, но нет уборочного спада NDVI (гейт уборки).';
+      + '«Не обрабатывается» — вег. цикл есть, но нет уборочного спада NDVI (гейт уборки).'
+      + harvStr;
   }
 
   function renderAlerts(resp) {

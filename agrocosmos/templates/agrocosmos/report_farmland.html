@@ -710,12 +710,20 @@
     var seasonCard = '';
     if (cs && cs.season_class && cs.season_class !== 'unknown') {
       var seasonColor = cs.season_class === 'winter' ? '#1565C0'
-        : cs.season_class === 'unused' ? '#795548' : '#F57C00';
+        : cs.season_class === 'unused' ? '#795548'
+        : cs.season_class === 'hayfield' ? '#2E7D32' : '#F57C00';
       var confStr = (cs.confidence !== null && cs.confidence !== undefined)
         ? ' · ' + Math.round(cs.confidence * 100) + '%' : '';
       seasonCard =
         '<div class="summary-card"><div class="val" style="font-size:15px; color:' + seasonColor + ';">'
         + esc(cs.season_label) + '</div><div class="lbl">Озимая/яровая (NDVI)' + confStr + '</div></div>';
+    }
+    var harvestCard = '';
+    if (cs && (cs.season_class === 'winter' || cs.season_class === 'spring' || cs.season_class === 'hayfield')) {
+      var harvested = cs.is_harvested === true;
+      harvestCard =
+        '<div class="summary-card"><div class="val" style="font-size:15px; color:' + (harvested ? '#2E7D32' : '#9E9E9E') + ';">'
+        + (harvested ? 'Убрано' : 'Не убрано') + '</div><div class="lbl">Уборка (NDVI)</div></div>';
     }
     summaryEl.innerHTML =
       '<div class="summary-card"><div class="val">' + esc(f.crop_type_label) + '</div><div class="lbl">Вид угодья</div></div>'
@@ -724,7 +732,8 @@
       + '<div class="summary-card"><div class="val">' + zStr + '</div><div class="lbl">z-score vs норма</div></div>'
       + '<div class="summary-card"><div class="val" style="font-size:13px; padding-top:3px;"><span class="assessment-badge ' + ndviBadgeClass(latest.mean_ndvi) + '">' + esc(latest.assessment || 'Нет данных') + '</span></div><div class="lbl">Оценка</div></div>'
       + '<div class="summary-card"><div class="val" style="font-size:14px;">' + usedStr + '</div><div class="lbl">Факт использования</div></div>'
-      + seasonCard;
+      + seasonCard
+      + harvestCard;
 
     var bbox = renderContourSvg(f.geometry);
     var cap = [];

@@ -258,6 +258,7 @@ class FarmlandCropSeason(models.Model):
     class SeasonClass(models.TextChoices):
         WINTER = 'winter', 'Озимые'
         SPRING = 'spring', 'Яровые'
+        HAYFIELD = 'hayfield', 'Сенокос'
         UNUSED = 'unused', 'Не обрабатывается'
         UNKNOWN = 'unknown', 'Не определено'
 
@@ -309,6 +310,14 @@ class FarmlandCropSeason(models.Model):
     harvest_drop = models.FloatField(
         null=True, blank=True, verbose_name='Глубина уборочного спада',
         help_text='Доля спада NDVI после пика к амплитуде сезона (0..1+).',
+    )
+    # Явный признак «угодье убрано» для пашни и сенокоса: есть уборочный
+    # спад NDVI после пика (:func:`services.winter_spring.detect_harvest`).
+    # Дублирует смысл ``harvest_doy is not None``, но выделен отдельным полем
+    # для простой фильтрации/агрегации в отчётах.
+    is_harvested = models.BooleanField(
+        default=False, verbose_name='Угодье убрано',
+        help_text='Есть уборочный спад NDVI после пика (пашня/сенокос).',
     )
 
     # ``is_reference`` — угодье попало под опорную точку известной культуры

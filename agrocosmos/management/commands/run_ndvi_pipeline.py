@@ -292,6 +292,23 @@ class Command(BaseCommand):
         self._log('─── postprocess done ───')
         self._flush_log_to_db()
 
+    def _stage_classify(self, *, region_id, district_id, year, source) -> None:
+        """Классификация озимые/яровые/сенокос + признак «убрано».
+
+        Запускается автоматически после сглаживания: пашня получает класс
+        сезона, сенокос — 'hayfield', оба — признак ``is_harvested``. Гейты
+        по умолчанию (покров ВКЛ, уборка ВЫКЛ) корректны и в середине сезона.
+        """
+        self._log(f'─── stage: classify_winter_spring --source {source} ───')
+        kwargs = {'year': year, 'source': source}
+        if district_id:
+            kwargs['district_id'] = district_id
+        else:
+            kwargs['region_id'] = region_id
+        self._run_subcommand('classify_winter_spring', **kwargs)
+        self._log('─── classify done ───')
+        self._flush_log_to_db()
+
     # ------------------------------------------------------------------ main
 
     def handle(self, *args, **options):
@@ -470,4 +487,15 @@ class Command(BaseCommand):
             )
             self._stage_postprocess(
                 region_id=region_id, district_id=district_id, year=year,
+            )
+            # Классификация поверх сглаженного fused-ряда.
+            self._stage_classify(
+                region_id=region_id, district_id=district_id, year=year,
+                source='fused',
+            )
+        else:
+            # Без fusion классифицируем по растровому (S2/L8) источнику.
+            self._stage_classify(
+                region_id=region_id, district_id=district_id, year=year,
+                source='raster',
             )

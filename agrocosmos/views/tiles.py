@@ -9,6 +9,15 @@ from django.views.decorators.cache import cache_page
 
 from ._helpers import rate_limit
 
+# Minimum zoom at which the MVT producer will actually query PostGIS.
+# Below these floors the tile bbox covers so large an area that the polygon
+# scan blows the gateway timeout (504) — and individual parcels are sub-pixel
+# there anyway. An *unfiltered* (nationwide) request must scan the whole
+# ``agro_farmland`` table by bbox, so it needs a much higher floor than a
+# region/district-filtered request, which is bounded by an indexed FK.
+MIN_TILE_ZOOM_FILTERED = 5
+MIN_TILE_ZOOM_UNFILTERED = 11
+
 
 def _is_admin_legacy(request: HttpRequest) -> bool:
     """Return True if the current legacy user is an admin.
@@ -72,6 +81,18 @@ def _api_tile_cached(request: HttpRequest, z: int, x: int, y: int) -> HttpRespon
 
     region_id = request.GET.get('region')
     district_id = request.GET.get('district')
+
+    # Zoom floor: at low zoom the tile bbox is enormous. An unfiltered
+    # (nationwide) request would scan millions of ``agro_farmland`` polygons
+    # and blow the gateway timeout (504); a region/district-filtered request
+    # is bounded by an indexed FK and stays cheap. Parcels are sub-pixel at
+    # these zooms anyway, so we short-circuit with an empty (but cacheable)
+    # tile instead of running the query.
+    min_zoom = MIN_TILE_ZOOM_FILTERED if (region_id or district_id) else MIN_TILE_ZOOM_UNFILTERED
+    if z < min_zoom:
+        empty = HttpResponse(b'', content_type='application/x-protobuf')
+        empty['Cache-Control'] = 'public, max-age=600'
+        return empty
 
     where_clauses = []
     params = []

@@ -48,9 +48,10 @@ from agrocosmos.services.winter_spring import (
 RASTER_SATELLITES = ('sentinel2', 'landsat8', 'landsat9')
 FUSED_SATELLITES = ('hls_fused',)
 
-# По умолчанию классифицируем только ПАШНЮ: озимые/яровые — это пашня, а
-# луга/пастбища/многолетние/сады зеленеют рано и раздувают «озимые».
-DEFAULT_CROP_TYPES = ('arable',)
+# По умолчанию классифицируем ПАШНЮ и СЕНОКОС: озимые/яровые — это пашня;
+# сенокос получает класс 'hayfield' и признак «убрано» (укос). Пастбища/
+# многолетние/сады зеленеют рано и раздувают «озимые», поэтому исключены.
+DEFAULT_CROP_TYPES = ('arable', 'hayfield')
 
 DB_BATCH = 2000
 
@@ -71,9 +72,10 @@ class Command(BaseCommand):
         parser.add_argument('--threshold', type=float, default=None,
                             help='Ручной порог early_spring_ndvi (вторичный '
                                  'сигнал; переопределяет калибровку)')
-        parser.add_argument('--crop-types', type=str, default='arable',
-                            help='Виды угодий через запятую (по умолч. arable). '
-                                 '"all"/пусто — без фильтра (все угодья).')
+        parser.add_argument('--crop-types', type=str, default='arable,hayfield',
+                            help='Виды угодий через запятую (по умолч. '
+                                 'arable,hayfield). "all"/пусто — без фильтра '
+                                 '(все угодья). Сенокос → класс hayfield.')
         parser.add_argument('--harvest-gate', action='store_true',
                             help='Включить гейт уборки (отсев '
                                  'необрабатываемых угодий в класс unused). '
@@ -310,7 +312,7 @@ class Command(BaseCommand):
         params.extend(satellites)
 
         sql = f"""
-            SELECT vi.farmland_id, vi.acquired_date, vi.mean
+            SELECT vi.farmland_id, vi.acquired_date, vi.mean, f.crop_type
             FROM agro_vegetation_index vi
             JOIN agro_farmland f ON f.id = vi.farmland_id
             JOIN agro_satellite_scene sc ON sc.id = vi.scene_id
@@ -326,7 +328,7 @@ class Command(BaseCommand):
             recs = list(group)
             doys = [r[1].timetuple().tm_yday for r in recs]
             vals = [float(r[2]) for r in recs]
-            out[fl_id] = (doys, vals)
+            out[fl_id] = (doys, vals, recs[0][3])
         return out
 
     # -------------------------------------------------------- reference points
@@ -497,12 +499,14 @@ class Command(BaseCommand):
 
     def _classify_all(self, series, peak_threshold, es_threshold, year,
                       source, ref_map, gate, dry_run):
-        counts = {'winter': 0, 'spring': 0, 'unused': 0, 'unknown': 0}
+        counts = {'winter': 0, 'spring': 0, 'hayfield': 0, 'unused': 0,
+                  'unknown': 0}
         batch = []
-        for fl_id, (doys, ndvi) in series.items():
+        for fl_id, (doys, ndvi, crop_type) in series.items():
             prof = classify_profile(
                 doys, ndvi, peak_doy_threshold=peak_threshold,
-                early_spring_threshold=es_threshold, **gate,
+                early_spring_threshold=es_threshold,
+                hayfield=(crop_type == 'hayfield'), **gate,
             )
             counts[prof.season_class] += 1
             if dry_run:
@@ -516,6 +520,7 @@ class Command(BaseCommand):
                 sos_doy=prof.sos_doy, peak_doy=prof.peak_doy,
                 peak_ndvi=prof.peak_ndvi,
                 harvest_doy=prof.harvest_doy, harvest_drop=prof.harvest_drop,
+                is_harvested=prof.is_harvested,
                 is_reference=ref is not None,
                 reference_crop=(ref['value'] if ref else ''),
                 threshold=es_threshold,
@@ -537,7 +542,7 @@ class Command(BaseCommand):
             update_fields=[
                 'season_class', 'confidence', 'early_spring_ndvi',
                 'winter_baseline', 'sos_doy', 'peak_doy', 'peak_ndvi',
-                'harvest_doy', 'harvest_drop',
+                'harvest_doy', 'harvest_drop', 'is_harvested',
                 'is_reference', 'reference_crop', 'threshold',
                 'peak_doy_threshold',
             ],
@@ -604,6 +609,7 @@ class Command(BaseCommand):
         self.stdout.write(
             f'\n{"[DRY RUN] " if dry_run else ""}Классифицировано {total}: '
             f'озимые={counts["winter"]}, яровые={counts["spring"]}, '
+            f'сенокос={counts["hayfield"]}, '
             f'не обрабатывается={counts["unused"]}, '
             f'не определено={counts["unknown"]}'
         )

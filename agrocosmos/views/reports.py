@@ -793,6 +793,7 @@ def _farmland_crop_season(farmland, year):
         'sos_doy': rec.sos_doy,
         'harvest_doy': rec.harvest_doy,
         'harvest_drop': _safe_round(rec.harvest_drop),
+        'is_harvested': rec.is_harvested,
         'is_reference': rec.is_reference,
         'reference_crop': rec.reference_crop or None,
     }
@@ -1200,10 +1201,11 @@ def _district_crop_season_summary(district_id, year):
         return None
     classes = {
         c: {'count': 0, 'area_ha': 0.0, 'avg_confidence': None}
-        for c in ('winter', 'spring', 'unused', 'unknown')
+        for c in ('winter', 'spring', 'hayfield', 'unused', 'unknown')
     }
+    scoped = base.filter(source=source)
     rows = (
-        base.filter(source=source)
+        scoped
         .values('season_class')
         .annotate(
             count=Count('id'),
@@ -1217,7 +1219,18 @@ def _district_crop_season_summary(district_id, year):
             'area_ha': _safe_round(r['area_ha'] or 0, 1),
             'avg_confidence': _safe_round(r['avg_conf']),
         }
-    return {'source': source, 'classes': classes}
+    # Признак «убрано» (пашня/сенокос): доля угодий с уборочным спадом NDVI.
+    harvested = scoped.filter(is_harvested=True).aggregate(
+        count=Count('id'), area_ha=Sum('farmland__area_ha'),
+    )
+    return {
+        'source': source,
+        'classes': classes,
+        'harvested': {
+            'count': harvested['count'] or 0,
+            'area_ha': _safe_round(harvested['area_ha'] or 0, 1),
+        },
+    }
 
 
 @rate_limit('30/m')
