@@ -142,7 +142,7 @@ class WinterSpringServiceTests(SimpleTestCase):
     def test_grassland_gated_to_unused(self):
         # Есть вег. цикл, но нет уборочного обвала → не обрабатывается.
         doys, vals, _ = _profile(_grassland_ndvi)
-        prof = classify_profile(doys, vals)
+        prof = classify_profile(doys, vals, require_harvest=True)
         self.assertEqual(prof.season_class, 'unused')
         self.assertIsNotNone(prof.peak_doy)      # цикл есть
         self.assertIsNone(prof.harvest_doy)      # уборки нет
@@ -154,9 +154,15 @@ class WinterSpringServiceTests(SimpleTestCase):
         prof = classify_profile(doys, vals, require_harvest=False)
         self.assertIn(prof.season_class, ('winter', 'spring'))
 
+    def test_gate_off_by_default_grassland_falls_through(self):
+        # Гейт по умолчанию ВЫКЛ (сезон может быть незавершён).
+        doys, vals, _ = _profile(_grassland_ndvi)
+        prof = classify_profile(doys, vals)
+        self.assertIn(prof.season_class, ('winter', 'spring'))
+
     def test_winter_passes_gate(self):
         doys, vals, _ = _profile(_winter_ndvi)
-        prof = classify_profile(doys, vals)
+        prof = classify_profile(doys, vals, require_harvest=True)
         self.assertEqual(prof.season_class, 'winter')
         self.assertIsNotNone(prof.harvest_doy)
         self.assertGreaterEqual(prof.harvest_drop, 0.5)
@@ -164,7 +170,7 @@ class WinterSpringServiceTests(SimpleTestCase):
     def test_harvest_survives_weed_regrowth(self):
         # Обвал уборки + повторный рост сорняков → уборка всё равно найдена.
         doys, vals, _ = _profile(_winter_regrowth_ndvi)
-        prof = classify_profile(doys, vals)
+        prof = classify_profile(doys, vals, require_harvest=True)
         self.assertEqual(prof.season_class, 'winter')
         self.assertIsNotNone(prof.harvest_doy)
         self.assertLess(prof.harvest_doy, 220)   # обвал ~190, не поздний рост
@@ -337,7 +343,7 @@ class ClassifyWinterSpringCommandTests(TestCase):
 
     # -- tests --
     def test_classifies_winter_and_spring(self):
-        self._run(region_id=self.region.pk, year=YEAR)
+        self._run(region_id=self.region.pk, year=YEAR, harvest_gate=True)
         winter = FarmlandCropSeason.objects.filter(
             year=YEAR, season_class='winter')
         self.assertEqual(winter.count(), 3)
@@ -358,7 +364,7 @@ class ClassifyWinterSpringCommandTests(TestCase):
 
     def test_reference_calibration_and_confusion(self):
         out = self._run(
-            district_id=self.district.pk, year=YEAR,
+            district_id=self.district.pk, year=YEAR, harvest_gate=True,
             reference_layer='kultury_2026', reference_attr='crop',
         )
         self.assertIn('Опорных угодий', out)
@@ -403,7 +409,7 @@ class ClassifyWinterSpringCommandTests(TestCase):
         self.assertEqual(FarmlandCropSeason.objects.filter(year=YEAR).count(), 7)
 
     def test_report_district_detailed_includes_crop_season(self):
-        self._run(region_id=self.region.pk, year=YEAR)
+        self._run(region_id=self.region.pk, year=YEAR, harvest_gate=True)
         resp = self.client.get(
             '/agrocosmos/api/report/district-detailed/',
             {'district': self.district.pk, 'year': YEAR},

@@ -72,9 +72,11 @@ class Command(BaseCommand):
         parser.add_argument('--crop-types', type=str, default='arable',
                             help='Виды угодий через запятую (по умолч. arable). '
                                  '"all"/пусто — без фильтра (все угодья).')
-        parser.add_argument('--no-harvest-gate', action='store_true',
-                            help='Отключить гейт уборки (не отсеивать '
-                                 'необрабатываемые угодья в класс unused).')
+        parser.add_argument('--harvest-gate', action='store_true',
+                            help='Включить гейт уборки (отсев '
+                                 'необрабатываемых угодий в класс unused). '
+                                 'ТОЛЬКО для ЗАВЕРШЁННОГО сезона: в середине '
+                                 'года уборки ещё нет и всё уйдёт в unused.')
         parser.add_argument('--harvest-min-drop', type=float, default=None,
                             help='Порог абсолютного уборочного спада NDVI '
                                  f'(по умолч. {HARVEST_MIN_DROP}).')
@@ -163,7 +165,7 @@ class Command(BaseCommand):
     def _harvest_gate(options):
         """Параметры гейта уборки из CLI (с дефолтами сервиса)."""
         return {
-            'require_harvest': not options['no_harvest_gate'],
+            'require_harvest': options['harvest_gate'],
             'harvest_min_drop': (
                 HARVEST_MIN_DROP if options['harvest_min_drop'] is None
                 else options['harvest_min_drop']

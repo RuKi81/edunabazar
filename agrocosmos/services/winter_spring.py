@@ -268,7 +268,7 @@ def classify_profile(
     doys: Sequence[int], ndvi: Sequence[float],
     peak_doy_threshold: float = PEAK_DOY_THRESHOLD_DEFAULT,
     early_spring_threshold: float = DEFAULT_EARLY_SPRING_THRESHOLD,
-    require_harvest: bool = True,
+    require_harvest: bool = False,
     harvest_min_drop: float = HARVEST_MIN_DROP,
     harvest_min_drop_ratio: float = HARVEST_MIN_DROP_RATIO,
 ) -> SeasonProfile:
@@ -279,10 +279,14 @@ def classify_profile(
     Ранневесенний NDVI (``early_spring_threshold``) — ВТОРИЧНЫЙ сигнал,
     влияет только на уверенность.
 
-    **Гейт уборки** (``require_harvest=True``, по умолчанию): перед бинарной
+    **Гейт уборки** (``require_harvest``, по умолчанию ВЫКЛ): перед бинарной
     классификацией проверяем, что после пика был уборочный спад NDVI
     (:func:`detect_harvest`). Если спада нет — угодье не обрабатывается
     (залежь, многолетние травы), класс ``unused`` вместо winter/spring.
+
+    ВНИМАНИЕ: гейт корректен ТОЛЬКО для ЗАВЕРШЁННОГО сезона. В середине
+    сезона уборка ещё не произошла (или не попала в ряд) — включать нельзя,
+    иначе почти всё уйдёт в ``unused``. Поэтому по умолчанию выключен.
 
     Args:
         doys: дни года наблюдений (1..366).
