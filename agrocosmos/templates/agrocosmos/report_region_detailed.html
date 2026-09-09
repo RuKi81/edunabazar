@@ -96,6 +96,19 @@
       margin-right: 6px; vertical-align: -1px;
     }
 
+    .cat-grid { display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: center; }
+    @media (max-width: 800px) { .cat-grid { grid-template-columns: 1fr; } }
+    .cat-legend { font-size: 12px; }
+    .cat-legend .row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 6px 0; border-bottom: 1px solid #f0f0f0;
+    }
+
+    .rd-table th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+    .rd-table th.sortable:hover { background: #e8f5e9; }
+    .rd-table th .sort-ind { color: #2e7d32; font-size: 10px; margin-left: 2px; }
+    .rd-table tbody tr { cursor: pointer; }
+
     .report-loader { text-align: center; padding: 40px; font-size: 15px; color: #777; }
     .report-loader.hidden { display: none; }
     #report-content.hidden { display: none; }
@@ -159,6 +172,7 @@
 
     <button class="btn-generate" id="btn-generate">Сформировать свод</button>
     <div class="report-actions">
+      <button class="action-btn" id="btn-csv" title="Экспорт в CSV"><i class="material-icons">file_download</i></button>
       <button class="action-btn" onclick="window.print()" title="Печать"><i class="material-icons">print</i></button>
       <button class="action-btn" id="btn-copy" title="Скопировать ссылку"><i class="material-icons">content_copy</i></button>
     </div>
@@ -180,6 +194,14 @@
       <div class="empty-note" id="crop-season-note" style="margin-top:8px;"></div>
     </div>
 
+    <div class="pp-section" id="area-section" style="display:none;">
+      <h2><i class="material-icons">donut_small</i> Доли площадей по классам</h2>
+      <div class="cat-grid">
+        <div style="height:220px; position:relative;"><canvas id="chart-area"></canvas></div>
+        <div class="cat-legend" id="area-legend"></div>
+      </div>
+    </div>
+
     <div class="pp-section" id="ndvi-season-section" style="display:none;">
       <h2><i class="material-icons">show_chart</i> Текущее состояние NDVI (последние значения в БД)</h2>
       <div style="overflow-x:auto;">
@@ -198,12 +220,19 @@
 
     <div class="pp-section" id="districts-section" style="display:none;">
       <h2><i class="material-icons">table_chart</i> Разбивка по районам</h2>
+      <div class="empty-note" style="padding-top:0;">Клик по столбцу — сортировка; клик по строке — свод района.</div>
       <div style="overflow-x:auto;">
         <table class="rd-table">
           <thead>
-            <tr>
-              <th>Район</th><th>Всего</th><th>Озимые</th><th>Яровые</th>
-              <th>Сенокос</th><th>Не обраб.</th><th>Убрано</th><th>Площадь, га</th>
+            <tr id="districts-head">
+              <th class="sortable" data-key="district_name">Район</th>
+              <th class="sortable" data-key="total">Всего</th>
+              <th class="sortable" data-key="winter">Озимые</th>
+              <th class="sortable" data-key="spring">Яровые</th>
+              <th class="sortable" data-key="hayfield">Сенокос</th>
+              <th class="sortable" data-key="unused">Не обраб.</th>
+              <th class="sortable" data-key="harvested">Убрано</th>
+              <th class="sortable" data-key="area_ha">Площадь, га</th>
             </tr>
           </thead>
           <tbody id="districts-body"></tbody>
@@ -217,6 +246,7 @@
 {% block site_footer %}{% endblock %}
 
 {% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <script>
 (function () {
   var regionSel = document.getElementById('rpt-region');
@@ -224,6 +254,10 @@
   var btnGen = document.getElementById('btn-generate');
   var loader = document.getElementById('rpt-loader');
   var content = document.getElementById('report-content');
+
+  var lastResp = null;
+  var charts = [];
+  function destroyCharts() { charts.forEach(function (c) { c.destroy(); }); charts = []; }
 
   function esc(s) { return (s || '').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
   function num(v) { return (v || 0).toLocaleString('ru'); }
@@ -263,6 +297,20 @@
     { key: 'unused', label: 'Не обрабатывается', color: '#795548' },
     { key: 'unknown', label: 'Не определено', color: '#9E9E9E' }
   ];
+
+  // Колонки таблицы районов: доступ к значению для сортировки/экспорта.
+  function clsCount(d, k) { return (d.classes[k] || {}).count || 0; }
+  var DIST_COLS = [
+    { key: 'district_name', text: true, get: function (d) { return d.district_name; } },
+    { key: 'total', get: function (d) { return d.total; } },
+    { key: 'winter', get: function (d) { return clsCount(d, 'winter'); } },
+    { key: 'spring', get: function (d) { return clsCount(d, 'spring'); } },
+    { key: 'hayfield', get: function (d) { return clsCount(d, 'hayfield'); } },
+    { key: 'unused', get: function (d) { return clsCount(d, 'unused'); } },
+    { key: 'harvested', get: function (d) { return (d.harvested || {}).count || 0; } },
+    { key: 'area_ha', get: function (d) { return d.area_ha; } }
+  ];
+  var sortState = { key: 'area_ha', dir: -1 };
 
   function renderSummary(resp) {
     var cs = resp.crop_season;
@@ -304,6 +352,31 @@
       + '«Не обрабатывается» — вег. цикл есть, но нет уборочного спада/покрова.' + harvStr;
   }
 
+  function renderAreaChart(resp) {
+    var section = document.getElementById('area-section');
+    var cs = resp.crop_season;
+    if (!cs || !cs.classes) { section.style.display = 'none'; return; }
+    section.style.display = 'block';
+    var data = SEASON_META.map(function (m) { return (cs.classes[m.key] || {}).area_ha || 0; });
+    var chart = new Chart(document.getElementById('chart-area'), {
+      type: 'doughnut',
+      data: {
+        labels: SEASON_META.map(function (m) { return m.label; }),
+        datasets: [{ data: data, backgroundColor: SEASON_META.map(function (m) { return m.color; }) }]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+    });
+    charts.push(chart);
+    var total = data.reduce(function (a, b) { return a + b; }, 0);
+    document.getElementById('area-legend').innerHTML = SEASON_META.map(function (m, i) {
+      var pct = total ? Math.round(data[i] / total * 100) : 0;
+      return '<div class="row">'
+        + '<span><span class="cat-dot" style="background:' + m.color + ';"></span>' + m.label + '</span>'
+        + '<span><b>' + area(data[i]) + '</b> га · ' + pct + '%</span>'
+        + '</div>';
+    }).join('');
+  }
+
   function renderNdviSeason(resp) {
     var section = document.getElementById('ndvi-season-section');
     var stats = resp.crop_season_ndvi;
@@ -327,14 +400,37 @@
       'Средний NDVI — площадь-взвешенный по последнему детальному наблюдению каждого угодья за год.';
   }
 
-  function renderDistricts(resp) {
-    var section = document.getElementById('districts-section');
-    var ds = resp.districts || [];
-    if (!ds.length) { section.style.display = 'none'; return; }
-    section.style.display = 'block';
-    document.getElementById('districts-body').innerHTML = ds.map(function (d) {
+  function colByKey(key) {
+    return DIST_COLS.filter(function (c) { return c.key === key; })[0];
+  }
+
+  function sortedDistricts() {
+    var col = colByKey(sortState.key) || colByKey('area_ha');
+    return (lastResp.districts || []).slice().sort(function (a, b) {
+      var va = col.get(a), vb = col.get(b);
+      if (col.text) { return sortState.dir * ('' + va).localeCompare('' + vb, 'ru'); }
+      return sortState.dir * ((va || 0) - (vb || 0));
+    });
+  }
+
+  function updateSortIndicators() {
+    var head = document.getElementById('districts-head');
+    head.querySelectorAll('th').forEach(function (th) {
+      var ind = th.querySelector('.sort-ind');
+      if (ind) { ind.remove(); }
+      if (th.getAttribute('data-key') === sortState.key) {
+        var span = document.createElement('span');
+        span.className = 'sort-ind';
+        span.textContent = sortState.dir < 0 ? '▼' : '▲';
+        th.appendChild(span);
+      }
+    });
+  }
+
+  function renderDistrictsBody() {
+    document.getElementById('districts-body').innerHTML = sortedDistricts().map(function (d) {
       function c(k) { return ((d.classes[k] || {}).count || 0); }
-      return '<tr>'
+      return '<tr data-did="' + d.district_id + '">'
         + '<td>' + esc(d.district_name) + '</td>'
         + '<td>' + num(d.total) + '</td>'
         + '<td style="color:#1565C0;">' + num(c('winter')) + '</td>'
@@ -345,7 +441,76 @@
         + '<td>' + area(d.area_ha) + '</td>'
         + '</tr>';
     }).join('');
+    updateSortIndicators();
   }
+
+  function renderDistricts(resp) {
+    var section = document.getElementById('districts-section');
+    var ds = resp.districts || [];
+    if (!ds.length) { section.style.display = 'none'; return; }
+    section.style.display = 'block';
+    renderDistrictsBody();
+  }
+
+  // Сортировка по клику на заголовок.
+  document.getElementById('districts-head').addEventListener('click', function (e) {
+    var th = e.target.closest('th[data-key]');
+    if (!th || !lastResp) { return; }
+    var key = th.getAttribute('data-key');
+    if (sortState.key === key) {
+      sortState.dir = -sortState.dir;
+    } else {
+      sortState.key = key;
+      sortState.dir = key === 'district_name' ? 1 : -1;
+    }
+    renderDistrictsBody();
+  });
+
+  // Переход в районный отчёт по клику на строку.
+  document.getElementById('districts-body').addEventListener('click', function (e) {
+    var tr = e.target.closest('tr[data-did]');
+    if (!tr || !lastResp) { return; }
+    var params = new URLSearchParams();
+    params.set('region', lastResp.region.id);
+    params.set('district', tr.getAttribute('data-did'));
+    params.set('year', lastResp.year);
+    location.href = '/agrocosmos/report/district-detailed/?' + params.toString();
+  });
+
+  function toCsv(resp) {
+    var head = ['Район', 'Всего', 'Озимые', 'Яровые', 'Сенокос',
+      'Не обрабатывается', 'Не определено', 'Убрано', 'Площадь, га'];
+    var rows = [head];
+    sortedDistricts().forEach(function (d) {
+      function c(k) { return (d.classes[k] || {}).count || 0; }
+      rows.push([d.district_name, d.total, c('winter'), c('spring'),
+        c('hayfield'), c('unused'), c('unknown'),
+        (d.harvested || {}).count || 0, d.area_ha]);
+    });
+    return rows.map(function (r) {
+      return r.map(function (v) {
+        var s = ('' + v).replace(/"/g, '""');
+        return /[",;\n]/.test(s) ? '"' + s + '"' : s;
+      }).join(';');
+    }).join('\r\n');
+  }
+
+  function downloadCsv() {
+    if (!lastResp || !(lastResp.districts || []).length) {
+      alert('Нет данных для экспорта');
+      return;
+    }
+    var blob = new Blob(['\ufeff' + toCsv(lastResp)], { type: 'text/csv;charset=utf-8;' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'svod_subekt_' + lastResp.region.name + '_' + lastResp.year + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+  document.getElementById('btn-csv').addEventListener('click', downloadCsv);
 
   function render(resp) {
     document.getElementById('rpt-title').textContent = 'Свод по субъекту — ' + resp.region.name;
@@ -353,6 +518,7 @@
       resp.year + ' г. · озимые / яровые / уборка / необрабатываемые · детальный мониторинг';
     renderSummary(resp);
     renderCropSeason(resp);
+    renderAreaChart(resp);
     renderNdviSeason(resp);
     renderDistricts(resp);
   }
@@ -364,6 +530,7 @@
 
     loader.classList.remove('hidden');
     content.classList.add('hidden');
+    destroyCharts();
 
     fetch('/agrocosmos/api/report/region-detailed/?region=' + encodeURIComponent(rid)
         + '&year=' + encodeURIComponent(yearSel.value))
@@ -371,6 +538,7 @@
       .then(function (resp) {
         loader.classList.add('hidden');
         if (!resp.ok) { alert('Ошибка: ' + (resp.error || 'неизвестная')); return; }
+        lastResp = resp;
         content.classList.remove('hidden');
         render(resp);
       })

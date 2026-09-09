@@ -605,6 +605,14 @@ class ClassifyWinterSpringCommandTests(TestCase):
         self.assertEqual(d['classes']['winter']['count'], 3)
         self.assertEqual(d['classes']['spring']['count'], 3)
 
+    def test_report_region_detailed_page_renders(self):
+        resp = self.client.get(
+            '/agrocosmos/report/region-detailed/',
+            {'region': self.region.pk, 'year': YEAR},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTemplateUsed(resp, 'agrocosmos/report_region_detailed.html')
+
     def test_report_region_detailed_no_classification(self):
         # Без запусков classify_winter_spring — свод пуст, но endpoint отвечает.
         resp = self.client.get(
