@@ -194,6 +194,16 @@
   <div id="report-content" class="hidden">
     <div class="report-summary" id="rpt-summary"></div>
 
+    <div class="pp-section" id="farmland-types-section" style="display:none;">
+      <h2><i class="material-icons">category</i> Виды угодий (по атрибуту «Тип» слоя ЗСН)</h2>
+      <div class="report-summary" id="ft-cards" style="margin-bottom:0;"></div>
+      <div class="cat-grid" style="margin-top:12px;">
+        <div style="height:220px; position:relative;"><canvas id="chart-ft"></canvas></div>
+        <div class="cat-legend" id="ft-legend"></div>
+      </div>
+      <div class="empty-note" id="ft-note" style="margin-top:8px;"></div>
+    </div>
+
     <div class="pp-section">
       <h2><i class="material-icons">donut_small</i> Распределение полей по состоянию</h2>
       <div class="cat-grid">
@@ -445,6 +455,47 @@
     }).join('');
   }
 
+  var FT_COLORS = {
+    arable: '#689F38', fallow: '#8D6E63', hayfield: '#2E7D32',
+    pasture: '#9CCC65', perennial: '#6A1B9A', other_agri: '#00838F',
+    other: '#9E9E9E'
+  };
+
+  function renderFarmlandTypes(resp) {
+    var section = document.getElementById('farmland-types-section');
+    var types = resp.farmland_types || [];
+    if (!types.length) { section.style.display = 'none'; return; }
+    section.style.display = 'block';
+    function ha(v) { return (v || 0).toLocaleString('ru', {maximumFractionDigits:0}); }
+    document.getElementById('ft-cards').innerHTML = types.map(function (t) {
+      var color = FT_COLORS[t.crop_type] || '#9E9E9E';
+      return '<div class="summary-card">'
+        + '<div class="val" style="color:' + color + ';">' + (t.count || 0).toLocaleString('ru') + '</div>'
+        + '<div class="lbl">' + esc(t.label) + '<br>' + ha(t.area_ha) + ' га</div></div>';
+    }).join('');
+    var data = types.map(function (t) { return t.area_ha || 0; });
+    var chart = new Chart(document.getElementById('chart-ft'), {
+      type: 'doughnut',
+      data: {
+        labels: types.map(function (t) { return t.label; }),
+        datasets: [{ data: data, backgroundColor: types.map(function (t) { return FT_COLORS[t.crop_type] || '#9E9E9E'; }) }]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+    });
+    charts.push(chart);
+    var total = data.reduce(function (a, b) { return a + b; }, 0);
+    document.getElementById('ft-legend').innerHTML = types.map(function (t, i) {
+      var pct = total ? Math.round(data[i] / total * 100) : 0;
+      return '<div class="row">'
+        + '<span><span class="cat-dot" style="background:' + (FT_COLORS[t.crop_type] || '#9E9E9E') + ';"></span>' + esc(t.label) + '</span>'
+        + '<span><b>' + ha(data[i]) + '</b> га · ' + pct + '%</span>'
+        + '</div>';
+    }).join('');
+    document.getElementById('ft-note').textContent =
+      'Состав угодий по атрибуту «Тип»/S_Vid_N слоя ЗСН (не зависит от NDVI). '
+      + 'Классификация озимые/яровые ниже считается только по пашне.';
+  }
+
   var SEASON_META = [
     { key: 'winter', label: 'Озимые', color: '#1565C0' },
     { key: 'spring', label: 'Яровые', color: '#F57C00' },
@@ -539,6 +590,7 @@
       + '<div class="summary-card"><div class="val" style="color:' + (problems ? '#D32F2F' : '#2e7d32') + ';">' + problems.toLocaleString('ru') + '</div><div class="lbl">Проблемных полей</div></div>'
       + '<div class="summary-card"><div class="val">' + (resp.alerts_summary.active_total || 0).toLocaleString('ru') + '</div><div class="lbl">Активных алертов</div></div>';
 
+    renderFarmlandTypes(resp);
     renderCategories(resp);
     renderOverallChart(resp);
     renderCrops(resp);

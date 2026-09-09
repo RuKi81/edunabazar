@@ -160,6 +160,20 @@ class ReportDistrictDetailedApiTests(TestCase):
         # Сортировка по площади: pasture (200) первым.
         self.assertEqual(resp['crops'][0]['crop_type'], 'pasture')
 
+    def test_farmland_types_breakdown(self):
+        # Состав по виду угодья (crop_type) — по ВСЕМ угодьям, независимо
+        # от наличия NDVI-данных: 3 пашни (100+50+75) + 1 пастбище (200).
+        resp = self._get(district=self.district.pk, year=YEAR).json()
+        types = {t['crop_type']: t for t in resp['farmland_types']}
+        self.assertEqual(set(types), {'arable', 'pasture'})
+        self.assertEqual(types['arable']['count'], 3)
+        self.assertAlmostEqual(types['arable']['area_ha'], 225.0, places=1)
+        self.assertEqual(types['arable']['label'], 'Пашня')
+        self.assertEqual(types['pasture']['count'], 1)
+        self.assertAlmostEqual(types['pasture']['area_ha'], 200.0, places=1)
+        # Порядок: пашня раньше пастбища (FARMLAND_TYPE_ORDER).
+        self.assertEqual(resp['farmland_types'][0]['crop_type'], 'arable')
+
     def test_alerts_summary(self):
         resp = self._get(district=self.district.pk, year=YEAR).json()
         sum_ = resp['alerts_summary']

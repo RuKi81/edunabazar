@@ -1190,6 +1190,44 @@ def _district_alerts_summary(district_id, year):
 
 CROP_SEASON_CLASSES = ('winter', 'spring', 'hayfield', 'unused', 'unknown')
 
+# Порядок видов угодий (``Farmland.crop_type``) для сводных разбивок.
+FARMLAND_TYPE_ORDER = (
+    'arable', 'fallow', 'hayfield', 'pasture', 'perennial', 'other_agri', 'other',
+)
+
+
+def _farmland_type_summary(fl_filter):
+    """Разбивка угодий по виду (``Farmland.crop_type``) в scope.
+
+    ``fl_filter`` — фильтр по угодьям (``{'district_id': id}`` или
+    ``{'district__region_id': id}``). Возвращает список видов угодий с
+    непустым числом — количество угодий и суммарная площадь (га). Источник —
+    атрибут «Тип»/``S_Vid_N`` слоя ЗСН, замапленный в ``crop_type`` при
+    импорте (не зависит от NDVI-классификации озимые/яровые).
+    """
+    by_type = {c: {'count': 0, 'area_ha': 0.0} for c in FARMLAND_TYPE_ORDER}
+    rows = (
+        Farmland.objects.filter(**fl_filter)
+        .values('crop_type')
+        .annotate(count=Count('id'), area_ha=Sum('area_ha'))
+    )
+    for r in rows:
+        key = r['crop_type'] if r['crop_type'] in by_type else 'other'
+        by_type[key]['count'] += r['count']
+        by_type[key]['area_ha'] += float(r['area_ha'] or 0)
+    result = []
+    for c in FARMLAND_TYPE_ORDER:
+        v = by_type[c]
+        if not v['count']:
+            continue
+        result.append({
+            'crop_type': c,
+            'label': Farmland.CropType(c).label,
+            'count': v['count'],
+            'area_ha': _safe_round(v['area_ha'], 1),
+        })
+    return result
+
 
 def _crop_season_source(cs_base):
     """Наиболее надёжный доступный источник классификации для набора.
@@ -1487,6 +1525,7 @@ def api_report_district_detailed(request: HttpRequest) -> JsonResponse:
             'farmlands_with_data': with_data,
             'area_with_data_ha': _safe_round(area_with_data, 1),
         },
+        'farmland_types': _farmland_type_summary({'district_id': district.pk}),
         'categories': categories,
         'overall_series': overall_series,
         'baseline': _bl_to_series(bl_lookup.get('') or {}, year),
@@ -1542,6 +1581,9 @@ def api_report_region_detailed(request: HttpRequest) -> JsonResponse:
         'region': {'id': region.pk, 'name': region.name},
         'year': year,
         'coverage': {'farmlands_total': farmlands_total},
+        'farmland_types': _farmland_type_summary(
+            {'district__region_id': region.pk},
+        ),
         'crop_season': crop_season,
         'crop_season_ndvi': crop_season_ndvi,
         'districts': districts,
