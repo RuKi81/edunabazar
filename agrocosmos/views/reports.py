@@ -1188,27 +1188,36 @@ def _district_alerts_summary(district_id, year):
     return {'active_total': sum(t['count'] for t in by_type), 'by_type': by_type}
 
 
-def _district_crop_season_summary(district_id, year):
-    """Сводка озимые/яровые по району: count, площадь и ср. уверенность.
+CROP_SEASON_CLASSES = ('winter', 'spring', 'hayfield', 'unused', 'unknown')
 
-    Берём наиболее надёжный источник: сначала сглаженный ``fused`` (HLS),
-    при отсутствии записей — сырой ``raster`` (S2/L8). ``None`` —
-    классификация ещё не считалась (нет запусков ``classify_winter_spring``).
+
+def _crop_season_source(cs_base):
+    """Наиболее надёжный доступный источник классификации для набора.
+
+    Сначала сглаженный ``fused`` (HLS), при отсутствии записей — сырой
+    ``raster`` (S2/L8). ``None`` — классификация ещё не считалась.
     """
-    base = FarmlandCropSeason.objects.filter(
-        farmland__district_id=district_id, year=year,
-    )
-    source = next(
-        (s for s in ('fused', 'raster') if base.filter(source=s).exists()),
+    return next(
+        (s for s in ('fused', 'raster') if cs_base.filter(source=s).exists()),
         None,
     )
+
+
+def _crop_season_summary_qs(cs_base):
+    """Сводка озимые/яровые по набору ``FarmlandCropSeason`` (район/регион).
+
+    ``cs_base`` — queryset, уже отфильтрованный по scope и году. Возвращает
+    count, площадь и ср. уверенность по классам + агрегат «убрано». ``None``
+    — классификация ещё не считалась.
+    """
+    source = _crop_season_source(cs_base)
     if source is None:
         return None
     classes = {
         c: {'count': 0, 'area_ha': 0.0, 'avg_confidence': None}
-        for c in ('winter', 'spring', 'hayfield', 'unused', 'unknown')
+        for c in CROP_SEASON_CLASSES
     }
-    scoped = base.filter(source=source)
+    scoped = cs_base.filter(source=source)
     rows = (
         scoped
         .values('season_class')
@@ -1236,6 +1245,136 @@ def _district_crop_season_summary(district_id, year):
             'area_ha': _safe_round(harvested['area_ha'] or 0, 1),
         },
     }
+
+
+def _district_crop_season_summary(district_id, year):
+    """Сводка озимые/яровые по району (обёртка над :func:`_crop_season_summary_qs`)."""
+    return _crop_season_summary_qs(FarmlandCropSeason.objects.filter(
+        farmland__district_id=district_id, year=year,
+    ))
+
+
+def _region_crop_season_summary(region_id, year):
+    """Сводка озимые/яровые по субъекту (все районы региона)."""
+    return _crop_season_summary_qs(FarmlandCropSeason.objects.filter(
+        farmland__district__region_id=region_id, year=year,
+    ))
+
+
+def _latest_detailed_ndvi_scoped(fl_filter, year):
+    """Последнее детальное (S2/L8/fused) NDVI-наблюдение на угодье в scope.
+
+    ``fl_filter`` — фильтр по угодью (``{'farmland__district_id': id}`` или
+    ``{'farmland__district__region_id': id}``). ``DISTINCT ON (farmland_id)``
+    по частичному индексу — один проход.
+    """
+    return (
+        VegetationIndex.objects.filter(
+            index_type='ndvi', is_outlier=False,
+            mean__gte=-1, mean__lte=1,
+            acquired_date__year=year,
+            scene__satellite__in=_DETAILED_SATELLITES,
+            **fl_filter,
+        )
+        .order_by('farmland_id', '-acquired_date')
+        .distinct('farmland_id')
+        .values('farmland_id', 'acquired_date', 'mean', 'farmland__area_ha')
+    )
+
+
+def _crop_season_ndvi_stats(cs_base, fl_filter, year):
+    """Статистика ТЕКУЩЕГО NDVI (последние значения в БД) по классам сезона.
+
+    Джойним последнее детальное наблюдение каждого угодья к его классу
+    (``season_class``) и агрегируем по классам: число угодий с данными,
+    площадь-взвешенный средний NDVI, min/max и дата последнего наблюдения.
+    Источник классификации — тот же, что в своде (fused ▸ raster).
+    """
+    source = _crop_season_source(cs_base)
+    if source is None:
+        return None
+    cls_by_fl = dict(
+        cs_base.filter(source=source).values_list('farmland_id', 'season_class')
+    )
+    acc = {
+        c: {'count': 0, 'sum_ndvi_area': 0.0, 'sum_area': 0.0,
+            'min': None, 'max': None, 'latest_date': None}
+        for c in CROP_SEASON_CLASSES
+    }
+    for r in _latest_detailed_ndvi_scoped(fl_filter, year):
+        cls = cls_by_fl.get(r['farmland_id'])
+        if cls is None:
+            continue
+        a = acc[cls]
+        area = float(r['farmland__area_ha'] or 0)
+        val = float(r['mean'])
+        a['count'] += 1
+        a['sum_ndvi_area'] += val * area
+        a['sum_area'] += area
+        a['min'] = val if a['min'] is None else min(a['min'], val)
+        a['max'] = val if a['max'] is None else max(a['max'], val)
+        if a['latest_date'] is None or r['acquired_date'] > a['latest_date']:
+            a['latest_date'] = r['acquired_date']
+    by_class = {
+        c: {
+            'count': a['count'],
+            'mean_ndvi': _safe_round(weighted_mean(a['sum_ndvi_area'], a['sum_area'])),
+            'min_ndvi': _safe_round(a['min']),
+            'max_ndvi': _safe_round(a['max']),
+            'latest_date': str(a['latest_date']) if a['latest_date'] else None,
+        }
+        for c, a in acc.items()
+    }
+    return {'source': source, 'by_class': by_class}
+
+
+def _region_district_crop_breakdown(region_id, year, source):
+    """Разбивка crop-season по районам субъекта (для таблицы регионального отчёта)."""
+    rows = (
+        FarmlandCropSeason.objects.filter(
+            farmland__district__region_id=region_id, year=year, source=source,
+        )
+        .values('farmland__district_id', 'farmland__district__name', 'season_class')
+        .annotate(count=Count('id'), area_ha=Sum('farmland__area_ha'))
+    )
+    harvested_rows = (
+        FarmlandCropSeason.objects.filter(
+            farmland__district__region_id=region_id, year=year, source=source,
+            is_harvested=True,
+        )
+        .values('farmland__district_id')
+        .annotate(count=Count('id'), area_ha=Sum('farmland__area_ha'))
+    )
+    harvested_by_d = {
+        r['farmland__district_id']: {
+            'count': r['count'], 'area_ha': _safe_round(r['area_ha'] or 0, 1),
+        }
+        for r in harvested_rows
+    }
+    districts = {}
+    for r in rows:
+        did = r['farmland__district_id']
+        d = districts.setdefault(did, {
+            'district_id': did,
+            'district_name': r['farmland__district__name'],
+            'total': 0,
+            'area_ha': 0.0,
+            'classes': {
+                c: {'count': 0, 'area_ha': 0.0} for c in CROP_SEASON_CLASSES
+            },
+            'harvested': harvested_by_d.get(did, {'count': 0, 'area_ha': 0.0}),
+        })
+        area = float(r['area_ha'] or 0)
+        d['total'] += r['count']
+        d['area_ha'] += area
+        d['classes'][r['season_class']] = {
+            'count': r['count'], 'area_ha': _safe_round(area, 1),
+        }
+    result = list(districts.values())
+    for d in result:
+        d['area_ha'] = _safe_round(d['area_ha'], 1)
+    result.sort(key=lambda d: -d['area_ha'])
+    return result
 
 
 @rate_limit('30/m')
@@ -1335,6 +1474,9 @@ def api_report_district_detailed(request: HttpRequest) -> JsonResponse:
 
     farmlands_total = Farmland.objects.filter(district_id=district.pk).count()
 
+    cs_base = FarmlandCropSeason.objects.filter(
+        farmland__district_id=district.pk, year=year,
+    )
     return JsonResponse({
         'ok': True,
         'district': {'id': district.pk, 'name': district.name},
@@ -1349,8 +1491,60 @@ def api_report_district_detailed(request: HttpRequest) -> JsonResponse:
         'overall_series': overall_series,
         'baseline': _bl_to_series(bl_lookup.get('') or {}, year),
         'crops': crops,
-        'crop_season': _district_crop_season_summary(district.pk, year),
+        'crop_season': _crop_season_summary_qs(cs_base),
+        'crop_season_ndvi': _crop_season_ndvi_stats(
+            cs_base, {'farmland__district_id': district.pk}, year,
+        ),
         'alerts_summary': _district_alerts_summary(district.pk, year),
+    })
+
+
+@rate_limit('30/m')
+@cache_page(60 * 10)
+def api_report_region_detailed(request: HttpRequest) -> JsonResponse:
+    """Subject-level (region) detailed crop-season report.
+
+    Свод по субъекту на данных детального мониторинга (S2/L8/fused):
+    всего угодий, распределение озимые/яровые/сенокос/необрабатываемые,
+    сколько убрано, статистика ТЕКУЩЕГО состояния NDVI (последние значения
+    в БД) по озимым и яровым, а также разбивка crop-season по районам.
+
+    Query params:
+        region (required): region id
+        year (required): year
+    """
+    region_id, year, error = _parse_report_params(request, 'region')
+    if error:
+        return error
+
+    try:
+        region = Region.objects.get(pk=region_id)
+    except Region.DoesNotExist:
+        return JsonResponse({'ok': False, 'error': 'region not found'}, status=404)
+
+    cs_base = FarmlandCropSeason.objects.filter(
+        farmland__district__region_id=region.pk, year=year,
+    )
+    crop_season = _crop_season_summary_qs(cs_base)
+    crop_season_ndvi = _crop_season_ndvi_stats(
+        cs_base, {'farmland__district__region_id': region.pk}, year,
+    )
+    farmlands_total = Farmland.objects.filter(
+        district__region_id=region.pk,
+    ).count()
+    districts = (
+        _region_district_crop_breakdown(region.pk, year, crop_season['source'])
+        if crop_season else []
+    )
+
+    return JsonResponse({
+        'ok': True,
+        'region': {'id': region.pk, 'name': region.name},
+        'year': year,
+        'coverage': {'farmlands_total': farmlands_total},
+        'crop_season': crop_season,
+        'crop_season_ndvi': crop_season_ndvi,
+        'districts': districts,
     })
 
 

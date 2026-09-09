@@ -131,6 +131,9 @@
     <a href="{% url 'agrocosmos:report_region' %}">
       <i class="material-icons" style="font-size:14px; vertical-align:-2px;">assessment</i> Отчёт NDVI
     </a>
+    <a href="{% url 'agrocosmos:report_region_detailed' %}">
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">map</i> Свод субъекта
+    </a>
     <a href="{% url 'agrocosmos:report_district_detailed' %}" class="active">
       <i class="material-icons" style="font-size:14px; vertical-align:-2px;">summarize</i> Свод района
     </a>
@@ -224,6 +227,21 @@
       <h2><i class="material-icons">ac_unit</i> Озимые и яровые</h2>
       <div class="report-summary" id="crop-season-cards" style="margin-bottom:0;"></div>
       <div class="empty-note" id="crop-season-note" style="margin-top:8px;"></div>
+    </div>
+
+    <div class="pp-section" id="ndvi-season-section" style="display:none;">
+      <h2><i class="material-icons">show_chart</i> Текущее состояние NDVI по озимым/яровым (последние значения в БД)</h2>
+      <div style="overflow-x:auto;">
+        <table class="crops-table">
+          <thead>
+            <tr>
+              <th>Класс сезона</th><th>Угодий с данными</th>
+              <th>NDVI (взвеш.)</th><th>min</th><th>max</th><th>Последнее наблюдение</th>
+            </tr>
+          </thead>
+          <tbody id="ndvi-season-body"></tbody>
+        </table>
+      </div>
     </div>
 
     <div class="pp-section" id="alerts-section" style="display:none;">
@@ -469,6 +487,28 @@
       + harvStr;
   }
 
+  function renderNdviSeason(resp) {
+    var section = document.getElementById('ndvi-season-section');
+    var stats = resp.crop_season_ndvi;
+    if (!stats || !stats.by_class) { section.style.display = 'none'; return; }
+    var by = stats.by_class;
+    var rows = SEASON_META.filter(function (m) { return (by[m.key] || {}).count; });
+    if (!rows.length) { section.style.display = 'none'; return; }
+    section.style.display = 'block';
+    function ndvi(v) { return (v !== null && v !== undefined) ? v.toFixed(3) : '—'; }
+    document.getElementById('ndvi-season-body').innerHTML = rows.map(function (m) {
+      var s = by[m.key];
+      return '<tr>'
+        + '<td><span class="cat-dot" style="background:' + m.color + ';"></span>' + m.label + '</td>'
+        + '<td>' + (s.count || 0).toLocaleString('ru') + '</td>'
+        + '<td><b>' + ndvi(s.mean_ndvi) + '</b></td>'
+        + '<td>' + ndvi(s.min_ndvi) + '</td>'
+        + '<td>' + ndvi(s.max_ndvi) + '</td>'
+        + '<td>' + (s.latest_date || '—') + '</td>'
+        + '</tr>';
+    }).join('');
+  }
+
   function renderAlerts(resp) {
     var section = document.getElementById('alerts-section');
     var sum = resp.alerts_summary || { active_total: 0, by_type: [] };
@@ -503,6 +543,7 @@
     renderOverallChart(resp);
     renderCrops(resp);
     renderCropSeason(resp);
+    renderNdviSeason(resp);
     renderAlerts(resp);
   }
 

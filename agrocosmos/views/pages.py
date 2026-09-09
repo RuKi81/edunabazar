@@ -413,6 +413,34 @@ def report_district_detailed(request: HttpRequest) -> HttpResponse:
     })
 
 
+def report_region_detailed(request: HttpRequest) -> HttpResponse:
+    """Subject-level (region) crop-season summary report page.
+
+    Свод по субъекту на данных Sentinel/Landsat: всего угодий,
+    озимые/яровые/сенокос/необрабатываемые, убрано, текущее состояние
+    NDVI по озимым и яровым, разбивка по районам. Data comes from
+    ``/agrocosmos/api/report/region-detailed/``.
+    """
+    regions = Region.objects.only('id', 'name', 'code')
+    region_id = request.GET.get('region')
+    year = request.GET.get('year')
+
+    current_year = date.today().year
+    years = _available_raster_years(current_year)
+
+    districts = _districts_for_region(region_id)
+
+    return render(request, 'agrocosmos/report_region_detailed.html', {
+        'legacy_user': _get_legacy_user(request),
+        'regions': regions,
+        'districts': districts,
+        'region_id': region_id or '',
+        'year': year or str(current_year),
+        'years': years,
+        'active_page': 'report_region_detailed',
+    })
+
+
 def report_unused(request: HttpRequest) -> HttpResponse:
     """Unused-lands screening report page (ЗСН control).
 

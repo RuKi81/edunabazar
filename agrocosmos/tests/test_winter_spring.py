@@ -560,6 +560,61 @@ class ClassifyWinterSpringCommandTests(TestCase):
         self.assertEqual(cs['classes']['spring']['count'], 3)
         self.assertEqual(cs['classes']['unused']['count'], 1)
 
+    def test_district_detailed_includes_crop_season_ndvi(self):
+        self._run(region_id=self.region.pk, year=YEAR, harvest_gate=True,
+                  cover_gate=False)
+        resp = self.client.get(
+            '/agrocosmos/api/report/district-detailed/',
+            {'district': self.district.pk, 'year': YEAR},
+        ).json()
+        stats = resp['crop_season_ndvi']
+        self.assertIsNotNone(stats)
+        self.assertEqual(stats['source'], 'raster')
+        by = stats['by_class']
+        self.assertEqual(by['winter']['count'], 3)
+        self.assertEqual(by['spring']['count'], 3)
+        self.assertIsNotNone(by['winter']['mean_ndvi'])
+        self.assertIsNotNone(by['spring']['latest_date'])
+
+    def test_report_region_detailed(self):
+        self._run(region_id=self.region.pk, year=YEAR, harvest_gate=True,
+                  cover_gate=False)
+        resp = self.client.get(
+            '/agrocosmos/api/report/region-detailed/',
+            {'region': self.region.pk, 'year': YEAR},
+        ).json()
+        self.assertTrue(resp['ok'])
+        self.assertEqual(resp['coverage']['farmlands_total'], 7)
+
+        cs = resp['crop_season']
+        self.assertEqual(cs['source'], 'raster')
+        self.assertEqual(cs['classes']['winter']['count'], 3)
+        self.assertEqual(cs['classes']['spring']['count'], 3)
+        self.assertEqual(cs['classes']['unused']['count'], 1)
+
+        # NDVI-статистика по классам (последние значения в БД).
+        by = resp['crop_season_ndvi']['by_class']
+        self.assertEqual(by['winter']['count'], 3)
+        self.assertIsNotNone(by['spring']['mean_ndvi'])
+
+        # Разбивка по районам: единственный район со всеми угодьями.
+        districts = resp['districts']
+        self.assertEqual(len(districts), 1)
+        d = districts[0]
+        self.assertEqual(d['district_id'], self.district.pk)
+        self.assertEqual(d['classes']['winter']['count'], 3)
+        self.assertEqual(d['classes']['spring']['count'], 3)
+
+    def test_report_region_detailed_no_classification(self):
+        # Без запусков classify_winter_spring — свод пуст, но endpoint отвечает.
+        resp = self.client.get(
+            '/agrocosmos/api/report/region-detailed/',
+            {'region': self.region.pk, 'year': YEAR},
+        ).json()
+        self.assertTrue(resp['ok'])
+        self.assertIsNone(resp['crop_season'])
+        self.assertEqual(resp['districts'], [])
+
     def test_report_farmland_includes_crop_season(self):
         self._run(region_id=self.region.pk, year=YEAR, cover_gate=False)
         resp = self.client.get(
