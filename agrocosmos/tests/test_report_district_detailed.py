@@ -201,7 +201,20 @@ class ReportDistrictDetailedApiTests(TestCase):
     'default': {'BACKEND': 'django.core.cache.backends.dummy.DummyCache'},
 })
 class ReportDistrictDetailedPageTests(TestCase):
-    def test_page_renders(self):
-        resp = self.client.get('/agrocosmos/report/district-detailed/')
+    def test_page_redirects_to_merged_report(self):
+        # Свод района объединён со сводом субъекта в одной вкладке
+        # (report_region_detailed); старая ссылка редиректит с параметрами.
+        resp = self.client.get(
+            '/agrocosmos/report/district-detailed/',
+            {'region': '71', 'district': '5', 'year': '2026'},
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(
+            resp['Location'],
+            '/agrocosmos/report/region-detailed/?region=71&district=5&year=2026',
+        )
+
+    def test_merged_page_renders(self):
+        resp = self.client.get('/agrocosmos/report/region-detailed/')
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, 'Свод по району')
+        self.assertContains(resp, 'Отчёт субъект/район')

@@ -5,7 +5,8 @@ from datetime import date
 from django.core.cache import cache
 from django.db.models import Count, Min, Max, Sum
 from django.http import HttpRequest, HttpResponse
-from django.shortcuts import render
+from django.shortcuts import redirect, render
+from django.urls import reverse
 
 from ..models import Region, District, Farmland, VegetationIndex, SatelliteScene
 from ._helpers import MODIS_SATELLITES, RASTER_SATELLITES
@@ -384,11 +385,26 @@ def report_screening(request: HttpRequest) -> HttpResponse:
 
 
 def report_district_detailed(request: HttpRequest) -> HttpResponse:
-    """District detailed-monitoring summary report page.
+    """Backwards-compatible redirect to the merged subject/district report.
 
-    Свод по району на данных Sentinel/Landsat: покрытие детальным
-    мониторингом, распределение полей по категориям, динамика по
-    культурам, сводка алертов. Data comes from
+    Свод по району объединён со сводом по субъекту в одной вкладке
+    ``report_region_detailed`` (выбор через селект «Район»). Старые
+    ссылки на ``/agrocosmos/report/district-detailed/`` сохраняются:
+    перенаправляем с теми же query-параметрами.
+    """
+    url = reverse('agrocosmos:report_region_detailed')
+    qs = request.GET.urlencode()
+    return redirect(f'{url}?{qs}' if qs else url)
+
+
+def report_region_detailed(request: HttpRequest) -> HttpResponse:
+    """Merged subject/district crop-season summary report page.
+
+    Отчёт «субъект/район» на данных Sentinel/Landsat: если район не
+    выбран — свод по субъекту (всего угодий, озимые/яровые/сенокос/
+    необрабатываемые, убрано, текущее состояние NDVI, разбивка по
+    районам). Если район выбран — свод по этому району. Данные:
+    ``/agrocosmos/api/report/region-detailed/`` и
     ``/agrocosmos/api/report/district-detailed/``.
     """
     regions = Region.objects.only('id', 'name', 'code')
@@ -401,40 +417,12 @@ def report_district_detailed(request: HttpRequest) -> HttpResponse:
 
     districts = _districts_for_region(region_id)
 
-    return render(request, 'agrocosmos/report_district_detailed.html', {
-        'legacy_user': _get_legacy_user(request),
-        'regions': regions,
-        'districts': districts,
-        'region_id': region_id or '',
-        'district_id': district_id or '',
-        'year': year or str(current_year),
-        'years': years,
-        'active_page': 'report_district_detailed',
-    })
-
-
-def report_region_detailed(request: HttpRequest) -> HttpResponse:
-    """Subject-level (region) crop-season summary report page.
-
-    Свод по субъекту на данных Sentinel/Landsat: всего угодий,
-    озимые/яровые/сенокос/необрабатываемые, убрано, текущее состояние
-    NDVI по озимым и яровым, разбивка по районам. Data comes from
-    ``/agrocosmos/api/report/region-detailed/``.
-    """
-    regions = Region.objects.only('id', 'name', 'code')
-    region_id = request.GET.get('region')
-    year = request.GET.get('year')
-
-    current_year = date.today().year
-    years = _available_raster_years(current_year)
-
-    districts = _districts_for_region(region_id)
-
     return render(request, 'agrocosmos/report_region_detailed.html', {
         'legacy_user': _get_legacy_user(request),
         'regions': regions,
         'districts': districts,
         'region_id': region_id or '',
+        'district_id': district_id or '',
         'year': year or str(current_year),
         'years': years,
         'active_page': 'report_region_detailed',

@@ -1,7 +1,7 @@
 {% extends 'legacy/base.html' %}
 {% load static %}
 
-{% block title %}Свод по субъекту (озимые/яровые) — Агрокосмос{% endblock %}
+{% block title %}Отчёт субъект/район (озимые/яровые) — Агрокосмос{% endblock %}
 {% block meta_description %}Сводный отчёт по субъекту РФ на данных Sentinel-2/Landsat: озимые/яровые/сенокос/необрабатываемые угодья, темпы уборки, текущее состояние NDVI и разбивка по районам.{% endblock %}
 {% block og_title %}Свод по субъекту — Агрокосмос{% endblock %}
 {% block og_description %}Сводный спутниковый отчёт по субъекту РФ: озимые/яровые, уборка, необрабатываемые угодья, текущее состояние NDVI по районам.{% endblock %}
@@ -109,6 +109,18 @@
     .rd-table th .sort-ind { color: #2e7d32; font-size: 10px; margin-left: 2px; }
     .rd-table tbody tr { cursor: pointer; }
 
+    .crops-table, .alerts-sum-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .crops-table th, .crops-table td,
+    .alerts-sum-table th, .alerts-sum-table td {
+      padding: 7px 10px; border-bottom: 1px solid #f0f0f0; text-align: center;
+    }
+    .crops-table th, .alerts-sum-table th { background: #f5f9f5; font-weight: 600; font-size: 11px; }
+    .crops-table td:first-child, .crops-table th:first-child,
+    .alerts-sum-table td:first-child, .alerts-sum-table th:first-child { text-align: left; }
+    .crops-table svg { display: block; width: 120px; height: 32px; margin: 0 auto; }
+    .warn { color: #F57C00; font-weight: 700; }
+    .neg { color: #D32F2F; font-weight: 700; }
+
     .report-loader { text-align: center; padding: 40px; font-size: 15px; color: #777; }
     .report-loader.hidden { display: none; }
     #report-content.hidden { display: none; }
@@ -133,10 +145,7 @@
       <i class="material-icons" style="font-size:14px; vertical-align:-2px;">assessment</i> Отчёт NDVI
     </a>
     <a href="{% url 'agrocosmos:report_region_detailed' %}" class="active">
-      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">map</i> Свод субъекта
-    </a>
-    <a href="{% url 'agrocosmos:report_district_detailed' %}">
-      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">summarize</i> Свод района
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">summarize</i> Отчёт субъект/район
     </a>
     <a href="{% url 'agrocosmos:report_screening' %}">
       <i class="material-icons" style="font-size:14px; vertical-align:-2px;">rule</i> Проблемные поля
@@ -155,11 +164,19 @@
   </div>
 
   <div class="report-controls">
-    <label>Регион:</label>
+    <label>Субъект:</label>
     <select id="rpt-region" class="browser-default">
-      <option value="">— Выберите регион —</option>
+      <option value="">— Выберите субъект —</option>
       {% for r in regions %}
         <option value="{{ r.id }}" {% if region_id|stringformat:'s' == r.id|stringformat:'s' %}selected{% endif %}>{{ r.name }}</option>
+      {% endfor %}
+    </select>
+
+    <label>Район:</label>
+    <select id="rpt-district" class="browser-default">
+      <option value="">— Весь субъект —</option>
+      {% for d in districts %}
+        <option value="{{ d.id }}" {% if district_id|stringformat:'s' == d.id|stringformat:'s' %}selected{% endif %}>{{ d.name }}</option>
       {% endfor %}
     </select>
 
@@ -198,8 +215,37 @@
       <div class="empty-note" id="ft-note" style="margin-top:8px;"></div>
     </div>
 
+    <div class="pp-section" id="categories-section" style="display:none;">
+      <h2><i class="material-icons">donut_small</i> Распределение полей по состоянию</h2>
+      <div class="cat-grid">
+        <div style="height:220px; position:relative;"><canvas id="chart-categories"></canvas></div>
+        <div class="cat-legend" id="cat-legend"></div>
+      </div>
+    </div>
+
+    <div class="pp-section" id="overall-section" style="display:none;">
+      <h2><i class="material-icons">show_chart</i> Динамика NDVI по району (Sentinel / Landsat)</h2>
+      <div style="height:240px; position:relative;"><canvas id="chart-overall"></canvas></div>
+      <div class="empty-note" id="overall-empty" style="display:none;">Нет детальных наблюдений за выбранный год.</div>
+    </div>
+
+    <div class="pp-section" id="crops-section" style="display:none;">
+      <h2><i class="material-icons">grass</i> По видам угодий</h2>
+      <div style="overflow-x:auto;">
+        <table class="crops-table">
+          <thead>
+            <tr>
+              <th>Вид угодья</th><th>Полей</th><th>Площадь, га</th>
+              <th>NDVI (взвеш.)</th><th>Проблемных</th><th>Динамика за сезон</th>
+            </tr>
+          </thead>
+          <tbody id="crops-body"></tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="pp-section" id="crop-season-section" style="display:none;">
-      <h2><i class="material-icons">ac_unit</i> Озимые и яровые по субъекту</h2>
+      <h2 id="crop-season-h2"><i class="material-icons">ac_unit</i> Озимые и яровые по субъекту</h2>
       <div class="report-summary" id="crop-season-cards" style="margin-bottom:0;"></div>
       <div class="empty-note" id="crop-season-note" style="margin-top:8px;"></div>
     </div>
@@ -249,6 +295,19 @@
         </table>
       </div>
     </div>
+
+    <div class="pp-section" id="alerts-section" style="display:none;">
+      <h2><i class="material-icons">warning</i> Неразрешённые алерты за сезон</h2>
+      <table class="alerts-sum-table">
+        <thead><tr><th>Тип алерта</th><th>Количество</th></tr></thead>
+        <tbody id="alerts-body"></tbody>
+      </table>
+      <div style="margin-top:10px; text-align:right;">
+        <a id="screening-link" href="#" style="font-size:12px; color:#1565C0; font-weight:600;">
+          <i class="material-icons" style="font-size:14px; vertical-align:-2px;">rule</i> Перейти к рейтингу проблемных полей →
+        </a>
+      </div>
+    </div>
   </div>
 </div>
 {% endblock %}
@@ -257,11 +316,14 @@
 
 {% block scripts %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="{% static 'agrocosmos/js/ndvi_chart.js' %}"></script>
 <script>
 (function () {
   var regionSel = document.getElementById('rpt-region');
+  var districtSel = document.getElementById('rpt-district');
   var yearSel = document.getElementById('rpt-year');
   var btnGen = document.getElementById('btn-generate');
+  var btnCsv = document.getElementById('btn-csv');
   var loader = document.getElementById('rpt-loader');
   var content = document.getElementById('report-content');
 
@@ -279,6 +341,7 @@
   function updateUrl() {
     var params = new URLSearchParams();
     if (regionSel.value) params.set('region', regionSel.value);
+    if (districtSel.value) params.set('district', districtSel.value);
     if (yearSel.value) params.set('year', yearSel.value);
     var qs = params.toString();
     history.replaceState(null, '', location.pathname + (qs ? '?' + qs : ''));
@@ -289,6 +352,7 @@
     });
   }
   regionSel.addEventListener('change', updateUrl);
+  districtSel.addEventListener('change', updateUrl);
   yearSel.addEventListener('change', updateUrl);
   updateUrl();
 
@@ -298,6 +362,27 @@
       toast.classList.add('show');
       setTimeout(function () { toast.classList.remove('show'); }, 2000);
     });
+  });
+
+  // Подгрузка районов при смене субъекта (сбрасываем выбор района → свод субъекта).
+  regionSel.addEventListener('change', function () {
+    var rid = this.value;
+    districtSel.innerHTML = '<option value="">— Весь субъект —</option>';
+    if (!rid) return;
+    fetch('/agrocosmos/api/districts/?region=' + rid)
+      .then(function (r) { return r.json(); })
+      .then(function (geojson) {
+        if (!geojson.features) return;
+        geojson.features
+          .map(function (f) { return { id: f.properties.id, name: f.properties.name }; })
+          .sort(function (a, b) { return a.name.localeCompare(b.name, 'ru'); })
+          .forEach(function (d) {
+            var opt = document.createElement('option');
+            opt.value = d.id;
+            opt.textContent = d.name;
+            districtSel.appendChild(opt);
+          });
+      });
   });
 
   var FT_COLORS = {
@@ -313,6 +398,39 @@
     { key: 'unused', label: 'Не обрабатывается', color: '#795548' },
     { key: 'unknown', label: 'Не определено', color: '#9E9E9E' }
   ];
+
+  var CATS = [
+    { key: 'anomaly', label: 'Аномалия', color: '#D32F2F' },
+    { key: 'below', label: 'Ниже нормы', color: '#F9A825' },
+    { key: 'normal', label: 'Норма', color: '#2e7d32' },
+    { key: 'nodata', label: 'Нет детальных данных', color: '#9E9E9E' }
+  ];
+
+  var CROP_COLORS = ['#2e7d32', '#1565C0', '#F57C00', '#6A1B9A', '#00838F', '#AD1457', '#5D4037', '#455A64'];
+
+  var REGION_ONLY = ['area-section', 'districts-section'];
+  var DISTRICT_ONLY = ['categories-section', 'overall-section', 'crops-section', 'alerts-section'];
+  function hideSections(ids) {
+    ids.forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) { el.style.display = 'none'; }
+    });
+  }
+
+  function sparklineSvg(series, color) {
+    var pts = (series || []).filter(function (s) { return s.mean_ndvi !== null && s.mean_ndvi !== undefined; });
+    if (!pts.length) return '';
+    var w = 120, h = 32, n = pts.length;
+    var coords = pts.map(function (s, i) {
+      var x = n > 1 ? 2 + (i / (n - 1)) * (w - 4) : w / 2;
+      var v = Math.max(0, Math.min(1, s.mean_ndvi));
+      var y = h - 2 - v * (h - 4);
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    });
+    return '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" aria-hidden="true">'
+      + '<polyline fill="none" stroke="' + color + '" stroke-width="1.5" points="' + coords.join(' ') + '"/>'
+      + '</svg>';
+  }
 
   // Колонки таблицы районов: доступ к значению для сортировки/экспорта.
   function clsCount(d, k) { return (d.classes[k] || {}).count || 0; }
@@ -340,6 +458,124 @@
       + '<div class="summary-card"><div class="val" style="color:#F57C00;">' + num(cnt('spring')) + '</div><div class="lbl">Яровые</div></div>'
       + '<div class="summary-card"><div class="val" style="color:#2E7D32;">' + num(harvested) + '</div><div class="lbl">Убрано (пашня/сенокос)</div></div>'
       + '<div class="summary-card"><div class="val" style="color:#795548;">' + num(cnt('unused')) + '</div><div class="lbl">Не обрабатывается</div></div>';
+  }
+
+  function renderDistrictSummary(resp) {
+    var cov = resp.coverage;
+    var covPct = cov.farmlands_total
+      ? Math.round(cov.farmlands_with_data / cov.farmlands_total * 100) : 0;
+    var cats = resp.categories || {};
+    var problems = ((cats.anomaly || {}).count || 0) + ((cats.below || {}).count || 0);
+    document.getElementById('rpt-summary').innerHTML =
+      '<div class="summary-card"><div class="val">' + num(cov.farmlands_total) + '</div><div class="lbl">Угодий в районе</div></div>'
+      + '<div class="summary-card"><div class="val">' + num(cov.farmlands_with_data) + ' (' + covPct + '%)</div><div class="lbl">Покрыто детальным мониторингом</div></div>'
+      + '<div class="summary-card"><div class="val">' + area(cov.area_with_data_ha) + ' га</div><div class="lbl">Площадь с данными</div></div>'
+      + '<div class="summary-card"><div class="val" style="color:' + (problems ? '#D32F2F' : '#2e7d32') + ';">' + num(problems) + '</div><div class="lbl">Проблемных полей</div></div>'
+      + '<div class="summary-card"><div class="val">' + num((resp.alerts_summary || {}).active_total) + '</div><div class="lbl">Активных алертов</div></div>';
+  }
+
+  function renderCategories(resp) {
+    var cats = resp.categories || {};
+    var data = CATS.map(function (c) { return (cats[c.key] || {}).count || 0; });
+    document.getElementById('categories-section').style.display = 'block';
+    var chart = new Chart(document.getElementById('chart-categories'), {
+      type: 'doughnut',
+      data: {
+        labels: CATS.map(function (c) { return c.label; }),
+        datasets: [{ data: data, backgroundColor: CATS.map(function (c) { return c.color; }) }]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+    });
+    charts.push(chart);
+    document.getElementById('cat-legend').innerHTML = CATS.map(function (c) {
+      var cat = cats[c.key] || { count: 0, area_ha: 0 };
+      return '<div class="row">'
+        + '<span><span class="cat-dot" style="background:' + c.color + ';"></span>' + c.label + '</span>'
+        + '<span><b>' + num(cat.count) + '</b> полей · ' + area(cat.area_ha) + ' га</span>'
+        + '</div>';
+    }).join('');
+  }
+
+  function renderOverallChart(resp) {
+    var series = resp.overall_series || [];
+    var baseline = resp.baseline || [];
+    var emptyEl = document.getElementById('overall-empty');
+    var canvas = document.getElementById('chart-overall');
+    document.getElementById('overall-section').style.display = 'block';
+    if (!series.length) {
+      emptyEl.style.display = 'block';
+      canvas.style.display = 'none';
+      return;
+    }
+    emptyEl.style.display = 'none';
+    canvas.style.display = 'block';
+
+    var labelSet = new Set();
+    series.forEach(function (s) { labelSet.add(s.date.substring(5)); });
+    baseline.forEach(function (b) { labelSet.add(b.date.substring(5)); });
+    var labels = Array.from(labelSet).sort();
+
+    var datasets = NdviChart.buildBaselineDatasets(baseline, labels);
+    var lookup = {};
+    series.forEach(function (s) { lookup[s.date.substring(5)] = s.mean_ndvi; });
+    datasets.push({
+      label: 'NDVI района (S2/L8, area-weighted)',
+      data: labels.map(function (l) { return lookup[l] !== undefined ? lookup[l] : null; }),
+      borderColor: '#2e7d32', backgroundColor: 'transparent',
+      borderWidth: 2.5, fill: false, pointRadius: 2, tension: 0.3, spanGaps: true,
+    });
+
+    var chart = new Chart(canvas, {
+      type: 'line',
+      data: { labels: labels, datasets: datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: true, labels: { usePointStyle: true, pointStyle: 'line', boxWidth: 30, font: { size: 11 }, filter: NdviChart.legendFilter } }
+        },
+        scales: {
+          x: { ticks: { font: { size: 9 }, maxRotation: 45 } },
+          y: { min: 0, max: 1, ticks: { font: { size: 10 } } }
+        }
+      }
+    });
+    charts.push(chart);
+  }
+
+  function renderCrops(resp) {
+    var section = document.getElementById('crops-section');
+    var crops = resp.crops || [];
+    if (!crops.length) { section.style.display = 'none'; return; }
+    section.style.display = 'block';
+    document.getElementById('crops-body').innerHTML = crops.map(function (c, i) {
+      var color = CROP_COLORS[i % CROP_COLORS.length];
+      var probCls = '';
+      if (c.farmlands) {
+        var share = c.problem_count / c.farmlands;
+        probCls = share >= 0.5 ? 'neg' : share >= 0.25 ? 'warn' : '';
+      }
+      return '<tr>'
+        + '<td><span class="cat-dot" style="background:' + color + ';"></span>' + esc(c.crop_type_label) + '</td>'
+        + '<td>' + num(c.farmlands) + '</td>'
+        + '<td>' + area(c.area_ha) + '</td>'
+        + '<td>' + ndvi(c.latest_ndvi) + '</td>'
+        + '<td><span class="' + probCls + '">' + num(c.problem_count) + '</span></td>'
+        + '<td>' + sparklineSvg(c.series, color) + '</td>'
+        + '</tr>';
+    }).join('');
+  }
+
+  function renderAlerts(resp) {
+    var section = document.getElementById('alerts-section');
+    var sum = resp.alerts_summary || { active_total: 0, by_type: [] };
+    if (!sum.active_total) { section.style.display = 'none'; return; }
+    section.style.display = 'block';
+    document.getElementById('alerts-body').innerHTML = (sum.by_type || []).map(function (t) {
+      return '<tr><td>' + esc(t.alert_type_label) + '</td><td><b>' + num(t.count) + '</b></td></tr>';
+    }).join('');
+    document.getElementById('screening-link').href =
+      '/agrocosmos/report/screening/?region=' + regionSel.value
+      + '&district=' + districtSel.value + '&year=' + resp.year;
   }
 
   function renderFarmlandTypes(resp) {
@@ -381,6 +617,8 @@
     var cs = resp.crop_season;
     if (!cs || !cs.classes) { section.style.display = 'none'; return; }
     section.style.display = 'block';
+    document.getElementById('crop-season-h2').innerHTML =
+      '<i class="material-icons">ac_unit</i> Озимые и яровые' + (resp.district ? '' : ' по субъекту');
     var classes = cs.classes;
     document.getElementById('crop-season-cards').innerHTML = SEASON_META.map(function (m) {
       var c = classes[m.key] || { count: 0, area_ha: 0, avg_confidence: null };
@@ -516,15 +754,21 @@
     renderDistrictsBody();
   });
 
-  // Переход в районный отчёт по клику на строку.
+  // Клик по строке — подставить район в селект и перестроить отчёт на месте.
   document.getElementById('districts-body').addEventListener('click', function (e) {
     var tr = e.target.closest('tr[data-did]');
     if (!tr || !lastResp) { return; }
-    var params = new URLSearchParams();
-    params.set('region', lastResp.region.id);
-    params.set('district', tr.getAttribute('data-did'));
-    params.set('year', lastResp.year);
-    location.href = '/agrocosmos/report/district-detailed/?' + params.toString();
+    var did = tr.getAttribute('data-did');
+    if (!districtSel.querySelector('option[value="' + did + '"]')) {
+      var opt = document.createElement('option');
+      opt.value = did;
+      opt.textContent = tr.firstChild ? tr.firstChild.textContent : ('#' + did);
+      districtSel.appendChild(opt);
+    }
+    districtSel.value = did;
+    updateUrl();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    generate();
   });
 
   function toCsv(resp) {
@@ -574,7 +818,10 @@
   }
   document.getElementById('btn-csv').addEventListener('click', downloadCsv);
 
-  function render(resp) {
+  // Свод по субъекту (район не выбран).
+  function renderRegion(resp) {
+    hideSections(DISTRICT_ONLY);
+    btnCsv.style.display = '';
     document.getElementById('rpt-title').textContent = 'Свод по субъекту — ' + resp.region.name;
     document.getElementById('rpt-subtitle').textContent =
       resp.year + ' г. · озимые / яровые / уборка / необрабатываемые · детальный мониторинг';
@@ -586,24 +833,47 @@
     renderDistricts(resp);
   }
 
+  // Свод по району (район выбран).
+  function renderDistrict(resp) {
+    hideSections(REGION_ONLY);
+    btnCsv.style.display = 'none';
+    document.getElementById('rpt-title').textContent = 'Свод по району — ' + resp.district.name;
+    document.getElementById('rpt-subtitle').textContent =
+      resp.region.name + ' · ' + resp.year + ' г. · детальный мониторинг Sentinel-2 / Landsat';
+    renderDistrictSummary(resp);
+    renderFarmlandTypes(resp);
+    renderCategories(resp);
+    renderOverallChart(resp);
+    renderCrops(resp);
+    renderCropSeason(resp);
+    renderNdviSeason(resp);
+    renderAlerts(resp);
+  }
+
   function generate() {
     var rid = regionSel.value;
-    if (!rid) { alert('Выберите регион'); return; }
+    if (!rid) { alert('Выберите субъект'); return; }
+    var did = districtSel.value;
     updateUrl();
 
     loader.classList.remove('hidden');
     content.classList.add('hidden');
     destroyCharts();
 
-    fetch('/agrocosmos/api/report/region-detailed/?region=' + encodeURIComponent(rid)
-        + '&year=' + encodeURIComponent(yearSel.value))
+    var url = did
+      ? '/agrocosmos/api/report/district-detailed/?district=' + encodeURIComponent(did)
+        + '&year=' + encodeURIComponent(yearSel.value)
+      : '/agrocosmos/api/report/region-detailed/?region=' + encodeURIComponent(rid)
+        + '&year=' + encodeURIComponent(yearSel.value);
+
+    fetch(url)
       .then(function (r) { return r.json(); })
       .then(function (resp) {
         loader.classList.add('hidden');
         if (!resp.ok) { alert('Ошибка: ' + (resp.error || 'неизвестная')); return; }
         lastResp = resp;
         content.classList.remove('hidden');
-        render(resp);
+        if (did) { renderDistrict(resp); } else { renderRegion(resp); }
       })
       .catch(function (err) {
         loader.classList.add('hidden');
