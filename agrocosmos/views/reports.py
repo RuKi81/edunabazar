@@ -1298,17 +1298,31 @@ def _crop_season_summary_qs(cs_base):
             'count': r['count'],
             'area_ha': _safe_round(r['area_ha'] or 0, 1),
             'avg_confidence': _safe_round(r['avg_conf']),
+            'harvested': {'count': 0, 'area_ha': 0.0},
         }
     # Признак «убрано» (пашня/сенокос): доля угодий с уборочным спадом NDVI.
-    harvested = scoped.filter(is_harvested=True).aggregate(
-        count=Count('id'), area_ha=Sum('farmland__area_ha'),
+    # Разрез по классам — сколько убрано озимых/яровых/сенокоса отдельно.
+    harv_rows = (
+        scoped.filter(is_harvested=True)
+        .values('season_class')
+        .annotate(count=Count('id'), area_ha=Sum('farmland__area_ha'))
     )
+    harv_total_count = 0
+    harv_total_area = 0.0
+    for r in harv_rows:
+        cnt = r['count'] or 0
+        ar = float(r['area_ha'] or 0)
+        harv_total_count += cnt
+        harv_total_area += ar
+        cls = classes.get(r['season_class'])
+        if cls is not None:
+            cls['harvested'] = {'count': cnt, 'area_ha': _safe_round(ar, 1)}
     return {
         'source': source,
         'classes': classes,
         'harvested': {
-            'count': harvested['count'] or 0,
-            'area_ha': _safe_round(harvested['area_ha'] or 0, 1),
+            'count': harv_total_count,
+            'area_ha': _safe_round(harv_total_area, 1),
         },
     }
 
