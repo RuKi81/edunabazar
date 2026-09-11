@@ -271,6 +271,15 @@ SESSION_COOKIE_HTTPONLY = True
 CSRF_COOKIE_HTTPONLY = True
 SECURE_BROWSER_XSS_FILTER = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
+# Django's default ("same-origin") strips the Referer header on ALL
+# cross-origin requests, so browser tile requests to third-party map
+# servers (e.g. tile.openstreetmap.org) arrive with no Referer. The OSM
+# Tile Usage Policy requires a valid Referer to identify the website;
+# missing it counts as "Misidentification" and gets requests rejected.
+# "strict-origin-when-cross-origin" still sends our origin (scheme+host,
+# no path) cross-origin over HTTPS, which is enough to identify us while
+# staying privacy-preserving.
+SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
 
 # CSRF trusted origins (required when behind reverse proxy)
 _csrf_origins = os.getenv('CSRF_TRUSTED_ORIGINS', '')
