@@ -455,7 +455,7 @@
     map.getPane('basemapPane').style.zIndex = 150;
 
     var osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19, subdomains: 'abc', attribution: '&copy; OpenStreetMap', pane: 'basemapPane'
+      maxZoom: 19, subdomains: 'abc', attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors', pane: 'basemapPane'
     }).addTo(map);
 
     var satLayer = L.tileLayer(
