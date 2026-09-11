@@ -4,6 +4,7 @@ import json
 from collections import defaultdict
 from datetime import date
 
+from django.core.cache import cache
 from django.db.models import Avg, Count, Max, Min, Q, Sum
 from django.db.models.functions import Extract
 from django.http import HttpRequest, JsonResponse
@@ -1196,6 +1197,24 @@ FARMLAND_TYPE_ORDER = (
 )
 
 
+_RF_AREA_CACHE_KEY = 'agro:rf_total_farmland_area_ha'
+_RF_AREA_CACHE_TTL = 60 * 60  # 1 час
+
+
+def _rf_total_farmland_area_ha():
+    """Суммарная площадь всех угодий РФ (га) по всему слою ЗСН.
+
+    Полный ``SUM(area_ha)`` по таблице угодий тяжёлый (миллионы строк),
+    поэтому кэшируем на час: значение — общий знаменатель для «доли угодий
+    субъекта от площади угодий в РФ» и меняется только при импорте данных.
+    """
+    val = cache.get(_RF_AREA_CACHE_KEY)
+    if val is None:
+        val = float(Farmland.objects.aggregate(s=Sum('area_ha'))['s'] or 0.0)
+        cache.set(_RF_AREA_CACHE_KEY, val, _RF_AREA_CACHE_TTL)
+    return val
+
+
 def _farmland_type_summary(fl_filter):
     """Разбивка угодий по виду (``Farmland.crop_type``) в scope.
 
@@ -1568,9 +1587,12 @@ def api_report_region_detailed(request: HttpRequest) -> JsonResponse:
     crop_season_ndvi = _crop_season_ndvi_stats(
         cs_base, {'farmland__district__region_id': region.pk}, year,
     )
-    farmlands_total = Farmland.objects.filter(
+    region_agg = Farmland.objects.filter(
         district__region_id=region.pk,
-    ).count()
+    ).aggregate(count=Count('id'), area_ha=Sum('area_ha'))
+    farmlands_total = region_agg['count'] or 0
+    area_total = float(region_agg['area_ha'] or 0.0)
+    area_rf = _rf_total_farmland_area_ha()
     districts = (
         _region_district_crop_breakdown(region.pk, year, crop_season['source'])
         if crop_season else []
@@ -1580,7 +1602,11 @@ def api_report_region_detailed(request: HttpRequest) -> JsonResponse:
         'ok': True,
         'region': {'id': region.pk, 'name': region.name},
         'year': year,
-        'coverage': {'farmlands_total': farmlands_total},
+        'coverage': {
+            'farmlands_total': farmlands_total,
+            'area_total_ha': _safe_round(area_total, 1),
+            'area_rf_ha': _safe_round(area_rf, 1),
+        },
         'farmland_types': _farmland_type_summary(
             {'district__region_id': region.pk},
         ),

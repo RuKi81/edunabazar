@@ -206,7 +206,7 @@
     <div class="report-summary" id="rpt-summary"></div>
 
     <div class="pp-section" id="farmland-types-section" style="display:none;">
-      <h2><i class="material-icons">category</i> Виды угодий (по атрибуту «Тип» слоя ЗСН)</h2>
+      <h2><i class="material-icons">category</i> Виды угодий</h2>
       <div class="report-summary" id="ft-cards" style="margin-bottom:0;"></div>
       <div class="cat-grid" style="margin-top:12px;">
         <div style="height:220px; position:relative;"><canvas id="chart-ft"></canvas></div>
@@ -447,17 +447,19 @@
   var sortState = { key: 'area_ha', dir: -1 };
 
   function renderSummary(resp) {
-    var cs = resp.crop_season;
     var total = resp.coverage.farmlands_total || 0;
-    var classes = (cs && cs.classes) || {};
-    function cnt(k) { return (classes[k] || {}).count || 0; }
-    var harvested = (cs && cs.harvested) ? cs.harvested.count : 0;
+    var types = resp.farmland_types || [];
+    var totalArea = (resp.coverage.area_total_ha !== undefined && resp.coverage.area_total_ha !== null)
+      ? resp.coverage.area_total_ha
+      : types.reduce(function (a, t) { return a + (t.area_ha || 0); }, 0);
+    var avgArea = total ? totalArea / total : 0;
+    var rfArea = resp.coverage.area_rf_ha || 0;
+    var rfShare = rfArea ? (totalArea / rfArea * 100) : 0;
     document.getElementById('rpt-summary').innerHTML =
       '<div class="summary-card"><div class="val">' + num(total) + '</div><div class="lbl">Угодий в субъекте</div></div>'
-      + '<div class="summary-card"><div class="val" style="color:#1565C0;">' + num(cnt('winter')) + '</div><div class="lbl">Озимые</div></div>'
-      + '<div class="summary-card"><div class="val" style="color:#F57C00;">' + num(cnt('spring')) + '</div><div class="lbl">Яровые</div></div>'
-      + '<div class="summary-card"><div class="val" style="color:#2E7D32;">' + num(harvested) + '</div><div class="lbl">Убрано (пашня/сенокос)</div></div>'
-      + '<div class="summary-card"><div class="val" style="color:#795548;">' + num(cnt('unused')) + '</div><div class="lbl">Не обрабатывается</div></div>';
+      + '<div class="summary-card"><div class="val">' + area(totalArea) + ' га</div><div class="lbl">Площадь всех угодий</div></div>'
+      + '<div class="summary-card"><div class="val">' + avgArea.toLocaleString('ru', {maximumFractionDigits:1}) + ' га</div><div class="lbl">Средняя площадь угодья</div></div>'
+      + '<div class="summary-card"><div class="val">' + rfShare.toLocaleString('ru', {maximumFractionDigits:2}) + '%</div><div class="lbl">Доля от площади угодий в РФ</div></div>';
   }
 
   function renderDistrictSummary(resp) {
