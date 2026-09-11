@@ -232,9 +232,9 @@
     /* ── Контур поля на мини-карте ── */
     try {
       var geom = JSON.parse(document.getElementById('ppf-geom').textContent);
-      var map = L.map('ppf-map', { zoomControl: false, attributionControl: false,
+      var map = L.map('ppf-map', { zoomControl: false, attributionControl: true,
         scrollWheelZoom: false, dragging: false, doubleClickZoom: false });
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors' }).addTo(map);
       var layer = L.geoJSON(geom, { style: { color: '#2e7d32', weight: 2, fillOpacity: 0.20 } }).addTo(map);
       map.fitBounds(layer.getBounds(), { padding: [12, 12], maxZoom: 15 });
       document.getElementById('ppf-map-caption').textContent =

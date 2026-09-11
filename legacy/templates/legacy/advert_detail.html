@@ -371,7 +371,7 @@
 
       var m = L.map('ad_minimap', {
         zoomControl: false,
-        attributionControl: false,
+        attributionControl: true,
         scrollWheelZoom: false,
         dragging: false,
         doubleClickZoom: false,
@@ -379,7 +379,7 @@
         keyboard: false,
         tap: false,
       });
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, subdomains: 'abc' }).addTo(m);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, subdomains: 'abc', attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors' }).addTo(m);
       m.setView([lat, lon], 11);
       L.marker([lat, lon]).addTo(m);
 
