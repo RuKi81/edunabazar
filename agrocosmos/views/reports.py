@@ -1192,25 +1192,32 @@ def _district_alerts_summary(district_id, year):
 CROP_SEASON_CLASSES = ('winter', 'spring', 'hayfield', 'unused', 'unknown')
 
 # Порядок видов угодий (``Farmland.crop_type``) для сводных разбивок.
+# Пашня → Сенокос → Пастбище → Многолетние насаждения → Залежь.
+# «Иные с.-х. земли» (other_agri) и «Прочее» (other) в отчёте не показываем.
 FARMLAND_TYPE_ORDER = (
-    'arable', 'fallow', 'hayfield', 'pasture', 'perennial', 'other_agri', 'other',
+    'arable', 'hayfield', 'pasture', 'perennial', 'fallow',
 )
 
 
-_RF_AREA_CACHE_KEY = 'agro:rf_total_farmland_area_ha'
+_RF_AREA_CACHE_KEY = 'agro:rf_total_farmland_area_ha:v2'
 _RF_AREA_CACHE_TTL = 60 * 60  # 1 час
 
 
 def _rf_total_farmland_area_ha():
-    """Суммарная площадь всех угодий РФ (га) по всему слою ЗСН.
+    """Суммарная площадь угодий РФ (га) по показываемым видам слоя ЗСН.
 
-    Полный ``SUM(area_ha)`` по таблице угодий тяжёлый (миллионы строк),
-    поэтому кэшируем на час: значение — общий знаменатель для «доли угодий
-    субъекта от площади угодий в РФ» и меняется только при импорте данных.
+    Считается по ``FARMLAND_TYPE_ORDER`` (пашня/сенокос/пастбище/многолетние/
+    залежь), без «иных» и «прочих». Полный ``SUM(area_ha)`` по таблице
+    угодий тяжёлый (миллионы строк), поэтому кэшируем на час: значение —
+    общий знаменатель для «доли угодий субъекта от площади угодий в РФ» и
+    меняется только при импорте данных.
     """
     val = cache.get(_RF_AREA_CACHE_KEY)
     if val is None:
-        val = float(Farmland.objects.aggregate(s=Sum('area_ha'))['s'] or 0.0)
+        val = float(
+            Farmland.objects.filter(crop_type__in=FARMLAND_TYPE_ORDER)
+            .aggregate(s=Sum('area_ha'))['s'] or 0.0
+        )
         cache.set(_RF_AREA_CACHE_KEY, val, _RF_AREA_CACHE_TTL)
     return val
 
@@ -1231,7 +1238,9 @@ def _farmland_type_summary(fl_filter):
         .annotate(count=Count('id'), area_ha=Sum('area_ha'))
     )
     for r in rows:
-        key = r['crop_type'] if r['crop_type'] in by_type else 'other'
+        key = r['crop_type']
+        if key not in by_type:
+            continue  # иные/прочие в отчёте не показываем
         by_type[key]['count'] += r['count']
         by_type[key]['area_ha'] += float(r['area_ha'] or 0)
     result = []
@@ -1588,7 +1597,7 @@ def api_report_region_detailed(request: HttpRequest) -> JsonResponse:
         cs_base, {'farmland__district__region_id': region.pk}, year,
     )
     region_agg = Farmland.objects.filter(
-        district__region_id=region.pk,
+        district__region_id=region.pk, crop_type__in=FARMLAND_TYPE_ORDER,
     ).aggregate(count=Count('id'), area_ha=Sum('area_ha'))
     farmlands_total = region_agg['count'] or 0
     area_total = float(region_agg['area_ha'] or 0.0)

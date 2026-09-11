@@ -104,6 +104,16 @@
       padding: 6px 0; border-bottom: 1px solid #f0f0f0;
     }
 
+    .ft-grid { align-items: start; }
+    .ft-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .ft-table th, .ft-table td {
+      padding: 7px 10px; border-bottom: 1px solid #f0f0f0; text-align: right; white-space: nowrap;
+    }
+    .ft-table th { background: #f5f9f5; font-weight: 600; font-size: 11px; }
+    .ft-table td:first-child, .ft-table th:first-child { text-align: left; }
+    .ft-table tbody tr:hover { background: #fafdfa; }
+    .ft-table tr.ft-total td, .ft-table td.ft-total { font-weight: 700; border-top: 2px solid #e0e0e0; }
+
     .rd-table th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
     .rd-table th.sortable:hover { background: #e8f5e9; }
     .rd-table th .sort-ind { color: #2e7d32; font-size: 10px; margin-left: 2px; }
@@ -208,9 +218,16 @@
     <div class="pp-section" id="farmland-types-section" style="display:none;">
       <h2><i class="material-icons">category</i> Виды угодий</h2>
       <div class="report-summary" id="ft-cards" style="margin-bottom:0;"></div>
-      <div class="cat-grid" style="margin-top:12px;">
-        <div style="height:220px; position:relative;"><canvas id="chart-ft"></canvas></div>
-        <div class="cat-legend" id="ft-legend"></div>
+      <div class="cat-grid ft-grid" style="margin-top:12px;">
+        <div style="height:240px; position:relative;"><canvas id="chart-ft"></canvas></div>
+        <div style="overflow-x:auto;">
+          <table class="ft-table">
+            <thead>
+              <tr><th>Вид угодья</th><th>Угодий</th><th>Площадь, га</th><th>Доля</th></tr>
+            </thead>
+            <tbody id="ft-legend"></tbody>
+          </table>
+        </div>
       </div>
       <div class="empty-note" id="ft-note" style="margin-top:8px;"></div>
     </div>
@@ -385,9 +402,14 @@
       });
   });
 
+  // Цветовая схема видов угодий (примерная по скрину).
   var FT_COLORS = {
-    arable: '#689F38', fallow: '#8D6E63', hayfield: '#2E7D32',
-    pasture: '#9CCC65', perennial: '#6A1B9A', other_agri: '#00838F',
+    arable: '#E0A82E',    // Пашня — золотисто-охристый
+    hayfield: '#43A047',  // Сенокос — зелёный
+    pasture: '#AED581',   // Пастбище — светло-зелёный
+    perennial: '#8E24AA', // Многолетние насаждения — фиолетовый
+    fallow: '#A1887F',    // Залежь — коричневый
+    other_agri: '#00838F',
     other: '#9E9E9E'
   };
 
@@ -602,13 +624,23 @@
     });
     charts.push(chart);
     var total = data.reduce(function (a, b) { return a + b; }, 0);
-    document.getElementById('ft-legend').innerHTML = types.map(function (t, i) {
+    var totalCount = types.reduce(function (a, t) { return a + (t.count || 0); }, 0);
+    var rows = types.map(function (t, i) {
       var pct = total ? Math.round(data[i] / total * 100) : 0;
-      return '<div class="row">'
-        + '<span><span class="cat-dot" style="background:' + (FT_COLORS[t.crop_type] || '#9E9E9E') + ';"></span>' + esc(t.label) + '</span>'
-        + '<span><b>' + area(data[i]) + '</b> га · ' + pct + '%</span>'
-        + '</div>';
+      return '<tr>'
+        + '<td><span class="cat-dot" style="background:' + (FT_COLORS[t.crop_type] || '#9E9E9E') + ';"></span>' + esc(t.label) + '</td>'
+        + '<td>' + num(t.count) + '</td>'
+        + '<td>' + area(data[i]) + '</td>'
+        + '<td>' + pct + '%</td>'
+        + '</tr>';
     }).join('');
+    rows += '<tr class="ft-total">'
+      + '<td>Итого</td>'
+      + '<td>' + num(totalCount) + '</td>'
+      + '<td>' + area(total) + '</td>'
+      + '<td>100%</td>'
+      + '</tr>';
+    document.getElementById('ft-legend').innerHTML = rows;
     document.getElementById('ft-note').textContent =
       'Состав угодий по атрибуту «Тип»/S_Vid_N слоя ЗСН (не зависит от NDVI). '
       + 'Классификация озимые/яровые ниже считается только по пашне.';
