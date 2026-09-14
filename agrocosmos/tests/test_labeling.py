@@ -6,7 +6,7 @@
    (близость пика к порогу / низкая уверенность), скрытие размеченных,
    отдача геометрии и фич.
 3. Сохранение/обновление/снятие метки + валидация входа.
-4. Счётчики меток по классам.
+4. Счётчики меток по классам и кросс-проверка (модель + NDVI-скрининг).
 5. Использование ручных меток командой ``classify_winter_spring
    --reference-labels`` как эталонов.
 """
@@ -33,6 +33,7 @@ PAGE_URL = '/agrocosmos/label/'
 CANDIDATES_URL = '/agrocosmos/api/label/candidates/'
 SAVE_URL = '/agrocosmos/api/label/'
 STATS_URL = '/agrocosmos/api/label/stats/'
+AGREEMENT_URL = '/agrocosmos/api/label/agreement/'
 
 _DUMMY_CACHE = {
     'default': {'BACKEND': 'django.core.cache.backends.dummy.DummyCache'},
@@ -299,6 +300,136 @@ class LabelingApiTests(TestCase):
             STATS_URL, {'year': YEAR, 'region': self.other_region.pk},
         ).json()['stats']
         self.assertEqual(scoped['total'], 0)
+
+
+@override_settings(CACHES=_DUMMY_CACHE, ADMIN_USERNAMES={'admin'})
+class LabelAgreementTests(TestCase):
+    """Кросс-проверка меток: против модели и против NDVI-скрининга."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.region = Region.objects.create(
+            name='Регион А', code='ra-1', geom=_square(37, 54, 1),
+        )
+        cls.district = District.objects.create(
+            region=cls.region, name='Район А', geom=_square(37, 54, 1),
+        )
+
+        def farmland(x):
+            return Farmland.objects.create(
+                region=cls.region, district=cls.district,
+                crop_type=Farmland.CropType.ARABLE, area_ha=50,
+                geom=_square(x, 54.1),
+            )
+
+        def season(fl, cls_):
+            FarmlandCropSeason.objects.create(
+                farmland=fl, year=YEAR,
+                source=FarmlandCropSeason.Source.FUSED,
+                season_class=cls_, confidence=0.8, peak_doy=180,
+            )
+
+        def ndvi(fl, values):
+            """Наблюдения NDVI за год (достаточно для порога MIN_OBS)."""
+            for i, value in enumerate(values):
+                acq = date(YEAR, 5, 1) + timedelta(days=i * 10)
+                scene, _ = SatelliteScene.objects.get_or_create(
+                    satellite='sentinel2', scene_id=f'S2_ag_{acq}',
+                    defaults={'acquired_date': acq},
+                )
+                VegetationIndex.objects.create(
+                    farmland=fl, scene=scene, index_type='ndvi',
+                    acquired_date=acq, mean=value, mean_smooth=value,
+                )
+
+        # Метка совпала с моделью, есть вегетация — чисто.
+        cls.fl_hit = farmland(37.1)
+        season(cls.fl_hit, FarmlandCropSeason.SeasonClass.WINTER)
+        ndvi(cls.fl_hit, [0.2, 0.75, 0.4])
+        FarmlandTrainingLabel.objects.create(
+            farmland=cls.fl_hit, year=YEAR, true_class='winter')
+
+        # Метка не совпала с моделью (озимые vs яровые).
+        cls.fl_miss = farmland(37.2)
+        season(cls.fl_miss, FarmlandCropSeason.SeasonClass.SPRING)
+        ndvi(cls.fl_miss, [0.25, 0.8, 0.35])
+        FarmlandTrainingLabel.objects.create(
+            farmland=cls.fl_miss, year=YEAR, true_class='winter')
+
+        # Метка «не обрабатывается» подтверждена NDVI (нет покрова).
+        cls.fl_unused_ok = farmland(37.3)
+        season(cls.fl_unused_ok, FarmlandCropSeason.SeasonClass.UNUSED)
+        ndvi(cls.fl_unused_ok, [0.12, 0.18, 0.15])
+        FarmlandTrainingLabel.objects.create(
+            farmland=cls.fl_unused_ok, year=YEAR, true_class='unused')
+
+        # Метка «не обрабатывается», но виден полный покров — противоречие.
+        cls.fl_unused_bad = farmland(37.4)
+        ndvi(cls.fl_unused_bad, [0.2, 0.85, 0.3])
+        FarmlandTrainingLabel.objects.create(
+            farmland=cls.fl_unused_bad, year=YEAR, true_class='unused')
+
+        # Метка культуры, но NDVI говорит «нет вегетации» — подозрительно.
+        cls.fl_crop_bad = farmland(37.5)
+        ndvi(cls.fl_crop_bad, [0.1, 0.16, 0.14])
+        FarmlandTrainingLabel.objects.create(
+            farmland=cls.fl_crop_bad, year=YEAR, true_class='spring')
+
+        # Наблюдений мало — в проверку не идёт.
+        cls.fl_nodata = farmland(37.6)
+        ndvi(cls.fl_nodata, [0.5])
+        FarmlandTrainingLabel.objects.create(
+            farmland=cls.fl_nodata, year=YEAR, true_class='spring')
+
+    def setUp(self):
+        self.admin = _make_user('admin')
+        self.plain = _make_user('plainuser')
+        self.client = _login(Client(), self.admin)
+
+    def _agreement(self, **params):
+        params.setdefault('year', YEAR)
+        return self.client.get(AGREEMENT_URL, params).json()
+
+    def test_requires_admin(self):
+        c = _login(Client(), self.plain)
+        self.assertEqual(c.get(AGREEMENT_URL, {'year': YEAR}).status_code, 403)
+
+    def test_model_matrix_and_accuracy(self):
+        model = self._agreement()['model']
+        self.assertEqual(model['labeled'], 6)
+        self.assertEqual(model['with_model'], 3)
+        # Сопоставимые: winter/winter, winter/spring, unused/unused.
+        self.assertEqual(model['comparable'], 3)
+        self.assertEqual(model['agree'], 2)
+        self.assertAlmostEqual(model['accuracy'], 0.667, places=2)
+        self.assertEqual(model['matrix']['winter'], {'winter': 1, 'spring': 1})
+        self.assertEqual(model['matrix']['unused'], {'unused': 1})
+
+    def test_unused_cross_check(self):
+        check = self._agreement()['unused_check']
+        self.assertEqual(check['confirmed'], 1)
+        self.assertEqual(check['contradicted'], 1)
+        self.assertEqual(check['contradicted_ids'], [self.fl_unused_bad.pk])
+        self.assertEqual(check['suspicious_crop'], 1)
+        self.assertEqual(check['suspicious_crop_ids'], [self.fl_crop_bad.pk])
+        self.assertEqual(check['no_data'], 1)
+        self.assertEqual(check['checked'], 5)
+
+    def test_region_scope_and_source(self):
+        other = Region.objects.create(
+            name='Регион Б', code='rb-1', geom=_square(40, 54, 1))
+        empty = self._agreement(region=other.pk)
+        self.assertEqual(empty['model']['labeled'], 0)
+        self.assertEqual(empty['unused_check']['checked'], 0)
+        # Предсказания записаны только для источника fused.
+        raster = self._agreement(source='raster')
+        self.assertEqual(raster['source'], 'raster')
+        self.assertEqual(raster['model']['with_model'], 0)
+        self.assertIsNone(raster['model']['accuracy'])
+
+    def test_invalid_year(self):
+        resp = self.client.get(AGREEMENT_URL, {'year': 'abc'})
+        self.assertEqual(resp.status_code, 400)
 
 
 def _winter_ndvi(doy):

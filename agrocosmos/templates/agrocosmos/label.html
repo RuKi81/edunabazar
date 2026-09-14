@@ -90,6 +90,25 @@
     .nav-row { display: flex; gap: 6px; margin-top: 10px; }
     .nav-row .lbl-btn { flex: 1; }
     .lbl-hint { font-size: 11px; color: #888; margin-top: 8px; line-height: 1.5; }
+
+    /* Легенда классов поверх карты (свой контрол, без имён Materialize). */
+    .lbl-legend {
+      background: rgba(255,255,255,.95); border-radius: 6px; padding: 8px 10px;
+      box-shadow: 0 1px 6px rgba(0,0,0,.3); font-size: 12px; color: #263238;
+      line-height: 1.6;
+    }
+    .lbl-legend b { display: block; font-size: 11px; text-transform: uppercase; color: #555; margin-bottom: 4px; }
+    .lbl-legend .lg-row { display: flex; align-items: center; gap: 6px; }
+    .lbl-legend .sw { width: 14px; height: 14px; border-radius: 3px; border: 1px solid rgba(0,0,0,.25); flex: 0 0 14px; }
+    .lbl-legend .sw--labeled { border: 2px solid #111; }
+    .lbl-legend .sw--current { background: #ff1744; border: 2px solid #b71c1c; }
+    .lbl-legend .lg-note { font-size: 11px; color: #777; margin-top: 4px; }
+
+    .lbl-agree { font-size: 12px; color: #37474f; margin-top: 6px; line-height: 1.6; }
+    .lbl-agree table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 6px; }
+    .lbl-agree th, .lbl-agree td { padding: 2px 4px; border-bottom: 1px solid #eee; text-align: right; }
+    .lbl-agree th:first-child, .lbl-agree td:first-child { text-align: left; }
+    .lbl-agree .warn { color: #c62828; font-weight: 700; }
     .lbl-progress { font-size: 12px; color: #555; margin-top: 4px; }
     .lbl-forbidden { padding: 80px 20px; text-align: center; color: #b71c1c; font-size: 16px; }
 
@@ -153,6 +172,12 @@
     <h3>Статистика</h3>
     <div class="lbl-stats" id="lbl-stats"></div>
     <div class="lbl-progress" id="lbl-progress"></div>
+
+    <h3>Кросс-проверка меток</h3>
+    <div class="lbl-row">
+      <button class="lbl-btn secondary" id="lbl-agree-btn">Сверить с моделью и NDVI</button>
+    </div>
+    <div class="lbl-agree" id="lbl-agree"></div>
   </aside>
 
   <button type="button" class="lbl-collapse" id="lbl-collapse-left" title="Свернуть панель">‹</button>
@@ -310,6 +335,23 @@
   }
   initResize('lbl-resize-left', 'left');
   initResize('lbl-resize-right', 'right');
+
+  // Легенда классов: заливка = метка (если есть) или предсказание модели.
+  var legend = L.control({ position: 'bottomleft' });
+  legend.onAdd = function () {
+    var div = L.DomUtil.create('div', 'lbl-legend');
+    var rows = CLASS_META.map(function (c) {
+      return '<div class="lg-row"><span class="sw" style="background:' + c.color
+        + '"></span>' + c.label + '</div>';
+    }).join('');
+    div.innerHTML = '<b>Классы</b>' + rows
+      + '<div class="lg-row"><span class="sw sw--labeled" style="background:#eceff1"></span>размечено вручную</div>'
+      + '<div class="lg-row"><span class="sw sw--current"></span>текущее угодье</div>'
+      + '<div class="lg-note">Заливка — метка, иначе предсказание модели.</div>';
+    L.DomEvent.disableClickPropagation(div);
+    return div;
+  };
+  legend.addTo(map);
 
   var geoLayer = L.geoJSON(null, { style: styleFor, onEachFeature: onEach }).addTo(map);
   var layerById = {};
@@ -563,6 +605,71 @@
     updateProgress();
   }
 
+  function loadAgreement() {
+    var btn = document.getElementById('lbl-agree-btn');
+    var out = document.getElementById('lbl-agree');
+    var params = new URLSearchParams({
+      year: yearSel.value, source: sourceSel.value,
+    });
+    if (regionSel.value) params.set('region', regionSel.value);
+    btn.textContent = 'Сверка…';
+    fetch('/agrocosmos/api/label/agreement/?' + params.toString())
+      .then(function (r) { return r.json(); })
+      .then(function (resp) {
+        btn.textContent = 'Сверить с моделью и NDVI';
+        if (!resp.ok) { out.textContent = resp.error || 'Ошибка'; return; }
+        out.innerHTML = renderAgreement(resp);
+      })
+      .catch(function () {
+        btn.textContent = 'Сверить с моделью и NDVI';
+        out.textContent = 'Ошибка сети';
+      });
+  }
+
+  function renderAgreement(resp) {
+    var m = resp.model || {};
+    var u = resp.unused_check || {};
+    var html = 'Меток: <b>' + (m.labeled || 0) + '</b> · с предсказанием: <b>'
+      + (m.with_model || 0) + '</b><br />Совпадений: <b>' + (m.agree || 0) + '</b> из '
+      + (m.comparable || 0) + ' · точность: <b>' + pct(m.accuracy) + '</b>';
+    html += matrixTable(m.matrix || {});
+    html += '<div style="margin-top:6px">NDVI-сверка неиспользования (проверено '
+      + (u.checked || 0) + ', без данных ' + (u.no_data || 0) + '):<br />'
+      + 'подтверждено «не обраб.»: <b>' + (u.confirmed || 0) + '</b><br />'
+      + mismatchLine('противоречит (виден покров)', u.contradicted, u.contradicted_ids)
+      + mismatchLine('культура, но сигналы неисп.', u.suspicious_crop, u.suspicious_crop_ids)
+      + '</div>';
+    return html;
+  }
+
+  function mismatchLine(title, count, ids) {
+    var cls = count ? ' class="warn"' : '';
+    var tail = (count && ids && ids.length) ? ' <span style="color:#777">#' + ids.join(', #') + '</span>' : '';
+    return '<span' + cls + '>' + title + ': <b>' + (count || 0) + '</b></span>' + tail + '<br />';
+  }
+
+  function matrixTable(matrix) {
+    var trueKeys = Object.keys(matrix);
+    if (!trueKeys.length) return '';
+    var predKeys = [];
+    trueKeys.forEach(function (t) {
+      Object.keys(matrix[t]).forEach(function (p) {
+        if (predKeys.indexOf(p) < 0) predKeys.push(p);
+      });
+    });
+    var head = '<tr><th>метка \\ модель</th>' + predKeys.map(function (p) {
+      return '<th>' + (CLASS_LABEL[p] || p) + '</th>';
+    }).join('') + '</tr>';
+    var body = trueKeys.map(function (t) {
+      return '<tr><td>' + (CLASS_LABEL[t] || t) + '</td>' + predKeys.map(function (p) {
+        var n = matrix[t][p] || 0;
+        var warn = (n && t !== p) ? ' class="warn"' : '';
+        return '<td' + warn + '>' + (n || '—') + '</td>';
+      }).join('') + '</tr>';
+    }).join('');
+    return '<table>' + head + body + '</table>';
+  }
+
   function pct(v) { return v == null ? '—' : Math.round(v * 100) + '%'; }
   function fmt(v) { return v == null ? '—' : Number(v).toLocaleString('ru'); }
 
@@ -577,6 +684,7 @@
   });
 
   document.getElementById('lbl-load').addEventListener('click', loadCandidates);
+  document.getElementById('lbl-agree-btn').addEventListener('click', loadAgreement);
   document.getElementById('lbl-prev').addEventListener('click', prev);
   document.getElementById('lbl-skip').addEventListener('click', next);
   buildClassButtons();

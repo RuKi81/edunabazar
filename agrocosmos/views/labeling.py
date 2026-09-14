@@ -12,15 +12,19 @@ import json
 from datetime import date
 
 from django.db import connection
-from django.db.models import Count
+from django.db.models import Count, Max, Min
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from ..models import Farmland, FarmlandTrainingLabel, Region
+from ..models import (
+    Farmland, FarmlandCropSeason, FarmlandPhenology, FarmlandTrainingLabel,
+    Region, VegetationIndex,
+)
 from ._helpers import rate_limit
 from .pages import _get_legacy_user
+from .reports import _unused_signals
 from .tiles import _is_admin_legacy
 
 # Класс сезона, вокруг которого ведём разметку (пашня/сенокос).
@@ -32,6 +36,11 @@ _DEFAULT_AMBIG_CONF = 0.60      # уверенность ниже — канди
 _DEFAULT_AMBIG_DAYS = 12        # |peak_doy - порог| ≤ — кандидат
 _DEFAULT_PEAK_THRESHOLD = 185   # фолбэк, если прогон был без калибровки
 _MAX_CANDIDATES = 600
+
+# Классы, напрямую сопоставимые с предсказанием классификатора.
+_COMPARABLE_CLASSES = ('winter', 'spring', 'unused')
+# Сколько id расхождений отдавать для перехода к ним в разметчике.
+_MAX_MISMATCH_IDS = 50
 
 
 def label_dashboard(request: HttpRequest) -> HttpResponse:
@@ -229,6 +238,147 @@ def api_label_stats(request: HttpRequest) -> JsonResponse:
         stats[r['true_class']] = r['n']
     stats['total'] = sum(stats.values())
     return JsonResponse({'ok': True, 'year': year, 'stats': stats})
+
+
+@rate_limit('60/m')
+@require_http_methods(['GET'])
+def api_label_agreement(request: HttpRequest) -> JsonResponse:
+    """Кросс-проверка ручных меток за год (опц. по субъекту).
+
+    Две независимые сверки:
+
+    1. ``model`` — матрица ошибок метка×предсказание
+       :class:`FarmlandCropSeason` (по ``source``) и точность по
+       сопоставимым классам (озимые/яровые/не обрабатывается).
+    2. ``unused_check`` — сверка с NDVI-скринингом неиспользования по тем
+       же порогам, что в отчёте ``api_report_unused`` (макс. NDVI,
+       амплитуда, наличие SOS): метки «не обрабатывается» должны иметь
+       сигналы неиспользования, метки культур — не иметь. Расхождения
+       показывают либо ошибку разметчика, либо дыру в данных.
+    """
+    if not _is_admin_legacy(request):
+        return JsonResponse({'ok': False, 'error': 'forbidden'}, status=403)
+    try:
+        year = int(request.GET.get('year') or 0)
+    except (TypeError, ValueError):
+        return JsonResponse({'ok': False, 'error': 'invalid year'}, status=400)
+
+    source = request.GET.get('source') or 'fused'
+    if source not in ('fused', 'raster'):
+        source = 'fused'
+
+    qs = FarmlandTrainingLabel.objects.filter(year=year)
+    region_id = request.GET.get('region')
+    if region_id and str(region_id).isdigit():
+        qs = qs.filter(farmland__district__region_id=int(region_id))
+    labels = dict(qs.values_list('farmland_id', 'true_class'))
+
+    return JsonResponse({
+        'ok': True, 'year': year, 'source': source,
+        'model': _model_agreement(labels, year, source),
+        'unused_check': _unused_agreement(labels, year),
+    })
+
+
+def _model_agreement(labels, year, source):
+    """Матрица метка×предсказание и точность по сопоставимым классам."""
+    predicted = dict(
+        FarmlandCropSeason.objects.filter(
+            farmland_id__in=labels.keys(), year=year, source=source,
+        ).values_list('farmland_id', 'season_class')
+    )
+    matrix, agree, comparable = {}, 0, 0
+    for fid, true_class in labels.items():
+        pred = predicted.get(fid)
+        if pred is None:
+            continue
+        matrix.setdefault(true_class, {})
+        matrix[true_class][pred] = matrix[true_class].get(pred, 0) + 1
+        if true_class in _COMPARABLE_CLASSES:
+            comparable += 1
+            if true_class == pred:
+                agree += 1
+    return {
+        'labeled': len(labels),
+        'with_model': len(predicted),
+        'comparable': comparable,
+        'agree': agree,
+        'accuracy': round(agree / comparable, 3) if comparable else None,
+        'matrix': matrix,
+    }
+
+
+def _unused_agreement(labels, year):
+    """Сверка меток с NDVI-сигналами неиспользования (как в скрининге).
+
+    ``confirmed`` — метка «не обрабатывается» и сигналы есть;
+    ``contradicted`` — метка «не обрабатывается», но виден покров/цикл;
+    ``suspicious_crop`` — метка культуры/сенокоса, но сигналы
+    неиспользования есть (вероятная ошибка разметки);
+    ``no_data`` — наблюдений меньше ``UNUSED_MIN_OBS``.
+    """
+    ids = list(labels.keys())
+    stats = _season_stats_for(ids, year)
+    sos_ids = _sos_ids_for(ids, year)
+
+    out = {'checked': 0, 'confirmed': 0, 'contradicted': 0,
+           'suspicious_crop': 0, 'no_data': 0,
+           'contradicted_ids': [], 'suspicious_crop_ids': []}
+    for fid, true_class in labels.items():
+        if true_class == FarmlandTrainingLabel.TrueClass.IGNORE:
+            continue
+        signals = _unused_signals(stats.get(fid), fid in sos_ids)
+        if signals is None:
+            out['no_data'] += 1
+            continue
+        out['checked'] += 1
+        if true_class == FarmlandTrainingLabel.TrueClass.UNUSED:
+            if signals:
+                out['confirmed'] += 1
+            else:
+                out['contradicted'] += 1
+                out['contradicted_ids'].append(fid)
+        elif signals:
+            out['suspicious_crop'] += 1
+            out['suspicious_crop_ids'].append(fid)
+    for key in ('contradicted_ids', 'suspicious_crop_ids'):
+        out[key] = sorted(out[key])[:_MAX_MISMATCH_IDS]
+    return out
+
+
+def _season_stats_for(farmland_ids, year):
+    """farmland_id → {max, min, n_obs} NDVI за год по всем спутникам.
+
+    Аналог ``reports._farmland_season_stats``, но с областью по списку
+    угодий: меток обычно десятки, скан по району был бы избыточен.
+    """
+    if not farmland_ids:
+        return {}
+    rows = (
+        VegetationIndex.objects.filter(
+            farmland_id__in=farmland_ids,
+            index_type='ndvi', is_outlier=False,
+            mean__gte=-1, mean__lte=1,
+            acquired_date__year=year,
+        )
+        .values('farmland_id')
+        .annotate(
+            max_ndvi=Max('mean'), min_ndvi=Min('mean'), n_obs=Count('id'),
+        )
+    )
+    return {r['farmland_id']: r for r in rows}
+
+
+def _sos_ids_for(farmland_ids, year):
+    """Множество farmland_id с детектированным началом сезона за год."""
+    if not farmland_ids:
+        return set()
+    return set(
+        FarmlandPhenology.objects.filter(
+            farmland_id__in=farmland_ids, year=year,
+            sos_date__isnull=False,
+        ).values_list('farmland_id', flat=True)
+    )
 
 
 def _round_or_none(raw, precision=3):

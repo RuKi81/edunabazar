@@ -16,6 +16,7 @@ urlpatterns = [
     path('api/label/candidates/', views.api_label_candidates, name='api_label_candidates'),
     path('api/label/', views.api_label_save, name='api_label_save'),
     path('api/label/stats/', views.api_label_stats, name='api_label_stats'),
+    path('api/label/agreement/', views.api_label_agreement, name='api_label_agreement'),
     path('api/regions/', views.api_regions, name='api_regions'),
     path('api/districts/', views.api_districts, name='api_districts'),
     path('api/districts/status/', views.api_districts_status, name='api_districts_status'),

@@ -71,6 +71,7 @@ from .labeling import (
     api_label_candidates,
     api_label_save,
     api_label_stats,
+    api_label_agreement,
 )
 
 __all__ = [
@@ -102,7 +103,7 @@ __all__ = [
     'me_agrocosmos',
     # training-label tool
     'label_dashboard', 'api_label_candidates', 'api_label_save',
-    'api_label_stats',
+    'api_label_stats', 'api_label_agreement',
     # private helpers (exported for tests / legacy callers)
     '_satellite_filter', '_safe_round', '_get_legacy_user',
     '_tile_bbox', '_ndvi_assessment',
