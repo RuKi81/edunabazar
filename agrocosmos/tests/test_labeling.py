@@ -140,6 +140,17 @@ class LabelingApiTests(TestCase):
         self.assertIn('server.arcgisonline.com', html)
         self.assertIn('mt{s}.google.com/vt/lyrs=', html)
         self.assertIn('Google — космоснимки', html)
+        self.assertIn('tile.openstreetmap.org', html)
+        self.assertIn(
+            '<a href="https://www.openstreetmap.org/copyright"', html)
+
+    def test_page_has_two_collapsible_panes(self):
+        """Лэйаут разметчика: левая и правая панели со сворачиванием/ресайзом."""
+        html = self.client.get(PAGE_URL).content.decode()
+        for marker in ('lbl-pane--left', 'lbl-pane--right',
+                       'lbl-collapse-left', 'lbl-collapse-right',
+                       'lbl-resize-left', 'lbl-resize-right'):
+            self.assertIn(marker, html)
 
     def test_apis_require_admin(self):
         c = _login(Client(), self.plain)

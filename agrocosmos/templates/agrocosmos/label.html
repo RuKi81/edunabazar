@@ -8,21 +8,54 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <link rel="stylesheet" href="{% static 'legacy/css/leaflet.css' %}" />
   <style>
-    :root { --lbl-left: 360px; }
     html, body { height: 100%; }
     .brand-logo, .brand-logo__img, .sidenav-logo { display: none !important; }
     .content { background: transparent !important; }
     .content > .container { width: 100% !important; min-width: 0 !important; padding: 0 !important; margin: 0 !important; }
 
-    .lbl-ui { position: fixed; inset: 0; }
-    #lbl-map { position: absolute; left: var(--lbl-left); right: 0; top: 0; bottom: 0; background: #eee; }
-    .lbl-panel {
-      position: fixed; left: 0; top: 0; bottom: 0; width: var(--lbl-left);
-      background: #fff; border-right: 1px solid #ddd; overflow-y: auto;
-      padding: 66px 14px 16px 14px; z-index: 1000; box-sizing: border-box;
+    /* Две сворачиваемые и тянущиеся панели — как в ГИС. ``*-size`` — реальная
+       ширина панели, ``*-w`` — отступ карты (обнуляется при сворачивании). */
+    .lbl-ui {
+      position: fixed; inset: 0;
+      --lbl-left-size: 340px; --lbl-right-size: 360px;
+      --lbl-left-w: var(--lbl-left-size); --lbl-right-w: var(--lbl-right-size);
     }
-    .lbl-panel h2 { font-size: 16px; font-weight: 700; margin: 0 0 10px; display: flex; align-items: center; gap: 6px; }
-    .lbl-panel h3 { font-size: 13px; font-weight: 700; margin: 14px 0 6px; color: #555; text-transform: uppercase; letter-spacing: .03em; }
+    .lbl-ui.left-collapsed  { --lbl-left-w: 0px; }
+    .lbl-ui.right-collapsed { --lbl-right-w: 0px; }
+
+    #lbl-map {
+      position: absolute; top: 0; bottom: 0;
+      left: var(--lbl-left-w); right: var(--lbl-right-w); background: #eee;
+    }
+
+    .lbl-pane {
+      position: fixed; top: 0; bottom: 0; background: #fff; overflow-y: auto;
+      padding: 66px 14px 16px 14px; z-index: 1000; box-sizing: border-box;
+      transition: transform .2s ease;
+    }
+    .lbl-pane--left  { left: 0;  width: var(--lbl-left-size);  border-right: 1px solid #ddd; }
+    .lbl-pane--right { right: 0; width: var(--lbl-right-size); border-left: 1px solid #ddd; }
+    .lbl-ui.left-collapsed  .lbl-pane--left  { transform: translateX(-100%); }
+    .lbl-ui.right-collapsed .lbl-pane--right { transform: translateX(100%); }
+    .lbl-pane h2 { font-size: 16px; font-weight: 700; margin: 0 0 10px; display: flex; align-items: center; gap: 6px; }
+    .lbl-pane h3 { font-size: 13px; font-weight: 700; margin: 14px 0 6px; color: #555; text-transform: uppercase; letter-spacing: .03em; }
+
+    .lbl-collapse {
+      position: fixed; top: 74px; z-index: 1100; width: 22px; height: 46px;
+      background: rgba(255,255,255,.95); border: 1px solid rgba(0,0,0,.14);
+      cursor: pointer; padding: 0; font-size: 15px; color: #455a64;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .lbl-collapse:hover { background: #eceff1; }
+    #lbl-collapse-left  { left: var(--lbl-left-w);   border-radius: 0 4px 4px 0; border-left: none; }
+    #lbl-collapse-right { right: var(--lbl-right-w); border-radius: 4px 0 0 4px; border-right: none; }
+
+    .lbl-resize { position: fixed; top: 0; bottom: 0; width: 6px; cursor: ew-resize; z-index: 1001; }
+    .lbl-resize:hover { background: rgba(46,125,50,.28); }
+    #lbl-resize-left  { left: calc(var(--lbl-left-w) - 3px); }
+    #lbl-resize-right { right: calc(var(--lbl-right-w) - 3px); }
+    .lbl-ui.left-collapsed  #lbl-resize-left,
+    .lbl-ui.right-collapsed #lbl-resize-right { display: none; }
     .lbl-row { display: flex; gap: 8px; margin-bottom: 8px; }
     .lbl-row > * { flex: 1; }
     .lbl-field { width: 100%; height: 34px; border: 1px solid #ccc; border-radius: 6px; padding: 0 8px; font-size: 13px; background: #fff; }
@@ -60,22 +93,19 @@
     .lbl-progress { font-size: 12px; color: #555; margin-top: 4px; }
     .lbl-forbidden { padding: 80px 20px; text-align: center; color: #b71c1c; font-size: 16px; }
 
-    /* Переключатель подложек: Materialize гасит radio внутри leaflet-контрола
-       (opacity:0; position:absolute) и рисует свои ::before/::after — возвращаем вид. */
-    .leaflet-control-layers { background: #fff; border-radius: 6px; box-shadow: 0 1px 6px rgba(0,0,0,.35); }
-    .leaflet-control-layers-expanded { padding: 8px 10px 8px 8px; }
-    .leaflet-control-layers-list label {
+    /* Подложки: Materialize глобально гасит нативные radio
+       (position:absolute; opacity:0) и рисует свои ::before/::after — возвращаем вид. */
+    .lbl-base label {
       display: flex !important; align-items: center; gap: 6px;
       font-size: 13px; color: #263238; height: auto; line-height: 1.5;
-      margin: 0; padding: 2px 0; cursor: pointer;
+      margin: 0; padding: 3px 0; cursor: pointer;
     }
-    .leaflet-control-layers-list label::before,
-    .leaflet-control-layers-list label::after { display: none !important; content: none !important; }
-    .leaflet-control-layers-selector {
-      opacity: 1 !important; position: static !important; pointer-events: auto !important;
-      width: 16px; height: 16px; margin: 0; flex: 0 0 16px;
+    .lbl-base label::before, .lbl-base label::after { display: none !important; content: none !important; }
+    .lbl-base input[type="radio"] {
+      position: static !important; opacity: 1 !important; pointer-events: auto !important;
+      -webkit-appearance: auto !important; appearance: auto !important;
+      width: 16px; height: 16px; margin: 0; flex: 0 0 16px; accent-color: #2e7d32;
     }
-    .leaflet-control-layers-list label span { display: inline-flex; align-items: center; gap: 6px; }
   </style>
 {% endblock %}
 
@@ -83,8 +113,8 @@
 {% if forbidden %}
   <div class="lbl-forbidden">Доступ только для администратора.</div>
 {% else %}
-<div class="lbl-ui">
-  <div class="lbl-panel">
+<div class="lbl-ui" id="lbl-ui">
+  <aside class="lbl-pane lbl-pane--left" id="lbl-pane-left">
     <h2><i class="material-icons">school</i> Обучающая выборка</h2>
 
     <div class="lbl-row">
@@ -112,11 +142,31 @@
       <button class="lbl-btn" id="lbl-load">Загрузить угодья</button>
     </div>
 
+    <h3>Подложка</h3>
+    <div class="lbl-base" id="lbl-base">
+      <label><input type="radio" name="lbl-basemap" value="gsat" /> Google — космоснимки</label>
+      <label><input type="radio" name="lbl-basemap" value="ghyb" /> Google — снимки + подписи</label>
+      <label><input type="radio" name="lbl-basemap" value="esri" /> Esri World Imagery</label>
+      <label><input type="radio" name="lbl-basemap" value="osm" /> OpenStreetMap</label>
+    </div>
+
+    <h3>Статистика</h3>
     <div class="lbl-stats" id="lbl-stats"></div>
     <div class="lbl-progress" id="lbl-progress"></div>
+  </aside>
+
+  <button type="button" class="lbl-collapse" id="lbl-collapse-left" title="Свернуть панель">‹</button>
+  <div class="lbl-resize" id="lbl-resize-left"></div>
+
+  <div id="lbl-map"></div>
+
+  <div class="lbl-resize" id="lbl-resize-right"></div>
+  <button type="button" class="lbl-collapse" id="lbl-collapse-right" title="Свернуть панель">›</button>
+
+  <aside class="lbl-pane lbl-pane--right" id="lbl-pane-right">
+    <h2><i class="material-icons">terrain</i> Угодье</h2>
 
     <div id="lbl-current" style="display:none;">
-      <h3>Текущее угодье</h3>
       <div class="lbl-card">
         <div class="lbl-pred" id="lbl-pred"></div>
         <div id="lbl-chart-wrap"><canvas id="lbl-chart"></canvas></div>
@@ -140,8 +190,7 @@
     <div class="lbl-hint" id="lbl-empty" style="display:none;">
       Нет кандидатов. Снимите «только сомнительные» или смените субъект/год/источник.
     </div>
-  </div>
-  <div id="lbl-map"></div>
+  </aside>
 </div>
 {% endif %}
 {% endblock %}
@@ -186,21 +235,81 @@
     }),
     gsat: gTiles('s'),
     ghyb: L.layerGroup([gTiles('s'), gTiles('h')]),
+    osm: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors',
+    }),
   };
   var BASEMAP_KEY = 'agroLabelBasemap';
   var activeBase = localStorage.getItem(BASEMAP_KEY);
   if (!BASEMAPS[activeBase]) activeBase = 'esri';
   BASEMAPS[activeBase].addTo(map);
-  L.control.layers({
-    'Esri World Imagery': BASEMAPS.esri,
-    'Google — космоснимки': BASEMAPS.gsat,
-    'Google — снимки + подписи': BASEMAPS.ghyb,
-  }, null, { position: 'topright', collapsed: false }).addTo(map);
-  map.on('baselayerchange', function (e) {
-    Object.keys(BASEMAPS).forEach(function (k) {
-      if (BASEMAPS[k] === e.layer) localStorage.setItem(BASEMAP_KEY, k);
-    });
+
+  function setBasemap(key) {
+    if (!BASEMAPS[key] || key === activeBase) return;
+    map.removeLayer(BASEMAPS[activeBase]);
+    BASEMAPS[key].addTo(map);
+    if (BASEMAPS[key].bringToBack) BASEMAPS[key].bringToBack();
+    activeBase = key;
+    localStorage.setItem(BASEMAP_KEY, key);
+  }
+  Array.prototype.forEach.call(
+    document.querySelectorAll('#lbl-base input[name="lbl-basemap"]'),
+    function (input) {
+      input.checked = input.value === activeBase;
+      input.addEventListener('change', function () {
+        if (input.checked) setBasemap(input.value);
+      });
+    }
+  );
+
+  // Сворачивание и изменение ширины панелей (как в ГИС).
+  var ui = document.getElementById('lbl-ui');
+  var PANE_KEY = 'agroLabelPanes';
+  var paneState = { left: 340, right: 360, leftCollapsed: false, rightCollapsed: false };
+  try { Object.assign(paneState, JSON.parse(localStorage.getItem(PANE_KEY) || '{}')); } catch (e) {}
+
+  function applyPanes() {
+    ui.style.setProperty('--lbl-left-size', paneState.left + 'px');
+    ui.style.setProperty('--lbl-right-size', paneState.right + 'px');
+    ui.classList.toggle('left-collapsed', !!paneState.leftCollapsed);
+    ui.classList.toggle('right-collapsed', !!paneState.rightCollapsed);
+    document.getElementById('lbl-collapse-left').textContent = paneState.leftCollapsed ? '›' : '‹';
+    document.getElementById('lbl-collapse-right').textContent = paneState.rightCollapsed ? '‹' : '›';
+    localStorage.setItem(PANE_KEY, JSON.stringify(paneState));
+    setTimeout(function () { map.invalidateSize(); }, 220);
+  }
+  applyPanes();
+
+  document.getElementById('lbl-collapse-left').addEventListener('click', function () {
+    paneState.leftCollapsed = !paneState.leftCollapsed; applyPanes();
   });
+  document.getElementById('lbl-collapse-right').addEventListener('click', function () {
+    paneState.rightCollapsed = !paneState.rightCollapsed; applyPanes();
+  });
+
+  function initResize(handleId, side) {
+    var handle = document.getElementById(handleId);
+    var dragging = false;
+    handle.addEventListener('mousedown', function (e) {
+      dragging = true; e.preventDefault();
+      document.body.style.userSelect = 'none';
+    });
+    document.addEventListener('mousemove', function (e) {
+      if (!dragging) return;
+      var w = side === 'left' ? e.clientX : window.innerWidth - e.clientX;
+      paneState[side] = Math.max(220, Math.min(620, w));
+      ui.style.setProperty('--lbl-' + side + '-size', paneState[side] + 'px');
+    });
+    document.addEventListener('mouseup', function () {
+      if (!dragging) return;
+      dragging = false;
+      document.body.style.userSelect = '';
+      applyPanes();
+    });
+  }
+  initResize('lbl-resize-left', 'left');
+  initResize('lbl-resize-right', 'right');
 
   var geoLayer = L.geoJSON(null, { style: styleFor, onEachFeature: onEach }).addTo(map);
   var layerById = {};
