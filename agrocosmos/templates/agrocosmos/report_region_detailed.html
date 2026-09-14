@@ -136,13 +136,14 @@
     #report-content.hidden { display: none; }
     .empty-note { color: #999; font-size: 13px; padding: 8px 0; }
 
-    .collapsible-h2 {
+    .hv-h2 {
       cursor: pointer; display: flex; align-items: center; justify-content: space-between;
       user-select: none;
     }
-    .collapsible-h2 .chevron { color: #2e7d32; transition: transform .2s; }
-    .pp-section.collapsed .collapsible-body { display: none; }
-    .pp-section.collapsed .collapsible-h2 .chevron { transform: rotate(-90deg); }
+    .hv-h2 .chevron { color: #2e7d32; transition: transform .2s; }
+    .hv-body { display: block; }
+    .pp-section.collapsed .hv-body { display: none; }
+    .pp-section.collapsed .hv-h2 .chevron { transform: rotate(-90deg); }
     .harvest-card .val small { font-size: 11px; color: #888; font-weight: 400; }
 
     @media print {
@@ -277,11 +278,11 @@
     </div>
 
     <div class="pp-section" id="harvest-section" style="display:none;">
-      <h2 class="collapsible-h2" id="harvest-h2">
+      <h2 class="hv-h2" id="harvest-h2">
         <span><i class="material-icons">agriculture</i> Уборка (озимые / яровые)</span>
         <i class="material-icons chevron">expand_more</i>
       </h2>
-      <div class="collapsible-body">
+      <div class="hv-body">
         <div class="report-summary" id="harvest-cards" style="margin-bottom:0;"></div>
         <div class="empty-note" id="harvest-note" style="margin-top:8px;"></div>
       </div>
