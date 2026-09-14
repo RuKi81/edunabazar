@@ -66,6 +66,12 @@ from .yield_forecast import (
     api_yield_models,
 )
 from .cabinet import me_agrocosmos
+from .labeling import (
+    label_dashboard,
+    api_label_candidates,
+    api_label_save,
+    api_label_stats,
+)
 
 __all__ = [
     # constants
@@ -94,6 +100,9 @@ __all__ = [
     'api_yield_forecast', 'api_yield_forecast_region', 'api_yield_models',
     # cabinet
     'me_agrocosmos',
+    # training-label tool
+    'label_dashboard', 'api_label_candidates', 'api_label_save',
+    'api_label_stats',
     # private helpers (exported for tests / legacy callers)
     '_satellite_filter', '_safe_round', '_get_legacy_user',
     '_tile_bbox', '_ndvi_assessment',

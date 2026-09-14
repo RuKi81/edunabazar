@@ -36,7 +36,9 @@ from django.contrib.gis.geos import GEOSGeometry
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection
 
-from agrocosmos.models import District, Farmland, FarmlandCropSeason, Region
+from agrocosmos.models import (
+    District, Farmland, FarmlandCropSeason, FarmlandTrainingLabel, Region,
+)
 from agrocosmos.services.winter_spring import (
     DEFAULT_EARLY_SPRING_THRESHOLD, GREEN_FRACTION_MIN, HARVEST_MIN_DROP,
     HARVEST_MIN_DROP_RATIO, PEAK_DOY_THRESHOLD_DEFAULT,
@@ -104,6 +106,12 @@ class Command(BaseCommand):
                             help='Название/таблица/pk ГИС-слоя опорных точек')
         parser.add_argument('--reference-attr', type=str, default='crop',
                             help='Атрибут культуры (по умолч. crop)')
+        parser.add_argument('--reference-labels', action='store_true',
+                            help='Использовать ручную обучающую выборку '
+                                 '(FarmlandTrainingLabel, карта-разметчик '
+                                 'label/) как эталоны для калибровки порогов '
+                                 'и валидации. Метки в приоритете над точками '
+                                 'из --reference-shp/--reference-layer.')
         parser.add_argument('--dry-run', action='store_true',
                             help='Не писать в БД, только показать сводку')
         parser.add_argument('--reference-features', action='store_true',
@@ -128,6 +136,9 @@ class Command(BaseCommand):
         # не зависят от NDVI, а битый путь к SHP валится за секунды, а не
         # после многоминутной выборки временных рядов.
         ref_map = self._reference_farmlands(region, district, options)
+        if options.get('reference_labels'):
+            label_refs = self._reference_labels(region, district, year)
+            ref_map = {**ref_map, **label_refs}  # ручные метки в приоритете
 
         scope_msg = ('все угодья' if crop_types is None
                      else ', '.join(crop_types))
@@ -386,6 +397,39 @@ class Command(BaseCommand):
             f'не обраб.={sum(1 for r in ref_map.values() if r["class"] == "unused")})'
         )
         return ref_map
+
+    def _reference_labels(self, region, district, year):
+        """{farmland_id: {'value','class'}} из ручной обучающей выборки.
+
+        Метки (:class:`FarmlandTrainingLabel`, карта-разметчик ``label/``)
+        экспертно проверены, поэтому используются как эталоны для калибровки
+        порогов и валидации наравне с точками из ГИС-слоя. Сенокос и
+        «пропустить» не участвуют в калибровке пик-порога → отбрасываются.
+        """
+        qs = FarmlandTrainingLabel.objects.filter(year=year)
+        if district is not None:
+            qs = qs.filter(farmland__district_id=district.pk)
+        else:
+            qs = qs.filter(farmland__district__region_id=region.pk)
+
+        cls_map = {'winter': 'winter', 'spring': 'spring', 'unused': 'unused'}
+        out = {}
+        counts = {'winter': 0, 'spring': 0, 'unused': 0, 'skipped': 0}
+        for fid, tc in qs.values_list('farmland_id', 'true_class'):
+            cls = cls_map.get(tc)
+            if cls is None:
+                counts['skipped'] += 1
+                continue
+            out[fid] = {'value': f'label:{tc}', 'class': cls}
+            counts[cls] += 1
+        self.stdout.write(
+            '  Ручные метки (обучающая выборка): '
+            f'озимые={counts["winter"]}, яровые={counts["spring"]}, '
+            f'не обраб.={counts["unused"]}'
+            + (f', пропущено(сенокос/сад)={counts["skipped"]}'
+               if counts['skipped'] else '')
+        )
+        return out
 
     def _points_from_shp(self, path, attr):
         """[(GEOSGeometry point 4326, value), ...] из shapefile."""

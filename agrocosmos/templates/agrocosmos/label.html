@@ -1,0 +1,438 @@
+{% extends 'legacy/base.html' %}
+{% load static %}
+
+{% block title %}Агрокосмос — разметка обучающей выборки{% endblock %}
+{% block meta_description %}Инструмент админа: разметка угодий (озимые/яровые) для обучающей выборки классификатора.{% endblock %}
+
+{% block head %}
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <link rel="stylesheet" href="{% static 'legacy/css/leaflet.css' %}" />
+  <style>
+    :root { --lbl-left: 360px; }
+    html, body { height: 100%; }
+    .brand-logo, .brand-logo__img, .sidenav-logo { display: none !important; }
+    .content { background: transparent !important; }
+    .content > .container { width: 100% !important; min-width: 0 !important; padding: 0 !important; margin: 0 !important; }
+
+    .lbl-ui { position: fixed; inset: 0; }
+    #lbl-map { position: absolute; left: var(--lbl-left); right: 0; top: 0; bottom: 0; background: #eee; }
+    .lbl-panel {
+      position: fixed; left: 0; top: 0; bottom: 0; width: var(--lbl-left);
+      background: #fff; border-right: 1px solid #ddd; overflow-y: auto;
+      padding: 66px 14px 16px 14px; z-index: 1000; box-sizing: border-box;
+    }
+    .lbl-panel h2 { font-size: 16px; font-weight: 700; margin: 0 0 10px; display: flex; align-items: center; gap: 6px; }
+    .lbl-panel h3 { font-size: 13px; font-weight: 700; margin: 14px 0 6px; color: #555; text-transform: uppercase; letter-spacing: .03em; }
+    .lbl-row { display: flex; gap: 8px; margin-bottom: 8px; }
+    .lbl-row > * { flex: 1; }
+    .lbl-field { width: 100%; height: 34px; border: 1px solid #ccc; border-radius: 6px; padding: 0 8px; font-size: 13px; background: #fff; }
+    label.lbl-check { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+    /* Materialize гасит голые checkbox (opacity:0; position:absolute) — возвращаем вид */
+    label.lbl-check input[type="checkbox"] {
+      opacity: 1 !important; position: static !important; pointer-events: auto !important;
+      width: 16px; height: 16px; margin: 0; flex: 0 0 16px;
+    }
+    .lbl-btn { height: 36px; border: none; border-radius: 6px; background: #2e7d32; color: #fff; font-weight: 700; cursor: pointer; font-size: 13px; }
+    .lbl-btn:hover { background: #276b2a; }
+    .lbl-btn.secondary { background: #eceff1; color: #37474f; }
+    .lbl-btn.secondary:hover { background: #cfd8dc; }
+
+    .lbl-stats { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+    .lbl-chip { font-size: 12px; padding: 3px 8px; border-radius: 12px; background: #f1f3f4; color: #333; }
+    .lbl-chip b { font-weight: 700; }
+
+    .lbl-card { border: 1px solid #e0e0e0; border-radius: 8px; padding: 10px; margin-top: 6px; }
+    .lbl-pred { font-size: 13px; margin-bottom: 6px; }
+    .lbl-pred .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; color: #fff; font-weight: 700; font-size: 12px; }
+    .feat-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .feat-table td { padding: 3px 4px; border-bottom: 1px solid #f0f0f0; }
+    .feat-table td:last-child { text-align: right; font-weight: 600; }
+    #lbl-chart-wrap { height: 170px; position: relative; margin-top: 6px; }
+
+    .class-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .class-btn { height: 40px; border: 2px solid transparent; border-radius: 8px; color: #fff; font-weight: 700; cursor: pointer; font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 6px; }
+    .class-btn .k { font-size: 11px; opacity: .8; background: rgba(0,0,0,.18); border-radius: 4px; padding: 0 5px; }
+    .class-btn.active { outline: 3px solid #111; outline-offset: 1px; }
+
+    .nav-row { display: flex; gap: 6px; margin-top: 10px; }
+    .nav-row .lbl-btn { flex: 1; }
+    .lbl-hint { font-size: 11px; color: #888; margin-top: 8px; line-height: 1.5; }
+    .lbl-progress { font-size: 12px; color: #555; margin-top: 4px; }
+    .lbl-forbidden { padding: 80px 20px; text-align: center; color: #b71c1c; font-size: 16px; }
+  </style>
+{% endblock %}
+
+{% block content %}
+{% if forbidden %}
+  <div class="lbl-forbidden">Доступ только для администратора.</div>
+{% else %}
+<div class="lbl-ui">
+  <div class="lbl-panel">
+    <h2><i class="material-icons">school</i> Обучающая выборка</h2>
+
+    <div class="lbl-row">
+      <select id="lbl-region" class="lbl-field browser-default">
+        <option value="">Субъект…</option>
+        {% for r in regions %}
+          <option value="{{ r.id }}" {% if r.id|stringformat:'s' == region_id %}selected{% endif %}>{{ r.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="lbl-row">
+      <select id="lbl-year" class="lbl-field browser-default">
+        {% for y in years %}<option value="{{ y }}" {% if y|stringformat:'s' == year %}selected{% endif %}>{{ y }}</option>{% endfor %}
+      </select>
+      <select id="lbl-source" class="lbl-field browser-default">
+        <option value="fused">HLS (fused)</option>
+        <option value="raster">S2/L8 (raster)</option>
+      </select>
+    </div>
+    <div class="lbl-row">
+      <label class="lbl-check"><input type="checkbox" id="lbl-mode-ambig" checked /> Только сомнительные</label>
+      <label class="lbl-check"><input type="checkbox" id="lbl-unlabeled" checked /> Скрыть размеченные</label>
+    </div>
+    <div class="lbl-row">
+      <button class="lbl-btn" id="lbl-load">Загрузить угодья</button>
+    </div>
+
+    <div class="lbl-stats" id="lbl-stats"></div>
+    <div class="lbl-progress" id="lbl-progress"></div>
+
+    <div id="lbl-current" style="display:none;">
+      <h3>Текущее угодье</h3>
+      <div class="lbl-card">
+        <div class="lbl-pred" id="lbl-pred"></div>
+        <div id="lbl-chart-wrap"><canvas id="lbl-chart"></canvas></div>
+        <table class="feat-table" id="lbl-feats"></table>
+      </div>
+
+      <h3>Истинный класс</h3>
+      <div class="class-grid" id="lbl-classes"></div>
+
+      <div class="nav-row">
+        <button class="lbl-btn secondary" id="lbl-prev">← Назад (P)</button>
+        <button class="lbl-btn secondary" id="lbl-skip">Пропустить (Space)</button>
+      </div>
+      <div class="lbl-hint">
+        Горячие клавиши: <b>1</b> озимые · <b>2</b> яровые · <b>3</b> сенокос ·
+        <b>4</b> не обраб. · <b>5</b> пропустить(сад) · <b>Space</b> след. ·
+        <b>P</b> назад · <b>Del</b> снять метку.
+      </div>
+    </div>
+
+    <div class="lbl-hint" id="lbl-empty" style="display:none;">
+      Нет кандидатов. Снимите «только сомнительные» или смените субъект/год/источник.
+    </div>
+  </div>
+  <div id="lbl-map"></div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block site_footer %}{% endblock %}
+
+{% block scripts %}
+{% if not forbidden %}
+<script src="{% static 'legacy/js/leaflet.js' %}"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script>
+(function () {
+  var CLASS_META = [
+    { key: 'winter',   label: 'Озимые',        color: '#1565C0', hot: '1' },
+    { key: 'spring',   label: 'Яровые',        color: '#F57C00', hot: '2' },
+    { key: 'hayfield', label: 'Сенокос',       color: '#7CB342', hot: '3' },
+    { key: 'unused',   label: 'Не обраб.',     color: '#9E9E9E', hot: '4' },
+    { key: 'ignore',   label: 'Пропустить',    color: '#5E35B1', hot: '5' },
+  ];
+  var COLOR = {};
+  CLASS_META.forEach(function (c) { COLOR[c.key] = c.color; });
+  var CLASS_LABEL = {};
+  CLASS_META.forEach(function (c) { CLASS_LABEL[c.key] = c.label; });
+
+  var regionSel = document.getElementById('lbl-region');
+  var yearSel = document.getElementById('lbl-year');
+  var sourceSel = document.getElementById('lbl-source');
+  var ambigChk = document.getElementById('lbl-mode-ambig');
+  var unlabChk = document.getElementById('lbl-unlabeled');
+
+  var map = L.map('lbl-map', { zoomControl: true, attributionControl: true })
+    .setView([54.2, 37.6], 8);
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19,
+    attribution: 'Tiles &copy; <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a> — Source: Esri, Maxar, Earthstar Geographics',
+  }).addTo(map);
+
+  var geoLayer = L.geoJSON(null, { style: styleFor, onEachFeature: onEach }).addTo(map);
+  var layerById = {};
+  var candidates = [];
+  var idx = -1;
+  var chart = null;
+
+  function styleFor(feature) {
+    var p = feature.properties || {};
+    var labeled = !!p.label;
+    return {
+      color: labeled ? '#111' : '#ffffff',
+      weight: labeled ? 2.5 : 1,
+      fillColor: COLOR[p.label || p.predicted_class] || '#888',
+      fillOpacity: labeled ? 0.75 : 0.45,
+    };
+  }
+
+  function onEach(feature, layer) {
+    var fid = feature.properties.farmland_id;
+    layerById[fid] = layer;
+    layer.on('click', function () {
+      var i = candidates.findIndex(function (c) { return c.farmland_id === fid; });
+      if (i >= 0) select(i);
+    });
+  }
+
+  function loadCandidates() {
+    var region = regionSel.value;
+    if (!region) { alert('Выберите субъект'); return; }
+    var params = new URLSearchParams({
+      region: region, year: yearSel.value, source: sourceSel.value,
+      mode: ambigChk.checked ? 'ambiguous' : 'all',
+      unlabeled: unlabChk.checked ? '1' : '0',
+    });
+    document.getElementById('lbl-load').textContent = 'Загрузка…';
+    fetch('/agrocosmos/api/label/candidates/?' + params.toString())
+      .then(function (r) { return r.json(); })
+      .then(function (resp) {
+        document.getElementById('lbl-load').textContent = 'Загрузить угодья';
+        if (!resp.ok) { alert(resp.error || 'Ошибка'); return; }
+        candidates = resp.candidates || [];
+        renderLayer();
+        refreshStats();
+        if (candidates.length) { select(0); document.getElementById('lbl-empty').style.display = 'none'; }
+        else {
+          idx = -1;
+          document.getElementById('lbl-current').style.display = 'none';
+          document.getElementById('lbl-empty').style.display = '';
+        }
+        updateProgress();
+      })
+      .catch(function () {
+        document.getElementById('lbl-load').textContent = 'Загрузить угодья';
+        alert('Ошибка загрузки');
+      });
+  }
+
+  function renderLayer() {
+    geoLayer.clearLayers();
+    layerById = {};
+    var features = candidates.map(function (c) {
+      return {
+        type: 'Feature', geometry: c.geometry,
+        properties: {
+          farmland_id: c.farmland_id, predicted_class: c.predicted_class,
+          label: c.label,
+        },
+      };
+    });
+    geoLayer.addData({ type: 'FeatureCollection', features: features });
+    try {
+      var b = geoLayer.getBounds();
+      if (b.isValid()) map.fitBounds(b, { padding: [30, 30] });
+    } catch (e) {}
+  }
+
+  function select(i) {
+    if (i < 0 || i >= candidates.length) return;
+    idx = i;
+    var c = candidates[i];
+    document.getElementById('lbl-current').style.display = '';
+
+    // Highlight + zoom.
+    var layer = layerById[c.farmland_id];
+    if (layer) {
+      geoLayer.resetStyle();
+      layer.setStyle({ color: '#ff1744', weight: 3, fillOpacity: 0.6 });
+      layer.bringToFront();
+      try { map.fitBounds(layer.getBounds(), { maxZoom: 15, padding: [60, 60] }); } catch (e) {}
+    }
+
+    // Predicted class + label state.
+    var predTag = '<span class="tag" style="background:' + (COLOR[c.predicted_class] || '#888') + '">'
+      + (CLASS_LABEL[c.predicted_class] || c.predicted_class) + '</span>';
+    var lblTag = c.label
+      ? ' → метка: <span class="tag" style="background:' + (COLOR[c.label] || '#888') + '">' + (CLASS_LABEL[c.label] || c.label) + '</span>'
+      : ' → <i>не размечено</i>';
+    document.getElementById('lbl-pred').innerHTML =
+      'Модель: ' + predTag + ' (увер. ' + pct(c.confidence) + ')' + lblTag;
+
+    // Features table.
+    document.getElementById('lbl-feats').innerHTML = [
+      row('Угодье #', c.farmland_id + (c.cadastral ? ' · ' + c.cadastral : '')),
+      row('Район', c.district || '—'),
+      row('Площадь, га', fmt(c.area_ha)),
+      row('Вид', c.crop_type),
+      row('День пика (DOY)', c.peak_doy != null ? c.peak_doy + ' · порог ' + (c.peak_doy_threshold != null ? Math.round(c.peak_doy_threshold) : '185') : '—'),
+      row('SOS (DOY)', c.sos_doy != null ? c.sos_doy : '—'),
+      row('NDVI ранней весны', c.early_spring_ndvi != null ? c.early_spring_ndvi : '—'),
+      row('Уборка', c.is_harvested ? ('да' + (c.harvest_doy ? ' (DOY ' + c.harvest_doy + ')' : '')) : 'нет'),
+    ].join('');
+
+    highlightClassButtons(c.label);
+    loadChart(c.farmland_id);
+    updateProgress();
+  }
+
+  function row(k, v) { return '<tr><td>' + k + '</td><td>' + v + '</td></tr>'; }
+
+  function loadChart(fid) {
+    fetch('/agrocosmos/api/farmland/ndvi/?farmland=' + fid + '&year=' + yearSel.value + '&source=' + sourceSel.value)
+      .then(function (r) { return r.json(); })
+      .then(function (resp) {
+        var data = (resp && resp.data) || [];
+        drawChart(data);
+      })
+      .catch(function () { drawChart([]); });
+  }
+
+  function drawChart(data) {
+    var labels = data.map(function (d) { return d.date; });
+    var raw = data.map(function (d) { return d.mean; });
+    var smooth = data.map(function (d) { return d.mean_smooth; });
+    if (chart) chart.destroy();
+    chart = new Chart(document.getElementById('lbl-chart'), {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [
+          { label: 'NDVI сглаж.', data: smooth, borderColor: '#2e7d32', borderWidth: 2, pointRadius: 0, tension: 0.3, spanGaps: true },
+          { label: 'NDVI', data: raw, borderColor: '#90a4ae', showLine: false, pointRadius: 2, pointBackgroundColor: '#90a4ae' },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: {
+          x: { ticks: { font: { size: 9 }, maxTicksLimit: 6, autoSkip: true } },
+          y: { min: 0, max: 1, ticks: { font: { size: 9 } } },
+        },
+        plugins: { legend: { display: false }, tooltip: { enabled: true } },
+      },
+    });
+  }
+
+  function buildClassButtons() {
+    var grid = document.getElementById('lbl-classes');
+    grid.innerHTML = '';
+    CLASS_META.forEach(function (c) {
+      var b = document.createElement('button');
+      b.className = 'class-btn';
+      b.dataset.key = c.key;
+      b.style.background = c.color;
+      b.innerHTML = c.label + ' <span class="k">' + c.hot + '</span>';
+      b.addEventListener('click', function () { setLabel(c.key); });
+      grid.appendChild(b);
+    });
+  }
+
+  function highlightClassButtons(active) {
+    document.querySelectorAll('#lbl-classes .class-btn').forEach(function (b) {
+      b.classList.toggle('active', b.dataset.key === active);
+    });
+  }
+
+  function setLabel(cls) {
+    if (idx < 0) return;
+    var c = candidates[idx];
+    fetch('/agrocosmos/api/label/', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ farmland_id: c.farmland_id, year: parseInt(yearSel.value, 10), true_class: cls }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (resp) {
+        if (!resp.ok) { alert(resp.error || 'Ошибка сохранения'); return; }
+        c.label = cls;
+        var layer = layerById[c.farmland_id];
+        if (layer) { layer.feature.properties.label = cls; geoLayer.resetStyle(layer); }
+        highlightClassButtons(cls);
+        refreshStats();
+        next();
+      })
+      .catch(function () { alert('Ошибка сети'); });
+  }
+
+  function deleteLabel() {
+    if (idx < 0) return;
+    var c = candidates[idx];
+    if (!c.label) return;
+    fetch('/agrocosmos/api/label/', {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ farmland_id: c.farmland_id, year: parseInt(yearSel.value, 10) }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (resp) {
+        if (!resp.ok) return;
+        c.label = null;
+        var layer = layerById[c.farmland_id];
+        if (layer) { layer.feature.properties.label = null; geoLayer.resetStyle(layer); }
+        highlightClassButtons(null);
+        refreshStats();
+        select(idx);
+      });
+  }
+
+  function next() {
+    if (unlabChk.checked) {
+      for (var j = idx + 1; j < candidates.length; j++) {
+        if (!candidates[j].label) { select(j); return; }
+      }
+      // wrap from start
+      for (var k = 0; k < candidates.length; k++) {
+        if (!candidates[k].label) { select(k); return; }
+      }
+    }
+    if (idx + 1 < candidates.length) select(idx + 1);
+  }
+
+  function prev() { if (idx > 0) select(idx - 1); }
+
+  function updateProgress() {
+    var labeled = candidates.filter(function (c) { return c.label; }).length;
+    document.getElementById('lbl-progress').textContent =
+      'Кандидатов: ' + candidates.length + ' · размечено: ' + labeled
+      + (idx >= 0 ? ' · текущее ' + (idx + 1) : '');
+  }
+
+  function refreshStats() {
+    var region = regionSel.value;
+    fetch('/agrocosmos/api/label/stats/?region=' + region + '&year=' + yearSel.value)
+      .then(function (r) { return r.json(); })
+      .then(function (resp) {
+        if (!resp.ok) return;
+        var s = resp.stats;
+        var chips = CLASS_META.map(function (c) {
+          return '<span class="lbl-chip"><b>' + (s[c.key] || 0) + '</b> ' + c.label + '</span>';
+        }).join('');
+        chips += '<span class="lbl-chip">всего: <b>' + (s.total || 0) + '</b></span>';
+        document.getElementById('lbl-stats').innerHTML = chips;
+      });
+    updateProgress();
+  }
+
+  function pct(v) { return v == null ? '—' : Math.round(v * 100) + '%'; }
+  function fmt(v) { return v == null ? '—' : Number(v).toLocaleString('ru'); }
+
+  // Hotkeys.
+  document.addEventListener('keydown', function (e) {
+    if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+    var m = CLASS_META.find(function (c) { return c.hot === e.key; });
+    if (m) { e.preventDefault(); setLabel(m.key); return; }
+    if (e.key === ' ') { e.preventDefault(); next(); }
+    else if (e.key === 'p' || e.key === 'P' || e.key === 'з') { e.preventDefault(); prev(); }
+    else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteLabel(); }
+  });
+
+  document.getElementById('lbl-load').addEventListener('click', loadCandidates);
+  document.getElementById('lbl-prev').addEventListener('click', prev);
+  document.getElementById('lbl-skip').addEventListener('click', next);
+  buildClassButtons();
+  if (regionSel.value) loadCandidates();
+})();
+</script>
+{% endif %}
+{% endblock %}

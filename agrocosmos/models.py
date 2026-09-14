@@ -1264,3 +1264,57 @@ class YieldForecast(models.Model):
             f'[{self.ci_lower:.2f}; {self.ci_upper:.2f}] т/га '
             f'(at {self.forecasted_at})'
         )
+
+
+class FarmlandTrainingLabel(models.Model):
+    """Ручная разметка угодья истинным классом для обучающей выборки.
+
+    Независима от прогонов ``classify_winter_spring``: эксперт-админ через
+    карту-разметчик ставит ИСТИННЫЙ класс угодья (озимые / яровые / сенокос /
+    не обрабатывается / пропустить). Метки копятся отдельно и используются
+    командой классификации как эталоны для калибровки порогов и печати
+    матрицы ошибок — в отличие от ``FarmlandCropSeason.is_reference``, они не
+    затираются при полном переклассе сезона.
+
+    ``labeled_by`` хранит логин legacy-пользователя строкой (приложение
+    работает с ``request.legacy_user``, а не с ``auth.User``).
+    """
+
+    class TrueClass(models.TextChoices):
+        WINTER = 'winter', 'Озимые'
+        SPRING = 'spring', 'Яровые'
+        HAYFIELD = 'hayfield', 'Сенокос'
+        UNUSED = 'unused', 'Не обрабатывается'
+        IGNORE = 'ignore', 'Пропустить (сад/прочее)'
+
+    farmland = models.ForeignKey(
+        Farmland, on_delete=models.CASCADE, related_name='training_labels',
+    )
+    year = models.IntegerField(verbose_name='Год')
+    true_class = models.CharField(
+        max_length=10, choices=TrueClass.choices,
+        verbose_name='Истинный класс',
+    )
+    note = models.CharField(
+        max_length=255, blank=True, default='', verbose_name='Заметка',
+    )
+    labeled_by = models.CharField(
+        max_length=150, blank=True, default='',
+        verbose_name='Разметил (логин)',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'agro_farmland_training_label'
+        ordering = ['-updated_at']
+        verbose_name = 'Метка обучающей выборки'
+        verbose_name_plural = 'Метки обучающей выборки'
+        unique_together = [('farmland', 'year')]
+        indexes = [
+            models.Index(fields=['year', 'true_class'],
+                         name='train_label_yr_cls_idx'),
+        ]
+
+    def __str__(self):
+        return f'Label {self.farmland_id} {self.year} = {self.true_class}'

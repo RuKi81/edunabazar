@@ -15,9 +15,9 @@ from django.utils.functional import cached_property
 from django.utils.html import format_html
 
 from .models import (
-    AgroSubscription, District, Farmland, FarmlandCropSeason, GeeApiMetric,
-    MonitoringTask, PipelineRun, Region, SatelliteScene, VegetationAlert,
-    VegetationIndex,
+    AgroSubscription, District, Farmland, FarmlandCropSeason,
+    FarmlandTrainingLabel, GeeApiMetric, MonitoringTask, PipelineRun, Region,
+    SatelliteScene, VegetationAlert, VegetationIndex,
 )
 
 import logging
@@ -133,6 +133,20 @@ class FarmlandCropSeasonAdmin(admin.ModelAdmin):
     raw_id_fields = ('farmland',)
     search_fields = ('farmland__cadastral_number', 'reference_crop')
     ordering = ('-id',)
+    paginator = _NoCountPaginator
+    show_full_result_count = False
+
+
+@admin.register(FarmlandTrainingLabel)
+class FarmlandTrainingLabelAdmin(admin.ModelAdmin):
+    """Ручная обучающая выборка (карта-разметчик label/)."""
+    list_display = ('id', 'farmland', 'year', 'true_class', 'labeled_by',
+                    'updated_at')
+    list_filter = ('year', 'true_class')
+    list_select_related = ('farmland',)
+    raw_id_fields = ('farmland',)
+    search_fields = ('farmland__cadastral_number', 'note', 'labeled_by')
+    ordering = ('-updated_at',)
     paginator = _NoCountPaginator
     show_full_result_count = False
 
