@@ -135,6 +135,12 @@ class LabelingApiTests(TestCase):
         self.assertEqual(resp.context['year'], str(date.today().year))
         self.assertIn('Обучающая выборка', resp.content.decode())
 
+    def test_page_offers_esri_and_google_basemaps(self):
+        html = self.client.get(PAGE_URL).content.decode()
+        self.assertIn('server.arcgisonline.com', html)
+        self.assertIn('mt{s}.google.com/vt/lyrs=', html)
+        self.assertIn('Google — космоснимки', html)
+
     def test_apis_require_admin(self):
         c = _login(Client(), self.plain)
         self.assertEqual(

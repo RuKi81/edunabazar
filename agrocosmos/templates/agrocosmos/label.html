@@ -157,10 +157,33 @@
 
   var map = L.map('lbl-map', { zoomControl: true, attributionControl: true })
     .setView([54.2, 37.6], 8);
-  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-    maxZoom: 19,
-    attribution: 'Tiles &copy; <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a> — Source: Esri, Maxar, Earthstar Geographics',
-  }).addTo(map);
+  function gTiles(lyrs) {
+    return L.tileLayer('https://mt{s}.google.com/vt/lyrs=' + lyrs + '&x={x}&y={y}&z={z}', {
+      maxZoom: 20, subdomains: '0123', attribution: '&copy; Google',
+    });
+  }
+  var BASEMAPS = {
+    esri: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19,
+      attribution: 'Tiles &copy; <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a> — Source: Esri, Maxar, Earthstar Geographics',
+    }),
+    gsat: gTiles('s'),
+    ghyb: L.layerGroup([gTiles('s'), gTiles('h')]),
+  };
+  var BASEMAP_KEY = 'agroLabelBasemap';
+  var activeBase = localStorage.getItem(BASEMAP_KEY);
+  if (!BASEMAPS[activeBase]) activeBase = 'esri';
+  BASEMAPS[activeBase].addTo(map);
+  L.control.layers({
+    'Esri World Imagery': BASEMAPS.esri,
+    'Google — космоснимки': BASEMAPS.gsat,
+    'Google — снимки + подписи': BASEMAPS.ghyb,
+  }, null, { position: 'topright' }).addTo(map);
+  map.on('baselayerchange', function (e) {
+    Object.keys(BASEMAPS).forEach(function (k) {
+      if (BASEMAPS[k] === e.layer) localStorage.setItem(BASEMAP_KEY, k);
+    });
+  });
 
   var geoLayer = L.geoJSON(null, { style: styleFor, onEachFeature: onEach }).addTo(map);
   var layerById = {};
