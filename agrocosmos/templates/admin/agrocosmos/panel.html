@@ -407,6 +407,95 @@
     </div>
   </div>
 
+  <!-- ═══ 3c. Классификация озимые/яровые ═══ -->
+  <div class="agro-section">
+    <h2>🌾 Классификация озимые / яровые</h2>
+    <div class="body">
+      <form method="post" action="{% url 'admin:agro_run_classify_season' %}">
+        {% csrf_token %}
+        <div class="agro-row">
+          <div class="agro-field">
+            <label>Субъект</label>
+            <select name="region_id" id="classify-region" required>
+              <option value="">— Выберите —</option>
+              {% for r in regions %}
+                <option value="{{ r.id }}">{{ r.name }} {% if r.farmland_count %}({{ r.farmland_count }} угодий){% endif %}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="agro-field">
+            <label>Район (опц.)</label>
+            <select name="district_id" id="classify-district">
+              <option value="">— Весь субъект —</option>
+              {% for d in districts %}
+                <option value="{{ d.id }}" data-region="{{ d.region_id }}">{{ d.name }} ({{ d.region.name }})</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="agro-field">
+            <label>Год</label>
+            <select name="year" required>
+              {% for y in years %}
+                <option value="{{ y }}" {% if y == current_year %}selected{% endif %}>{{ y }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="agro-field">
+            <label>Источник NDVI</label>
+            <select name="source">
+              <option value="fused" selected>HLS fusion (S2+L8)</option>
+              <option value="raster">S2/L8 по отдельности</option>
+            </select>
+          </div>
+        </div>
+        <div class="agro-row" style="margin-top:8px;">
+          <label style="margin-right:18px;">
+            <input type="checkbox" name="reference_labels" value="1" checked>
+            Калибровать по ручным меткам (карта-разметчик)
+          </label>
+          <label style="margin-right:18px;">
+            <input type="checkbox" name="cover_gate" value="1" checked>
+            Гейт покрова (отсев залежи в «не обрабатывается»)
+          </label>
+          <label style="margin-right:18px;">
+            <input type="checkbox" name="harvest_gate" value="1">
+            Гейт уборки (только для завершённого сезона)
+          </label>
+          <label style="margin-right:18px;">
+            <input type="checkbox" name="all_crop_types" value="1">
+            Все виды угодий (по умолч. пашня + сенокос)
+          </label>
+        </div>
+        <div class="agro-row" style="margin-top:10px;">
+          <div>
+            <button type="submit" class="agro-btn agro-btn--green">Классифицировать и записать</button>
+          </div>
+          <div style="margin-left:10px;">
+            <button type="submit" class="agro-btn agro-btn--orange" name="dry_run" value="1">
+              Прогон без записи (dry-run)
+            </button>
+          </div>
+          <div style="margin-left:14px;">
+            <a href="/agrocosmos/label/" target="_blank" class="agro-btn" style="background:#6d28d9;">
+              🎓 Разметить эталоны
+            </a>
+          </div>
+        </div>
+        <div class="agro-hint">
+          Ставит в очередь <code>classify_winter_spring</code> (выполняет воркер;
+          прогресс и лог — в «Процессы пайплайна»).<br>
+          <b>Порядок работы</b>: сначала разметить эталоны на карте-разметчике
+          (кнопка справа), затем <b>dry-run</b> — в логе будут калиброванные
+          пороги и точность по эталонам, и только потом запись.<br>
+          <b>По ручным меткам</b>: <code>--reference-labels</code> — метки за тот
+          же год и субъект калибруют порог дня пика и печатают матрицу ошибок.<br>
+          <b>Гейт уборки</b> в середине сезона отправит всё в «не обрабатывается»
+          — включать только после уборки.
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- ═══ 4. Start Monitoring (MODIS) ═══ -->
   <div class="agro-section">
     <h2>🛰️ Постановка на мониторинг — MODIS (16-дн. архив)</h2>
@@ -656,7 +745,8 @@
 })();
 
 // Filter district dropdown by selected region (per pair)
-[['raster-region', 'raster-district']].forEach(function(pair) {
+[['raster-region', 'raster-district'],
+ ['classify-region', 'classify-district']].forEach(function(pair) {
   var regionSel = document.getElementById(pair[0]);
   var districtSel = document.getElementById(pair[1]);
   if (!regionSel || !districtSel) return;

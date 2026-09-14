@@ -588,6 +588,7 @@ class PipelineRun(models.Model):
         MONITORING = 'monitoring', 'Мониторинг NDVI'
         GIS_OVERLAY = 'gis_overlay', 'Оверлей ГИС-слоёв'
         RASTER_INGEST = 'raster_ingest', 'Конвертация растра (COG)'
+        CLASSIFY_SEASON = 'classify_season', 'Классификация озимые/яровые'
 
     class Status(models.TextChoices):
         QUEUED = 'queued', 'В очереди'

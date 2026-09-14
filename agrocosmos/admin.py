@@ -448,6 +448,9 @@ class AgrocosmosAdminSite:
             path('agrocosmos/alerts/action/',
                  admin.site.admin_view(agro_alert_action_view),
                  name='agro_alert_action'),
+            path('agrocosmos/classify-season/',
+                 admin.site.admin_view(run_classify_season_view),
+                 name='agro_run_classify_season'),
         ]
 
 
@@ -964,6 +967,98 @@ def run_raster_view(request):
         f'{region.name}{district_name}, {year} (min_valid={min_valid:.0%})'
         f'{flags_s}. Воркер подхватит в течение нескольких секунд. '
         f'Обновляйте страницу для прогресса.'
+    )
+    return redirect('admin:agro_panel')
+
+
+def run_classify_season_view(request):
+    """Queue a winter/spring classification run for a region/district + year.
+
+    Runs in the ``worker`` container (``classify_winter_spring --run-id``):
+    the command loads a full season of NDVI series for the whole scope,
+    which is far too heavy for a gunicorn request.
+    """
+    if request.method != 'POST':
+        return redirect('admin:agro_panel')
+
+    region_id = request.POST.get('region_id')
+    year = request.POST.get('year')
+    if not region_id or not year:
+        messages.error(request, 'Укажите субъект и год')
+        return redirect('admin:agro_panel')
+
+    try:
+        region = Region.objects.get(pk=int(region_id))
+        year = int(year)
+    except (TypeError, ValueError, Region.DoesNotExist):
+        messages.error(request, 'Некорректный субъект или год')
+        return redirect('admin:agro_panel')
+
+    district = None
+    district_id = request.POST.get('district_id')
+    if district_id:
+        try:
+            district = District.objects.get(pk=int(district_id))
+        except (TypeError, ValueError, District.DoesNotExist):
+            district = None
+
+    source = request.POST.get('source')
+    if source not in ('fused', 'raster'):
+        source = 'fused'
+
+    launch_args = {
+        'year': year,
+        'source': source,
+        'reference_labels': request.POST.get('reference_labels') == '1',
+        'harvest_gate': request.POST.get('harvest_gate') == '1',
+        # Гейт покрова включён в команде по умолчанию — снимаем только явно.
+        'cover_gate': request.POST.get('cover_gate') == '1',
+        'dry_run': request.POST.get('dry_run') == '1',
+    }
+    if request.POST.get('all_crop_types') == '1':
+        launch_args['crop_types'] = 'all'
+    if district is not None:
+        launch_args['district_id'] = district.pk
+    else:
+        launch_args['region_id'] = region.pk
+
+    flags = [source]
+    if launch_args['reference_labels']:
+        flags.append('по ручным меткам')
+    if launch_args['harvest_gate']:
+        flags.append('гейт уборки')
+    if not launch_args['cover_gate']:
+        flags.append('без гейта покрова')
+    if launch_args['dry_run']:
+        flags.append('dry-run')
+
+    run = PipelineRun.objects.create(
+        task_type=PipelineRun.TaskType.CLASSIFY_SEASON,
+        status=PipelineRun.Status.QUEUED,
+        region=region,
+        year=year,
+        description=(
+            f'{region.name}'
+            + (f', {district.name}' if district is not None else '')
+            + f', {year} год [{", ".join(flags)}]'
+        ),
+    )
+
+    log_path = _pipeline_log_dir() / f'run_{run.pk}.log'
+    try:
+        log_path.touch(exist_ok=True)
+    except OSError:
+        pass
+    run.launch_args = launch_args
+    run.log_file = str(log_path)
+    run.heartbeat_at = timezone.now()
+    run.save(update_fields=['launch_args', 'log_file', 'heartbeat_at'])
+
+    messages.success(
+        request,
+        f'Классификация озимые/яровые поставлена в очередь (run #{run.pk}): '
+        f'{run.description}. Воркер подхватит задачу в течение нескольких '
+        f'секунд — прогресс и лог смотрите в «Процессы пайплайна».'
     )
     return redirect('admin:agro_panel')
 

@@ -28,16 +28,20 @@ NDVI ранней весной (апрель) и ранний SOS, яровые 
     python manage.py classify_winter_spring --region-id 71 --year 2026 --dry-run
 """
 import argparse
+import os
 import time
+import traceback
 from itertools import groupby
 from operator import itemgetter
 
 from django.contrib.gis.geos import GEOSGeometry
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection
+from django.utils import timezone
 
 from agrocosmos.models import (
-    District, Farmland, FarmlandCropSeason, FarmlandTrainingLabel, Region,
+    District, Farmland, FarmlandCropSeason, FarmlandTrainingLabel,
+    PipelineRun, Region,
 )
 from agrocosmos.services.winter_spring import (
     DEFAULT_EARLY_SPRING_THRESHOLD, GREEN_FRACTION_MIN, HARVEST_MIN_DROP,
@@ -114,6 +118,10 @@ class Command(BaseCommand):
                                  'из --reference-shp/--reference-layer.')
         parser.add_argument('--dry-run', action='store_true',
                             help='Не писать в БД, только показать сводку')
+        parser.add_argument('--run-id', type=int, default=None,
+                            help='id строки PipelineRun — в ней ведётся '
+                                 'статус/лог прогона (запуск из агропанели '
+                                 'через воркер).')
         parser.add_argument('--reference-features', action='store_true',
                             help='Диагностика: вывести распределения '
                                  'признаков по эталонным классам '
@@ -123,9 +131,50 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------ main
 
     def handle(self, *args, **options):
+        run_id = options.get('run_id')
+        if not run_id:
+            self._run(options)
+            return
+
+        self._run_bootstrap(run_id)
+        try:
+            total = self._run(options)
+        except Exception:
+            self._run_fail(run_id, traceback.format_exc())
+            raise
+        if total is None:
+            self._run_fail(run_id, 'Не удалось определить регион/район прогона.')
+            raise CommandError('Регион/район не найден — см. лог прогона.')
+        PipelineRun.objects.filter(pk=run_id).update(
+            status=PipelineRun.Status.COMPLETED,
+            finished_at=timezone.now(), heartbeat_at=timezone.now(),
+            records_count=total,
+        )
+
+    @staticmethod
+    def _run_bootstrap(run_id):
+        PipelineRun.objects.filter(pk=run_id).update(
+            pid=os.getpid(), status=PipelineRun.Status.RUNNING,
+            heartbeat_at=timezone.now(),
+        )
+
+    @staticmethod
+    def _run_fail(run_id, message):
+        run = PipelineRun.objects.filter(pk=run_id).only('log').first()
+        prev = (run.log or '') if run else ''
+        PipelineRun.objects.filter(pk=run_id).exclude(
+            status=PipelineRun.Status.COMPLETED,
+        ).update(
+            status=PipelineRun.Status.FAILED,
+            finished_at=timezone.now(), heartbeat_at=timezone.now(),
+            log=(prev + ('\n' if prev else '') + message)[-8000:],
+        )
+
+    def _run(self, options):
+        """Прогон классификации; возвращает число угодий (None — нет scope)."""
         region, district = self._resolve_scope(options)
         if region is None and district is None:
-            return
+            return None
         year = options['year']
         source = options['source']
         satellites = FUSED_SATELLITES if source == 'fused' else RASTER_SATELLITES
@@ -152,7 +201,7 @@ class Command(BaseCommand):
         )
         if not series:
             self.stdout.write(self.style.WARNING('No data — nothing to do.'))
-            return
+            return 0
 
         # --- Диагностика признаков по эталонам (без записи) ---
         if options['reference_features']:
@@ -162,7 +211,7 @@ class Command(BaseCommand):
                     '(--reference-shp / --reference-layer).'
                 )
             self._reference_features_report(series, ref_map)
-            return
+            return 0
 
         # --- Пороги: ручные / калибровка / по умолчанию ---
         peak_threshold = options['peak_threshold']
@@ -216,6 +265,7 @@ class Command(BaseCommand):
             counts, series, ref_map, peak_threshold, es_threshold, gate,
             options['dry_run'],
         )
+        return sum(counts.values())
 
     @staticmethod
     def _gate_params(options):

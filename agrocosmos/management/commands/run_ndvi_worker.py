@@ -53,6 +53,7 @@ TASK_COMMAND = {
     PipelineRun.TaskType.ARCHIVE_NDVI: 'run_archive_pipeline',
     PipelineRun.TaskType.GIS_OVERLAY: 'run_gis_overlay',
     PipelineRun.TaskType.RASTER_INGEST: 'run_raster_ingest',
+    PipelineRun.TaskType.CLASSIFY_SEASON: 'classify_winter_spring',
 }
 SUPPORTED_TASK_TYPES = set(TASK_COMMAND)
 
@@ -64,6 +65,7 @@ SUPPORTED_TASK_TYPES = set(TASK_COMMAND)
 QUICK_TASK_TYPES = {
     PipelineRun.TaskType.GIS_OVERLAY,
     PipelineRun.TaskType.RASTER_INGEST,
+    PipelineRun.TaskType.CLASSIFY_SEASON,
 }
 
 

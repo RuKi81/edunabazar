@@ -176,3 +176,70 @@ class StartRasterMonitoringTests(AdminPanelTestCase):
         run = PipelineRun.objects.get()
         self.assertEqual(run.status, PipelineRun.Status.FAILED)
         self.assertIn('нет воркера', run.log)
+
+
+class RunClassifySeasonTests(AdminPanelTestCase):
+
+    URL_NAME = 'admin:agro_run_classify_season'
+
+    def _post(self, **data):
+        base = {'region_id': self.region.pk, 'year': 2026}
+        base.update(data)
+        return self.client.post(reverse(self.URL_NAME), base)
+
+    def test_get_redirects_without_side_effects(self):
+        resp = self.client.get(reverse(self.URL_NAME))
+        self.assertEqual(resp.status_code, 302)
+        self.assertFalse(PipelineRun.objects.exists())
+
+    def test_missing_region_or_year(self):
+        self.assertEqual(self._post(region_id='').status_code, 302)
+        self.assertEqual(self._post(year='').status_code, 302)
+        self.assertFalse(PipelineRun.objects.exists())
+
+    def test_unknown_region_rejected(self):
+        self._post(region_id=99999)
+        self.assertFalse(PipelineRun.objects.exists())
+
+    def test_queues_run_with_default_args(self):
+        self.assertEqual(self._post().status_code, 302)
+        run = PipelineRun.objects.get()
+        self.assertEqual(run.task_type, PipelineRun.TaskType.CLASSIFY_SEASON)
+        self.assertEqual(run.status, PipelineRun.Status.QUEUED)
+        self.assertEqual(run.region_id, self.region.pk)
+        self.assertEqual(run.year, 2026)
+        self.assertEqual(run.launch_args, {
+            'year': 2026, 'source': 'fused', 'reference_labels': False,
+            'harvest_gate': False, 'cover_gate': False, 'dry_run': False,
+            'region_id': self.region.pk,
+        })
+        self.assertTrue(run.log_file.endswith(f'run_{run.pk}.log'))
+
+    def test_checkboxes_and_district_scope(self):
+        self._post(
+            district_id=self.district.pk, source='raster',
+            reference_labels='1', cover_gate='1', harvest_gate='1',
+            all_crop_types='1', dry_run='1',
+        )
+        run = PipelineRun.objects.get()
+        self.assertEqual(run.launch_args, {
+            'year': 2026, 'source': 'raster', 'reference_labels': True,
+            'harvest_gate': True, 'cover_gate': True, 'dry_run': True,
+            'crop_types': 'all', 'district_id': self.district.pk,
+        })
+        self.assertNotIn('region_id', run.launch_args)
+        self.assertIn('по ручным меткам', run.description)
+        self.assertIn('dry-run', run.description)
+
+    def test_bad_source_and_district_fall_back(self):
+        self._post(source='мусор', district_id='мусор')
+        args = PipelineRun.objects.get().launch_args
+        self.assertEqual(args['source'], 'fused')
+        self.assertEqual(args['region_id'], self.region.pk)
+
+    def test_worker_knows_how_to_run_the_task(self):
+        from agrocosmos.management.commands.run_ndvi_worker import TASK_COMMAND
+        self.assertEqual(
+            TASK_COMMAND[PipelineRun.TaskType.CLASSIFY_SEASON],
+            'classify_winter_spring',
+        )

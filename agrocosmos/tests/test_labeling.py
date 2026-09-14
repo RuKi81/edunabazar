@@ -16,6 +16,7 @@ from io import StringIO
 
 from django.contrib.gis.geos import MultiPolygon, Polygon
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 
@@ -23,8 +24,8 @@ from legacy.constants import USER_STATUS_ACTIVE
 from legacy.models import LegacyUser
 
 from agrocosmos.models import (
-    District, Farmland, FarmlandCropSeason, FarmlandTrainingLabel, Region,
-    SatelliteScene, VegetationIndex,
+    District, Farmland, FarmlandCropSeason, FarmlandTrainingLabel,
+    PipelineRun, Region, SatelliteScene, VegetationIndex,
 )
 
 YEAR = 2026
@@ -378,3 +379,38 @@ class ClassifyWithManualLabelsTests(TestCase):
             farmland=self.fl_winter, year=YEAR, source='raster')
         self.assertTrue(winter.is_reference)
         self.assertEqual(winter.reference_crop, 'label:winter')
+
+    def _queued_run(self):
+        return PipelineRun.objects.create(
+            task_type=PipelineRun.TaskType.CLASSIFY_SEASON,
+            status=PipelineRun.Status.QUEUED,
+            region=self.region, year=YEAR,
+        )
+
+    def test_run_id_marks_pipeline_run_completed(self):
+        run = self._queued_run()
+        self._run(reference_labels=True, dry_run=True, run_id=run.pk)
+        run.refresh_from_db()
+        self.assertEqual(run.status, PipelineRun.Status.COMPLETED)
+        self.assertEqual(run.records_count, 2)
+        self.assertIsNotNone(run.finished_at)
+
+    def test_run_id_marks_pipeline_run_failed(self):
+        run = self._queued_run()
+        with self.assertRaises(CommandError):
+            call_command(
+                'classify_winter_spring', region_id=self.region.pk, year=YEAR,
+                source='raster', reference_features=True, run_id=run.pk,
+                stdout=StringIO(),
+            )
+        run.refresh_from_db()
+        self.assertEqual(run.status, PipelineRun.Status.FAILED)
+        self.assertIn('reference-features', run.log)
+
+    def test_unknown_scope_with_run_id_fails(self):
+        run = self._queued_run()
+        with self.assertRaises(CommandError):
+            call_command('classify_winter_spring', region_id=999999, year=YEAR,
+                         run_id=run.pk, stdout=StringIO(), stderr=StringIO())
+        run.refresh_from_db()
+        self.assertEqual(run.status, PipelineRun.Status.FAILED)
