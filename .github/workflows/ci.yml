@@ -279,8 +279,16 @@ jobs:
             # requests against the old schema; now a failed migration aborts
             # the deploy while the old containers keep serving untouched.
             # --no-deps: don't touch the already-running redis.
-            docker compose -f docker-compose.prod.yml run --rm --no-deps web python manage.py migrate --noinput
-            docker compose -f docker-compose.prod.yml run --rm --no-deps web python manage.py collectstatic --noinput
+            #
+            # -T and `< /dev/null` are LOAD-BEARING: this whole script is fed
+            # to `bash -s` over ssh via stdin, and `compose run` attaches
+            # stdin to the one-off container by default. Without them the
+            # migrate step SWALLOWED THE REST OF THE SCRIPT as its stdin:
+            # bash then hit EOF and exited 0, so every deploy was green while
+            # collectstatic, `up -d` and the gates below never ran and prod
+            # kept serving the previously swapped image for days.
+            docker compose -f docker-compose.prod.yml run --rm --no-deps -T web python manage.py migrate --noinput < /dev/null
+            docker compose -f docker-compose.prod.yml run --rm --no-deps -T web python manage.py collectstatic --noinput < /dev/null
             # --force-recreate for the code-carrying services. A plain `up -d`
             # once silently left `web`/`worker` on the PREVIOUS image for
             # several deploys in a row (new images built, containers never
@@ -333,17 +341,20 @@ jobs:
               done
             done
             # Mark stale running PipelineRuns as failed (e.g. killed by prior worker timeout)
-            docker compose -f docker-compose.prod.yml exec -T web python manage.py cleanup_stale_runs --timeout-min 10 || true
+            # `< /dev/null` on every exec for the same reason as the `run`
+            # calls above: the docker CLI drains its stdin into the container,
+            # which here is the remaining deploy script.
+            docker compose -f docker-compose.prod.yml exec -T web python manage.py cleanup_stale_runs --timeout-min 10 < /dev/null || true
             # Make sure every Region has an active MODIS monitoring task for
             # the current year. Idempotent — only creates missing tasks and
             # reactivates paused ones; never overwrites state otherwise.
-            docker compose -f docker-compose.prod.yml exec -T web python manage.py ensure_all_regions_monitored || true
+            docker compose -f docker-compose.prod.yml exec -T web python manage.py ensure_all_regions_monitored < /dev/null || true
             # Pre-warm the Agrocosmos GeoJSON choropleth cache so the first
             # post-deploy user does not pay the ~20 s rebuild cost (which on
             # bursts of traffic was enough to lock all gunicorn workers).
-            docker compose -f docker-compose.prod.yml exec -T web python manage.py prewarm_agro_caches || true
+            docker compose -f docker-compose.prod.yml exec -T web python manage.py prewarm_agro_caches < /dev/null || true
             docker image prune -f
             # Install/update cron jobs (idempotent: replaces marker-bounded
             # block in user crontab and scrubs legacy duplicates).
-            bash /opt/edunabazar/deploy/install_cron.sh
+            bash /opt/edunabazar/deploy/install_cron.sh < /dev/null
           DEPLOY_SCRIPT
