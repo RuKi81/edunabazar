@@ -203,15 +203,49 @@ jobs:
       group: deploy-${{ github.ref }}
       cancel-in-progress: false
     steps:
+      # Deploy runs over the runner's NATIVE ssh, not appleboy/ssh-action.
+      # That action downloads its `drone-ssh` binary from GitHub Releases on
+      # every run, so a transient CDN 504 ("Failed to download
+      # drone-ssh-...-linux-amd64") aborted the deploy even though the app
+      # server was perfectly reachable. Plain ssh + the key from secrets has
+      # no runtime download and no third-party supply chain.
+      - name: Prepare SSH key and known_hosts
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Pin the host key instead of StrictHostKeyChecking=no. keyscan is
+          # retried: a single dropped packet must not fail the deploy.
+          for attempt in 1 2 3; do
+            if ssh-keyscan -p "${SERVER_PORT:-22}" -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null \
+               && [ -s ~/.ssh/known_hosts ]; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::ssh-keyscan failed for $SERVER_HOST after 3 attempts"; exit 1
+            fi
+            sleep $((attempt * 5))
+          done
+
       - name: Deploy via SSH to VM1 (app)
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          port: ${{ secrets.SERVER_PORT }}
-          command_timeout: 20m
-          script: |
+        timeout-minutes: 25
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+              -p "${SERVER_PORT:-22}" \
+              -o BatchMode=yes \
+              -o ConnectTimeout=30 \
+              -o ServerAliveInterval=30 \
+              -o ServerAliveCountMax=20 \
+              "$SERVER_USER@$SERVER_HOST" 'bash -s' <<'DEPLOY_SCRIPT'
             set -e
             cd /opt/edunabazar
             # `git fetch` over HTTPS occasionally dies with a transient
@@ -282,3 +316,4 @@ jobs:
             # Install/update cron jobs (idempotent: replaces marker-bounded
             # block in user crontab and scrubs legacy duplicates).
             bash /opt/edunabazar/deploy/install_cron.sh
+          DEPLOY_SCRIPT
