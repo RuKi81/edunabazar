@@ -23,6 +23,15 @@ COPY . .
 
 RUN DJANGO_DEBUG=1 DJANGO_SECRET_KEY=build-only-key python manage.py collectstatic --noinput
 
+# Commit baked into the image. The deploy asserts that the RUNNING container
+# reports the SHA that was just deployed: a green deploy serving stale code
+# (image rebuilt but `up -d` not recreating the container) used to be
+# invisible, because the smoke gate only checked the health of whatever
+# container happened to run. Placed after the heavy layers so a new SHA
+# invalidates nothing but this one cheap layer.
+ARG GIT_SHA=unknown
+ENV GIT_SHA=$GIT_SHA
+
 EXPOSE 8000
 
 # Gunicorn: 4 workers × 8 threads = up to 32 concurrent requests.

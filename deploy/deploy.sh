@@ -32,11 +32,21 @@ if [ ! -f "$APP_DIR/.env" ]; then
     exit 1
 fi
 
+# Commit baked into the image (Dockerfile ARG GIT_SHA) so the running
+# container can be checked against the deployed commit.
+export GIT_SHA="$(git rev-parse HEAD)"
+echo "--- Deploying $GIT_SHA ---"
+
 # Build and restart
 echo "--- Building containers ---"
 docker compose -f "$COMPOSE_FILE" build --no-cache web
 
+# --force-recreate for the code-carrying services: a plain `up -d` has been
+# observed leaving web/worker on the previous image (new image built,
+# container never swapped), i.e. prod serving stale code after a "successful"
+# deploy.
 echo "--- Starting services ---"
+docker compose -f "$COMPOSE_FILE" up -d --force-recreate web worker
 docker compose -f "$COMPOSE_FILE" up -d
 
 echo "--- Running migrations ---"

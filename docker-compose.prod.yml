@@ -13,7 +13,14 @@ services:
       retries: 3
 
   web:
-    build: .
+    # GIT_SHA is baked into the image and asserted after deploy (see
+    # .github/workflows/ci.yml): the running container must report the
+    # commit that was just deployed, otherwise the deploy fails loudly
+    # instead of silently serving the previous image.
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
     restart: always
     env_file:
       - .env
@@ -59,7 +66,10 @@ services:
   # Each replica processes one PipelineRun at a time. Increase only if
   # GEE quota allows (watch for HTTP 429 in logs/pipeline/run_*.log).
   worker:
-    build: .
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
     restart: always
     command: ["python", "manage.py", "run_ndvi_worker", "--poll-sec", "5"]
     env_file:

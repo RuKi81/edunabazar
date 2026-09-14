@@ -266,6 +266,10 @@ jobs:
               sleep $((attempt * 5))
             done
             git reset --hard origin/main
+            # Deployed commit: baked into the image as GIT_SHA (see Dockerfile)
+            # and asserted below against the RUNNING container.
+            export GIT_SHA=$(git rev-parse HEAD)
+            echo "deploying $GIT_SHA"
             # Build both web and worker — they share the Dockerfile but
             # docker compose maintains them as separate image tags.
             docker compose -f docker-compose.prod.yml build web worker
@@ -277,6 +281,13 @@ jobs:
             # --no-deps: don't touch the already-running redis.
             docker compose -f docker-compose.prod.yml run --rm --no-deps web python manage.py migrate --noinput
             docker compose -f docker-compose.prod.yml run --rm --no-deps web python manage.py collectstatic --noinput
+            # --force-recreate for the code-carrying services. A plain `up -d`
+            # once silently left `web`/`worker` on the PREVIOUS image for
+            # several deploys in a row (new images built, containers never
+            # swapped), so prod served stale code behind a green deploy.
+            # Recreating them unconditionally is a sub-second container swap
+            # and removes that failure mode entirely.
+            docker compose -f docker-compose.prod.yml up -d --force-recreate web worker
             docker compose -f docker-compose.prod.yml up -d
             # nginx.conf is bind-mounted as a SINGLE FILE. `git reset --hard`
             # above rewrites it as a NEW inode, but the running nginx container
@@ -302,6 +313,25 @@ jobs:
               docker compose -f docker-compose.prod.yml logs --tail 100 web
               exit 1
             fi
+            # Staleness gate: the healthcheck above only proves SOMETHING
+            # healthy is running — it passed happily while prod served a
+            # 3-hour-old image. Assert that web and worker actually report
+            # the commit we just deployed.
+            # Inspected per CONTAINER (not `compose exec`): exec targets
+            # replica index 1, which does not exist once the worker has been
+            # scaled (`--scale worker=N` leaves e.g. worker-12 only).
+            for svc in web worker; do
+              for cid in $(docker compose -f docker-compose.prod.yml ps -q "$svc"); do
+                cname=$(docker inspect -f '{{.Name}}' "$cid")
+                running_sha=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$cid" \
+                              | sed -n 's/^GIT_SHA=//p' | tr -d '\r')
+                if [ "$running_sha" != "$GIT_SHA" ]; then
+                  echo "::error::$cname runs '$running_sha', expected '$GIT_SHA' — stale container, deploy failed"
+                  exit 1
+                fi
+                echo "$cname runs $running_sha — ok"
+              done
+            done
             # Mark stale running PipelineRuns as failed (e.g. killed by prior worker timeout)
             docker compose -f docker-compose.prod.yml exec -T web python manage.py cleanup_stale_runs --timeout-min 10 || true
             # Make sure every Region has an active MODIS monitoring task for
