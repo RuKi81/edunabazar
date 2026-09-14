@@ -83,6 +83,28 @@ GIS access grant; the ``can_open_gis`` flag is set by
         <span class="cab-nav-icon">⭐</span>
         <span>Отзывы обо мне</span>
       </a>
+
+      {% if is_admin_user %}
+        <div class="cab-nav-divider"></div>
+
+        <a href="{% url 'agrocosmos:label_dashboard' %}" class="cab-nav-item">
+          <span class="cab-nav-icon">🎓</span>
+          <span>Разметка озимые/яровые</span>
+          <span class="cab-nav-badge">admin</span>
+        </a>
+
+        <a href="{% url 'agrocosmos:report_region_detailed' %}" class="cab-nav-item">
+          <span class="cab-nav-icon">📊</span>
+          <span>Отчёт субъект/район</span>
+          <span class="cab-nav-badge">admin</span>
+        </a>
+
+        <a href="/admin/" class="cab-nav-item">
+          <span class="cab-nav-icon">⚙️</span>
+          <span>Django-админка</span>
+          <span class="cab-nav-badge">admin</span>
+        </a>
+      {% endif %}
     </div>
   </div>
 </aside>

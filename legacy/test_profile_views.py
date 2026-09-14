@@ -151,6 +151,17 @@ class LegacyMeGetTests(TestCase):
         resp = self._client(self.user).get(self.URL, {'page_my': 'garbage'})
         self.assertEqual(resp.status_code, 200)
 
+    def test_admin_tools_links_in_sidebar(self):
+        html = self._client(_make_user('admin')).get(self.URL).content.decode()
+        self.assertIn('/agrocosmos/label/', html)
+        self.assertIn('/agrocosmos/report/region-detailed/', html)
+        self.assertIn('href="/admin/"', html)
+
+    def test_admin_tools_links_hidden_from_regular_user(self):
+        html = self._client(self.user).get(self.URL).content.decode()
+        self.assertNotIn('/agrocosmos/label/', html)
+        self.assertNotIn('href="/admin/"', html)
+
 
 @override_settings(CACHES=_DUMMY_CACHE)
 class LegacyMePostTests(TestCase):
