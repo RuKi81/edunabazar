@@ -282,6 +282,12 @@
       <div class="empty-note" id="crop-season-note" style="margin-top:8px;"></div>
     </div>
 
+    <div class="pp-section" id="declared-usage-section" style="display:none;">
+      <h2><i class="material-icons">fact_check</i> Не обрабатывается против данных ЗСН</h2>
+      <div class="report-summary" id="declared-usage-cards" style="margin-bottom:0;"></div>
+      <div class="empty-note" id="declared-usage-note" style="margin-top:8px;"></div>
+    </div>
+
     <div class="pp-section" id="harvest-section" style="display:none;">
       <h2 class="hv-h2" id="harvest-h2">
         <span><i class="material-icons">agriculture</i> Уборка (озимые / яровые)</span>
@@ -696,6 +702,49 @@
       + '«Не обрабатывается» — вег. цикл есть, но нет уборочного спада/покрова.';
   }
 
+  // Класс unused (спутник) против заявленного использования (ЗСН).
+  var USAGE_META = [
+    { key: 'suspect', label: 'Заявлено используемым, но не обрабатывается',
+      color: '#D32F2F' },
+    { key: 'confirmed', label: 'Не обрабатывается — совпало с ЗСН',
+      color: '#2e7d32' },
+    { key: 'unknown_declared', label: 'Не обрабатывается, статус ЗСН не указан',
+      color: '#9E9E9E' },
+    { key: 'reactivated', label: 'Заявлено неиспользуемым, но виден посев',
+      color: '#1565C0' }
+  ];
+
+  function renderDeclaredUsage(resp) {
+    var section = document.getElementById('declared-usage-section');
+    var du = resp.declared_usage;
+    if (!du || !du.cells) { section.style.display = 'none'; return; }
+    section.style.display = 'block';
+    var cards = USAGE_META.map(function (m) {
+      var c = du.cells[m.key] || { count: 0, area_ha: 0 };
+      return '<div class="summary-card">'
+        + '<div class="val" style="color:' + m.color + ';">' + area(c.area_ha) + ' га</div>'
+        + '<div class="lbl">' + m.label + '<br>' + num(c.count) + ' угодий</div></div>';
+    });
+    var cs = resp.crop_season;
+    var unusedArea = cs && cs.classes && cs.classes.unused
+      ? (cs.classes.unused.area_ha || 0) : 0;
+    var arable = du.arable_area_ha || 0;
+    var share = arable ? (unusedArea / arable * 100) : null;
+    if (share !== null) {
+      cards.push('<div class="summary-card">'
+        + '<div class="val" style="color:#795548;">' + share.toFixed(1) + '%</div>'
+        + '<div class="lbl">Доля «не обрабатывается» от пашни<br>'
+        + area(unusedArea) + ' из ' + area(arable) + ' га</div></div>');
+    }
+    document.getElementById('declared-usage-cards').innerHTML = cards.join('');
+    document.getElementById('declared-usage-note').textContent =
+      'Спутниковый класс «не обрабатывается» сверен с признаком использования '
+      + 'из слоя ЗСН. Красная карточка — рабочий список на проверку: '
+      + 'угодье числится используемым, а покрова/уборки спутник не видит. '
+      + 'Синяя — обратное расхождение: числится неиспользуемым, но есть посев. '
+      + 'Класс «не определено» в сверку не входит.';
+  }
+
   function renderHarvest(resp) {
     var section = document.getElementById('harvest-section');
     var cs = resp.crop_season;
@@ -937,6 +986,7 @@
     renderSummary(resp);
     renderFarmlandTypes(resp);
     renderCropSeason(resp);
+    renderDeclaredUsage(resp);
     renderHarvest(resp);
     renderAreaChart(resp);
     renderNdviSeason(resp);
@@ -956,6 +1006,7 @@
     renderOverallChart(resp);
     renderCrops(resp);
     renderCropSeason(resp);
+    renderDeclaredUsage(resp);
     renderHarvest(resp);
     renderNdviSeason(resp);
     renderAlerts(resp);

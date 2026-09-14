@@ -605,6 +605,60 @@ class ClassifyWinterSpringCommandTests(TestCase):
         self.assertEqual(d['classes']['winter']['count'], 3)
         self.assertEqual(d['classes']['spring']['count'], 3)
 
+    def test_declared_usage_cross(self):
+        # Заявленное использование (ЗСН): unused-угодье числится
+        # используемым (подозрение), одно озимое — неиспользуемым
+        # (вернули в оборот), у остального — пусто (статус не указан).
+        Farmland.objects.filter(pk=self.unused.pk).update(is_used=True)
+        Farmland.objects.filter(pk=self.winter[0].pk).update(is_used=False)
+        self._run(region_id=self.region.pk, year=YEAR, harvest_gate=True,
+                  cover_gate=False)
+        resp = self.client.get(
+            '/agrocosmos/api/report/region-detailed/',
+            {'region': self.region.pk, 'year': YEAR},
+        ).json()
+        du = resp['declared_usage']
+        self.assertEqual(du['source'], 'raster')
+        cells = du['cells']
+        # unused + заявлено используемым → рабочий список на проверку.
+        self.assertEqual(cells['suspect']['count'], 1)
+        self.assertAlmostEqual(cells['suspect']['area_ha'], 100.0, places=1)
+        # Культура, заявленная неиспользуемой → вернули в оборот.
+        self.assertEqual(cells['reactivated']['count'], 1)
+        # Совпадений с ЗСН нет: is_used=False стоит только у озимого.
+        self.assertEqual(cells['confirmed']['count'], 0)
+        self.assertEqual(cells['unknown_declared']['count'], 0)
+        # Знаменатель доли «не обрабатывается» — площадь пашни (7×100).
+        self.assertAlmostEqual(du['arable_area_ha'], 700.0, places=1)
+
+    def test_declared_usage_confirmed_and_unknown(self):
+        # unused заявлено неиспользуемым → совпало; статус не указан → unknown.
+        self._run(region_id=self.region.pk, year=YEAR, harvest_gate=True,
+                  cover_gate=False)
+        resp = self.client.get(
+            '/agrocosmos/api/report/district-detailed/',
+            {'district': self.district.pk, 'year': YEAR},
+        ).json()
+        cells = resp['declared_usage']['cells']
+        self.assertEqual(cells['unknown_declared']['count'], 1)
+        self.assertEqual(cells['suspect']['count'], 0)
+
+        Farmland.objects.filter(pk=self.unused.pk).update(is_used=False)
+        resp = self.client.get(
+            '/agrocosmos/api/report/district-detailed/',
+            {'district': self.district.pk, 'year': YEAR},
+        ).json()
+        cells = resp['declared_usage']['cells']
+        self.assertEqual(cells['confirmed']['count'], 1)
+        self.assertEqual(cells['unknown_declared']['count'], 0)
+
+    def test_declared_usage_none_without_classification(self):
+        resp = self.client.get(
+            '/agrocosmos/api/report/region-detailed/',
+            {'region': self.region.pk, 'year': YEAR},
+        ).json()
+        self.assertIsNone(resp['declared_usage'])
+
     def test_report_region_detailed_page_renders(self):
         resp = self.client.get(
             '/agrocosmos/report/region-detailed/',
