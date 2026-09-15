@@ -44,11 +44,12 @@ from agrocosmos.models import (
     PipelineRun, Region,
 )
 from agrocosmos.services.winter_spring import (
-    DEFAULT_EARLY_SPRING_THRESHOLD, GREEN_FRACTION_MIN, HARVEST_MIN_DROP,
-    HARVEST_MIN_DROP_RATIO, PEAK_DOY_THRESHOLD_DEFAULT,
-    calibrate_cover_threshold, calibrate_peak_doy_threshold,
-    calibrate_threshold_separating, classify_crop_value, classify_profile,
-    evaluate_predictions, profile_features,
+    DEFAULT_EARLY_SPRING_THRESHOLD, GREEN_FRACTION_MAX, GREEN_FRACTION_MIN,
+    HARVEST_MIN_DROP, HARVEST_MIN_DROP_RATIO, PEAK_DOY_THRESHOLD_DEFAULT,
+    calibrate_cover_max_threshold, calibrate_cover_threshold,
+    calibrate_peak_doy_threshold, calibrate_threshold_separating,
+    classify_crop_value, classify_profile, evaluate_predictions,
+    profile_features,
 )
 
 RASTER_SATELLITES = ('sentinel2', 'landsat8', 'landsat9')
@@ -104,6 +105,17 @@ class Command(BaseCommand):
                             help='Порог доли зелёных наблюдений (ниже — '
                                  f'unused; по умолч. {GREEN_FRACTION_MIN} или '
                                  'калибровка по эталонам).')
+        parser.add_argument('--overgrown-gate',
+                            action=argparse.BooleanOptionalAction,
+                            default=False,
+                            help='Гейт зарастания: отсев в unused по '
+                                 'ВЫСОКОЙ доле зелёных ПРИ ОТСУТСТВИИ '
+                                 'уборки (заросшая залежь зеленее культур). '
+                                 'Требует гейта покрова; по умолчанию ВЫКЛ.')
+        parser.add_argument('--cover-max', type=float, default=None,
+                            help='Верхний порог доли зелёных (≥ и без '
+                                 f'уборки — unused; по умолч. '
+                                 f'{GREEN_FRACTION_MAX} или калибровка).')
         parser.add_argument('--reference-shp', type=str, default=None,
                             help='Путь к shapefile опорных точек культур')
         parser.add_argument('--reference-layer', type=str, default=None,
@@ -179,6 +191,13 @@ class Command(BaseCommand):
         source = options['source']
         satellites = FUSED_SATELLITES if source == 'fused' else RASTER_SATELLITES
         crop_types = self._parse_crop_types(options['crop_types'])
+        # Верхняя ветка покрова без нижней бессмысленна — валидируем ДО
+        # многоминутной загрузки рядов NDVI.
+        if options['overgrown_gate'] and not options['cover_gate']:
+            raise CommandError(
+                '--overgrown-gate работает только вместе с гейтом '
+                'покрова: уберите --no-cover-gate.'
+            )
 
         # --- Опорные точки культур (для калибровки/валидации) ---
         # Резолвим ДО тяжёлой загрузки NDVI: чтение SHP/слоя и spatial-join
@@ -232,8 +251,27 @@ class Command(BaseCommand):
         )
 
         # --- Гейты отсева необрабатываемых угодий ---
+        gate = self._resolve_gates(options, series, ref_map)
+
+        # --- Классификация + запись ---
+        counts = self._classify_all(
+            series, peak_threshold, es_threshold, year, source, ref_map,
+            gate, options['dry_run'],
+        )
+        self._report(
+            counts, series, ref_map, peak_threshold, es_threshold, gate,
+            options['dry_run'],
+        )
+        return sum(counts.values())
+
+    def _resolve_gates(self, options, series, ref_map):
+        """Резолв порогов гейтов (калибровка / дефолты) + печать статуса.
+
+        Три гейта: покрова (низкая доля зелени — голая залежь),
+        зарастания (высокая доля зелени без уборки — заросшая) и
+        уборки. Возвращает kwargs для :func:`classify_profile`.
+        """
         gate = self._gate_params(options)
-        # Гейт покрова: резолвим порог доли зелёных (калибровка / дефолт).
         if gate['require_cover'] and gate['cover_min'] is None:
             gate['cover_min'] = (
                 self._calibrate_cover(series, ref_map) if ref_map
@@ -248,6 +286,21 @@ class Command(BaseCommand):
             )
         else:
             self.stdout.write('  Гейт покрова ВЫКЛ')
+
+        # Гейт зарастания — верхняя сторона покрова (валидация в :meth:`_run`).
+        if options['overgrown_gate']:
+            if gate['cover_max'] is None:
+                gate['cover_max'] = (
+                    self._calibrate_cover_max(series, ref_map) if ref_map
+                    else GREEN_FRACTION_MAX
+                )
+            self.stdout.write(
+                f'  Гейт зарастания ВКЛ: доля зелёных ≥ '
+                f'{gate["cover_max"]:.2f} И без уборки → unused'
+            )
+        else:
+            self.stdout.write('  Гейт зарастания ВЫКЛ')
+
         if gate['require_harvest']:
             self.stdout.write(
                 f'  Гейт уборки ВКЛ: спад ≥ {gate["harvest_min_drop"]:.2f} '
@@ -255,17 +308,7 @@ class Command(BaseCommand):
             )
         else:
             self.stdout.write('  Гейт уборки ВЫКЛ')
-
-        # --- Классификация + запись ---
-        counts = self._classify_all(
-            series, peak_threshold, es_threshold, year, source, ref_map,
-            gate, options['dry_run'],
-        )
-        self._report(
-            counts, series, ref_map, peak_threshold, es_threshold, gate,
-            options['dry_run'],
-        )
-        return sum(counts.values())
+        return gate
 
     @staticmethod
     def _gate_params(options):
@@ -286,14 +329,13 @@ class Command(BaseCommand):
             ),
             'require_cover': options['cover_gate'],
             'cover_min': options['cover_min'],
+            'cover_max': (options['cover_max']
+                          if options['overgrown_gate'] else None),
         }
 
-    def _calibrate_cover(self, series, ref_map):
-        """Подобрать порог доли зелёных по эталонам культур и «не обраб.».
-
-        Культуры (winter+spring) должны оказаться ВЫШЕ порога, «не
-        обрабатываемые» — НИЖЕ (:func:`calibrate_cover_threshold`).
-        """
+    @staticmethod
+    def _reference_green_fractions(series, ref_map):
+        """([доли зелени культур], [доли зелени «не обраб.»]) по эталонам."""
         crop, unused = [], []
         for fid, ref in ref_map.items():
             data = series.get(fid)
@@ -306,10 +348,33 @@ class Command(BaseCommand):
                 crop.append(gf)
             elif ref['class'] == 'unused':
                 unused.append(gf)
+        return crop, unused
+
+    def _calibrate_cover(self, series, ref_map):
+        """Подобрать порог доли зелёных по эталонам культур и «не обраб.».
+
+        Культуры (winter+spring) должны оказаться ВЫШЕ порога, «не
+        обрабатываемые» — НИЖЕ (:func:`calibrate_cover_threshold`).
+        """
+        crop, unused = self._reference_green_fractions(series, ref_map)
         thr = calibrate_cover_threshold(crop, unused)
         self.stdout.write(
             f'  Калибровка покрова: культур с рядом={len(crop)}, '
             f'не обраб.={len(unused)} → порог доли зелёных {thr:.2f}'
+        )
+        return thr
+
+    def _calibrate_cover_max(self, series, ref_map):
+        """Подобрать ВЕРХНИЙ порог доли зелёных (гейт зарастания).
+
+        Зеркально :meth:`_calibrate_cover`: «не обрабатываемые» должны
+        оказаться ВЫШЕ порога (заросшая залежь), культуры — НИЖЕ.
+        """
+        crop, unused = self._reference_green_fractions(series, ref_map)
+        thr = calibrate_cover_max_threshold(crop, unused)
+        self.stdout.write(
+            f'  Калибровка зарастания: культур с рядом={len(crop)}, '
+            f'не обраб.={len(unused)} → верхний порог {thr:.2f}'
         )
         return thr
 

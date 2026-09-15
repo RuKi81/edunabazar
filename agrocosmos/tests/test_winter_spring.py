@@ -16,6 +16,7 @@ from io import StringIO
 
 from django.contrib.gis.geos import MultiPolygon, Polygon
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.db import connection
 from django.test import SimpleTestCase, TestCase, override_settings
 
@@ -24,9 +25,10 @@ from agrocosmos.models import (
     VegetationIndex,
 )
 from agrocosmos.services.winter_spring import (
-    calibrate_cover_threshold, calibrate_peak_doy_threshold,
-    calibrate_threshold, calibrate_threshold_separating, classify_crop_value,
-    classify_profile, detect_harvest, evaluate_predictions, profile_features,
+    calibrate_cover_max_threshold, calibrate_cover_threshold,
+    calibrate_peak_doy_threshold, calibrate_threshold,
+    calibrate_threshold_separating, classify_crop_value, classify_profile,
+    detect_harvest, evaluate_predictions, profile_features,
 )
 
 YEAR = 2026
@@ -284,6 +286,73 @@ class WinterSpringServiceTests(SimpleTestCase):
         thr = calibrate_cover_threshold([0.5, 0.6], [])
         self.assertLessEqual(thr, 0.5)
 
+    # -- гейт зарастания (верхняя сторона покрова) --
+    def test_overgrown_gate_catches_green_unharvested(self):
+        """Заросшая залежь: зелено весь сезон И без уборки → unused.
+
+        Именно этот тип преобладает в ручных метках и НЕ ловился
+        нижней веткой покрова ни разу (знак признака обратный).
+        """
+        doys, vals, _ = _profile(_grassland_ndvi)
+        prof = classify_profile(doys, vals, require_cover=True, cover_max=0.79)
+        self.assertEqual(prof.season_class, 'unused')
+        self.assertGreaterEqual(prof.green_fraction, 0.79)
+        self.assertFalse(prof.is_harvested)
+
+    def test_overgrown_gate_off_by_default(self):
+        doys, vals, _ = _profile(_grassland_ndvi)
+        prof = classify_profile(doys, vals, require_cover=True)
+        self.assertNotEqual(prof.season_class, 'unused')
+
+    def test_overgrown_gate_spares_harvested_crop(self):
+        """Плотный посев с уборкой не уходит в unused даже при низком
+        верхнем пороге — защита от потери культур и люцерны."""
+        # cover_min=0.0 — изолируем верхнюю ветку: синтетический профиль
+        # «острый» (доля зелени ~0.3) и иначе ловится нижней.
+        doys, vals, _ = _profile(_winter_ndvi)
+        prof = classify_profile(doys, vals, require_cover=True,
+                                cover_min=0.0, cover_max=0.10)
+        self.assertEqual(prof.season_class, 'winter')
+        self.assertTrue(prof.is_harvested)
+
+    def test_overgrown_gate_needs_cover_gate(self):
+        """Без ``require_cover`` верхний порог игнорируется."""
+        doys, vals, _ = _profile(_grassland_ndvi)
+        prof = classify_profile(doys, vals, cover_max=0.79)
+        self.assertNotEqual(prof.season_class, 'unused')
+
+    def test_overgrown_gate_before_harvest_gate(self):
+        """Заросшая залежь → unused и при включённом гейте уборки."""
+        doys, vals, _ = _profile(_grassland_ndvi)
+        prof = classify_profile(doys, vals, require_cover=True, cover_max=0.79,
+                                require_harvest=True)
+        self.assertEqual(prof.season_class, 'unused')
+
+    def test_calibrate_cover_max_separates_inverted_classes(self):
+        """Зеркально нижнему порогу: «не обраб.» ВЫШЕ культур."""
+        crop = [0.60, 0.62, 0.66, 0.70]
+        unused = [0.85, 0.88, 0.92, 0.95]
+        thr = calibrate_cover_max_threshold(crop, unused)
+        self.assertTrue(0.60 <= thr <= 0.95)
+        self.assertTrue(all(u >= thr for u in unused))
+        self.assertTrue(all(c < thr for c in crop))
+
+    def test_calibrate_cover_max_degenerate(self):
+        self.assertEqual(calibrate_cover_max_threshold([], []), 0.79)
+        # Только культуры → порог выше почти всех (ничего не теряем).
+        self.assertGreaterEqual(
+            calibrate_cover_max_threshold([0.60, 0.65], []), 0.60,
+        )
+        # Только «не обраб.» → порог ниже почти всех (ловим больше).
+        self.assertLessEqual(
+            calibrate_cover_max_threshold([], [0.85, 0.90]), 0.90,
+        )
+
+    def test_calibrate_cover_max_clamped(self):
+        """Вырожденная выборка не даёт порога ниже 0.60."""
+        thr = calibrate_cover_max_threshold([0.05, 0.08], [0.20, 0.25])
+        self.assertGreaterEqual(thr, 0.60)
+
     # -- раскладка crop → класс (реальные значения kultury_2026) --
     def test_classify_crop_value_real_labels(self):
         cases = {
@@ -519,6 +588,26 @@ class ClassifyWinterSpringCommandTests(TestCase):
         # --no-cover-gate (cover_gate=False) выключает гейт покрова.
         out = self._run(region_id=self.region.pk, year=YEAR, cover_gate=False)
         self.assertIn('Гейт покрова ВЫКЛ', out)
+
+    def test_overgrown_gate_off_by_default(self):
+        out = self._run(region_id=self.region.pk, year=YEAR)
+        self.assertIn('Гейт зарастания ВЫКЛ', out)
+
+    def test_overgrown_gate_reports_threshold_and_catches_fallow(self):
+        """С --overgrown-gate заросшая залежь уходит в unused."""
+        out = self._run(region_id=self.region.pk, year=YEAR,
+                        overgrown_gate=True, cover_max=0.79)
+        self.assertIn('Гейт зарастания ВКЛ', out)
+        self.assertIn('0.79', out)
+        self.assertEqual(
+            FarmlandCropSeason.objects.filter(
+                farmland=self.unused, season_class='unused').count(), 1,
+        )
+
+    def test_overgrown_gate_requires_cover_gate(self):
+        with self.assertRaisesMessage(CommandError, '--overgrown-gate'):
+            self._run(region_id=self.region.pk, year=YEAR,
+                      overgrown_gate=True, cover_gate=False)
 
     def test_missing_shp_fails_fast(self):
         from django.core.management.base import CommandError

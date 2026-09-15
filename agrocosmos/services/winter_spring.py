@@ -111,6 +111,24 @@ GREEN_FRACTION_MIN = 0.33
 MIN_COVER_THRESHOLD = 0.20
 MAX_COVER_THRESHOLD = 0.50
 
+# ── ГЕЙТ ЗАРАСТАНИЯ (overgrown gate): вторая сторона покрова ──
+# «Не обрабатывается» — ДВА разных физических объекта, и односторонний
+# порог ловит только один из них:
+#
+# * ГОЛАЯ залежь / неудобья — мало зелени (нижняя ветка, ``cover_min``);
+# * ЗАРОСШАЯ залежь — многолетний травостой ЗЕЛЕНЕЕ культур: его не
+#   надо сеять, поэтому нет периода голой почвы после вспашки/сева.
+#
+# На ручных метках Тулы-2026 (263 «не обраб.») второй тип преобладает:
+# доля зелени у культур 0.62, у необрабатываемых 0.88 — то есть ЗНАК
+# ОБРАТНЫЙ к нижней ветке, и один только ``cover_min`` на них не
+# срабатывал НИ РАЗУ (recall 0.00 на всей сетке порогов).
+GREEN_FRACTION_MAX = 0.79
+# Диапазон калибровки верхнего порога: ниже 0.60 под отсев пошли бы
+# нормальные плотные посевы, выше 0.95 — гейт перестаёт что-либо ловить.
+MIN_COVER_MAX_THRESHOLD = 0.60
+MAX_COVER_MAX_THRESHOLD = 0.95
+
 
 @dataclass
 class HarvestSignal:
@@ -302,6 +320,7 @@ def classify_profile(
     harvest_min_drop_ratio: float = HARVEST_MIN_DROP_RATIO,
     require_cover: bool = False,
     cover_min: float = GREEN_FRACTION_MIN,
+    cover_max: Optional[float] = None,
     hayfield: bool = False,
 ) -> SeasonProfile:
     """Классифицировать один сезонный NDVI-ряд угодья.
@@ -326,6 +345,14 @@ def classify_profile(
     (залежь, неудобья, разреженный покров) ⇒ класс ``unused``. В отличие от
     гейта уборки этот признак НЕ требует состоявшейся уборки, поэтому
     корректен и в середине сезона. Проверяется ПЕРЕД гейтом уборки.
+
+    **Гейт зарастания** (``cover_max``, только вместе с ``require_cover``;
+    по умолчанию ``None`` = ВЫКЛ): вторая, ПРОТИВОПОЛОЖНАЯ сторона
+    покрова: если доля зелени ≥ ``cover_max`` И уборочного спада нет —
+    поле зеленеет весь сезон и никто его не убирал ⇒ заросшая залежь.
+    Условие «без уборки» обязательно: без него в отсев попадут плотные
+    посевы и многолетние кормовые (люцерна) — они тоже держат высокую
+    долю зелени, но их косят/убирают.
 
     Args:
         doys: дни года наблюдений (1..366).
@@ -403,6 +430,19 @@ def classify_profile(
             sos_doy, peak_doy, peak_ndvi, n_obs,
             harvest_doy=harvest.harvest_doy, harvest_drop=harvest.drop_ratio,
             is_harvested=harvest.has_harvest, green_fraction=green_fraction,
+        )
+
+    # Гейт зарастания: зелено почти весь ряд И никакой уборки → залежь
+    # под многолетним травостоем (у культуры есть либо голая почва
+    # после сева, либо уборочный спад — чаще и то, и другое).
+    if (require_cover and cover_max is not None
+            and green_fraction >= cover_max and not harvest.has_harvest):
+        return SeasonProfile(
+            'unused', _unused_confidence(harvest.drop_ratio,
+                                         harvest_min_drop_ratio),
+            early_spring, winter_baseline, sos_doy, peak_doy, peak_ndvi, n_obs,
+            harvest_doy=None, harvest_drop=harvest.drop_ratio,
+            green_fraction=green_fraction,
         )
 
     if require_harvest and not harvest.has_harvest:
@@ -793,6 +833,40 @@ def calibrate_cover_threshold(
         if score > best_score:
             best_score, best_thr = score, float(thr)
     return float(np.clip(best_thr, lo, hi))
+
+
+def calibrate_cover_max_threshold(
+    crop_green_fractions: Sequence[float],
+    unused_green_fractions: Sequence[float],
+    default: float = GREEN_FRACTION_MAX,
+) -> float:
+    """Калибровка ВЕРХНЕГО порога доли зелени (гейт зарастания).
+
+    Зеркально :func:`calibrate_cover_threshold`: здесь «не обрабатываемые»
+    должны оказаться ВЫШЕ порога (заросшая залежь зеленее культур), а
+    культуры — НИЖЕ. Максимизируем сбалансированную точность по сетке
+    кандидатов из самих данных. Деградации:
+    - только культуры → 90-й перцентиль их долей (порог выше почти всех);
+    - только «не обраб.» → 10-й перцентиль их долей (порог ниже почти всех);
+    - нет данных → ``default``.
+    Итог зажимается в
+    [``MIN_COVER_MAX_THRESHOLD``, ``MAX_COVER_MAX_THRESHOLD``].
+    """
+    crop = [v for v in crop_green_fractions if v is not None]
+    unused = [v for v in unused_green_fractions if v is not None]
+    lo, hi = MIN_COVER_MAX_THRESHOLD, MAX_COVER_MAX_THRESHOLD
+    if not crop and not unused:
+        return default
+    if crop and not unused:
+        return float(np.clip(np.percentile(crop, 90), lo, hi))
+    if unused and not crop:
+        return float(np.clip(np.percentile(unused, 10), lo, hi))
+
+    grid = feature_grid(crop + unused)
+    # pos = «не обраб.» ВЫШЕ порога, neg = культуры ниже.
+    points = sweep_threshold(unused, crop, grid, pos_side='above')
+    best = max(points, key=lambda p: p.balanced)
+    return float(np.clip(best.threshold, lo, hi))
 
 
 # ── Сопоставление названия культуры → класс сезона (ground truth) ────
