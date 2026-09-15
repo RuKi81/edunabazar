@@ -35,11 +35,40 @@ from agrocosmos.models import District, FarmlandTrainingLabel, Region
 from agrocosmos.services.winter_spring import (
     GREEN_FRACTION_MIN, HARVEST_MIN_DROP_RATIO, MAX_COVER_THRESHOLD,
     MAX_PEAK_DOY_THRESHOLD, MIN_COVER_THRESHOLD, MIN_PEAK_DOY_THRESHOLD,
-    PEAK_DOY_THRESHOLD_DEFAULT, classify_profile, sweep_threshold,
+    PEAK_DOY_THRESHOLD_DEFAULT, best_split, classify_profile,
+    profile_features, sweep_threshold,
 )
 
 RASTER_SATELLITES = ('sentinel2', 'landsat8', 'landsat9')
 FUSED_SATELLITES = ('hls_fused',)
+# Прошлогодняя осень нужна для признака «всходы озимых»: если S2/L8
+# за предыдущий год нет, пробуем архив MODIS (он есть с 2000-х).
+MODIS_SATELLITES = ('modis_terra', 'modis_aqua')
+
+# Кандидаты в дискриминаторы: ключ фичи → подпись и формат.
+# Порядок только для читаемости — в отчёте признаки сортируются по
+# разделяющей силе. ``autumn_prev`` — главный физический признак
+# озимых: осенью прошлого года они всходят и зеленеют, а под яровые
+# поле стоит под стернёй или вспашкой.
+FEATURES = (
+    ('autumn_prev', 'NDVI сен-ноя ПРОШЛ. года', '{:.3f}'),
+    ('early_spring', 'NDVI апр-май', '{:.3f}'),
+    ('peak_doy', 'день пика', '{:.0f}'),
+    ('sos_doy', 'SOS (день)', '{:.0f}'),
+    ('summer', 'NDVI июл-авг', '{:.3f}'),
+    ('autumn', 'NDVI сен-ноя', '{:.3f}'),
+    ('drop_ratio', 'спад после пика', '{:.2f}'),
+    ('green_fraction', 'доля зелени', '{:.2f}'),
+    ('amplitude', 'амплитуда', '{:.3f}'),
+    ('peak_ndvi', 'пик NDVI', '{:.3f}'),
+    ('season_min', 'минимум за год', '{:.3f}'),
+    ('winter_baseline', 'зимний baseline', '{:.3f}'),
+)
+
+# Ниже этого баланса признак практически бесполезен (0.5 = монетка).
+USELESS_BALANCED = 0.60
+# Доля эталонов с прошлогодним рядом, ниже которой пробуем MODIS.
+PREV_COVERAGE_MIN = 0.5
 
 # Классы меток, участвующие в подборе порогов. ``hayfield``/``ignore``
 # не участвуют: сенокос получает класс по land-use, сады исключены.
@@ -78,6 +107,9 @@ class Command(BaseCommand):
         parser.add_argument('--skip-area', action='store_true',
                             help='Не считать распределение дня пика по всем '
                                  'угодьям региона (только эталоны).')
+        parser.add_argument('--skip-prev-autumn', action='store_true',
+                            help='Не грузить ряды предыдущего года (признак '
+                                 '«всходы озимых осенью» будет пропущен).')
 
     # ------------------------------------------------------------------ main
 
@@ -101,11 +133,23 @@ class Command(BaseCommand):
             f'за {time.time() - t0:.1f}s'
         )
 
-        feats = self._features(labels, series)
+        prev_series = ({} if options['skip_prev_autumn']
+                       else self._load_prev_series(list(labels), year,
+                                                   satellites))
+
+        feats = self._features(labels, series, prev_series)
         self._report_labels(labels, feats)
         self._sweep_peak(feats, options['peak_step'])
         self._sweep_cover(feats)
         self._sweep_harvest(feats)
+        self._rank_features(
+            feats, 'ОЗИМЫЕ vs ЯРОВЫЕ', ('winter',), ('spring',),
+            'озимые', 'яровые',
+        )
+        self._rank_features(
+            feats, 'КУЛЬТУРЫ vs НЕ ОБРАБАТЫВАЕТСЯ',
+            ('winter', 'spring'), ('unused',), 'культуры', 'не обраб.',
+        )
         if not options['skip_area']:
             self._report_peak_histogram(region, district, year, source)
 
@@ -180,27 +224,63 @@ class Command(BaseCommand):
             vals.append(float(mean))
         return out
 
-    @staticmethod
-    def _features(labels, series) -> list[dict]:
-        """Признаки эталонов: [{'cls', 'peak_doy', 'green', 'drop_ratio'}].
+    def _load_prev_series(self, farmland_ids, year, satellites) -> dict:
+        """Ряды ПРЕДЫДУЩЕГО года — для признака «всходы озимых осенью».
 
-        Признаки НЕ зависят от порогов (день пика, доля зелени, глубина
-        спада), поэтому считаются один раз с дефолтными параметрами
-        :func:`classify_profile`, а пороги перебираются уже по ним.
+        Озимые сеют в августе-сентябре, и до зимы поле зеленеет — это
+        прямой признак класса, в отличие от косвенного дня пика. Если
+        детальный мониторинг за прошлый год покрывает меньше половины
+        эталонов, переходим на архив MODIS.
         """
+        prev = year - 1
+        series = self._load_series(farmland_ids, prev, satellites)
+        used = 'детальный'
+        if len(series) < PREV_COVERAGE_MIN * len(farmland_ids):
+            modis = self._load_series(farmland_ids, prev, MODIS_SATELLITES)
+            if len(modis) > len(series):
+                series, used = modis, 'MODIS'
+        self.stdout.write(
+            f'Ряды NDVI за {prev} ({used}): {len(series)} из '
+            f'{len(farmland_ids)} эталонов'
+            + ('' if series else ' — признак осени недоступен')
+        )
+        return series
+
+    @staticmethod
+    def _features(labels, series, prev_series=None) -> list[dict]:
+        """Признаки эталонов: [{'cls', <ключи FEATURES>, 'n_obs'}].
+
+        Признаки НЕ зависят от порогов, поэтому считаются один раз с
+        дефолтными параметрами, а пороги перебираются уже по ним.
+        ``autumn_prev`` берётся из ряда предыдущего года и может быть
+        ``None`` — такие значения отбрасываются при ранжировании.
+        """
+        prev_series = prev_series or {}
         out = []
         for fid, cls in labels.items():
             data = series.get(fid)
             if not data:
                 continue
             prof = classify_profile(data[0], data[1])
-            out.append({
+            feats = profile_features(data[0], data[1])
+            prev = prev_series.get(fid)
+            row = {
                 'cls': cls,
+                'n_obs': prof.n_obs,
                 'peak_doy': prof.peak_doy,
+                'sos_doy': prof.sos_doy,
                 'green': prof.green_fraction,
                 'drop_ratio': prof.harvest_drop,
-                'n_obs': prof.n_obs,
-            })
+                'autumn_prev': (
+                    profile_features(prev[0], prev[1]).get('autumn')
+                    if prev else None
+                ),
+            }
+            for key in ('early_spring', 'summer', 'autumn', 'amplitude',
+                        'peak_ndvi', 'season_min', 'winter_baseline',
+                        'green_fraction'):
+                row[key] = feats.get(key)
+            out.append(row)
         return out
 
     # --------------------------------------------------------------- reports
@@ -298,6 +378,67 @@ class Command(BaseCommand):
             f'{fmt.format(nearest.threshold)} → {nearest.balanced:.3f}; '
             f'выигрыш {delta:+.3f}'
         )
+
+    def _rank_features(self, feats, title, pos_cls, neg_cls,
+                       pos_name, neg_name):
+        """Ранжирование признаков по разделяющей силе на эталонах.
+
+        Для каждого кандидата ищется лучший разрез с автовыбором
+        стороны (:func:`best_split`) — направление разделения заранее
+        неизвестно. Сортировка по сбалансированной точности: сразу
+        видно, есть ли вообще признак, на котором стоит строить правило.
+        """
+        self.stdout.write(f'\nРАЗДЕЛЯЮЩАЯ СИЛА ПРИЗНАКОВ: {title}')
+        self.stdout.write(
+            f'  {"признак":<24}  {pos_name:>9}  {neg_name:>9}  '
+            f'{"порог":>8}  {"баланс":>7}'
+        )
+        rows = []
+        for key, label, fmt in FEATURES:
+            src = 'green' if key == 'green_fraction' else key
+            pos = [f.get(src) for f in feats if f['cls'] in pos_cls]
+            neg = [f.get(src) for f in feats if f['cls'] in neg_cls]
+            point, side = best_split(pos, neg)
+            if point is None:
+                continue
+            rows.append((point, side, label, fmt,
+                         self._median(pos), self._median(neg)))
+
+        if not rows:
+            self.stdout.write('  Нет эталонов обоих классов — пропущено.')
+            return
+
+        rows.sort(key=lambda r: r[0].balanced, reverse=True)
+        for point, side, label, fmt, med_pos, med_neg in rows:
+            sign = '<' if side == 'below' else '≥'
+            bar = '#' * int(round(point.balanced * BAR_WIDTH))
+            note = '  ← не разделяет' if point.balanced < USELESS_BALANCED else ''
+            self.stdout.write(
+                f'  {label:<24}  {self._fmt(med_pos, fmt):>9}  '
+                f'{self._fmt(med_neg, fmt):>9}  '
+                f'{sign}{self._fmt(point.threshold, fmt):>7}  '
+                f'{point.balanced:>7.3f}  {bar}{note}'
+            )
+        best = rows[0][0]
+        if best.balanced < USELESS_BALANCED:
+            self.stdout.write(
+                '  НИ ОДИН признак не разделяет эти классы лучше '
+                f'{USELESS_BALANCED:.2f} — пороговым правилом задача не '
+                'решается (либо шум в метках/рядах).'
+            )
+        self.stdout.write(
+            '  Колонки классов — медианы; знак у порога показывает '
+            f'условие для «{pos_name}».'
+        )
+
+    @staticmethod
+    def _median(values):
+        vals = [v for v in values if v is not None]
+        return float(np.median(vals)) if vals else None
+
+    @staticmethod
+    def _fmt(value, fmt):
+        return '—' if value is None else fmt.format(value)
 
     def _report_peak_histogram(self, region, district, year, source):
         """Распределение дня пика по ВСЕМ угодьям scope (бимодальность?).

@@ -551,6 +551,55 @@ def sweep_threshold(
     return out
 
 
+def feature_grid(values: Sequence[Optional[float]],
+                 n_candidates: int = 99) -> list[float]:
+    """Сетка кандидатов в порог по распределению значений признака.
+
+    Берём перцентили объединённой выборки: сетка автоматически покрывает
+    фактический диапазон признака (в отличие от фиксированных сеток, где
+    оптимум может лежать за краем). Дубликаты убираются, поэтому для
+    дискретных признаков сетка короче ``n_candidates``.
+    """
+    vals = np.asarray([v for v in values if v is not None], dtype=np.float64)
+    if vals.size == 0:
+        return []
+    if vals.size == 1:
+        return [float(vals[0])]
+    qs = np.linspace(1.0, 99.0, n_candidates)
+    return [float(v) for v in np.unique(np.percentile(vals, qs))]
+
+
+def best_split(pos_values: Sequence[Optional[float]],
+               neg_values: Sequence[Optional[float]],
+               grid: Optional[Sequence[float]] = None):
+    """Лучший разрез признака с АВТОВЫБОРОМ стороны: (SweepPoint, side).
+
+    Проверяет обе гипотезы — «положительный класс ниже порога» и «выше» —
+    и возвращает победителя по сбалансированной точности. Нужно для
+    ранжирования признаков-кандидатов, когда направление разделения заранее
+    неизвестно. ``(None, None)`` — если один из классов пуст.
+
+    Сбалансированная точность 0.5 означает «признак не разделяет классы»:
+    это тот же результат, что у монетки.
+    """
+    pos = [v for v in pos_values if v is not None]
+    neg = [v for v in neg_values if v is not None]
+    if not pos or not neg:
+        return None, None
+    if grid is None:
+        grid = feature_grid(list(pos) + list(neg))
+    if not grid:
+        return None, None
+
+    best_point, best_side = None, None
+    for side in ('below', 'above'):
+        point = max(sweep_threshold(pos, neg, grid, side),
+                    key=lambda p: p.balanced)
+        if best_point is None or point.balanced > best_point.balanced:
+            best_point, best_side = point, side
+    return best_point, best_side
+
+
 def calibrate_threshold(
     winter_early_spring: Sequence[float],
     percentile: float = 10.0,

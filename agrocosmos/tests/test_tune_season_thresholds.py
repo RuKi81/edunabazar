@@ -7,6 +7,7 @@
 Синтетические профили NDVI переиспользуются из ``test_winter_spring``:
 озимые дают ранний пик, яровые — поздний, залежь — низкую долю зелени.
 """
+from datetime import date, timedelta
 from io import StringIO
 
 from django.core.management import call_command
@@ -17,7 +18,9 @@ from agrocosmos.models import (
     District, Farmland, FarmlandCropSeason, FarmlandTrainingLabel, Region,
     SatelliteScene, VegetationIndex,
 )
-from agrocosmos.services.winter_spring import sweep_threshold
+from agrocosmos.services.winter_spring import (
+    best_split, feature_grid, sweep_threshold,
+)
 
 from .test_winter_spring import (
     YEAR, _profile, _spring_ndvi, _square, _unused_cover_ndvi, _winter_ndvi,
@@ -69,6 +72,41 @@ class SweepThresholdTests(SimpleTestCase):
             sweep_threshold([1], [2], [1.5], 'sideways')
 
 
+class FeatureGridAndBestSplitTests(SimpleTestCase):
+    """Сетка кандидатов по выборке и лучший разрез с автовыбором стороны."""
+
+    def test_grid_covers_range_and_dedups(self):
+        grid = feature_grid([0.1, 0.1, 0.9])
+        self.assertGreater(len(grid), 1)
+        self.assertGreaterEqual(min(grid), 0.1)
+        self.assertLessEqual(max(grid), 0.9)
+        self.assertEqual(len(grid), len(set(grid)))
+
+    def test_grid_edge_cases(self):
+        self.assertEqual(feature_grid([]), [])
+        self.assertEqual(feature_grid([None]), [])
+        self.assertEqual(feature_grid([0.42]), [0.42])
+
+    def test_best_split_detects_side_below(self):
+        point, side = best_split([150, 152], [200, 202])
+        self.assertEqual(side, 'below')
+        self.assertEqual(point.balanced, 1.0)
+
+    def test_best_split_detects_side_above(self):
+        point, side = best_split([0.8, 0.9], [0.1, 0.2])
+        self.assertEqual(side, 'above')
+        self.assertEqual(point.balanced, 1.0)
+
+    def test_best_split_reports_coin_flip_for_identical_classes(self):
+        """Неразделимые классы → баланс около 0.5, а не ложный оптимум."""
+        point, _side = best_split([1, 2, 3, 4], [1, 2, 3, 4])
+        self.assertLess(point.balanced, 0.7)
+
+    def test_best_split_requires_both_classes(self):
+        self.assertEqual(best_split([1, 2], []), (None, None))
+        self.assertEqual(best_split([], [1, 2]), (None, None))
+
+
 class TuneSeasonThresholdsCommandTests(TestCase):
     @classmethod
     def setUpTestData(cls):
@@ -111,6 +149,20 @@ class TuneSeasonThresholdsCommandTests(TestCase):
             VegetationIndex.objects.create(
                 farmland=fl, scene=scene, index_type='ndvi',
                 acquired_date=d, mean=val,
+            )
+
+    @classmethod
+    def _prev_series(cls, fl, autumn_value):
+        """Короткий MODIS-ряд ЗА ПРОШЛЫЙ год в осеннем окне (DOY 258-305)."""
+        for day in (20, 30, 40, 50):   # середина сентября — начало ноября
+            d = date(YEAR - 1, 9, 1) + timedelta(days=day)
+            scene, _ = SatelliteScene.objects.get_or_create(
+                scene_id=f'modis_terra_{d}',
+                defaults={'satellite': 'modis_terra', 'acquired_date': d},
+            )
+            VegetationIndex.objects.create(
+                farmland=fl, scene=scene, index_type='ndvi',
+                acquired_date=d, mean=autumn_value,
             )
 
     @classmethod
@@ -177,6 +229,41 @@ class TuneSeasonThresholdsCommandTests(TestCase):
         self.assertIn('РАСПРЕДЕЛЕНИЕ ДНЯ ПИКА', out)
         self.assertIn('Всего угодий с пиком: 5', out)
         self.assertIn('Провал между модами: бин 170', out)
+
+    def test_feature_ranking_sections_printed_and_sorted(self):
+        out = self._run(skip_area=True, skip_prev_autumn=True)
+        self.assertIn('РАЗДЕЛЯЮЩАЯ СИЛА ПРИЗНАКОВ: ОЗИМЫЕ vs ЯРОВЫЕ', out)
+        self.assertIn('РАЗДЕЛЯЮЩАЯ СИЛА ПРИЗНАКОВ: КУЛЬТУРЫ vs', out)
+        block = out.split('ОЗИМЫЕ vs ЯРОВЫЕ')[1].split('РАЗДЕЛЯЮЩАЯ')[0]
+        balances = [
+            float(line.split()[-2]) for line in block.splitlines()
+            if line.startswith('  ') and '≥' in line or '  <' in line
+        ]
+        self.assertTrue(balances)
+        self.assertEqual(balances, sorted(balances, reverse=True))
+
+    def test_prev_autumn_skipped_without_previous_year_data(self):
+        """Без рядов прошлого года признак осени не молчит, а сообщает."""
+        out = self._run(skip_area=True)
+        self.assertIn(f'Ряды NDVI за {YEAR - 1}', out)
+        self.assertIn('признак осени недоступен', out)
+        self.assertNotIn('NDVI сен-ноя ПРОШЛ. года', out)
+
+    def test_prev_autumn_ranked_when_modis_archive_present(self):
+        """Осень прошлого года берётся из MODIS, если S2/L8 за него нет."""
+        for fl in self.winter:
+            self._prev_series(fl, 0.62)   # всходы озимых осенью
+        for fl in self.spring + self.unused:
+            self._prev_series(fl, 0.15)   # стерня / вспашка
+        out = self._run(skip_area=True)
+        self.assertIn('(MODIS)', out)
+        self.assertIn('NDVI сен-ноя ПРОШЛ. года', out)
+        block = out.split('ОЗИМЫЕ vs ЯРОВЫЕ')[1].split('РАЗДЕЛЯЮЩАЯ')[0]
+        autumn_line = [ln for ln in block.splitlines()
+                       if 'ПРОШЛ. года' in ln][0]
+        # Синтетика разделима идеально и разрез — сверху (≥).
+        self.assertIn('1.000', autumn_line)
+        self.assertIn('≥', autumn_line)
 
     def test_histogram_reports_missing_crop_season_rows(self):
         out = self._run()
