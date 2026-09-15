@@ -7,8 +7,11 @@
 Синтетические профили NDVI переиспользуются из ``test_winter_spring``:
 озимые дают ранний пик, яровые — поздний, залежь — низкую долю зелени.
 """
+import re
 from datetime import date, timedelta
 from io import StringIO
+
+import numpy as np
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -19,7 +22,7 @@ from agrocosmos.models import (
     SatelliteScene, VegetationIndex,
 )
 from agrocosmos.services.winter_spring import (
-    best_split, feature_grid, sweep_threshold,
+    best_split, cv_balanced, feature_grid, sweep_threshold,
 )
 
 from .test_winter_spring import (
@@ -105,6 +108,54 @@ class FeatureGridAndBestSplitTests(SimpleTestCase):
     def test_best_split_requires_both_classes(self):
         self.assertEqual(best_split([1, 2], []), (None, None))
         self.assertEqual(best_split([], [1, 2]), (None, None))
+
+
+class CvBalancedTests(SimpleTestCase):
+    """Кросс-валидация отделяет реальный признак от подгонки под шум."""
+
+    def test_separable_feature_survives_cv(self):
+        pos = [0.1 + 0.01 * i for i in range(20)]
+        neg = [0.9 + 0.01 * i for i in range(20)]
+        self.assertEqual(cv_balanced(pos, neg), 1.0)
+
+    def test_noise_feature_collapses_to_coin_flip(self):
+        """Главное свойство: in-sample оптимум на шуме высок, CV — нет.
+
+        Две выборки из ОДНОГО распределения — разделять нечего, но
+        порог, подобранный по ним же, даёт заметно больше 0.5.
+        """
+        rng = np.random.default_rng(42)
+        pos = list(rng.normal(size=12))
+        neg = list(rng.normal(size=12))
+        in_sample, _side = best_split(pos, neg)
+        cv = cv_balanced(pos, neg)
+        self.assertGreater(in_sample.balanced, 0.60)
+        self.assertLess(cv, in_sample.balanced)
+        self.assertLess(cv, 0.60)
+
+    def test_quantized_ties_do_not_fake_separation(self):
+        """Квантованный признак (тип зимнего baseline под снегом)."""
+        pos = [0.06, 0.061, 0.062] * 12
+        neg = [0.06, 0.061, 0.062] * 14
+        self.assertLess(cv_balanced(pos, neg), 0.60)
+
+    def test_none_when_sample_smaller_than_folds(self):
+        self.assertIsNone(cv_balanced([1, 2], [3, 4], folds=5))
+
+    def test_nones_dropped_before_split(self):
+        pos = [0.1] * 5 + [None] * 3
+        neg = [0.9] * 5
+        self.assertEqual(cv_balanced(pos, neg, folds=5), 1.0)
+
+    def test_folds_below_two_rejected(self):
+        with self.assertRaises(ValueError):
+            cv_balanced([1] * 5, [2] * 5, folds=1)
+
+    def test_deterministic_for_same_seed(self):
+        rng = np.random.default_rng(7)
+        pos, neg = list(rng.normal(size=30)), list(rng.normal(size=30))
+        self.assertEqual(cv_balanced(pos, neg, seed=3),
+                         cv_balanced(pos, neg, seed=3))
 
 
 class TuneSeasonThresholdsCommandTests(TestCase):
@@ -230,17 +281,31 @@ class TuneSeasonThresholdsCommandTests(TestCase):
         self.assertIn('Всего угодий с пиком: 5', out)
         self.assertIn('Провал между модами: бин 170', out)
 
+    @staticmethod
+    def _ranking_scores(out, title):
+        """Значения колонки «баланс» из блока ранжирования, в порядке строк."""
+        block = out.split(title)[1].split('\n\n')[0]
+        return [float(m) for m in re.findall(r'\s(\d\.\d{3})\s+\S+\s+#', block)]
+
     def test_feature_ranking_sections_printed_and_sorted(self):
         out = self._run(skip_area=True, skip_prev_autumn=True)
         self.assertIn('РАЗДЕЛЯЮЩАЯ СИЛА ПРИЗНАКОВ: ОЗИМЫЕ vs ЯРОВЫЕ', out)
         self.assertIn('РАЗДЕЛЯЮЩАЯ СИЛА ПРИЗНАКОВ: КУЛЬТУРЫ vs', out)
-        block = out.split('ОЗИМЫЕ vs ЯРОВЫЕ')[1].split('РАЗДЕЛЯЮЩАЯ')[0]
-        balances = [
-            float(line.split()[-2]) for line in block.splitlines()
-            if line.startswith('  ') and '≥' in line or '  <' in line
-        ]
-        self.assertTrue(balances)
-        self.assertEqual(balances, sorted(balances, reverse=True))
+        scores = self._ranking_scores(out, 'ОЗИМЫЕ vs ЯРОВЫЕ')
+        self.assertTrue(scores)
+        self.assertEqual(scores, sorted(scores, reverse=True))
+
+    def test_cv_column_dash_when_labels_too_few(self):
+        """На двух эталонах класса CV невозможна — честное «—»."""
+        out = self._run(skip_area=True, skip_prev_autumn=True)
+        block = out.split('ОЗИМЫЕ vs ЯРОВЫЕ')[1].split('\n\n')[0]
+        self.assertIn('CV', block)
+        self.assertRegex(block, r'\d\.\d{3}\s+—\s+#')
+
+    def test_cv_can_be_disabled(self):
+        out = self._run(skip_area=True, skip_prev_autumn=True, cv_folds=0)
+        block = out.split('ОЗИМЫЕ vs ЯРОВЫЕ')[1].split('\n\n')[0]
+        self.assertRegex(block, r'\d\.\d{3}\s+—\s+#')
 
     def test_prev_autumn_skipped_without_previous_year_data(self):
         """Без рядов прошлого года признак осени не молчит, а сообщает."""

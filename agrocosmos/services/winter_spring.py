@@ -600,6 +600,54 @@ def best_split(pos_values: Sequence[Optional[float]],
     return best_point, best_side
 
 
+def cv_balanced(
+    pos_values: Sequence[Optional[float]],
+    neg_values: Sequence[Optional[float]],
+    folds: int = 5,
+    seed: int = 0,
+) -> Optional[float]:
+    """Кросс-валидированная сбалансированная точность лучшего порога.
+
+    ``best_split`` подбирает порог и оценивает его НА ТЕХ ЖЕ данных, поэтому
+    на малой выборке он завышает качество: на шумном признаке всегда
+    найдётся разрез, случайно разделивший конкретные эталоны (особенно если
+    значения квантованы и совпадают). Здесь порог подбирается на обучающих
+    фолдах, а оценивается на отложенном — признак-артефакт «схлопывается»
+    к 0.5, настоящий сохраняет качество.
+
+    Стратификация: каждый класс режется на фолды отдельно, поэтому в
+    тестовой части всегда есть оба класса. ``None`` — если классов меньше
+    ``folds`` элементов (оценка невозможна).
+    """
+    if folds < 2:
+        raise ValueError(f'folds must be >= 2, got {folds}')
+    pos = [float(v) for v in pos_values if v is not None]
+    neg = [float(v) for v in neg_values if v is not None]
+    if len(pos) < folds or len(neg) < folds:
+        return None
+
+    rng = np.random.default_rng(seed)
+    pos_idx = rng.permutation(len(pos))
+    neg_idx = rng.permutation(len(neg))
+    pos_parts = np.array_split(pos_idx, folds)
+    neg_parts = np.array_split(neg_idx, folds)
+
+    scores = []
+    for k in range(folds):
+        pos_test = [pos[i] for i in pos_parts[k]]
+        neg_test = [neg[i] for i in neg_parts[k]]
+        pos_train = [pos[i] for j, part in enumerate(pos_parts) if j != k
+                     for i in part]
+        neg_train = [neg[i] for j, part in enumerate(neg_parts) if j != k
+                     for i in part]
+        point, side = best_split(pos_train, neg_train)
+        if point is None or not pos_test or not neg_test:
+            continue
+        tested = sweep_threshold(pos_test, neg_test, [point.threshold], side)
+        scores.append(tested[0].balanced)
+    return float(np.mean(scores)) if scores else None
+
+
 def calibrate_threshold(
     winter_early_spring: Sequence[float],
     percentile: float = 10.0,

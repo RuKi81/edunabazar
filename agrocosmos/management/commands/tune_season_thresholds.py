@@ -13,6 +13,11 @@
 * **доля зелёных наблюдений** — гейт покрова (отсев необрабатываемых);
 * **глубина уборочного спада** — гейт уборки (доля к амплитуде сезона).
 
+Плюс ранжирование кандидатов в дискриминаторы по двум парам классов с
+КРОСС-ВАЛИДАЦИЕЙ: порог, подобранный и проверенный на одних и тех же
+десятках эталонов, выглядит сильным даже на чистом шуме, поэтому решение
+принимается по качеству на отложенных данных (колонка CV).
+
 Плюс распределение дня пика по ВСЕМ угодьям региона (не только эталонам):
 бимодальность с провалом означает, что признак вообще разделяет классы, и
 порог надо ставить в провал. Один горб — порогом задача не решается.
@@ -35,7 +40,7 @@ from agrocosmos.models import District, FarmlandTrainingLabel, Region
 from agrocosmos.services.winter_spring import (
     GREEN_FRACTION_MIN, HARVEST_MIN_DROP_RATIO, MAX_COVER_THRESHOLD,
     MAX_PEAK_DOY_THRESHOLD, MIN_COVER_THRESHOLD, MIN_PEAK_DOY_THRESHOLD,
-    PEAK_DOY_THRESHOLD_DEFAULT, best_split, classify_profile,
+    PEAK_DOY_THRESHOLD_DEFAULT, best_split, classify_profile, cv_balanced,
     profile_features, sweep_threshold,
 )
 
@@ -67,6 +72,10 @@ FEATURES = (
 
 # Ниже этого баланса признак практически бесполезен (0.5 = монетка).
 USELESS_BALANCED = 0.60
+# Просадка in-sample → CV, при которой разрез признан подгонкой под шум.
+OVERFIT_GAP = 0.10
+# Фолдов в кросс-валидации по умолчанию (0 = выключить проверку).
+CV_FOLDS_DEFAULT = 5
 # Доля эталонов с прошлогодним рядом, ниже которой пробуем MODIS.
 PREV_COVERAGE_MIN = 0.5
 
@@ -107,6 +116,9 @@ class Command(BaseCommand):
         parser.add_argument('--skip-area', action='store_true',
                             help='Не считать распределение дня пика по всем '
                                  'угодьям региона (только эталоны).')
+        parser.add_argument('--cv-folds', type=int, default=CV_FOLDS_DEFAULT,
+                            help='Фолдов кросс-валидации при ранжировании '
+                                 'признаков (0 — только in-sample).')
         parser.add_argument('--skip-prev-autumn', action='store_true',
                             help='Не грузить ряды предыдущего года (признак '
                                  '«всходы озимых осенью» будет пропущен).')
@@ -142,13 +154,15 @@ class Command(BaseCommand):
         self._sweep_peak(feats, options['peak_step'])
         self._sweep_cover(feats)
         self._sweep_harvest(feats)
+        cv_folds = options['cv_folds']
         self._rank_features(
             feats, 'ОЗИМЫЕ vs ЯРОВЫЕ', ('winter',), ('spring',),
-            'озимые', 'яровые',
+            'озимые', 'яровые', cv_folds,
         )
         self._rank_features(
             feats, 'КУЛЬТУРЫ vs НЕ ОБРАБАТЫВАЕТСЯ',
             ('winter', 'spring'), ('unused',), 'культуры', 'не обраб.',
+            cv_folds,
         )
         if not options['skip_area']:
             self._report_peak_histogram(region, district, year, source)
@@ -380,18 +394,21 @@ class Command(BaseCommand):
         )
 
     def _rank_features(self, feats, title, pos_cls, neg_cls,
-                       pos_name, neg_name):
+                       pos_name, neg_name, cv_folds=CV_FOLDS_DEFAULT):
         """Ранжирование признаков по разделяющей силе на эталонах.
 
         Для каждого кандидата ищется лучший разрез с автовыбором
         стороны (:func:`best_split`) — направление разделения заранее
-        неизвестно. Сортировка по сбалансированной точности: сразу
-        видно, есть ли вообще признак, на котором стоит строить правило.
+        неизвестно. Ранжирование идёт по КРОСС-ВАЛИДИРОВАННОМУ качеству
+        (:func:`cv_balanced`): in-sample оптимум на выборке из десятков
+        эталонов легко находится и у чистого шума, поэтому доверять можно
+        только оценке на отложенных данных. Большой разрыв in-sample → CV
+        помечается как подгонка.
         """
         self.stdout.write(f'\nРАЗДЕЛЯЮЩАЯ СИЛА ПРИЗНАКОВ: {title}')
         self.stdout.write(
             f'  {"признак":<24}  {pos_name:>9}  {neg_name:>9}  '
-            f'{"порог":>8}  {"баланс":>7}'
+            f'{"порог":>8}  {"баланс":>7}  {"CV":>6}'
         )
         rows = []
         for key, label, fmt in FEATURES:
@@ -401,26 +418,38 @@ class Command(BaseCommand):
             point, side = best_split(pos, neg)
             if point is None:
                 continue
+            cv = (cv_balanced(pos, neg, folds=cv_folds)
+                  if cv_folds >= 2 else None)
             rows.append((point, side, label, fmt,
-                         self._median(pos), self._median(neg)))
+                         self._median(pos), self._median(neg), cv))
 
         if not rows:
             self.stdout.write('  Нет эталонов обоих классов — пропущено.')
             return
 
-        rows.sort(key=lambda r: r[0].balanced, reverse=True)
-        for point, side, label, fmt, med_pos, med_neg in rows:
+        # Сортировка по CV, если она посчитана: она и есть честная оценка.
+        rows.sort(key=lambda r: (r[6] if r[6] is not None else r[0].balanced),
+                  reverse=True)
+        for point, side, label, fmt, med_pos, med_neg, cv in rows:
             sign = '<' if side == 'below' else '≥'
-            bar = '#' * int(round(point.balanced * BAR_WIDTH))
-            note = '  ← не разделяет' if point.balanced < USELESS_BALANCED else ''
+            score = cv if cv is not None else point.balanced
+            bar = '#' * int(round(score * BAR_WIDTH))
+            if cv is not None and point.balanced - cv >= OVERFIT_GAP:
+                note = '  ← подгонка под шум'
+            elif score < USELESS_BALANCED:
+                note = '  ← не разделяет'
+            else:
+                note = ''
+            cv_txt = '—' if cv is None else f'{cv:.3f}'
             self.stdout.write(
                 f'  {label:<24}  {self._fmt(med_pos, fmt):>9}  '
                 f'{self._fmt(med_neg, fmt):>9}  '
                 f'{sign}{self._fmt(point.threshold, fmt):>7}  '
-                f'{point.balanced:>7.3f}  {bar}{note}'
+                f'{point.balanced:>7.3f}  {cv_txt:>6}  {bar}{note}'
             )
-        best = rows[0][0]
-        if best.balanced < USELESS_BALANCED:
+        best = rows[0]
+        best_score = best[6] if best[6] is not None else best[0].balanced
+        if best_score < USELESS_BALANCED:
             self.stdout.write(
                 '  НИ ОДИН признак не разделяет эти классы лучше '
                 f'{USELESS_BALANCED:.2f} — пороговым правилом задача не '
@@ -428,7 +457,8 @@ class Command(BaseCommand):
             )
         self.stdout.write(
             '  Колонки классов — медианы; знак у порога показывает '
-            f'условие для «{pos_name}».'
+            f'условие для «{pos_name}»; баланс — на своих же данных, '
+            'CV — на отложенных (ей и верить).'
         )
 
     @staticmethod
