@@ -22,7 +22,7 @@ from django.core.management import call_command
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from agrocosmos.models import MonitoringTask
+from agrocosmos.models import Farmland, MonitoringTask
 
 logger = logging.getLogger('agrocosmos')
 
@@ -86,7 +86,15 @@ class Command(BaseCommand):
         max_periods_per_task = options['max_periods_per_task']
         today = date.today()
 
+        # ``task_type`` MUST be pinned to MODIS: ``check_raster_monitoring``
+        # keeps its own ``MonitoringTask(task_type='raster')`` rows for the
+        # operational S2+L8 contour and advances their ``last_date_to`` on a
+        # ~7-day cadence. Without this filter we ran the MODIS pipeline for
+        # raster tasks too and — worse — overwrote their ``last_date_to``
+        # with 16-day MODIS grid dates, which silently emptied the S2+L8
+        # window and stalled operational monitoring for that scope.
         tasks = MonitoringTask.objects.filter(
+            task_type=MonitoringTask.TaskType.MODIS,
             status='active',
         ).select_related('region')
 
@@ -132,6 +140,9 @@ class Command(BaseCommand):
         region = task.region
         year = task.year
         year_end = date(year, 12, 31)
+
+        if self._pause_if_no_farmlands(task, dry_run):
+            return 0
 
         if self._year_complete(task, year_end):
             return
@@ -198,6 +209,46 @@ class Command(BaseCommand):
         # Returned to ``handle()`` so it knows whether to run the
         # single batch-tail ``recompute_district_ndvi_status``.
         return periods_done
+
+    def _pause_if_no_farmlands(self, task, dry_run) -> bool:
+        """Pause scopes that have no farmland vector at all.
+
+        ``modis_ndvi`` downloads the GEE composite BEFORE it loads
+        farmlands, so a scope with no vector data (Москва, Санкт-
+        Петербург, Севастополь — no agricultural land in the ЗСН
+        layer) burned a GEE request every night and then wrote 0
+        rows. Zero rows also means ``last_date_to`` never advances,
+        so the very same period was retried forever.
+
+        The predicate mirrors ``modis_ndvi._load_farmlands`` exactly
+        (``district__region`` / ``district``) so we only pause tasks
+        whose pipeline would genuinely find nothing to compute.
+        ``ensure_all_regions_monitored`` skips farmland-less regions
+        as well, so a deploy will not resurrect the task.
+        """
+        if task.district_id:
+            qs = Farmland.objects.filter(district_id=task.district_id)
+        else:
+            qs = Farmland.objects.filter(district__region_id=task.region_id)
+        if qs.exists():
+            return False
+
+        self.stdout.write(self.style.WARNING(
+            f'  [{task.region.name} {task.year}] No farmlands in scope — '
+            f'{"would pause" if dry_run else "pausing"} task, '
+            f'no GEE requests.'
+        ))
+        if not dry_run:
+            task.status = MonitoringTask.Status.PAUSED
+            task.last_check = timezone.now()
+            task.log = (
+                task.log
+                + f'\n[{timezone.now():%Y-%m-%d %H:%M}] paused: '
+                  f'no farmlands in scope'
+            )[-10000:]
+            task.save(update_fields=['status', 'last_check', 'log',
+                                     'updated_at'])
+        return True
 
     def _year_complete(self, task, year_end) -> bool:
         """If we've already completed the year, mark as completed."""

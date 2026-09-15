@@ -7,7 +7,10 @@ fresh year for an existing one) silently skipped operational coverage
 until somebody clicked through the UI.
 
 This command makes the desired state explicit: for the target year,
-every ``Region`` in the database has an ``active`` ``MonitoringTask``.
+every ``Region`` that has a farmland vector gets an ``active``
+region-level MODIS ``MonitoringTask``. Farmland-less subjects (Москва,
+Санкт-Петербург, Севастополь) are deliberately skipped — the pipeline
+would only burn GEE requests and write nothing.
 It is safe to re-run — existing rows are left in place unless they
 were ``paused`` (then we reactivate, which mirrors the admin's "resume"
 button).
@@ -31,8 +34,9 @@ from datetime import date
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
+from django.db.models import Exists, OuterRef
 
-from agrocosmos.models import MonitoringTask, Region
+from agrocosmos.models import Farmland, MonitoringTask, Region
 
 
 class Command(BaseCommand):
@@ -56,16 +60,37 @@ class Command(BaseCommand):
         year = opts['year']
         reactivate = not opts['no_reactivate']
 
-        regions = list(Region.objects.all().only('id', 'name'))
+        # Only regions that actually have a farmland vector are enrolled.
+        # ``modis_ndvi`` downloads the GEE composite BEFORE it loads
+        # farmlands, so a farmland-less subject (Москва, Санкт-Петербург,
+        # Севастополь — no agricultural land in the ЗСН layer) spent a
+        # GEE request every night and then wrote 0 rows forever. The
+        # predicate mirrors ``modis_ndvi._load_farmlands``.
+        eligible = Region.objects.filter(
+            Exists(Farmland.objects.filter(district__region=OuterRef('pk')))
+        )
+        regions = list(eligible.only('id', 'name'))
         total = len(regions)
+        skipped_empty = Region.objects.count() - total
         if not total:
-            self.stdout.write(self.style.WARNING('No regions in DB — nothing to do.'))
+            self.stdout.write(self.style.WARNING(
+                'No regions with farmlands in DB — nothing to do.'))
             return
 
         # Bulk-fetch existing tasks for the target year to avoid N queries.
+        # Scoped to region-level MODIS rows — exactly what we enrol below.
+        # Without the scope a region that only had a ``raster`` task (or a
+        # district-scoped one) looked "already covered" and silently never
+        # got its MODIS enrolment.
         existing = {
             t.region_id: t for t in
-            MonitoringTask.objects.filter(year=year).only('id', 'region_id', 'status')
+            MonitoringTask.objects
+            .filter(
+                year=year,
+                task_type=MonitoringTask.TaskType.MODIS,
+                district__isnull=True,
+            )
+            .only('id', 'region_id', 'status')
         }
 
         created = 0
@@ -104,5 +129,6 @@ class Command(BaseCommand):
             f'ensure_all_regions_monitored year={year}: '
             f'regions={total}  created={created}  reactivated={reactivated}  '
             f'already_active={already_active}  '
-            f'already_completed={already_completed}  paused_kept={still_paused}'
+            f'already_completed={already_completed}  paused_kept={still_paused}  '
+            f'skipped_no_farmlands={skipped_empty}'
         ))

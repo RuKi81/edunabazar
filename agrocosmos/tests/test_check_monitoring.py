@@ -14,7 +14,7 @@ from django.test import TestCase
 from agrocosmos.management.commands.check_monitoring import (
     _next_aligned_period,
 )
-from agrocosmos.models import MonitoringTask, Region
+from agrocosmos.models import District, Farmland, MonitoringTask, Region
 
 MOD = 'agrocosmos.management.commands.check_monitoring'
 
@@ -40,6 +40,13 @@ class CheckMonitoringTests(TestCase):
     def setUpTestData(cls):
         cls.region = Region.objects.create(
             name='Регион', code='r1', geom=_square(30, 50))
+        # Обход пропускает скоупы без вектора угодий (экономия запросов
+        # к GEE), поэтому базовому региону нужно хотя бы одно угодье.
+        cls.district = District.objects.create(
+            region=cls.region, name='Район', geom=_square(30, 50, 0.2))
+        Farmland.objects.create(
+            region=cls.region, district=cls.district,
+            area_ha=10, geom=_square(30, 50, 0.1))
 
     def _task(self, **overrides):
         kwargs = dict(region=self.region, year=PAST_YEAR, status='active')
@@ -58,6 +65,56 @@ class CheckMonitoringTests(TestCase):
         out, _, mock_cc = self._run()
         self.assertIn('No active monitoring tasks', out)
         mock_cc.assert_not_called()
+
+    def test_raster_tasks_are_ignored(self):
+        """Задачи S2+L8 не должны попадать в MODIS-обход.
+
+        Регрессия: без фильтра по ``task_type`` команда гоняла MODIS-пайплайн
+        по растровым задачам и переписывала их ``last_date_to`` датами
+        16-дневной сетки, из-за чего ``check_raster_monitoring`` получал
+        пустое окно и оперативный мониторинг тихо вставал.
+        """
+        raster = self._task(task_type='raster',
+                            last_date_to=date(PAST_YEAR, 6, 1))
+        out, _, mock_cc = self._run(inner=_saved_inner())
+        self.assertIn('No active monitoring tasks', out)
+        mock_cc.assert_not_called()
+        raster.refresh_from_db()
+        self.assertEqual(raster.last_date_to, date(PAST_YEAR, 6, 1))
+
+    def test_region_without_farmlands_is_paused(self):
+        """Регионы без угодий (Москва/СПб/Севастополь) не должны дёргать GEE.
+
+        Регрессия: пайплайн скачивал композит ДО загрузки угодий, писал 0
+        записей, ``last_date_to`` не двигался — и один и тот же период
+        переспрашивался у GEE каждую ночь бесконечно.
+        """
+        empty = Region.objects.create(
+            name='Мегаполис', code='r2', geom=_square(40, 55))
+        task = MonitoringTask.objects.create(
+            region=empty, year=PAST_YEAR, status='active')
+        out, _, mock_cc = self._run(inner=_saved_inner())
+        self.assertIn('No farmlands in scope', out)
+        self.assertIn('pausing task', out)
+        task.refresh_from_db()
+        self.assertEqual(task.status, 'paused')
+        self.assertIn('no farmlands in scope', task.log)
+        # Пайплайн по пустому региону не запускался
+        called_regions = [
+            c.kwargs.get('region_id') for c in mock_cc.call_args_list
+            if c.args and c.args[0] == 'modis_ndvi'
+        ]
+        self.assertNotIn(empty.pk, called_regions)
+
+    def test_no_farmlands_dry_run_keeps_status(self):
+        empty = Region.objects.create(
+            name='Мегаполис', code='r2', geom=_square(40, 55))
+        task = MonitoringTask.objects.create(
+            region=empty, year=PAST_YEAR, status='active')
+        out, _, _ = self._run(inner=_saved_inner(), dry_run=True)
+        self.assertIn('would pause', out)
+        task.refresh_from_db()
+        self.assertEqual(task.status, 'active')
 
     def test_completed_year_marks_task(self):
         task = self._task(last_date_to=date(PAST_YEAR, 12, 31))
