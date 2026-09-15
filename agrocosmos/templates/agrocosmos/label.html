@@ -193,6 +193,9 @@
       <label><input type="radio" name="lbl-basemap" value="esri" /> Esri World Imagery</label>
       <label><input type="radio" name="lbl-basemap" value="osm" /> OpenStreetMap</label>
     </div>
+    <div class="lbl-row">
+      <label class="lbl-check"><input type="checkbox" id="lbl-no-fill" /> Убрать заливку полигона</label>
+    </div>
 
     <h3>Статистика</h3>
     <div class="lbl-stats" id="lbl-stats"></div>
@@ -273,6 +276,7 @@
   var ambigChk = document.getElementById('lbl-mode-ambig');
   var unlabChk = document.getElementById('lbl-unlabeled');
   var hideUnusedChk = document.getElementById('lbl-hide-unused');
+  var noFillChk = document.getElementById('lbl-no-fill');
 
   var map = L.map('lbl-map', { zoomControl: true, attributionControl: true })
     .setView([54.2, 37.6], 8);
@@ -391,11 +395,13 @@
   function styleFor(feature) {
     var p = feature.properties || {};
     var labeled = !!p.label;
+    var noFill = noFillChk.checked;
     return {
-      color: labeled ? '#111' : '#ffffff',
-      weight: labeled ? 2.5 : 1,
+      color: noFill ? (COLOR[p.label || p.predicted_class] || '#888')
+                    : (labeled ? '#111' : '#ffffff'),
+      weight: noFill ? (labeled ? 3 : 2) : (labeled ? 2.5 : 1),
       fillColor: COLOR[p.label || p.predicted_class] || '#888',
-      fillOpacity: labeled ? 0.75 : 0.45,
+      fillOpacity: noFill ? 0 : (labeled ? 0.75 : 0.45),
     };
   }
 
@@ -479,11 +485,8 @@
     document.getElementById('lbl-current').style.display = '';
 
     // Highlight + zoom.
-    var layer = layerById[c.farmland_id];
+    var layer = highlightCurrent();
     if (layer) {
-      geoLayer.resetStyle();
-      layer.setStyle({ color: '#ff1744', weight: 3, fillOpacity: 0.6 });
-      layer.bringToFront();
       try { map.fitBounds(layer.getBounds(), { maxZoom: 15, padding: [60, 60] }); } catch (e) {}
     }
 
@@ -562,6 +565,20 @@
       b.addEventListener('click', function () { setLabel(c.key); });
       grid.appendChild(b);
     });
+  }
+
+  // Подсветить выбранное угодье (без изменения вида карты).
+  function highlightCurrent() {
+    if (idx < 0 || idx >= candidates.length) return null;
+    var layer = layerById[candidates[idx].farmland_id];
+    if (!layer) return null;
+    geoLayer.resetStyle();
+    layer.setStyle({
+      color: '#ff1744', weight: 3,
+      fillOpacity: noFillChk.checked ? 0 : 0.6,
+    });
+    layer.bringToFront();
+    return layer;
   }
 
   function highlightClassButtons(active) {
@@ -747,6 +764,14 @@
       })
       .catch(function () {});
   }
+
+  var NO_FILL_KEY = 'agroLabelNoFill';
+  noFillChk.checked = localStorage.getItem(NO_FILL_KEY) === '1';
+  noFillChk.addEventListener('change', function () {
+    localStorage.setItem(NO_FILL_KEY, noFillChk.checked ? '1' : '0');
+    geoLayer.resetStyle();
+    highlightCurrent();
+  });
 
   document.getElementById('lbl-load').addEventListener('click', loadCandidates);
   document.getElementById('lbl-agree-btn').addEventListener('click', loadAgreement);
