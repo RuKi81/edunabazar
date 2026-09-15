@@ -145,6 +145,11 @@
       </select>
     </div>
     <div class="lbl-row">
+      <select id="lbl-district" class="lbl-field browser-default">
+        <option value="">Все районы субъекта</option>
+      </select>
+    </div>
+    <div class="lbl-row">
       <select id="lbl-year" class="lbl-field browser-default">
         {% for y in years %}<option value="{{ y }}" {% if y|stringformat:'s' == year %}selected{% endif %}>{{ y }}</option>{% endfor %}
       </select>
@@ -153,9 +158,29 @@
         <option value="raster">S2/L8 (raster)</option>
       </select>
     </div>
+
+    <h3>Очередь кандидатов</h3>
+    <div class="lbl-row">
+      <select id="lbl-order" class="lbl-field browser-default">
+        <option value="ambiguity">Сначала спорные</option>
+        <option value="confidence">Сначала уверенные</option>
+        <option value="area">Сначала крупные</option>
+      </select>
+    </div>
+    <div class="lbl-row" style="flex-wrap:wrap;">
+      <label class="lbl-check"><input type="checkbox" class="lbl-cls" value="winter" checked /> Модель: озимые</label>
+      <label class="lbl-check"><input type="checkbox" class="lbl-cls" value="spring" checked /> яровые</label>
+    </div>
+    <div class="lbl-row" style="flex-wrap:wrap;">
+      <label class="lbl-check"><input type="checkbox" class="lbl-cls" value="unused" /> не обраб.</label>
+      <label class="lbl-check"><input type="checkbox" class="lbl-cls" value="hayfield" /> сенокос</label>
+    </div>
     <div class="lbl-row">
       <label class="lbl-check"><input type="checkbox" id="lbl-mode-ambig" checked /> Только сомнительные</label>
       <label class="lbl-check"><input type="checkbox" id="lbl-unlabeled" checked /> Скрыть размеченные</label>
+    </div>
+    <div class="lbl-row">
+      <label class="lbl-check"><input type="checkbox" id="lbl-hide-unused" /> Скрыть похожие на залежь</label>
     </div>
     <div class="lbl-row">
       <button class="lbl-btn" id="lbl-load">Загрузить угодья</button>
@@ -241,10 +266,13 @@
   CLASS_META.forEach(function (c) { CLASS_LABEL[c.key] = c.label; });
 
   var regionSel = document.getElementById('lbl-region');
+  var districtSel = document.getElementById('lbl-district');
   var yearSel = document.getElementById('lbl-year');
   var sourceSel = document.getElementById('lbl-source');
+  var orderSel = document.getElementById('lbl-order');
   var ambigChk = document.getElementById('lbl-mode-ambig');
   var unlabChk = document.getElementById('lbl-unlabeled');
+  var hideUnusedChk = document.getElementById('lbl-hide-unused');
 
   var map = L.map('lbl-map', { zoomControl: true, attributionControl: true })
     .setView([54.2, 37.6], 8);
@@ -358,6 +386,7 @@
   var candidates = [];
   var idx = -1;
   var chart = null;
+  var skippedUnusedLike = 0;
 
   function styleFor(feature) {
     var p = feature.properties || {};
@@ -379,14 +408,27 @@
     });
   }
 
+  // Какие предсказанные классы модели брать в очередь.
+  function pickedClasses() {
+    return Array.prototype.filter
+      .call(document.querySelectorAll('.lbl-cls'), function (i) { return i.checked; })
+      .map(function (i) { return i.value; });
+  }
+
   function loadCandidates() {
     var region = regionSel.value;
     if (!region) { alert('Выберите субъект'); return; }
+    var classes = pickedClasses();
+    if (!classes.length) { alert('Отметьте хотя бы один класс модели'); return; }
     var params = new URLSearchParams({
       region: region, year: yearSel.value, source: sourceSel.value,
       mode: ambigChk.checked ? 'ambiguous' : 'all',
       unlabeled: unlabChk.checked ? '1' : '0',
+      classes: classes.join(','),
+      order: orderSel.value,
+      hide_unused_like: hideUnusedChk.checked ? '1' : '0',
     });
+    if (districtSel.value) params.set('district', districtSel.value);
     document.getElementById('lbl-load').textContent = 'Загрузка…';
     fetch('/agrocosmos/api/label/candidates/?' + params.toString())
       .then(function (r) { return r.json(); })
@@ -394,6 +436,7 @@
         document.getElementById('lbl-load').textContent = 'Загрузить угодья';
         if (!resp.ok) { alert(resp.error || 'Ошибка'); return; }
         candidates = resp.candidates || [];
+        skippedUnusedLike = resp.skipped_unused_like || 0;
         renderLayer();
         refreshStats();
         if (candidates.length) { select(0); document.getElementById('lbl-empty').style.display = 'none'; }
@@ -586,7 +629,8 @@
     var labeled = candidates.filter(function (c) { return c.label; }).length;
     document.getElementById('lbl-progress').textContent =
       'Кандидатов: ' + candidates.length + ' · размечено: ' + labeled
-      + (idx >= 0 ? ' · текущее ' + (idx + 1) : '');
+      + (idx >= 0 ? ' · текущее ' + (idx + 1) : '')
+      + (skippedUnusedLike ? ' · отсеяно как залежь: ' + skippedUnusedLike : '');
   }
 
   function refreshStats() {
@@ -683,11 +727,34 @@
     else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteLabel(); }
   });
 
+  // Районы субъекта: разметка по одному району быстрее — карта не прыгает
+  // через весь регион между угодьями.
+  function loadDistricts() {
+    districtSel.innerHTML = '<option value="">Все районы субъекта</option>';
+    if (!regionSel.value) return;
+    fetch('/agrocosmos/api/districts/?region=' + encodeURIComponent(regionSel.value))
+      .then(function (r) { return r.json(); })
+      .then(function (geojson) {
+        (geojson.features || [])
+          .map(function (f) { return f.properties || {}; })
+          .sort(function (a, b) { return (a.name || '').localeCompare(b.name || '', 'ru'); })
+          .forEach(function (p) {
+            var opt = document.createElement('option');
+            opt.value = p.id;
+            opt.textContent = p.name || ('Район #' + p.id);
+            districtSel.appendChild(opt);
+          });
+      })
+      .catch(function () {});
+  }
+
   document.getElementById('lbl-load').addEventListener('click', loadCandidates);
   document.getElementById('lbl-agree-btn').addEventListener('click', loadAgreement);
   document.getElementById('lbl-prev').addEventListener('click', prev);
   document.getElementById('lbl-skip').addEventListener('click', next);
+  regionSel.addEventListener('change', loadDistricts);
   buildClassButtons();
+  loadDistricts();
   if (regionSel.value) loadCandidates();
 })();
 </script>

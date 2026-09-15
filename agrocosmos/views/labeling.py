@@ -37,6 +37,28 @@ _DEFAULT_AMBIG_DAYS = 12        # |peak_doy - порог| ≤ — кандида
 _DEFAULT_PEAK_THRESHOLD = 185   # фолбэк, если прогон был без калибровки
 _MAX_CANDIDATES = 600
 
+# Классы предсказания, доступные как пул кандидатов. ``unknown`` не входит:
+# там не хватило наблюдений, проверять нечего. По умолчанию — озимые/яровые:
+# именно этих эталонов мало для калибровки.
+_CANDIDATE_CLASSES = ('winter', 'spring', 'hayfield', 'unused')
+_DEFAULT_CANDIDATE_CLASSES = ('winter', 'spring')
+
+# Порядок выдачи кандидатов:
+# * ``ambiguity``  — сначала спорные (пик у порога), active learning:
+#   максимум информации на метку, но разметчику труднее;
+# * ``confidence`` — сначала уверенные: быстрое набивание объёма
+#   (подтвердить очевидное одним нажатием);
+# * ``area``       — сначала крупные: лучше видно на снимке и больше веса
+#   в площадных сводках.
+_ORDER_SQL = {
+    'ambiguity': (
+        'abs(cs.peak_doy - COALESCE(cs.peak_doy_threshold, '
+        f'{int(_DEFAULT_PEAK_THRESHOLD)})) ASC NULLS LAST, cs.confidence ASC'
+    ),
+    'confidence': 'cs.confidence DESC, f.area_ha DESC NULLS LAST',
+    'area': 'f.area_ha DESC NULLS LAST',
+}
+
 # Классы, напрямую сопоставимые с предсказанием классификатора.
 _COMPARABLE_CLASSES = ('winter', 'spring', 'unused')
 # Сколько id расхождений отдавать для перехода к ним в разметчике.
@@ -74,9 +96,19 @@ def _labeler_username(request) -> str:
 def api_label_candidates(request: HttpRequest) -> JsonResponse:
     """Список угодий-кандидатов для разметки (GeoJSON-подобный).
 
-    Параметры: ``region`` (обяз.), ``year``, ``source`` (fused|raster),
-    ``mode`` (ambiguous|all), ``unlabeled`` (1 — скрыть уже размеченные),
-    ``conf``/``days`` — пороги «сомнительности», ``limit``.
+    Параметры: ``region`` (обяз.), ``district`` (сузить до района), ``year``,
+    ``source`` (fused|raster), ``mode`` (ambiguous|all), ``unlabeled``
+    (1 — скрыть уже размеченные), ``conf``/``days`` — пороги
+    «сомнительности», ``classes`` — какие предсказанные классы брать в пул
+    (csv из :data:`_CANDIDATE_CLASSES`), ``order`` — порядок выдачи
+    (:data:`_ORDER_SQL`), ``hide_unused_like`` (1 — выкинуть угодья с
+    NDVI-сигналами неиспользования), ``limit``.
+
+    ``hide_unused_like`` — главный ускоритель набора эталонов озимых/яровых:
+    в очередь не попадает залежь, на которой разметчик тратит время впустую.
+    Фильтр считается по тем же сигналам, что в скрининге неиспользования, и
+    применяется ПОСЛЕ SQL, поэтому при включённом флаге выбираем с запасом
+    и обрезаем до ``limit`` уже после отсева.
     """
     if not _is_admin_legacy(request):
         return JsonResponse({'ok': False, 'error': 'forbidden'}, status=403)
@@ -94,20 +126,37 @@ def api_label_candidates(request: HttpRequest) -> JsonResponse:
         source = 'fused'
     mode = request.GET.get('mode') or 'ambiguous'
     unlabeled = request.GET.get('unlabeled') in ('1', 'true', 'yes')
+    hide_unused_like = request.GET.get('hide_unused_like') in ('1', 'true', 'yes')
     conf = _safe_float(request.GET.get('conf'), _DEFAULT_AMBIG_CONF)
     days = _safe_float(request.GET.get('days'), _DEFAULT_AMBIG_DAYS)
     limit = min(_safe_int(request.GET.get('limit'), _MAX_CANDIDATES),
                 _MAX_CANDIDATES)
+    classes = _parse_candidate_classes(request.GET.get('classes'))
+    order = request.GET.get('order') or 'ambiguity'
+    if order not in _ORDER_SQL:
+        order = 'ambiguity'
+    district_id = request.GET.get('district')
+    district_id = int(district_id) if str(district_id or '').isdigit() else None
 
     ct_ph = ', '.join(['%s'] * len(_LABELABLE_CROP_TYPES))
+    cls_ph = ', '.join(['%s'] * len(classes))
     where = [
         'cs.year = %s', 'cs.source = %s',
         f'f.crop_type IN ({ct_ph})',
-        'f.district_id IN (SELECT id FROM agro_district WHERE region_id = %s)',
-        "cs.season_class IN ('winter', 'spring')",
-        'cs.peak_doy IS NOT NULL',
     ]
-    params = [year, source, *_LABELABLE_CROP_TYPES, int(region_id)]
+    params = [year, source, *_LABELABLE_CROP_TYPES]
+
+    if district_id is not None:
+        where.append('f.district_id = %s')
+        params.append(district_id)
+    else:
+        where.append(
+            'f.district_id IN (SELECT id FROM agro_district WHERE region_id = %s)'
+        )
+        params.append(int(region_id))
+
+    where.append(f'cs.season_class IN ({cls_ph})')
+    params += list(classes)
 
     if mode == 'ambiguous':
         where.append(
@@ -118,7 +167,10 @@ def api_label_candidates(request: HttpRequest) -> JsonResponse:
     if unlabeled:
         where.append('tl.id IS NULL')
 
-    params.append(limit)
+    # С запасом: отсев залежи идёт после SQL и «съедает» часть строк.
+    fetch_limit = (min(limit * 3, _MAX_CANDIDATES) if hide_unused_like
+                   else limit)
+    params.append(fetch_limit)
     sql = f"""
         SELECT f.id, f.area_ha, f.cadastral_number, f.crop_type,
                d.name AS district_name,
@@ -135,8 +187,7 @@ def api_label_candidates(request: HttpRequest) -> JsonResponse:
         LEFT JOIN agro_farmland_training_label tl
                ON tl.farmland_id = f.id AND tl.year = cs.year
         WHERE {' AND '.join(where)}
-        ORDER BY abs(cs.peak_doy - COALESCE(cs.peak_doy_threshold, {int(_DEFAULT_PEAK_THRESHOLD)})) ASC,
-                 cs.confidence ASC
+        ORDER BY {_ORDER_SQL[order]}
         LIMIT %s
     """
     with connection.cursor() as cur:
@@ -165,10 +216,53 @@ def api_label_candidates(request: HttpRequest) -> JsonResponse:
             'label': r[13],
             'geometry': json.loads(geojson),
         })
+
+    skipped_unused_like = 0
+    if hide_unused_like and candidates:
+        kept = _drop_unused_like(candidates, year)
+        skipped_unused_like = len(candidates) - len(kept)
+        candidates = kept
+    candidates = candidates[:limit]
+
     return JsonResponse({
         'ok': True, 'year': year, 'source': source, 'mode': mode,
+        'district': district_id, 'classes': list(classes), 'order': order,
+        'skipped_unused_like': skipped_unused_like,
         'count': len(candidates), 'candidates': candidates,
     })
+
+
+def _parse_candidate_classes(raw):
+    """csv предсказанных классов → валидный кортеж (или дефолт)."""
+    if not raw:
+        return _DEFAULT_CANDIDATE_CLASSES
+    picked = tuple(
+        c for c in (p.strip() for p in str(raw).split(','))
+        if c in _CANDIDATE_CLASSES
+    )
+    return picked or _DEFAULT_CANDIDATE_CLASSES
+
+
+def _drop_unused_like(candidates, year):
+    """Выкинуть кандидатов с NDVI-сигналами неиспользования (залежь).
+
+    Использует те же сигналы, что скрининг неиспользования
+    (:func:`agrocosmos.views.reports._unused_signals`): нет сомкнутого
+    покрова за сезон либо нет вегетационного цикла. Угодья, по которым
+    наблюдений недостаточно (``signals is None``), НЕ выкидываем — их всё
+    равно можно разметить визуально по снимку.
+    """
+    ids = [c['farmland_id'] for c in candidates]
+    stats = _season_stats_for(ids, year)
+    sos_ids = _sos_ids_for(ids, year)
+    kept = []
+    for c in candidates:
+        fid = c['farmland_id']
+        signals = _unused_signals(stats.get(fid), fid in sos_ids)
+        if signals:
+            continue
+        kept.append(c)
+    return kept
 
 
 @csrf_exempt

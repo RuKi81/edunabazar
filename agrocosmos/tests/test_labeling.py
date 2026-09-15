@@ -117,6 +117,11 @@ class LabelingApiTests(TestCase):
         cls.fl_unknown = farmland(37.5)
         season(cls.fl_unknown, peak_doy=186, confidence=0.4,
                season_class=FarmlandCropSeason.SeasonClass.UNKNOWN)
+        # Предсказано «не обрабатывается»: в пул попадает только по запросу
+        # ``classes`` — дефолт нацелен на озимые/яровые.
+        cls.fl_unused_pred = farmland(37.6)
+        season(cls.fl_unused_pred, peak_doy=186, confidence=0.4,
+               season_class=FarmlandCropSeason.SeasonClass.UNUSED)
 
     def setUp(self):
         self.admin = _make_user('admin')
@@ -228,6 +233,90 @@ class LabelingApiTests(TestCase):
     def test_candidates_limit(self):
         data = self._candidates(mode='all', limit=1)
         self.assertEqual(data['count'], 1)
+
+    # ── сужение очереди: район, класс модели, порядок, отсев залежи ──
+    def test_candidates_district_filter(self):
+        """``district`` сужает выборку до одного района субъекта."""
+        d2 = District.objects.create(
+            region=self.region, name='Район М', geom=_square(38, 54, 1))
+        fl = Farmland.objects.create(
+            region=self.region, district=d2,
+            crop_type=Farmland.CropType.ARABLE, area_ha=10,
+            geom=_square(38.1, 54.1))
+        FarmlandCropSeason.objects.create(
+            farmland=fl, year=YEAR, source=FarmlandCropSeason.Source.FUSED,
+            season_class=FarmlandCropSeason.SeasonClass.WINTER,
+            confidence=0.4, peak_doy=186, peak_doy_threshold=185)
+
+        data = self._candidates(mode='all', district=d2.pk)
+        self.assertEqual({c['farmland_id'] for c in data['candidates']},
+                         {fl.pk})
+        self.assertEqual(data['district'], d2.pk)
+        # Без фильтра район не изолирован — угодье в общем пуле.
+        all_ids = {c['farmland_id']
+                   for c in self._candidates(mode='all')['candidates']}
+        self.assertIn(fl.pk, all_ids)
+
+    def test_candidates_classes_filter(self):
+        """Дефолт — только озимые/яровые; ``classes`` открывает остальные."""
+        default_ids = {c['farmland_id']
+                       for c in self._candidates(mode='all')['candidates']}
+        self.assertNotIn(self.fl_unused_pred.pk, default_ids)
+
+        data = self._candidates(mode='all', classes='unused')
+        self.assertEqual({c['farmland_id'] for c in data['candidates']},
+                         {self.fl_unused_pred.pk})
+        self.assertEqual(data['classes'], ['unused'])
+
+    def test_candidates_classes_invalid_falls_back_to_default(self):
+        data = self._candidates(mode='all', classes='bogus,unknown')
+        self.assertEqual(data['classes'], ['winter', 'spring'])
+        self.assertNotIn(self.fl_unknown.pk,
+                         {c['farmland_id'] for c in data['candidates']})
+
+    def test_candidates_order_area_sorts_by_size(self):
+        Farmland.objects.filter(pk=self.fl_confident.pk).update(area_ha=500)
+        Farmland.objects.filter(pk=self.fl_ambig_conf.pk).update(area_ha=300)
+        Farmland.objects.filter(pk=self.fl_ambig_peak.pk).update(area_ha=100)
+        data = self._candidates(mode='all', order='area')
+        self.assertEqual(data['order'], 'area')
+        self.assertEqual([c['farmland_id'] for c in data['candidates']],
+                         [self.fl_confident.pk, self.fl_ambig_conf.pk,
+                          self.fl_ambig_peak.pk])
+
+    def test_candidates_order_invalid_falls_back(self):
+        self.assertEqual(
+            self._candidates(mode='all', order='bogus')['order'], 'ambiguity')
+
+    def _ndvi(self, fl, values):
+        """Ряд NDVI за год (сцены уникальны по угодью)."""
+        for i, value in enumerate(values):
+            acq = date(YEAR, 5, 1) + timedelta(days=i * 12)
+            scene, _ = SatelliteScene.objects.get_or_create(
+                scene_id=f'S2_lbl_{fl.pk}_{i}',
+                defaults={'satellite': 'sentinel2', 'acquired_date': acq},
+            )
+            VegetationIndex.objects.create(
+                farmland=fl, scene=scene, index_type='ndvi',
+                acquired_date=acq, mean=value, mean_smooth=value,
+            )
+
+    def test_candidates_hide_unused_like_drops_fallow(self):
+        """Залежь по NDVI-сигналам не попадает в очередь разметки."""
+        self._ndvi(self.fl_ambig_peak, [0.20, 0.80, 0.75, 0.30])   # культура
+        self._ndvi(self.fl_ambig_conf, [0.12, 0.15, 0.18, 0.14])   # залежь
+
+        data = self._candidates(mode='ambiguous', hide_unused_like='1')
+        self.assertEqual({c['farmland_id'] for c in data['candidates']},
+                         {self.fl_ambig_peak.pk})
+        self.assertEqual(data['skipped_unused_like'], 1)
+
+    def test_candidates_hide_unused_like_keeps_fields_without_data(self):
+        """Нет наблюдений → не выкидываем: разметить можно по снимку."""
+        data = self._candidates(mode='ambiguous', hide_unused_like='1')
+        self.assertEqual({c['farmland_id'] for c in data['candidates']},
+                         {self.fl_ambig_peak.pk, self.fl_ambig_conf.pk})
+        self.assertEqual(data['skipped_unused_like'], 0)
 
     # ── сохранение метки ─────────────────────────────────────────────
     def _save(self, payload, method='post'):
