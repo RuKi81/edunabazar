@@ -27,9 +27,34 @@ from agrocosmos.models import Farmland, MonitoringTask
 logger = logging.getLogger('agrocosmos')
 
 NDVI_COMMAND = 'modis_ndvi'
+
+# Printed by ``modis_ndvi._stats_step`` when a composite's zonal stats
+# are already stored for ≥99% of the scope's farmlands.
+COVERED_MARKER = 'already in DB'
+
+# Substrings worth keeping in the task log / echoing on a zero result.
+_NOTABLE_MARKERS = (
+    'records saved',
+    'done in',
+    COVERED_MARKER,
+    'error',
+    'no raster',
+    '0 farmlands',
+    'no farmlands found',
+    'download done',
+)
+
 AVAILABILITY_LAG_DAYS = 7  # MOD13Q1 composites available ~7 days after period ends
 
 CHUNK_DAYS = 16  # MOD13Q1 composite cadence
+
+
+def _notable_lines(log_text: str) -> list[str]:
+    """Lines from the inner pipeline output worth surfacing."""
+    return [
+        line.strip() for line in log_text.splitlines()
+        if any(m in line.lower() for m in _NOTABLE_MARKERS)
+    ]
 
 
 def _next_aligned_period(last_date_to, year):
@@ -172,18 +197,26 @@ class Command(BaseCommand):
                     break
                 continue
 
-            records_saved, elapsed = self._run_period(
+            records_saved, elapsed, covered = self._run_period(
                 task, region, year, next_from, next_to)
             if records_saved is None:
                 break  # Stop on error, will retry next cron run
 
-            # Only advance last_date_to if data was actually saved;
-            # if 0 records — data likely not available yet, retry next time
-            if records_saved > 0:
+            # Advance last_date_to when the period is accounted for:
+            # either we just wrote rows, or the pipeline reported the
+            # composite as already covered in the DB (≥99% of farmlands
+            # have rows — e.g. the region was backfilled by a manual
+            # ``modis_ndvi`` run, which does not touch MonitoringTask).
+            # Treating "covered" as "no data yet" used to wedge the task
+            # forever: 0 rows → no advance → the same period re-checked
+            # every night, burning a GEE composite download each time.
+            if records_saved > 0 or covered:
                 task.last_date_to = next_to
                 periods_done += 1
+                detail = (f'{records_saved} records' if records_saved
+                          else 'already in DB')
                 self.stdout.write(
-                    f'    → {records_saved} records in {elapsed:.0f}s (period {periods_done})'
+                    f'    → {detail} in {elapsed:.0f}s (period {periods_done})'
                 )
             else:
                 self.stdout.write(
@@ -285,8 +318,11 @@ class Command(BaseCommand):
     def _run_period(self, task, region, year, next_from, next_to):
         """Run the NDVI pipeline for one period.
 
-        Returns (records_saved, elapsed); records_saved is None on error
-        (the task is already updated and saved in that case).
+        Returns (records_saved, elapsed, covered); records_saved is None
+        on error (the task is already updated and saved in that case).
+        ``covered`` means the pipeline skipped the period because the
+        composite is already stored in the DB — a success for the
+        purpose of advancing ``last_date_to``.
 
         ``skip_status_refresh=True`` is the critical flag here:
         the global ``recompute_district_ndvi_status`` SQL costs
@@ -315,11 +351,12 @@ class Command(BaseCommand):
             task.last_check = timezone.now()
             task.log = (task.log + f'\n[{timezone.now():%Y-%m-%d %H:%M}] ERROR: {e}')[-10000:]
             task.save()
-            return None, time.time() - t0
+            return None, time.time() - t0, False
 
         elapsed = time.time() - t0
         log_text = out.getvalue()
         records_saved = self._parse_records_saved(log_text)
+        covered = COVERED_MARKER in log_text
 
         # Update task
         task.last_check = timezone.now()
@@ -327,12 +364,19 @@ class Command(BaseCommand):
 
         # Append to log (keep last 10K chars)
         entry = f'\n[{timezone.now():%Y-%m-%d %H:%M}] {next_from}..{next_to}: '
-        for line in log_text.splitlines():
-            if 'records saved' in line.lower() or 'Done in' in line:
-                entry += line.strip() + ' '
+        for line in _notable_lines(log_text):
+            entry += line + ' '
         task.log = (task.log + entry)[-10000:]
 
-        return records_saved, elapsed
+        # A silent zero is the worst outcome to debug: ``modis_ndvi``
+        # swallows GEE failures internally (prints them to its own
+        # stderr, which we capture into ``out``), so without echoing
+        # them the cron log only said "0 records — no data yet".
+        if not records_saved and not covered:
+            for line in _notable_lines(log_text):
+                self.stderr.write(f'      {line}')
+
+        return records_saved, elapsed, covered
 
     @staticmethod
     def _parse_records_saved(log_text: str) -> int:

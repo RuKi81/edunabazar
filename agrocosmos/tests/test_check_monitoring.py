@@ -35,6 +35,16 @@ def _saved_inner(n=42):
     return inner
 
 
+def _covered_inner():
+    """Инерция modis_ndvi, когда композит уже посчитан и лежит в БД."""
+    def inner(name, **kw):
+        kw['stdout'].write(
+            '  [1/1] 2024-01-01..2024-01-16 — already in DB '
+            '(79142/79150), skip\n  Records saved: 0\n  Done in 0h00m02s\n'
+        )
+    return inner
+
+
 class CheckMonitoringTests(TestCase):
     @classmethod
     def setUpTestData(cls):
@@ -166,6 +176,43 @@ class CheckMonitoringTests(TestCase):
         self.assertIsNone(task.last_date_to)
         self.assertIn('no data yet, stop', out)
         self.assertIn('skipping status refresh', out)
+
+    def test_already_in_db_advances_last_date_to(self):
+        """Период, уже посчитанный ранее, считается успешным.
+
+        Регрессия: ``modis_ndvi`` пропускает zonal stats, если строки для
+        ≥99% угодий уже есть (так бывает после ручного бекфилла, который
+        не трогает MonitoringTask), и пишет 0 записей. Раньше это
+        трактовалось как «данных ещё нет», ``last_date_to`` не двигался и
+        задача вечно перекачивала тот же композит из GEE.
+        """
+        task = self._task()
+        out, _, mock_cc = self._run(inner=_covered_inner())
+        names = [c.args[0] for c in mock_cc.call_args_list]
+        self.assertEqual(names.count('modis_ndvi'), 2)
+        self.assertIn('already in DB in', out)
+        task.refresh_from_db()
+        self.assertEqual(task.last_date_to, date(PAST_YEAR, 2, 1))
+        self.assertEqual(task.records_total, 0)
+        # Данные двинулись → батчевый refresh статусов нужен
+        self.assertIn('recompute_district_ndvi_status', names)
+
+    def test_zero_records_echoes_pipeline_diagnostics(self):
+        """Причина нуля не должна теряться: modis_ndvi глотает ошибки GEE
+        внутри себя, а мы забираем его stdout/stderr в StringIO."""
+        def inner(name, **kw):
+            kw['stdout'].write(
+                '  [1/1] ERROR: MODIS download error: RESOURCE_EXHAUSTED\n'
+                '  Download done: 0 files, 0 skipped, 1 errors (84s)\n'
+                '  Records saved: 0\n'
+            )
+        task = self._task()
+        out, err, _ = self._run(inner=inner)
+        self.assertIn('no data yet, stop', out)
+        self.assertIn('RESOURCE_EXHAUSTED', err)
+        task.refresh_from_db()
+        self.assertIsNone(task.last_date_to)
+        self.assertIn('RESOURCE_EXHAUSTED', task.log)
 
     def test_pipeline_error_logged_and_stops(self):
         task = self._task()
