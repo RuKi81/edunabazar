@@ -113,59 +113,14 @@ def api_label_candidates(request: HttpRequest) -> JsonResponse:
     if not _is_admin_legacy(request):
         return JsonResponse({'ok': False, 'error': 'forbidden'}, status=403)
 
-    region_id = request.GET.get('region')
-    if not region_id or not str(region_id).isdigit():
-        return JsonResponse({'ok': False, 'error': 'region required'}, status=400)
-    try:
-        year = int(request.GET.get('year') or 0)
-    except (TypeError, ValueError):
-        return JsonResponse({'ok': False, 'error': 'invalid year'}, status=400)
+    opts = _parse_candidates_request(request)
+    if 'error' in opts:
+        return JsonResponse({'ok': False, 'error': opts['error']}, status=400)
 
-    source = request.GET.get('source') or 'fused'
-    if source not in ('fused', 'raster'):
-        source = 'fused'
-    mode = request.GET.get('mode') or 'ambiguous'
-    unlabeled = request.GET.get('unlabeled') in ('1', 'true', 'yes')
-    hide_unused_like = request.GET.get('hide_unused_like') in ('1', 'true', 'yes')
-    conf = _safe_float(request.GET.get('conf'), _DEFAULT_AMBIG_CONF)
-    days = _safe_float(request.GET.get('days'), _DEFAULT_AMBIG_DAYS)
-    limit = min(_safe_int(request.GET.get('limit'), _MAX_CANDIDATES),
-                _MAX_CANDIDATES)
-    classes = _parse_candidate_classes(request.GET.get('classes'))
-    order = request.GET.get('order') or 'ambiguity'
-    if order not in _ORDER_SQL:
-        order = 'ambiguity'
-    district_id = request.GET.get('district')
-    district_id = int(district_id) if str(district_id or '').isdigit() else None
-
-    ct_ph = ', '.join(['%s'] * len(_LABELABLE_CROP_TYPES))
-    cls_ph = ', '.join(['%s'] * len(classes))
-    where = [
-        'cs.year = %s', 'cs.source = %s',
-        f'f.crop_type IN ({ct_ph})',
-    ]
-    params = [year, source, *_LABELABLE_CROP_TYPES]
-
-    if district_id is not None:
-        where.append('f.district_id = %s')
-        params.append(district_id)
-    else:
-        where.append(
-            'f.district_id IN (SELECT id FROM agro_district WHERE region_id = %s)'
-        )
-        params.append(int(region_id))
-
-    where.append(f'cs.season_class IN ({cls_ph})')
-    params += list(classes)
-
-    if mode == 'ambiguous':
-        where.append(
-            '(cs.confidence < %s OR '
-            'abs(cs.peak_doy - COALESCE(cs.peak_doy_threshold, %s)) <= %s)'
-        )
-        params += [conf, _DEFAULT_PEAK_THRESHOLD, days]
-    if unlabeled:
-        where.append('tl.id IS NULL')
+    year = opts['year']
+    limit = opts['limit']
+    hide_unused_like = opts['hide_unused_like']
+    where, params = _candidates_where(opts)
 
     # С запасом: отсев залежи идёт после SQL и «съедает» часть строк.
     fetch_limit = (min(limit * 3, _MAX_CANDIDATES) if hide_unused_like
@@ -187,35 +142,14 @@ def api_label_candidates(request: HttpRequest) -> JsonResponse:
         LEFT JOIN agro_farmland_training_label tl
                ON tl.farmland_id = f.id AND tl.year = cs.year
         WHERE {' AND '.join(where)}
-        ORDER BY {_ORDER_SQL[order]}
+        ORDER BY {_ORDER_SQL[opts['order']]}
         LIMIT %s
     """
     with connection.cursor() as cur:
         cur.execute(sql, params)
         rows = cur.fetchall()
 
-    candidates = []
-    for r in rows:
-        geojson = r[14]
-        if not geojson:
-            continue
-        candidates.append({
-            'farmland_id': r[0],
-            'area_ha': _round_or_none(r[1], 2),
-            'cadastral': r[2] or '',
-            'crop_type': r[3],
-            'district': r[4] or '',
-            'predicted_class': r[5],
-            'confidence': _round_or_none(r[6]),
-            'peak_doy': r[7],
-            'peak_doy_threshold': _round_or_none(r[8], 1),
-            'sos_doy': r[9],
-            'early_spring_ndvi': _round_or_none(r[10]),
-            'harvest_doy': r[11],
-            'is_harvested': bool(r[12]),
-            'label': r[13],
-            'geometry': json.loads(geojson),
-        })
+    candidates = [_row_to_candidate(r) for r in rows if r[14]]
 
     skipped_unused_like = 0
     if hide_unused_like and candidates:
@@ -225,11 +159,104 @@ def api_label_candidates(request: HttpRequest) -> JsonResponse:
     candidates = candidates[:limit]
 
     return JsonResponse({
-        'ok': True, 'year': year, 'source': source, 'mode': mode,
-        'district': district_id, 'classes': list(classes), 'order': order,
+        'ok': True, 'year': year, 'source': opts['source'],
+        'mode': opts['mode'], 'district': opts['district_id'],
+        'classes': list(opts['classes']), 'order': opts['order'],
         'skipped_unused_like': skipped_unused_like,
         'count': len(candidates), 'candidates': candidates,
     })
+
+
+def _parse_candidates_request(request) -> dict:
+    """Разобрать и провалидировать query-параметры списка кандидатов.
+
+    Возвращает словарь опций либо ``{'error': ...}`` при плохих параметрах.
+    """
+    region_id = request.GET.get('region')
+    if not region_id or not str(region_id).isdigit():
+        return {'error': 'region required'}
+    try:
+        year = int(request.GET.get('year') or 0)
+    except (TypeError, ValueError):
+        return {'error': 'invalid year'}
+
+    source = request.GET.get('source') or 'fused'
+    if source not in ('fused', 'raster'):
+        source = 'fused'
+    order = request.GET.get('order') or 'ambiguity'
+    if order not in _ORDER_SQL:
+        order = 'ambiguity'
+    district_id = request.GET.get('district')
+    district_id = int(district_id) if str(district_id or '').isdigit() else None
+    return {
+        'region_id': int(region_id),
+        'year': year,
+        'source': source,
+        'order': order,
+        'district_id': district_id,
+        'mode': request.GET.get('mode') or 'ambiguous',
+        'unlabeled': request.GET.get('unlabeled') in ('1', 'true', 'yes'),
+        'hide_unused_like': (
+            request.GET.get('hide_unused_like') in ('1', 'true', 'yes')
+        ),
+        'conf': _safe_float(request.GET.get('conf'), _DEFAULT_AMBIG_CONF),
+        'days': _safe_float(request.GET.get('days'), _DEFAULT_AMBIG_DAYS),
+        'limit': min(_safe_int(request.GET.get('limit'), _MAX_CANDIDATES),
+                     _MAX_CANDIDATES),
+        'classes': _parse_candidate_classes(request.GET.get('classes')),
+    }
+
+
+def _candidates_where(opts: dict):
+    """Собрать список WHERE-условий и параметры запроса кандидатов."""
+    classes = opts['classes']
+    ct_ph = ', '.join(['%s'] * len(_LABELABLE_CROP_TYPES))
+    cls_ph = ', '.join(['%s'] * len(classes))
+    where = ['cs.year = %s', 'cs.source = %s', f'f.crop_type IN ({ct_ph})']
+    params = [opts['year'], opts['source'], *_LABELABLE_CROP_TYPES]
+
+    if opts['district_id'] is not None:
+        where.append('f.district_id = %s')
+        params.append(opts['district_id'])
+    else:
+        where.append(
+            'f.district_id IN (SELECT id FROM agro_district WHERE region_id = %s)'
+        )
+        params.append(opts['region_id'])
+
+    where.append(f'cs.season_class IN ({cls_ph})')
+    params += list(classes)
+
+    if opts['mode'] == 'ambiguous':
+        where.append(
+            '(cs.confidence < %s OR '
+            'abs(cs.peak_doy - COALESCE(cs.peak_doy_threshold, %s)) <= %s)'
+        )
+        params += [opts['conf'], _DEFAULT_PEAK_THRESHOLD, opts['days']]
+    if opts['unlabeled']:
+        where.append('tl.id IS NULL')
+    return where, params
+
+
+def _row_to_candidate(r) -> dict:
+    """Строка SQL-выдачи кандидатов → словарь для JSON-ответа."""
+    return {
+        'farmland_id': r[0],
+        'area_ha': _round_or_none(r[1], 2),
+        'cadastral': r[2] or '',
+        'crop_type': r[3],
+        'district': r[4] or '',
+        'predicted_class': r[5],
+        'confidence': _round_or_none(r[6]),
+        'peak_doy': r[7],
+        'peak_doy_threshold': _round_or_none(r[8], 1),
+        'sos_doy': r[9],
+        'early_spring_ndvi': _round_or_none(r[10]),
+        'harvest_doy': r[11],
+        'is_harvested': bool(r[12]),
+        'label': r[13],
+        'geometry': json.loads(r[14]),
+    }
 
 
 def _parse_candidate_classes(raw):
