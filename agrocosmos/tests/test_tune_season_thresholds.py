@@ -285,7 +285,8 @@ class TuneSeasonThresholdsCommandTests(TestCase):
     def _ranking_scores(out, title):
         """Значения колонки «баланс» из блока ранжирования, в порядке строк."""
         block = out.split(title)[1].split('\n\n')[0]
-        return [float(m) for m in re.findall(r'\s(\d\.\d{3})\s+\S+\s+#', block)]
+        return [float(m) for m in
+                re.findall(r'\s(\d\.\d{3})\s+\S+\s+\d+/\d+\s+#', block)]
 
     def test_feature_ranking_sections_printed_and_sorted(self):
         out = self._run(skip_area=True, skip_prev_autumn=True)
@@ -300,12 +301,15 @@ class TuneSeasonThresholdsCommandTests(TestCase):
         out = self._run(skip_area=True, skip_prev_autumn=True)
         block = out.split('ОЗИМЫЕ vs ЯРОВЫЕ')[1].split('\n\n')[0]
         self.assertIn('CV', block)
-        self.assertRegex(block, r'\d\.\d{3}\s+—\s+#')
+        self.assertRegex(block, r'\d\.\d{3}\s+—\s+\d+/\d+\s+#')
+        self.assertIn('CV невозможна', block)
 
     def test_cv_can_be_disabled(self):
+        """--cv-folds 0: ни CV, ни жалоб на её невозможность."""
         out = self._run(skip_area=True, skip_prev_autumn=True, cv_folds=0)
         block = out.split('ОЗИМЫЕ vs ЯРОВЫЕ')[1].split('\n\n')[0]
-        self.assertRegex(block, r'\d\.\d{3}\s+—\s+#')
+        self.assertRegex(block, r'\d\.\d{3}\s+—\s+\d+/\d+\s+#')
+        self.assertNotIn('CV невозможна', block)
 
     def test_prev_autumn_skipped_without_previous_year_data(self):
         """Без рядов прошлого года признак осени не молчит, а сообщает."""
@@ -342,3 +346,66 @@ class TuneSeasonThresholdsCommandTests(TestCase):
     def test_requires_scope(self):
         with self.assertRaisesMessage(CommandError, '--region-id'):
             call_command('tune_season_thresholds', year=YEAR, stdout=StringIO())
+
+
+class RankingWithoutCvTests(TestCase):
+    """Признак, посчитанный по единицам эталонов, не должен быть в топе.
+
+    Прод-случай Тулы-2026: детальных снимков за январь-февраль почти нет,
+    поэтому «зимний baseline» есть у горстки эталонов. In-sample оптимум на
+    такой выборке высок (0.833), а CV невозможна — и признак-артефакт
+    возглавлял рейтинг. Теперь такие строки уезжают вниз.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.region = Region.objects.create(
+            name='Регион CV', code='rcv', geom=_square(30, 50, 5),
+        )
+        cls.district = District.objects.create(
+            region=cls.region, name='Район CV', geom=_square(30, 50, 5),
+        )
+        # По 6 эталонов класса: хватает на 5 фолдов у полных признаков.
+        # Зимнее окно (DOY < 60) есть только у ОДНОГО эталона класса.
+        for i in range(6):
+            cls._labelled(30.1 + i * 0.1, _winter_ndvi, 'winter',
+                          with_winter=(i == 0))
+            cls._labelled(32.1 + i * 0.1, _spring_ndvi, 'spring',
+                          with_winter=(i == 0))
+
+    @classmethod
+    def _labelled(cls, x, fn, true_class, with_winter):
+        fl = Farmland.objects.create(
+            region=cls.region, district=cls.district,
+            crop_type=Farmland.CropType.ARABLE, area_ha=100,
+            geom=_square(x, 50.2),
+        )
+        for doy, val, d in zip(*_profile(fn)):
+            if doy < 60 and not with_winter:
+                continue          # нет январь-февральских снимков
+            scene, _ = SatelliteScene.objects.get_or_create(
+                scene_id=f'sentinel2_{d}',
+                defaults={'satellite': 'sentinel2', 'acquired_date': d},
+            )
+            VegetationIndex.objects.create(
+                farmland=fl, scene=scene, index_type='ndvi',
+                acquired_date=d, mean=val,
+            )
+        FarmlandTrainingLabel.objects.create(
+            farmland=fl, year=YEAR, true_class=true_class,
+        )
+
+    def test_feature_without_cv_is_ranked_last(self):
+        out = StringIO()
+        call_command('tune_season_thresholds', region_id=self.region.pk,
+                     year=YEAR, skip_area=True, skip_prev_autumn=True,
+                     stdout=out, stderr=out)
+        block = out.getvalue().split('ОЗИМЫЕ vs ЯРОВЫЕ')[1].split('\n\n')[0]
+        rows = [ln for ln in block.splitlines() if '#' in ln]
+        baseline = [ln for ln in rows if 'зимний baseline' in ln]
+        self.assertEqual(len(baseline), 1)
+        self.assertIn('CV невозможна', baseline[0])
+        self.assertIn('1/1', baseline[0])          # колонка n
+        self.assertIs(rows[-1], baseline[0])       # в самом конце рейтинга
+        # У остальных признаков CV посчитана — они выше.
+        self.assertRegex(rows[0], r'\d\.\d{3}\s+\d\.\d{3}')

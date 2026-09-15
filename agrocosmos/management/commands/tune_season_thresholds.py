@@ -404,11 +404,19 @@ class Command(BaseCommand):
         эталонов легко находится и у чистого шума, поэтому доверять можно
         только оценке на отложенных данных. Большой разрыв in-sample → CV
         помечается как подгонка.
+
+        Признаки, для которых CV НЕВОЗМОЖНА (признак есть менее
+        чем у ``cv_folds`` эталонов класса — например зимний baseline,
+        когда детальных снимков за январь-февраль почти нет), уезжают
+        В КОНЕЦ рейтинга: in-sample оценка на горсти точек — не повод
+        ставить их наверх (именно так артефакт попадал в топ).
+        Колонка ``n`` показывает размер выборки по классам — без неё
+        не видно, что признак посчитан по единицам эталонов.
         """
         self.stdout.write(f'\nРАЗДЕЛЯЮЩАЯ СИЛА ПРИЗНАКОВ: {title}')
         self.stdout.write(
             f'  {"признак":<24}  {pos_name:>9}  {neg_name:>9}  '
-            f'{"порог":>8}  {"баланс":>7}  {"CV":>6}'
+            f'{"порог":>8}  {"баланс":>7}  {"CV":>6}  {"n":>7}'
         )
         rows = []
         for key, label, fmt in FEATURES:
@@ -427,14 +435,24 @@ class Command(BaseCommand):
             self.stdout.write('  Нет эталонов обоих классов — пропущено.')
             return
 
-        # Сортировка по CV, если она посчитана: она и есть честная оценка.
-        rows.sort(key=lambda r: (r[6] if r[6] is not None else r[0].balanced),
-                  reverse=True)
+        # Сортировка по CV — она и есть честная оценка. Без CV
+        # (мало эталонов с признаком) — в конец, независимо от in-sample.
+        # При ОТКЛЮЧЁННОЙ CV (--cv-folds 0) сортируем по in-sample:
+        # оценка хуже, но порядок всё равно по качеству, а не по FEATURES.
+        cv_enabled = cv_folds >= 2
+        if cv_enabled:
+            rows.sort(key=lambda r: (r[6] is not None, r[6] or 0.0),
+                      reverse=True)
+        else:
+            rows.sort(key=lambda r: r[0].balanced, reverse=True)
         for point, side, label, fmt, med_pos, med_neg, cv in rows:
             sign = '<' if side == 'below' else '≥'
             score = cv if cv is not None else point.balanced
             bar = '#' * int(round(score * BAR_WIDTH))
-            if cv is not None and point.balanced - cv >= OVERFIT_GAP:
+            if cv is None:
+                note = ('' if not cv_enabled else
+                        f'  ← CV невозможна (< {cv_folds} эталонов с признаком)')
+            elif point.balanced - cv >= OVERFIT_GAP:
                 note = '  ← подгонка под шум'
             elif score < USELESS_BALANCED:
                 note = '  ← не разделяет'
@@ -445,7 +463,8 @@ class Command(BaseCommand):
                 f'  {label:<24}  {self._fmt(med_pos, fmt):>9}  '
                 f'{self._fmt(med_neg, fmt):>9}  '
                 f'{sign}{self._fmt(point.threshold, fmt):>7}  '
-                f'{point.balanced:>7.3f}  {cv_txt:>6}  {bar}{note}'
+                f'{point.balanced:>7.3f}  {cv_txt:>6}  '
+                f'{point.n_pos:>3}/{point.n_neg:<3}  {bar}{note}'
             )
         best = rows[0]
         best_score = best[6] if best[6] is not None else best[0].balanced
@@ -458,7 +477,8 @@ class Command(BaseCommand):
         self.stdout.write(
             '  Колонки классов — медианы; знак у порога показывает '
             f'условие для «{pos_name}»; баланс — на своих же данных, '
-            'CV — на отложенных (ей и верить).'
+            'CV — на отложенных (ей и верить); '
+            f'n — эталонов с признаком ({pos_name}/{neg_name}).'
         )
 
     @staticmethod
