@@ -483,6 +483,74 @@ def profile_features(doys: Sequence[int], ndvi: Sequence[float]) -> dict:
     return feats
 
 
+@dataclass
+class SweepPoint:
+    """Качество одного значения порога на эталонной выборке.
+
+    ``pos_recall``/``neg_recall`` — доли верно распознанных «положительного»
+    и «отрицательного» класса; ``balanced`` — их среднее (устойчиво к
+    дисбалансу, именно его максимизируют функции ``calibrate_*``);
+    ``accuracy`` — обычная точность (взвешена размерами классов).
+    """
+    threshold: float
+    pos_recall: float
+    neg_recall: float
+    balanced: float
+    accuracy: float
+    n_pos: int
+    n_neg: int
+
+
+def sweep_threshold(
+    pos_values: Sequence[Optional[float]],
+    neg_values: Sequence[Optional[float]],
+    grid: Sequence[float],
+    pos_side: str = 'below',
+) -> list[SweepPoint]:
+    """Качество бинарного порога на сетке значений (для подбора порогов).
+
+    В отличие от ``calibrate_*``, которые возвращают одну «лучшую» точку,
+    здесь возвращается ВЕСЬ профиль качества по сетке: видно форму кривой,
+    плато и цену сдвига порога. Это нужно и человеку (осознанный выбор
+    вместо доверия к одному числу), и интерфейсу подбора порогов.
+
+    Args:
+        pos_values: значения признака у эталонов «положительного» класса
+            (например, день пика у озимых).
+        neg_values: значения признака у «отрицательного» класса (яровые).
+        grid: значения порога для проверки.
+        pos_side: ``'below'`` — положительный класс НИЖЕ порога (день пика
+            у озимых), ``'above'`` — ВЫШЕ (доля зелени у культур).
+
+    ``None`` в выборках отбрасываются. Пустой класс даёт recall 0.0 —
+    порог по одному классу не оценивается (используйте ``calibrate_*``).
+    """
+    if pos_side not in ('below', 'above'):
+        raise ValueError(f'pos_side must be below|above, got {pos_side!r}')
+
+    pos = np.asarray([v for v in pos_values if v is not None], dtype=np.float64)
+    neg = np.asarray([v for v in neg_values if v is not None], dtype=np.float64)
+    n_pos, n_neg = int(pos.size), int(neg.size)
+    total = n_pos + n_neg
+
+    out: list[SweepPoint] = []
+    for thr in grid:
+        if pos_side == 'below':
+            pos_hit = pos < thr
+            neg_hit = neg >= thr
+        else:
+            pos_hit = pos >= thr
+            neg_hit = neg < thr
+        pr = float(np.mean(pos_hit)) if n_pos else 0.0
+        nr = float(np.mean(neg_hit)) if n_neg else 0.0
+        acc = ((pr * n_pos + nr * n_neg) / total) if total else 0.0
+        out.append(SweepPoint(
+            threshold=float(thr), pos_recall=pr, neg_recall=nr,
+            balanced=(pr + nr) / 2, accuracy=acc, n_pos=n_pos, n_neg=n_neg,
+        ))
+    return out
+
+
 def calibrate_threshold(
     winter_early_spring: Sequence[float],
     percentile: float = 10.0,
