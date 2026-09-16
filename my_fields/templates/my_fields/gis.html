@@ -1,7 +1,7 @@
 {% extends 'legacy/base.html' %}
 {% load static %}
 
-{% block title %}ГИС — Эдунабазар{% endblock %}
+{% block title %}Схема землеустройства 2.0 — Эдунабазар{% endblock %}
 {% block meta_description %}Экспериментальный ГИС-инструмент: векторные тайлы угодий и редактор геометрии.{% endblock %}
 
 {% block head %}
@@ -415,18 +415,42 @@
       color: #2e7d32; border-radius: 5px; padding: 5px 10px; font-size: 12px; cursor: pointer; margin-top: 4px; }
     .gis-style-addstop:hover { background: #e8f5e9; }
 
-    /* Хлебные крошки — наверху левого сайдбара, inline. */
+    /* Шильдик страницы — наверху левого сайдбара: название инструмента,
+       кнопка возврата в кабинет и строка статуса подложки. Палитра — как в
+       общем хедере сайта (зелёный градиент #2e7d32 → #7fb500). */
     .gis-topbar {
-      display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px;
-      margin: 0 0 10px 0; padding: 8px 10px;
-      background: #f1f8e9; border: 1px solid rgba(46,125,50,.18); border-radius: 8px;
-      font-size: 12px; line-height: 1.3;
+      margin: 0 0 10px 0; padding: 9px 12px;
+      background: linear-gradient(135deg, #2e7d32 0%, #7fb500 100%);
+      border: 1px solid rgba(27,94,32,.35); border-radius: 10px;
+      box-shadow: 0 1px 3px rgba(27,94,32,.25);
+      font-size: 12px; line-height: 1.3; color: #fff;
     }
-    .gis-topbar a { color: #2e7d32; text-decoration: none; font-weight: 600; }
-    .gis-topbar a:hover { text-decoration: underline; }
-    .gis-topbar .pill { background: #c8e6c9; color: #1b5e20; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
-    .gis-topbar .muted { color: #777; }
-    .gis-topbar #gis-status { flex-basis: 100%; color: #777; font-size: 11px; }
+    .gis-topbar__head { display: flex; align-items: center; gap: 8px; }
+    .gis-topbar a.gis-topbar__back {
+      flex: 0 0 auto; width: 22px; height: 22px; border-radius: 6px;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: rgba(255,255,255,.18); color: #fff;
+      font-size: 14px; font-weight: 700; text-decoration: none;
+    }
+    .gis-topbar a.gis-topbar__back:hover { background: rgba(255,255,255,.34); text-decoration: none; }
+    .gis-topbar__title {
+      flex: 1 1 auto; min-width: 0;
+      font-size: 12.5px; font-weight: 700; letter-spacing: .7px;
+      text-transform: uppercase; text-shadow: 0 1px 1px rgba(0,0,0,.18);
+    }
+    .gis-topbar__ver {
+      display: inline-block; margin-left: 5px; padding: 1px 6px;
+      border-radius: 10px; background: #fff; color: #2e7d32;
+      font-size: 11px; font-weight: 700; letter-spacing: .3px;
+    }
+    .gis-topbar .pill {
+      flex: 0 0 auto; background: rgba(255,255,255,.92); color: #1b5e20;
+      padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;
+    }
+    .gis-topbar #gis-status {
+      display: block; margin-top: 6px;
+      color: rgba(255,255,255,.88); font-size: 11px;
+    }
 
     @media (max-width: 992px) and (orientation: landscape) {
       :root { --map-header-h: 50px; }
@@ -931,10 +955,12 @@
 
     <aside class="gis-ui__left" id="gis-left">
       <div class="gis-topbar">
-        <a href="{% url 'legacy_me' %}" title="Назад в кабинет">← Кабинет</a>
-        <span class="muted">|</span>
-        <strong>ГИС</strong>
-        {% if is_admin_user %}<span class="pill">admin</span>{% endif %}
+        <div class="gis-topbar__head">
+          <a class="gis-topbar__back" href="{% url 'legacy_me' %}"
+             title="Назад в кабинет" aria-label="Назад в кабинет">←</a>
+          <span class="gis-topbar__title">Схема землеустройства<span class="gis-topbar__ver">2.0</span></span>
+          {% if is_admin_user %}<span class="pill">admin</span>{% endif %}
+        </div>
         <span id="gis-status">подложка: ЗСН (Росреестр-вектор)</span>
       </div>
 
