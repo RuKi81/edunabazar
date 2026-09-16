@@ -941,6 +941,9 @@
       <div class="gis-layers-bar">
         <button id="gis-master-vis" class="gis-master-vis" type="button"
                 aria-pressed="false" title="Показать/скрыть все слои">🚫</button>
+        <button id="gis-only-active" class="gis-master-vis gis-only-active" type="button"
+                aria-pressed="false"
+                title="Показать только включённые слои (видимость или редактирование)">☑</button>
         <button id="gis-layer-new" class="gis-master-vis gis-layer-new" type="button"
                 title="Создать новый слой — тип геометрии и атрибуты">➕</button>
         <button id="gis-folder-add" class="gis-master-vis gis-folder-add" type="button"
@@ -1804,6 +1807,89 @@
     (function () {
       var mb = document.getElementById('gis-master-vis');
       if (mb) mb.addEventListener('click', function () { setAllLayersVisible(!masterVisible); });
+    })();
+
+    /* ─────────────── Фильтр «только включённые слои» ────────────────────
+       При активации в левом сайдбаре остаются только те слои, у которых
+       включена видимость (👁) или редактирование (✏ у статических, ✎ у
+       загруженных). Состояние читается прямо из DOM (класс .active на
+       кнопках плашки), поэтому фильтр работает и для статических слоёв,
+       и для SHP-слоёв, и для растров без дублирования состояния.
+       Папка остаётся в списке, если внутри есть хотя бы один такой слой. */
+    (function () {
+      var btn = document.getElementById('gis-only-active');
+      if (!btn) return;
+      var BOX_IDS = ['gis-layers', 'gis-uploaded-layers'];
+      var STORE_KEY = 'agroGisOnlyActive';
+      var on = false;
+      try { on = window.localStorage.getItem(STORE_KEY) === '1'; } catch (e) { on = false; }
+
+      function rowIsOn(row) {
+        var sel = row.hasAttribute('data-layer')
+          ? '.gis-layer__btn[data-action="visibility"], .gis-layer__btn[data-action="edit"]'
+          : '.gis-layer__btn[data-a="vis"], .gis-layer__btn[data-a="geom"], .gis-raster__vis';
+        var btns = row.querySelectorAll(sel);
+        for (var i = 0; i < btns.length; i++) {
+          if (btns[i].classList.contains('active')) return true;
+        }
+        return false;
+      }
+
+      function apply() {
+        BOX_IDS.forEach(function (id) {
+          var box = document.getElementById(id);
+          if (!box) return;
+          box.querySelectorAll('.gis-layer').forEach(function (row) {
+            row.style.display = (on && !rowIsOn(row)) ? 'none' : '';
+          });
+          box.querySelectorAll('.gis-folder').forEach(function (f) {
+            var keep = !on || Array.prototype.some.call(
+              f.querySelectorAll('.gis-layer'), rowIsOn);
+            f.style.display = keep ? '' : 'none';
+          });
+        });
+      }
+
+      /* Список перерисовывается асинхронно (загрузка слоёв, растровый
+         поллинг, переключение видимости) — переприменяем фильтр по
+         изменениям DOM. Сам фильтр правит только inline-style, поэтому
+         наблюдение за childList/class не даёт петли. */
+      var timer = null;
+      function schedule() {
+        if (timer) return;
+        timer = setTimeout(function () { timer = null; apply(); }, 60);
+      }
+      var obs = new MutationObserver(schedule);
+      BOX_IDS.forEach(function (id) {
+        var box = document.getElementById(id);
+        if (!box) return;
+        obs.observe(box, {
+          subtree: true, childList: true,
+          attributes: true, attributeFilter: ['class'],
+        });
+      });
+
+      function sync() {
+        btn.classList.toggle('active', on);
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        btn.title = on
+          ? 'Показаны только включённые слои — показать все'
+          : 'Показать только включённые слои (видимость или редактирование)';
+        apply();
+      }
+
+      btn.addEventListener('click', function () {
+        on = !on;
+        try { window.localStorage.setItem(STORE_KEY, on ? '1' : '0'); } catch (e) {}
+        sync();
+        /* Пока плашка была скрыта, распределитель иконок её пропускал —
+           пересчитываем после возврата в список. Делаем это только по клику
+           пользователя: распределитель переносит иконки между рядом и
+           кебабом, т.е. меняет DOM, и вызов из apply() дал бы петлю. */
+        if (window.__gisRedistribute) window.__gisRedistribute();
+      });
+      sync();
+      window.__gisOnlyActiveApply = apply;
     })();
 
     /* Применяем дефолт «всё выключено» к статическим слоям, когда стиль готов. */
