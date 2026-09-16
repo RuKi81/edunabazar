@@ -5337,7 +5337,8 @@
           }
         });
       });
-      /* Snap-indicator всегда наверху. */
+      /* Подсветка выбранного объекта и snap-indicator — всегда наверху. */
+      if (window.__gisUpRaiseHl) window.__gisUpRaiseHl();
       if (map.getLayer('snap-indicator')) {
         try { map.moveLayer('snap-indicator'); } catch (_) {}
       }
@@ -7766,6 +7767,16 @@
            объект не выбран. Подсветка работает и без правки геометрии. */
         var hlIds = [];
         var selCase = ['boolean', ['feature-state', 'selected'], false];
+        if (k === 'polygon' || k === 'other') {
+          /* Заливка выделения: без неё выбранный полигон читался только по
+             контуру и «терялся» на пёстрой подложке. */
+          var hlFill = 'gisup-hlfill-' + L.id;
+          map.addLayer({ id: hlFill, type: 'fill', source: sid, 'source-layer': L.table_name,
+            filter: ['==', '$type', 'Polygon'],
+            paint: { 'fill-color': '#e100ff',
+                     'fill-opacity': ['case', selCase, 0.35, 0] } });
+          hlIds.push(hlFill);
+        }
         if (k === 'polygon' || k === 'line' || k === 'other') {
           var hlLine = 'gisup-hl-' + L.id;
           map.addLayer({ id: hlLine, type: 'line', source: sid, 'source-layer': L.table_name,
@@ -7786,6 +7797,7 @@
           hlIds.push(hlPt);
         }
         L._hlIds = hlIds;
+        raiseHighlights();
 
         added.forEach(function (lid) {
           map.on('click', lid, function (e) {
@@ -7810,6 +7822,20 @@
         applyStyle(L);  /* best-effort тематическая раскраска (см. applyStyle) */
       }
 
+      /* Highlight-слои держим выше всех данных. Иначе после любой
+         пересортировки z-order (moveLayer по _layerIds загруженных слоёв или
+         по статическим группам) подсветка выбранного объекта уходит под
+         заливки соседних слоёв — контур выглядел приглушённым/пропадал. */
+      function raiseHighlights() {
+        Object.keys(uploaded).forEach(function (id) {
+          (uploaded[id]._hlIds || []).forEach(function (lid) {
+            if (map.getLayer(lid)) { try { map.moveLayer(lid); } catch (_) {} }
+          });
+        });
+        if (map.getLayer('snap-indicator')) { try { map.moveLayer('snap-indicator'); } catch (_) {} }
+      }
+      window.__gisUpRaiseHl = raiseHighlights;
+
       function setVisible(L, vis) {
         (L._layerIds || []).concat(L._hlIds || []).forEach(function (lid) {
           if (map.getLayer(lid)) map.setLayoutProperty(lid, 'visibility', vis ? 'visible' : 'none');
@@ -7833,6 +7859,7 @@
           map.setFeatureState(
             { source: srcId(layerId), sourceLayer: L.table_name, id: fid },
             { selected: !!on });
+          if (on) raiseHighlights();
         } catch (_) {}
       };
 
@@ -8293,6 +8320,7 @@
             if (map.getLayer(lid)) { try { map.moveLayer(lid); } catch (_) {} }
           });
         });
+        raiseHighlights();
         /* Растры держим ПОД векторными данными (rasterBeforeId), но в порядке
            списка между собой: снизу вверх двигаем каждый под общий анкор. */
         var rrows = listEl.querySelectorAll('.gis-layer[data-gisraster]');
