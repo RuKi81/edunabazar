@@ -102,6 +102,16 @@
       .brand-logo__img { height: 63px; }
     }
 
+    /* Временная заглушка логотипа — жёлтый квадрат вместо картинки. */
+    .brand-logo__ph {
+      display: inline-block; vertical-align: middle;
+      height: 77px; width: 77px; background: #ffd400; border-radius: 6px;
+    }
+    @media (max-width: 600px) {
+      .brand-logo__ph { height: 63px; width: 63px; }
+    }
+    .brand-logo__ph--sm { height: 48px; width: 48px; }
+
     .hide-on-med-and-down nav { height: 92px; line-height: 92px; }
     .hide-on-med-and-down nav .nav-wrapper { height: 92px; line-height: 92px; }
     .hide-on-med-and-down nav ul a { line-height: 92px; font-size: 14px; font-weight: 600; letter-spacing: .2px; }
@@ -247,7 +257,7 @@
     <nav class="container background-none">
       <div class="nav-wrapper">
         <a href="/" class="brand-logo" aria-label="На главную">
-          <img class="brand-logo__img" src="{% static 'legacy/images/logo.png' %}" alt="Еду на базар">
+          <span class="brand-logo__ph" role="img" aria-label="Еду на базар"></span>
         </a>
         <ul class="right">
           <li class="navmenu-elem"><a href="/adverts/">объявления</a></li>
@@ -259,8 +269,6 @@
           {% endif %}
 
           {% if legacy_user %}
-            <li class="navmenu-elem"><a href="{% url 'favorites_list' %}">избранное</a></li>
-            <li class="navmenu-elem"><a href="{% url 'messages_inbox' %}">сообщения</a></li>
             {% if is_admin_user %}
               <li class="navmenu-elem"><a href="{% url 'admin_users' %}">админка</a></li>
             {% endif %}
@@ -280,7 +288,7 @@
     <div class="container" style="padding-top: 8px; padding-bottom: 8px;">
       <a href="#" data-target="slide-out" class="sidenav-trigger right"><i class="material-icons">menu</i></a>
       <a href="/" aria-label="На главную" style="display:inline-block;">
-        <img class="brand-logo__img" src="{% static 'legacy/images/logo.png' %}" alt="Еду на базар">
+        <span class="brand-logo__ph" role="img" aria-label="Еду на базар"></span>
       </a>
     </div>
   </div>
@@ -289,7 +297,7 @@
   <ul id="slide-out" class="sidenav">
     <li class="sidenav-logo">
       <a href="/" style="padding:0 !important; height:auto; line-height:normal;">
-        <img src="{% static 'legacy/images/logo.png' %}" alt="Еду на базар" style="height:48px; width:auto;">
+        <span class="brand-logo__ph brand-logo__ph--sm" role="img" aria-label="Еду на базар"></span>
       </a>
     </li>
     <li><a href="/adverts/"><i class="material-icons">list</i>объявления</a></li>
@@ -301,8 +309,6 @@
     {% endif %}
     <li><div class="divider"></div></li>
     {% if legacy_user %}
-      <li><a href="{% url 'favorites_list' %}"><i class="material-icons">favorite</i>избранное</a></li>
-      <li><a href="{% url 'messages_inbox' %}"><i class="material-icons">mail</i>сообщения</a></li>
       {% if is_admin_user %}
         <li><a href="{% url 'admin_users' %}"><i class="material-icons">settings</i>админка</a></li>
       {% endif %}

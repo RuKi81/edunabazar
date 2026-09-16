@@ -1,13 +1,11 @@
 {% comment %}
 Shared sidebar for the user cabinet (/me/, /me/agrocosmos/, /me/fields/).
 Requires context var ``active_section`` in
-{credentials|agrocosmos|my_fields|gis|adverts|messages|reviews}.
+{credentials|agrocosmos|my_fields|gis|adverts|favorites|messages|reviews}.
 Menu items that live on the same page (/me/) use data-tab, so the JS on
 /me/ can switch sections without a full reload. External pages use href.
-The "ГИС" item is shown to admins and to any user with at least one
-GIS access grant; the ``can_open_gis`` flag is set by
-``legacy.context_processors.legacy_user`` (mirrors
-``access.services.can_open_gis_page``). Admins get an "admin" badge.
+The "ГИС" link lives in the main site header (legacy/base.html, admin-only),
+not here. "Избранное" and "Сообщения" were also moved here out of the header.
 {% endcomment %}
 <aside class="cab-sidebar">
   <div class="cab-side-card">
@@ -59,6 +57,12 @@ GIS access grant; the ``can_open_gis`` flag is set by
       {% endif %}
 
       <div class="cab-nav-divider"></div>
+
+      <a href="{% url 'favorites_list' %}"
+         class="cab-nav-item {% if active_section == 'favorites' %}active{% endif %}">
+        <span class="cab-nav-icon">❤️</span>
+        <span>Избранное</span>
+      </a>
 
       <a href="{% url 'messages_inbox' %}"
          class="cab-nav-item {% if active_section == 'messages' %}active{% endif %}">
