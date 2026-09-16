@@ -107,11 +107,13 @@ class Command(BaseCommand):
                                  'калибровка по эталонам).')
         parser.add_argument('--overgrown-gate',
                             action=argparse.BooleanOptionalAction,
-                            default=False,
+                            default=None,
                             help='Гейт зарастания: отсев в unused по '
                                  'ВЫСОКОЙ доле зелёных ПРИ ОТСУТСТВИИ '
                                  'уборки (заросшая залежь зеленее культур). '
-                                 'Требует гейта покрова; по умолчанию ВЫКЛ.')
+                                 'ВКЛЮЧЁН ПО УМОЛЧАНИЮ вместе с гейтом '
+                                 'покрова (без него невозможен); '
+                                 'выключить — --no-overgrown-gate.')
         parser.add_argument('--cover-max', type=float, default=None,
                             help='Верхний порог доли зелёных (≥ и без '
                                  f'уборки — unused; по умолч. '
@@ -192,12 +194,15 @@ class Command(BaseCommand):
         satellites = FUSED_SATELLITES if source == 'fused' else RASTER_SATELLITES
         crop_types = self._parse_crop_types(options['crop_types'])
         # Верхняя ветка покрова без нижней бессмысленна — валидируем ДО
-        # многоминутной загрузки рядов NDVI.
+        # многоминутной загрузки рядов NDVI. Ошибка — только на ЯВНЫЙ
+        # --overgrown-gate; дефолт (None) при --no-cover-gate просто гаснет.
         if options['overgrown_gate'] and not options['cover_gate']:
             raise CommandError(
                 '--overgrown-gate работает только вместе с гейтом '
                 'покрова: уберите --no-cover-gate.'
             )
+        if options['overgrown_gate'] is None:
+            options['overgrown_gate'] = options['cover_gate']
 
         # --- Опорные точки культур (для калибровки/валидации) ---
         # Резолвим ДО тяжёлой загрузки NDVI: чтение SHP/слоя и spatial-join

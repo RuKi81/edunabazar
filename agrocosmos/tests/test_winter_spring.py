@@ -573,8 +573,10 @@ class ClassifyWinterSpringCommandTests(TestCase):
 
     def test_cover_gate_explicit_threshold_no_false_unused(self):
         # Явный низкий порог: высоко-покровные синтетики НЕ уходят в unused.
+        # overgrown_gate=False — изолируем НИЖНЮЮ ветку (верхняя ВКЛ по
+        # умолчанию и забрала бы зелёные профили в unused).
         self._run(region_id=self.region.pk, year=YEAR, cover_gate=True,
-                  cover_min=0.05)
+                  cover_min=0.05, overgrown_gate=False)
         self.assertEqual(
             FarmlandCropSeason.objects.filter(
                 year=YEAR, season_class='unused').count(), 0)
@@ -592,8 +594,22 @@ class ClassifyWinterSpringCommandTests(TestCase):
         out = self._run(region_id=self.region.pk, year=YEAR, cover_gate=False)
         self.assertIn('Гейт покрова ВЫКЛ', out)
 
-    def test_overgrown_gate_off_by_default(self):
+    def test_overgrown_gate_on_by_default(self):
+        """ВКЛ по умолчанию: на Туле-2026 ловит 259/293 залежей
+        при потере 4 культур из 87 (CV 0.909)."""
         out = self._run(region_id=self.region.pk, year=YEAR)
+        self.assertIn('Гейт зарастания ВКЛ', out)
+
+    def test_overgrown_gate_can_be_disabled(self):
+        out = self._run(region_id=self.region.pk, year=YEAR,
+                        overgrown_gate=False)
+        self.assertIn('Гейт зарастания ВЫКЛ', out)
+
+    def test_overgrown_gate_silently_off_without_cover_gate(self):
+        """--no-cover-gate без явного флага гасит верхнюю ветку,
+        а не валит команду ошибкой."""
+        out = self._run(region_id=self.region.pk, year=YEAR, cover_gate=False)
+        self.assertIn('Гейт покрова ВЫКЛ', out)
         self.assertIn('Гейт зарастания ВЫКЛ', out)
 
     def test_overgrown_gate_reports_threshold_and_catches_fallow(self):
