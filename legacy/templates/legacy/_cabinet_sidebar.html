@@ -45,15 +45,6 @@ GIS access grant; the ``can_open_gis`` flag is set by
         <span>Мои поля</span>
       </a>
 
-      {% if can_open_gis %}
-        <a href="{% url 'my_fields:ui_gis' %}"
-           class="cab-nav-item {% if active_section == 'gis' %}active{% endif %}">
-          <span class="cab-nav-icon">🗺️</span>
-          <span>ГИС</span>
-          {% if is_admin_user %}<span class="cab-nav-badge">admin</span>{% endif %}
-        </a>
-      {% endif %}
-
       {% if active_section == 'agrocosmos' or active_section == 'my_fields' or active_section == 'gis' %}
         <a href="{% url 'legacy_me' %}#adverts" class="cab-nav-item">
           <span class="cab-nav-icon">📋</span>
