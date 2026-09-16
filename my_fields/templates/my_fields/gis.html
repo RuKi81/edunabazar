@@ -1399,7 +1399,7 @@
       layout: { visibility: 'none' },
       paint: {
         'fill-color': [
-          'case', ['boolean', ['feature-state', 'selected'], false], '#e91e63',
+          'case', ['boolean', ['feature-state', 'selected'], false], '#d500f9',
           [
             'match', ['get', 'is_used'],
             1, '#66bb6a',
@@ -1468,7 +1468,7 @@
           layout: { visibility: 'none' },
           paint: {
             'fill-color': [
-              'case', ['boolean', ['feature-state', 'selected'], false], '#e91e63', '#2e7d32',
+              'case', ['boolean', ['feature-state', 'selected'], false], '#d500f9', '#2e7d32',
             ],
             'fill-opacity': [
               'case', ['boolean', ['feature-state', 'selected'], false], 0.50, 0.30,
@@ -7770,8 +7770,8 @@
           var hlLine = 'gisup-hl-' + L.id;
           map.addLayer({ id: hlLine, type: 'line', source: sid, 'source-layer': L.table_name,
             filter: ['any', ['==', '$type', 'Polygon'], ['==', '$type', 'LineString']],
-            paint: { 'line-color': '#e91e63',
-                     'line-width': ['case', selCase, 3.5, 0],
+            paint: { 'line-color': '#d500f9',
+                     'line-width': ['case', selCase, 5.25, 0],
                      'line-opacity': ['case', selCase, 1, 0] } });
           hlIds.push(hlLine);
         }
@@ -7780,9 +7780,9 @@
           map.addLayer({ id: hlPt, type: 'circle', source: sid, 'source-layer': L.table_name,
             filter: ['==', '$type', 'Point'],
             paint: { 'circle-radius': ['case', selCase, 7, 0],
-                     'circle-color': 'rgba(233,30,99,0.25)',
-                     'circle-stroke-color': '#e91e63',
-                     'circle-stroke-width': ['case', selCase, 2.5, 0] } });
+                     'circle-color': 'rgba(213,0,249,0.25)',
+                     'circle-stroke-color': '#d500f9',
+                     'circle-stroke-width': ['case', selCase, 3.75, 0] } });
           hlIds.push(hlPt);
         }
         L._hlIds = hlIds;
