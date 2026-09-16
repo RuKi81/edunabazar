@@ -777,6 +777,10 @@ class Command(BaseCommand):
 
         # Валидация: матрица ошибок по эталонам озимых/яровых.
         pairs = []
+        # Цена гейтов: эталонная КУЛЬТУРА, уехавшая в unused/unknown.
+        # Без этой разбивки ошибку «съел гейт» не отличить от ошибки
+        # «спутал озимые с яровыми» — а лечатся они по-разному.
+        lost = {'winter': 0, 'spring': 0}
         unused = {'n': 0, 'as_winter': 0, 'as_spring': 0,
                   'as_unused': 0, 'unknown': 0}
         for fid, ref in ref_map.items():
@@ -789,6 +793,8 @@ class Command(BaseCommand):
             )
             if ref['class'] in ('winter', 'spring'):
                 pairs.append((ref['class'], prof.season_class))
+                if prof.season_class in ('unused', 'unknown'):
+                    lost[ref['class']] += 1
             elif ref['class'] == 'unused':
                 unused['n'] += 1
                 unused[{'winter': 'as_winter', 'spring': 'as_spring',
@@ -811,6 +817,11 @@ class Command(BaseCommand):
                 f'    общая точность: {ev["accuracy"] * 100:.1f}% '
                 f'(n={ev["total"]})'
             )
+        self.stdout.write(
+            f'    из них съедено гейтами (в unused/unknown): '
+            f'озимые={lost["winter"]}/{w["n"]}, '
+            f'яровые={lost["spring"]}/{s["n"]}'
+        )
         if unused['n']:
             correct = unused['as_unused'] + unused['unknown']
             self.stdout.write(

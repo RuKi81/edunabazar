@@ -536,6 +536,9 @@ class ClassifyWinterSpringCommandTests(TestCase):
         self.assertIn('озимые:  3/3', out)
         self.assertIn('яровые:  3/3', out)
         self.assertIn('общая точность: 100.0%', out)
+        # Гейты не съели ни одной эталонной культуры.
+        self.assertIn('съедено гейтами (в unused/unknown): '
+                      'озимые=0/3, яровые=0/3', out)
         self.assertIn('не обрабатываемые', out)
         # Эталон «не используется» отсеян гейтом уборки.
         self.assertIn('отсеяно в unused=1', out)
@@ -608,6 +611,19 @@ class ClassifyWinterSpringCommandTests(TestCase):
         with self.assertRaisesMessage(CommandError, '--overgrown-gate'):
             self._run(region_id=self.region.pk, year=YEAR,
                       overgrown_gate=True, cover_gate=False)
+
+    def test_report_counts_crops_eaten_by_gates(self):
+        """Цена гейтов считается отдельно от путаницы озимые/яровые.
+
+        С завышенным порогом покрова все эталонные культуры
+        уезжают в unused — и отчёт обязан назвать это число.
+        """
+        out = self._run(
+            district_id=self.district.pk, year=YEAR, cover_min=0.99,
+            reference_layer='kultury_2026', reference_attr='crop',
+        )
+        self.assertIn('съедено гейтами (в unused/unknown): '
+                      'озимые=3/3, яровые=3/3', out)
 
     def test_missing_shp_fails_fast(self):
         from django.core.management.base import CommandError
