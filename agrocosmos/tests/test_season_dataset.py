@@ -19,6 +19,9 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
 
+from agrocosmos.management.commands.train_season_model import (
+    Command as TrainSeasonModelCommand,
+)
 from agrocosmos.models import (
     District, Farmland, FarmlandTrainingLabel, Region, SatelliteScene,
     VegetationIndex,
@@ -227,6 +230,23 @@ class SeasonDatasetTests(TestCase):
         row = stage['rows'][stage['farmland_ids'].index(fl.pk)]
         self.assertEqual(row['autumn_prev_missing'], 0.0)
         self.assertGreater(row['autumn_prev'], 0.5)
+        self.assertEqual(stage['n_autumn_prev'], 1)
+
+    def test_series_outside_autumn_window_leaves_feature_empty(self):
+        """Ряд за прошлый год есть, а осеннего окна в нём нет.
+
+        Именно так выглядит незавершённая загрузка снимков:
+        ``prev_source='детальный'`` создаёт видимость благополучия,
+        хотя главный признак озимых пуст.
+        """
+        fl = self.by_class['winter'][0]
+        self._prev_summer(fl)
+        data = build_dataset(YEAR, region_id=self.region.pk)
+        self.assertEqual(data['prev_source'], 'детальный')
+        stage = data[STAGE_SEASON]
+        self.assertEqual(stage['n_autumn_prev'], 0)
+        row = stage['rows'][stage['farmland_ids'].index(fl.pk)]
+        self.assertEqual(row['autumn_prev_missing'], 1.0)
 
     @classmethod
     def _prev_autumn(cls, fl, satellite, value):
@@ -240,6 +260,20 @@ class SeasonDatasetTests(TestCase):
             VegetationIndex.objects.create(
                 farmland=fl, scene=scene, index_type='ndvi',
                 acquired_date=d, mean=value,
+            )
+
+    @classmethod
+    def _prev_summer(cls, fl):
+        """Ряд ПРОШЛОГО года, обрывающийся до осеннего окна."""
+        for day in (0, 10, 20, 30, 40, 50):
+            d = date(YEAR - 1, 5, 1) + timedelta(days=day)
+            scene, _ = SatelliteScene.objects.get_or_create(
+                scene_id=f'sentinel2_{d}',
+                defaults={'satellite': 'sentinel2', 'acquired_date': d},
+            )
+            VegetationIndex.objects.create(
+                farmland=fl, scene=scene, index_type='ndvi',
+                acquired_date=d, mean=0.5,
             )
 
 
@@ -278,6 +312,18 @@ class TrainSeasonModelCommandTests(SeasonDatasetTests):
             balanced = float(line.split()[-4])
             self.assertGreater(balanced, 0.9, line)
 
+    def test_empty_autumn_prev_warns_instead_of_silent_zero_weight(self):
+        out = self._run(stage=STAGE_SEASON)
+        self.assertIn('Прошлогодняя осень заполнена: 0/', out)
+        self.assertIn('run_ndvi_pipeline', out)
+
+    def test_filled_autumn_prev_reported_without_warning(self):
+        self._prev_autumn(self.by_class['winter'][0],
+                          satellite='sentinel2', value=0.7)
+        out = self._run(stage=STAGE_SEASON, skip_prev_autumn=False)
+        self.assertIn('Прошлогодняя осень заполнена: 1/', out)
+        self.assertNotIn('run_ndvi_pipeline', out)
+
     def test_weights_printed_for_interpretation(self):
         out = self._run(stage=STAGE_SEASON, top_features=3)
         self.assertIn('Веса (на стандартизованных признаках', out)
@@ -290,6 +336,54 @@ class TrainSeasonModelCommandTests(SeasonDatasetTests):
     def test_missing_labels_reported(self):
         with self.assertRaisesMessage(CommandError, 'Нет меток'):
             self._run(year=YEAR + 5)
+
+
+class PerGroupReportTests(TestCase):
+    """Ранжирование групп в отчёте: односторонняя группа ≠ провал.
+
+    В районе, где вся разметка одного класса, сбалансированная точность
+    вырождается: recall отсутствующего класса равен нулю и тянет метрику
+    к 0.5. Без поправки район с 48 верными ответами попадал в «худшие»
+    наравне с районом, где модель ошибается.
+    """
+
+    def _report(self, per_group):
+        out = StringIO()
+        TrainSeasonModelCommand(stdout=out)._report_per_group(
+            {'per_group': per_group})
+        return out.getvalue()
+
+    @staticmethod
+    def _group(n_pos, n_neg, recall_pos, recall_neg):
+        total = n_pos + n_neg
+        return {
+            'n': total,
+            'n_pos': n_pos,
+            'n_neg': n_neg,
+            'recall_pos': recall_pos,
+            'recall_neg': recall_neg,
+            'balanced': (recall_pos + recall_neg) / 2,
+            'accuracy': (recall_pos * n_pos + recall_neg * n_neg) / total,
+        }
+
+    def test_all_correct_single_class_group_ranked_last(self):
+        text = self._report({
+            'd_ok': self._group(0, 48, 0.0, 1.0),
+            'd_mixed': self._group(5, 5, 0.6, 0.6),
+            'd_wrong': self._group(0, 1, 0.0, 0.0),
+        })
+        self.assertLess(text.index('d_wrong'), text.index('d_mixed'))
+        self.assertLess(text.index('d_mixed'), text.index('d_ok'))
+
+    def test_single_class_group_shown_by_accuracy_with_mark(self):
+        text = self._report({'d_ok': self._group(0, 48, 0.0, 1.0),
+                             'd_mixed': self._group(5, 5, 0.6, 0.6)})
+        self.assertIn('один класс', text)
+        line = [ln for ln in text.splitlines() if 'd_ok' in ln][0]
+        self.assertIn('1.000*', line)
+        mixed = [ln for ln in text.splitlines() if 'd_mixed' in ln][0]
+        self.assertIn('0.600', mixed)
+        self.assertNotIn('*', mixed)
 
 
 class SmallSampleCommandTests(TestCase):

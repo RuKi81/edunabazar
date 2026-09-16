@@ -168,6 +168,12 @@ def build_stage(
     их число возвращается в ``dropped``, чтобы отчёт показывал, сколько
     разметки не дошло до обучения (обычно это мелкие контуры под
     постоянной облачностью).
+
+    Отдельно считается ``n_autumn_prev`` — у скольких угодий признак
+    «прошлогодняя осень» действительно ЗАПОЛНЕН. Наличие ряда за прошлый
+    год этого не гарантирует: ряд может обрываться до окна 15 сентября —
+    1 ноября, и тогда главный признак озимых у всех пуст, хотя загрузка
+    выглядит успешной.
     """
     prev_series = prev_series or {}
     if stage == STAGE_COVER:
@@ -182,6 +188,7 @@ def build_stage(
 
     rows, y, group_list, ids = [], [], [], []
     dropped = 0
+    n_autumn_prev = 0
     for fid, cls in labels.items():
         if cls not in positive and cls not in negative:
             continue
@@ -199,6 +206,8 @@ def build_stage(
         if feats is None:
             dropped += 1
             continue
+        if feats.get('autumn_prev') is not None:
+            n_autumn_prev += 1
         rows.append(feats)
         y.append(1.0 if cls in positive else 0.0)
         group_list.append(groups.get(fid, 'unknown'))
@@ -218,6 +227,7 @@ def build_stage(
         'n_neg': int(len(y) - sum(y)),
         'n_groups': len(set(group_list)),
         'dropped': dropped,
+        'n_autumn_prev': n_autumn_prev,
     }
 
 

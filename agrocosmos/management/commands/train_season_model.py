@@ -147,6 +147,8 @@ class Command(BaseCommand):
             f'групп: {stage_data["n_groups"]}, '
             f'без ряда/короткий ряд: {stage_data["dropped"]}'
         )
+        if stage == STAGE_SEASON:
+            self._report_autumn_prev(stage_data)
         if min(stage_data['n_pos'], stage_data['n_neg']) < MIN_PER_CLASS:
             self.stdout.write(self.style.WARNING(
                 f'  Пропуск: нужно ≥ {MIN_PER_CLASS} примеров в каждом '
@@ -162,6 +164,31 @@ class Command(BaseCommand):
         self._report_l2(scores, state['l2'])
         self._report_quality(stage, stage_data, data['series'], state, cv)
         self._report_weights(state, top)
+
+    def _report_autumn_prev(self, stage_data):
+        """Заполненность главного признака озимых — до, а не после весов.
+
+        Признак ``autumn_prev`` (NDVI 15 сентября — 1 ноября ПРОШЛОГО
+        года) физически отличает озимые: только у них к зиме есть всходы.
+        Но ряд за прошлый год может обрываться раньше сентября — тогда
+        признак пуст У ВСЕХ, вес его в модели около нуля, и это легко
+        принять за «осень не информативна». Поэтому заполненность
+        печатается явно.
+        """
+        total = stage_data['n_pos'] + stage_data['n_neg']
+        filled = stage_data.get('n_autumn_prev', 0)
+        if not total:
+            return
+        line = f'  Прошлогодняя осень заполнена: {filled}/{total}'
+        if filled == 0:
+            self.stdout.write(self.style.WARNING(
+                line + ' — главный признак озимых недоступен: за прошлый '
+                'год нет снимков в окне 15 сентября — 1 ноября. Модель '
+                'решает по косвенным признакам; догрузите осень '
+                'прошлого года командой run_ndvi_pipeline.'
+            ))
+        else:
+            self.stdout.write(line)
 
     def _report_l2(self, scores, chosen):
         if not scores:
@@ -220,15 +247,28 @@ class Command(BaseCommand):
         self._report_per_group(cv)
 
     def _report_per_group(self, cv):
-        """Худшие группы: где модель проваливается, там и искать причину."""
-        groups = sorted(cv['per_group'].items(),
-                        key=lambda kv: kv[1]['balanced'])[:5]
-        if not groups:
+        """Худшие группы: где модель проваливается, там и искать причину.
+
+        В группе с ОДНИМ классом сбалансированная точность не определена:
+        recall отсутствующего класса считается нулём и тянет метрику к
+        0.5, поэтому район, где все 48 угодий угаданы верно, выглядел бы
+        таким же провальным, как район с ошибками. Такие группы
+        ранжируются и печатаются по доле верных ответов с пометкой ``*``.
+        """
+        ranked = []
+        for name, m in cv['per_group'].items():
+            both = bool(m['n_pos'] and m['n_neg'])
+            ranked.append((name, m, m['balanced'] if both else m['accuracy'],
+                           both))
+        if not ranked:
             return
-        self.stdout.write('  Худшие группы (сбаланс. точность):')
-        for name, m in groups:
+        ranked.sort(key=lambda item: item[2])
+        self.stdout.write('  Худшие группы (сбаланс. точность; '
+                          '* — один класс, доля верных):')
+        for name, m, score, both in ranked[:5]:
+            mark = '' if both else '*'
             self.stdout.write(
-                f'    {name:<12} n={m["n"]:<4} {m["balanced"]:.3f} '
+                f'    {name:<12} n={m["n"]:<4} {score:.3f}{mark:<2}'
                 f'(+{m["n_pos"]}/−{m["n_neg"]})'
             )
 
