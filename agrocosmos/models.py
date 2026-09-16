@@ -1272,10 +1272,11 @@ class FarmlandTrainingLabel(models.Model):
 
     Независима от прогонов ``classify_winter_spring``: эксперт-админ через
     карту-разметчик ставит ИСТИННЫЙ класс угодья (озимые / яровые / сенокос /
-    не обрабатывается / пропустить). Метки копятся отдельно и используются
-    командой классификации как эталоны для калибровки порогов и печати
-    матрицы ошибок — в отличие от ``FarmlandCropSeason.is_reference``, они не
-    затираются при полном переклассе сезона.
+    не обрабатывается — общий класс либо подкласс ДКР/сорная / пропустить).
+    Метки копятся отдельно и используются командой классификации как эталоны
+    для калибровки порогов и печати матрицы ошибок — в отличие от
+    ``FarmlandCropSeason.is_reference``, они не затираются при полном
+    переклассе сезона.
 
     ``labeled_by`` хранит логин legacy-пользователя строкой (приложение
     работает с ``request.legacy_user``, а не с ``auth.User``).
@@ -1286,14 +1287,36 @@ class FarmlandTrainingLabel(models.Model):
         SPRING = 'spring', 'Яровые'
         HAYFIELD = 'hayfield', 'Сенокос'
         UNUSED = 'unused', 'Не обрабатывается'
+        UNUSED_WOODY = 'unused_woody', 'Не обраб.: ДКР'
+        UNUSED_WEEDS = 'unused_weeds', 'Не обраб.: сорная'
         IGNORE = 'ignore', 'Пропустить (сад/прочее)'
+
+    # Семейство «не обрабатывается»: общий класс плюс два подкласса
+    # по типу зарастания. ДКР (деревья/кустарник) и сорная
+    # растительность — разные фенологии: у ДКР высокий NDVI с
+    # ранним выходом и без уборки, у сорняка — поздний беспорядочный
+    # рост. Для калибровки порогов все три работают как один класс
+    # ``unused`` (см. :meth:`family`), а разбивка нужна для диагностики:
+    # какой именно тип залежи гейты не ловят.
+    UNUSED_CLASSES = ('unused', 'unused_woody', 'unused_weeds')
+
+    @classmethod
+    def family(cls, true_class: str) -> str:
+        """Подкласс → базовый класс для калибровки и валидации.
+
+        Классификатор предсказывает только ``unused`` без типа
+        зарастания, поэтому при сверке с моделью подклассы
+        сворачиваются в общий класс — иначе верная метка «ДКР»
+        считалась бы ошибкой против предсказания ``unused``.
+        """
+        return 'unused' if true_class in cls.UNUSED_CLASSES else true_class
 
     farmland = models.ForeignKey(
         Farmland, on_delete=models.CASCADE, related_name='training_labels',
     )
     year = models.IntegerField(verbose_name='Год')
     true_class = models.CharField(
-        max_length=10, choices=TrueClass.choices,
+        max_length=20, choices=TrueClass.choices,
         verbose_name='Истинный класс',
     )
     note = models.CharField(

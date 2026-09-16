@@ -59,7 +59,9 @@ _ORDER_SQL = {
     'area': 'f.area_ha DESC NULLS LAST',
 }
 
-# Классы, напрямую сопоставимые с предсказанием классификатора.
+# Классы, напрямую сопоставимые с предсказанием классификатора. Подклассы
+# зарастания (ДКР/сорная) сворачиваются в ``unused``:
+# модель тип зарастания не предсказывает.
 _COMPARABLE_CLASSES = ('winter', 'spring', 'unused')
 # Сколько id расхождений отдавать для перехода к ним в разметчике.
 _MAX_MISMATCH_IDS = 50
@@ -413,11 +415,15 @@ def _model_agreement(labels, year, source):
         pred = predicted.get(fid)
         if pred is None:
             continue
+        # Матрица — по СЫРОЙ метке (видно, как модель ведёт себя
+        # на ДКР и на сорняке порознь), а точность — по базовому
+        # классу, иначе верная метка «ДКР» шла бы в ошибки.
+        family = FarmlandTrainingLabel.family(true_class)
         matrix.setdefault(true_class, {})
         matrix[true_class][pred] = matrix[true_class].get(pred, 0) + 1
-        if true_class in _COMPARABLE_CLASSES:
+        if family in _COMPARABLE_CLASSES:
             comparable += 1
-            if true_class == pred:
+            if family == pred:
                 agree += 1
     return {
         'labeled': len(labels),
@@ -453,7 +459,7 @@ def _unused_agreement(labels, year):
             out['no_data'] += 1
             continue
         out['checked'] += 1
-        if true_class == FarmlandTrainingLabel.TrueClass.UNUSED:
+        if true_class in FarmlandTrainingLabel.UNUSED_CLASSES:
             if signals:
                 out['confirmed'] += 1
             else:

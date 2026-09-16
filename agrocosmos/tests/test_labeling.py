@@ -370,6 +370,19 @@ class LabelingApiTests(TestCase):
     def test_save_rejects_get(self):
         self.assertEqual(self.client.get(SAVE_URL).status_code, 405)
 
+    def test_save_accepts_unused_subclasses(self):
+        """ДКР и сорная — валидные классы разметки."""
+        for fl, cls_ in ((self.fl_ambig_peak, 'unused_woody'),
+                         (self.fl_ambig_conf, 'unused_weeds')):
+            resp = self._save({'farmland_id': fl.pk, 'year': YEAR,
+                               'true_class': cls_})
+            self.assertEqual(resp.status_code, 200)
+            self.assertTrue(resp.json()['ok'])
+            label = FarmlandTrainingLabel.objects.get(farmland=fl, year=YEAR)
+            self.assertEqual(label.true_class, cls_)
+            # Для калибровки оба подкласса — один класс unused.
+            self.assertEqual(FarmlandTrainingLabel.family(cls_), 'unused')
+
     # ── счётчики ─────────────────────────────────────────────────────
     def test_stats_by_class_and_region(self):
         FarmlandTrainingLabel.objects.create(
@@ -389,6 +402,18 @@ class LabelingApiTests(TestCase):
             STATS_URL, {'year': YEAR, 'region': self.other_region.pk},
         ).json()['stats']
         self.assertEqual(scoped['total'], 0)
+
+    def test_stats_count_unused_subclasses_separately(self):
+        FarmlandTrainingLabel.objects.create(
+            farmland=self.fl_ambig_peak, year=YEAR, true_class='unused_woody')
+        FarmlandTrainingLabel.objects.create(
+            farmland=self.fl_ambig_conf, year=YEAR, true_class='unused_weeds')
+
+        stats = self.client.get(STATS_URL, {'year': YEAR}).json()['stats']
+        self.assertEqual(stats['unused_woody'], 1)
+        self.assertEqual(stats['unused_weeds'], 1)
+        self.assertEqual(stats['unused'], 0)
+        self.assertEqual(stats['total'], 2)
 
 
 @override_settings(CACHES=_DUMMY_CACHE, ADMIN_USERNAMES={'admin'})
@@ -520,6 +545,22 @@ class LabelAgreementTests(TestCase):
         resp = self.client.get(AGREEMENT_URL, {'year': 'abc'})
         self.assertEqual(resp.status_code, 400)
 
+    def test_unused_subclass_agrees_with_unused_prediction(self):
+        """Метка «ДКР» против предсказания ``unused`` — НЕ ошибка.
+
+        Классификатор тип зарастания не предсказывает, поэтому в точности
+        подклассы сворачиваются, а в матрице остаются видны порознь.
+        """
+        FarmlandTrainingLabel.objects.filter(
+            farmland=self.fl_unused_ok, year=YEAR,
+        ).update(true_class='unused_woody')
+
+        model = self._agreement()['model']
+        self.assertEqual(model['comparable'], 3)
+        self.assertEqual(model['agree'], 2)
+        self.assertEqual(model['matrix']['unused_woody'], {'unused': 1})
+        self.assertNotIn('unused', model['matrix'])
+
 
 def _winter_ndvi(doy):
     """Озимые: ранний пик NDVI (конец мая–июнь)."""
@@ -609,6 +650,23 @@ class ClassifyWithManualLabelsTests(TestCase):
     def test_hayfield_label_of_other_year_ignored(self):
         out = self._run(reference_labels=True, dry_run=True)
         self.assertNotIn('пропущено(сенокос/сад)', out)
+
+    def test_unused_subclasses_collapse_with_breakdown(self):
+        """Подклассы идут в калибровку как unused, но видны в сводке."""
+        extra = Farmland.objects.create(
+            region=self.region, district=self.district,
+            crop_type=Farmland.CropType.ARABLE, area_ha=100,
+            geom=_square(37.3, 54.1),
+        )
+        FarmlandTrainingLabel.objects.create(
+            farmland=extra, year=YEAR, true_class='unused_woody')
+        # Метка уникальна по (farmland, year) — переводим существующую.
+        FarmlandTrainingLabel.objects.filter(
+            farmland=self.fl_winter, year=YEAR,
+        ).update(true_class='unused_weeds')
+
+        out = self._run(reference_labels=True, dry_run=True)
+        self.assertIn('не обраб.=2 (ДКР=1, сорная=1)', out)
 
     def test_labels_marked_as_reference_in_db(self):
         self._run(reference_labels=True)

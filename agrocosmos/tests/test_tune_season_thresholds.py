@@ -334,6 +334,22 @@ class TuneSeasonThresholdsCommandTests(TestCase):
         self.assertIn('1.000', autumn_line)
         self.assertIn('≥', autumn_line)
 
+    def test_unused_subclasses_reported_under_unused(self):
+        """ДКР/сорная — часть ``unused`` в развёртках, но видны в сводке."""
+        FarmlandTrainingLabel.objects.filter(
+            farmland=self.unused[0], year=YEAR,
+        ).update(true_class='unused_woody')
+        FarmlandTrainingLabel.objects.filter(
+            farmland=self.unused[1], year=YEAR,
+        ).update(true_class='unused_weeds')
+
+        out = self._run(skip_area=True, skip_prev_autumn=True)
+        # Оба подкласса сложились в общий класс: развёртки видят 2 залежи.
+        self.assertRegex(out, r'unused\s+2 →\s+2')
+        self.assertIn('не обраб.=2', out)      # развёртка гейта покрова
+        self.assertRegex(out, r'из них ДКР\s+1 →\s+1')
+        self.assertRegex(out, r'из них сорная\s+1 →\s+1')
+
     def test_histogram_reports_missing_crop_season_rows(self):
         out = self._run()
         self.assertIn('Нет строк FarmlandCropSeason', out)

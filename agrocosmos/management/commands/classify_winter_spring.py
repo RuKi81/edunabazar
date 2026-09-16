@@ -525,6 +525,11 @@ class Command(BaseCommand):
         экспертно проверены, поэтому используются как эталоны для калибровки
         порогов и валидации наравне с точками из ГИС-слоя. Сенокос и
         «пропустить» не участвуют в калибровке пик-порога → отбрасываются.
+
+        Подклассы зарастания (ДКР, сорная) сворачиваются в ``unused``
+        через :meth:`FarmlandTrainingLabel.family`: классификатор типа
+        зарастания не предсказывает, но в сводке показываем разбивку —
+        иначе не видно, чего набрано в выборке.
         """
         qs = FarmlandTrainingLabel.objects.filter(year=year)
         if district is not None:
@@ -532,20 +537,27 @@ class Command(BaseCommand):
         else:
             qs = qs.filter(farmland__district__region_id=region.pk)
 
-        cls_map = {'winter': 'winter', 'spring': 'spring', 'unused': 'unused'}
+        calibration_classes = ('winter', 'spring', 'unused')
         out = {}
         counts = {'winter': 0, 'spring': 0, 'unused': 0, 'skipped': 0}
+        sub = {'unused_woody': 0, 'unused_weeds': 0}
         for fid, tc in qs.values_list('farmland_id', 'true_class'):
-            cls = cls_map.get(tc)
-            if cls is None:
+            cls = FarmlandTrainingLabel.family(tc)
+            if cls not in calibration_classes:
                 counts['skipped'] += 1
                 continue
             out[fid] = {'value': f'label:{tc}', 'class': cls}
             counts[cls] += 1
+            if tc in sub:
+                sub[tc] += 1
+        breakdown = ''
+        if sub['unused_woody'] or sub['unused_weeds']:
+            breakdown = (f' (ДКР={sub["unused_woody"]}, '
+                         f'сорная={sub["unused_weeds"]})')
         self.stdout.write(
             '  Ручные метки (обучающая выборка): '
             f'озимые={counts["winter"]}, яровые={counts["spring"]}, '
-            f'не обраб.={counts["unused"]}'
+            f'не обраб.={counts["unused"]}{breakdown}'
             + (f', пропущено(сенокос/сад)={counts["skipped"]}'
                if counts['skipped'] else '')
         )

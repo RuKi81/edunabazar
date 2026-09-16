@@ -83,6 +83,19 @@ PREV_COVERAGE_MIN = 0.5
 # не участвуют: сенокос получает класс по land-use, сады исключены.
 SWEEP_CLASSES = ('winter', 'spring', 'unused')
 
+# Метки, берущиеся из БД: плюс подклассы зарастания (ДКР, сорная).
+# В развёртках и рейтинге они работают как один класс ``unused``
+# (классификатор тип зарастания не предсказывает), но в сводке
+# эталонов показываются отдельно: без разбивки не понять, чего
+# набрано и какого типа залежи в выборке не хватает.
+LABEL_CLASSES = ('winter', 'spring') + FarmlandTrainingLabel.UNUSED_CLASSES
+
+# Подписи типов зарастания в сводке эталонов (порядок = порядок печати).
+UNUSED_SUBCLASS_TITLES = {
+    'unused_woody': 'ДКР',
+    'unused_weeds': 'сорная',
+}
+
 # Ниже этого числа эталонов в классе оценка порога недостоверна
 # (доверительный интервал шире, чем разница между кандидатами).
 MIN_LABELS_PER_CLASS = 30
@@ -195,9 +208,14 @@ class Command(BaseCommand):
 
     @staticmethod
     def _load_labels(region, district, year) -> dict:
-        """{farmland_id: true_class} по меткам scope за год."""
+        """{farmland_id: true_class} по меткам scope за год.
+
+        Сырой ``true_class``, включая подклассы зарастания: сворачивание
+        в ``unused`` делается позже (:meth:`_features`), чтобы сводка
+        эталонов могла показать разбивку по типам.
+        """
         qs = FarmlandTrainingLabel.objects.filter(
-            year=year, true_class__in=SWEEP_CLASSES,
+            year=year, true_class__in=LABEL_CLASSES,
         )
         if district is not None:
             qs = qs.filter(farmland__district_id=district.pk)
@@ -271,7 +289,7 @@ class Command(BaseCommand):
         """
         prev_series = prev_series or {}
         out = []
-        for fid, cls in labels.items():
+        for fid, label in labels.items():
             data = series.get(fid)
             if not data:
                 continue
@@ -279,7 +297,10 @@ class Command(BaseCommand):
             feats = profile_features(data[0], data[1])
             prev = prev_series.get(fid)
             row = {
-                'cls': cls,
+                # ``cls`` — базовый класс для развёрток, ``label`` — сырая
+                # метка с типом зарастания для сводки.
+                'cls': FarmlandTrainingLabel.family(label),
+                'label': label,
                 'n_obs': prof.n_obs,
                 'peak_doy': prof.peak_doy,
                 'sos_doy': prof.sos_doy,
@@ -300,12 +321,25 @@ class Command(BaseCommand):
     # --------------------------------------------------------------- reports
 
     def _report_labels(self, labels, feats):
+        """Сводка эталонов: базовые классы плюс типы зарастания.
+
+        Подклассы печатаются С ОТСТУПОМ как часть ``unused``, а не
+        отдельными классами — пороги по ним не подбираются, но видно,
+        чего набрал разметчик и какой тип залежи недобран.
+        """
         counts = {c: 0 for c in SWEEP_CLASSES}
-        for cls in labels.values():
+        sub_counts = {c: 0 for c in FarmlandTrainingLabel.UNUSED_CLASSES}
+        for label in labels.values():
+            cls = FarmlandTrainingLabel.family(label)
             counts[cls] = counts.get(cls, 0) + 1
+            if label in sub_counts:
+                sub_counts[label] += 1
         with_series = {c: 0 for c in SWEEP_CLASSES}
+        sub_series = {c: 0 for c in FarmlandTrainingLabel.UNUSED_CLASSES}
         for f in feats:
             with_series[f['cls']] += 1
+            if f['label'] in sub_series:
+                sub_series[f['label']] += 1
 
         self.stdout.write('\nЭталоны (метка → с рядом NDVI):')
         for cls in SWEEP_CLASSES:
@@ -314,6 +348,13 @@ class Command(BaseCommand):
             self.stdout.write(
                 f'  {cls:<8} {counts[cls]:>4} → {with_series[cls]:>4}{warn}'
             )
+            if cls != 'unused':
+                continue
+            for sub, title in UNUSED_SUBCLASS_TITLES.items():
+                self.stdout.write(
+                    f'    из них {title:<8} {sub_counts[sub]:>4} → '
+                    f'{sub_series[sub]:>4}'
+                )
 
     def _sweep_peak(self, feats, step):
         """Развёртка порога дня пика: озимые ниже порога, яровые выше."""

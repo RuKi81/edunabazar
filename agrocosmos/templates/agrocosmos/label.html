@@ -235,8 +235,13 @@
       </div>
       <div class="lbl-hint">
         Горячие клавиши: <b>1</b> озимые · <b>2</b> яровые · <b>3</b> сенокос ·
-        <b>4</b> не обраб. · <b>5</b> пропустить(сад) · <b>Space</b> след. ·
-        <b>P</b> назад · <b>Del</b> снять метку.
+        <b>4</b> не обраб. · <b>6</b> не обраб.: ДКР ·
+        <b>7</b> не обраб.: сорная · <b>5</b> пропустить(сад) ·
+        <b>Space</b> след. · <b>P</b> назад · <b>Del</b> снять метку.
+        <br />ДКР — древесно-кустарниковая растительность (поле заросло
+        деревьями/кустарником), сорная — бурьян без древесной поросли.
+        Тип зарастания на классификацию не влияет: модель предсказывает
+        общий класс «не обрабатывается», разбивка нужна для диагностики.
       </div>
     </div>
 
@@ -256,12 +261,16 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <script>
 (function () {
+  // Три оттенка серого/коричневого — семейство «не обрабатывается»:
+  // общий класс (когда тип зарастания не разобрать) и два подкласса.
   var CLASS_META = [
-    { key: 'winter',   label: 'Озимые',        color: '#1565C0', hot: '1' },
-    { key: 'spring',   label: 'Яровые',        color: '#F57C00', hot: '2' },
-    { key: 'hayfield', label: 'Сенокос',       color: '#7CB342', hot: '3' },
-    { key: 'unused',   label: 'Не обраб.',     color: '#9E9E9E', hot: '4' },
-    { key: 'ignore',   label: 'Пропустить',    color: '#5E35B1', hot: '5' },
+    { key: 'winter',       label: 'Озимые',      color: '#1565C0', hot: '1' },
+    { key: 'spring',       label: 'Яровые',      color: '#F57C00', hot: '2' },
+    { key: 'hayfield',     label: 'Сенокос',     color: '#7CB342', hot: '3' },
+    { key: 'unused',       label: 'Не обраб.',   color: '#9E9E9E', hot: '4' },
+    { key: 'unused_woody', label: '└ ДКР',        color: '#6D4C41', hot: '6' },
+    { key: 'unused_weeds', label: '└ Сорная',     color: '#AFB42B', hot: '7' },
+    { key: 'ignore',       label: 'Пропустить',  color: '#5E35B1', hot: '5' },
   ];
   var COLOR = {};
   CLASS_META.forEach(function (c) { COLOR[c.key] = c.color; });
