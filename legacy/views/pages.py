@@ -105,12 +105,24 @@ def news_detail(request: HttpRequest, news_id: int) -> HttpResponse:
 
 
 def home(request: HttpRequest) -> HttpResponse:
+    """Главная. Кэшируем целиком ТОЛЬКО для анонимов.
+
+    В кэш попадает весь HTML, включая хедер из ``legacy/base.html`` с
+    меню «кабинет/выход/админка/гис». Без разделения по пользователю
+    первый попавший в холодный кэш вариант показывался всем: залогиненный
+    видел анонимное меню (и наоборот — аноним видел меню залогиненного).
+    Персонализированную страницу рендерим каждый раз: тяжёлых запросов
+    здесь нет (каталоги/категории/3 новости).
+    """
     news_page_num = request.GET.get('news_page', 1)
+    is_anonymous = not request.session.get('legacy_user_id')
     gen = get_generation('home')
     cache_key = f'{HOME_PREFIX}{gen}:p{news_page_num}'
-    cached = cache.get(cache_key)
-    if cached is not None:
-        return HttpResponse(cached, content_type='text/html; charset=utf-8')
+    if is_anonymous:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return HttpResponse(
+                cached, content_type='text/html; charset=utf-8')
 
     news_qs = News.objects.filter(is_active=True)
     news_paginator = Paginator(news_qs, 3)
@@ -124,5 +136,6 @@ def home(request: HttpRequest) -> HttpResponse:
             'news_page': news_page,
         },
     )
-    cache.set(cache_key, resp.content.decode('utf-8'), HOME_TIMEOUT)
+    if is_anonymous:
+        cache.set(cache_key, resp.content.decode('utf-8'), HOME_TIMEOUT)
     return resp

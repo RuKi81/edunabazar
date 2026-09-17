@@ -2,6 +2,7 @@ import io
 import time
 
 from django.test import SimpleTestCase, TestCase, Client, override_settings
+from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from unittest.mock import MagicMock
 from PIL import Image as PILImage
@@ -868,8 +869,57 @@ class SmokeTests(TestCase):
         resp = self.client.get('/me/')
         self.assertEqual(resp.status_code, 302)
 
+    def test_header_has_no_raw_template_comment(self):
+        """Регрессия: многострочный ``{# ... #}`` Django НЕ поддерживает и
+        выводит как текст — служебная подпись про can_open_gis_page
+        вылезала в хедер и ломала вёрстку меню на всех страницах."""
+        body = self.client.get('/').content.decode()
+        self.assertNotIn('can_open_gis_page', body)
+        self.assertNotIn('{#', body)
+
     def test_healthcheck(self):
         resp = self.client.get('/healthz')
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertEqual(data['app'], 'ok')
+
+
+class HomeCacheTests(TestCase):
+    """Главная кэшируется целиком, поэтому кэш обязан быть только для
+    анонимов: иначе залогиненный получал анонимный хедер (и наоборот)."""
+
+    def setUp(self):
+        from django.utils import timezone
+        from .models import LegacyUser
+
+        cache.clear()
+        self.client = Client()
+        now = timezone.now()
+        self.user = LegacyUser.objects.create(
+            type=0, username='homecache', auth_key='', password_hash='',
+            email='homecache@test.com', currency='RUB', name='homecache',
+            address='', phone='', inn='', status=10,
+            created_at=now, updated_at=now, contacts='',
+        )
+
+    def _login(self):
+        session = self.client.session
+        session['legacy_user_id'] = self.user.pk
+        session.save()
+
+    def test_logged_in_user_gets_personal_header_after_anonymous_visit(self):
+        self.client.get('/')            # прогреваем кэш анонимом
+        self._login()
+        body = self.client.get('/').content.decode()
+        self.assertIn('/logout/', body)
+        self.assertNotIn('/register/', body)
+
+    def test_anonymous_not_served_logged_in_header(self):
+        self._login()
+        self.client.get('/')            # залогиненный рендер не должен кэшироваться
+        session = self.client.session
+        session.pop('legacy_user_id', None)
+        session.save()
+        body = self.client.get('/').content.decode()
+        self.assertNotIn('/logout/', body)
+        self.assertIn('/login/', body)

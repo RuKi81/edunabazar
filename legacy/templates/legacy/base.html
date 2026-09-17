@@ -264,9 +264,14 @@
           <li class="navmenu-elem"><a href="{% url 'seller_list' %}">предприятия</a></li>
           <li class="navmenu-elem"><a href="{% url 'prices_page' %}">цены</a></li>
           <li class="navmenu-elem"><a href="{% url 'agrocosmos:dashboard' %}">агрокосмос</a></li>
-          {# Гейт тот же, что у самой страницы (access.services.can_open_gis_page):
-             админ ИЛИ владелец ГИС/растрового гранта — иначе грантополучатели
-             не видят пункта меню. Публичные растры доступ НЕ открывают. #}
+          {% comment %}
+            Гейт тот же, что у самой страницы (access.services.can_open_gis_page):
+            админ ИЛИ владелец ГИС/растрового гранта — иначе грантополучатели
+            не видят пункта меню. Публичные растры доступ НЕ открывают.
+            ВАЖНО: многострочные комментарии — только этим тегом. Синтаксис
+            с решёткой в Django ОДНОСТРОЧНЫЙ: в многострочном виде движок
+            выводит его как обычный текст прямо в вёрстку.
+          {% endcomment %}
           {% if can_open_gis %}
             <li class="navmenu-elem"><a href="{% url 'my_fields:ui_gis' %}">гис</a></li>
           {% endif %}
