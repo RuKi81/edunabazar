@@ -184,6 +184,20 @@ class GisAccessTestCase(TestCase):
         self.assertEqual(r.status_code, 200, r.content)
         self.assertFalse(GisLayer.objects.filter(pk=self.layer_b.pk).exists())
 
+    # ── Пункт «ГИС» в общем хедере сайта (legacy/base.html) ──
+    # Регрессия: гейт ссылки должен совпадать с гейтом страницы
+    # (can_open_gis), иначе владельцы грантов не видят меню и не могут
+    # попасть на /me/gis/ иначе как по прямому URL.
+    def test_header_gis_link_visible_for_grant_holder(self):
+        self._login('viewer')
+        body = self.client.get('/adverts/').content.decode()
+        self.assertIn('/me/gis/', body)
+
+    def test_header_gis_link_hidden_without_grant(self):
+        self._login('nobody')
+        body = self.client.get('/adverts/').content.decode()
+        self.assertNotIn('/me/gis/', body)
+
     # ── admin ──
     def test_admin_full_access(self):
         self._login('admin')
