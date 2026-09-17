@@ -270,9 +270,12 @@ class PublicRasterTest(TestCase):
         self.assertIn(self.public.pk, ids)
         self.assertNotIn(self.private.pk, ids)
 
-    def test_page_open_with_public_raster(self):
-        # Любой авторизованный юзер попадает на /me/gis, если есть публичный растр.
-        self.assertTrue(can_open_gis_page(self.nobody))
+    def test_public_raster_does_not_open_page(self):
+        # Регрессия: растры создаются публичными по умолчанию, и раньше
+        # наличие любого публичного растра открывало /me/gis (и пункт меню
+        # «ГИС») ВСЕМ авторизованным. Публичность влияет только на
+        # видимость слоя внутри страницы, но не на вход на страницу.
+        self.assertFalse(can_open_gis_page(self.nobody))
 
 
 # ─────────────────────────────────────────────────────────────────────

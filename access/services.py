@@ -122,30 +122,28 @@ def raster_view_allowed(user, resource_id) -> bool:
         pk=resource_id, is_public=True).exists()
 
 
-def has_any_public_raster() -> bool:
-    """True, если существует хотя бы один публичный растровый слой."""
-    from my_fields.models import RasterLayer
-    return RasterLayer.objects.filter(is_public=True).exists()
-
-
 def can_open_gis_page(user) -> bool:
-    """Пускать на /me/gis, если админ, есть ГИС/растровый грант ИЛИ есть
-    публичные растры.
+    """Пускать на /me/gis только админа ИЛИ владельца ГИС/растрового гранта.
 
-    Страница /me/gis хостит и векторные (SHP), и растровые слои. Публичные
-    растры (``is_public=True``) видны всем, поэтому наличие хотя бы одного
-    такого слоя открывает страницу любому авторизованному пользователю.
+    Страница /me/gis хостит и векторные (SHP), и растровые слои.
+
+    ВАЖНО: публичность растров (``RasterLayer.is_public``, дефолт True)
+    САМА ПО СЕБЕ СТРАНИЦУ НЕ ОТКРЫВАЕТ. Раньше здесь была проверка
+    «есть хотя бы один публичный растр → пускаем любого», и так как растры
+    создаются публичными по умолчанию, после первой же загрузки растра
+    страница и пункт меню «ГИС» стали доступны ВСЕМ авторизованным
+    пользователям. ``is_public`` влияет только на видимость конкретного
+    слоя внутри страницы (см. ``raster_view_allowed``).
     """
     if is_admin_legacy_user(user):
         return True
     uid = getattr(user, 'id', None)
     if not uid:
         return False
-    has_grant = ResourceGrant.objects.filter(
+    return ResourceGrant.objects.filter(
         legacy_user_id=uid,
         resource_type__in=(
             ResourceGrant.ResourceType.GIS_LAYER,
             ResourceGrant.ResourceType.RASTER_LAYER,
         ),
     ).exists()
-    return has_grant or has_any_public_raster()

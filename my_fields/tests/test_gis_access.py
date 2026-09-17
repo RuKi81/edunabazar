@@ -198,6 +198,17 @@ class GisAccessTestCase(TestCase):
         body = self.client.get('/adverts/').content.decode()
         self.assertNotIn('/me/gis/', body)
 
+    def test_public_raster_does_not_expose_menu_or_page(self):
+        # Регрессия: RasterLayer создаётся с is_public=True, и раньше гейт
+        # can_open_gis_page пускал любого авторизованного при наличии хотя бы
+        # одного публичного растра → пункт «ГИС» стал видно ВСЕМ.
+        from my_fields.models import RasterLayer
+        RasterLayer.objects.create(title='Публичный растр')
+        self._login('nobody')
+        body = self.client.get('/adverts/').content.decode()
+        self.assertNotIn('/me/gis/', body)
+        self.assertEqual(self.client.get(self.PAGE).status_code, 404)
+
     # ── admin ──
     def test_admin_full_access(self):
         self._login('admin')

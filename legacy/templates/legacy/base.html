@@ -265,8 +265,8 @@
           <li class="navmenu-elem"><a href="{% url 'prices_page' %}">цены</a></li>
           <li class="navmenu-elem"><a href="{% url 'agrocosmos:dashboard' %}">агрокосмос</a></li>
           {# Гейт тот же, что у самой страницы (access.services.can_open_gis_page):
-             админ, владелец ГИС/растрового гранта или наличие публичного
-             растра — иначе грантополучатели не видят пункта меню. #}
+             админ ИЛИ владелец ГИС/растрового гранта — иначе грантополучатели
+             не видят пункта меню. Публичные растры доступ НЕ открывают. #}
           {% if can_open_gis %}
             <li class="navmenu-elem"><a href="{% url 'my_fields:ui_gis' %}">гис</a></li>
           {% endif %}
