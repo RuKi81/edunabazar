@@ -264,7 +264,10 @@
           <li class="navmenu-elem"><a href="{% url 'seller_list' %}">предприятия</a></li>
           <li class="navmenu-elem"><a href="{% url 'prices_page' %}">цены</a></li>
           <li class="navmenu-elem"><a href="{% url 'agrocosmos:dashboard' %}">агрокосмос</a></li>
-          {% if is_admin_user %}
+          {# Гейт тот же, что у самой страницы (access.services.can_open_gis_page):
+             админ, владелец ГИС/растрового гранта или наличие публичного
+             растра — иначе грантополучатели не видят пункта меню. #}
+          {% if can_open_gis %}
             <li class="navmenu-elem"><a href="{% url 'my_fields:ui_gis' %}">гис</a></li>
           {% endif %}
 
@@ -304,7 +307,7 @@
     <li><a href="{% url 'seller_list' %}"><i class="material-icons">business</i>предприятия</a></li>
     <li><a href="{% url 'prices_page' %}"><i class="material-icons">trending_up</i>цены</a></li>
     <li><a href="{% url 'agrocosmos:dashboard' %}"><i class="material-icons">satellite_alt</i>агрокосмос</a></li>
-    {% if is_admin_user %}
+    {% if can_open_gis %}
       <li><a href="{% url 'my_fields:ui_gis' %}"><i class="material-icons">map</i>гис</a></li>
     {% endif %}
     <li><div class="divider"></div></li>
