@@ -1,7 +1,8 @@
 # Архитектура проекта «Еду на базар» (edunabazar)
 
 > **Репозиторий:** <https://github.com/RuKi81/edunabazar>
-> **Домен:** edunabazar.ru / www.edunabazar.ru
+> **Домены:** edunabazar.ru / www.edunabazar.ru (основной, canonical),
+> agrokosmos.ru / www.agrokosmos.ru (алиас того же сайта)
 > **Дата:** 2026-06-17
 
 > См. также: [`README.md`](./README.md) (overview, quick start) ·
@@ -260,7 +261,7 @@ edunabazar/
 |-----------|----------|---------------|
 | `DJANGO_SECRET_KEY` | Секретный ключ Django | *(случайная строка 50+ символов)* |
 | `DJANGO_DEBUG` | Режим отладки | `0` |
-| `DJANGO_ALLOWED_HOSTS` | Разрешённые хосты | `195.47.196.46 edunabazar.ru www.edunabazar.ru` |
+| `DJANGO_ALLOWED_HOSTS` | Разрешённые хосты | `195.47.196.46 edunabazar.ru www.edunabazar.ru agrokosmos.ru www.agrokosmos.ru` |
 | `DJANGO_ADMIN_USERS` | Логины админов | `admin` |
 | `DB_HOST` | Хост БД | `10.0.0.11` |
 | `DB_PORT` | Порт БД | `5432` |
@@ -279,7 +280,7 @@ edunabazar/
 | `SMSC_PASSWORD` | Пароль SMSC.ru | *(секрет)* |
 | `SMSC_SENDER` | Отправитель SMS | *(настроить)* |
 | `GIGACHAT_AUTH_KEY` | Ключ GigaChat (base64) | *(секрет)* |
-| `CSRF_TRUSTED_ORIGINS` | Trusted origins | `https://edunabazar.ru,https://www.edunabazar.ru` |
+| `CSRF_TRUSTED_ORIGINS` | Trusted origins | `https://edunabazar.ru,https://www.edunabazar.ru,https://agrokosmos.ru,https://www.agrokosmos.ru` |
 | `SECURE_SSL_REDIRECT` | Редирект на HTTPS | `1` |
 | `SECURE_HSTS_SECONDS` | HSTS | `31536000` |
 
