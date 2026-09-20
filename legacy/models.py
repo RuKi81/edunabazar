@@ -54,8 +54,8 @@ class Advert(models.Model):
 class AdvertPhoto(models.Model):
     id = models.AutoField(primary_key=True)
     advert = models.ForeignKey(Advert, on_delete=models.CASCADE, related_name='photos')
-    image = models.FileField(upload_to='adverts/photos/')
-    thumbnail = models.FileField(upload_to='adverts/thumbs/', blank=True, default='')
+    image = models.FileField(upload_to='listings/photos/')
+    thumbnail = models.FileField(upload_to='listings/thumbs/', blank=True, default='')
     sort = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 

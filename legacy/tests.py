@@ -68,6 +68,30 @@ class PickThumbUrlFilterTests(SimpleTestCase):
         self.assertIn('legacy/images/no_photo_102_109.jpg', pick_thumb_url(None))
 
 
+class MediaPathAdBlockSafetyTests(SimpleTestCase):
+    """Пути загрузки не должны попадать под фильтры блокировщиков рекламы.
+
+    EasyList содержит generic-правило `/adverts/*$~xmlhttprequest`, которое
+    блокирует любой подресурс с таким сегментом в URL. Пока фото лежали в
+    `media/adverts/`, они не загружались ни у одного пользователя с uBlock
+    или AdGuard. Список токенов — самые распространённые в фильтрах.
+    """
+
+    BLOCKED_TOKENS = ('advert', 'banner', 'promo', 'sponsor', '/ads')
+
+    def test_advert_photo_upload_paths(self):
+        from .models import AdvertPhoto
+
+        for field_name in ('image', 'thumbnail'):
+            path = str(AdvertPhoto._meta.get_field(field_name).upload_to).lower()
+            for token in self.BLOCKED_TOKENS:
+                self.assertNotIn(
+                    token, path,
+                    f'{field_name}.upload_to="{path}" содержит токен "{token}", '
+                    f'который режут блокировщики рекламы',
+                )
+
+
 class IsAdminUserTests(SimpleTestCase):
     def test_none_user_is_not_admin(self):
         self.assertFalse(_is_admin_user(None))
