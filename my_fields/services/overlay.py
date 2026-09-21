@@ -78,17 +78,40 @@ _JOIN_PREDICATES = {
 _JOIN_AGGS = {'count', 'sum', 'avg', 'min', 'max', 'first'}
 _NUMERIC_AGGS = {'sum', 'avg', 'min', 'max'}
 
-# Режимы сопоставления объектов в spatial join.
-_JOIN_MATCH_MODES = {'geometry', 'centroid_b', 'centroid_a'}
+# Режимы сопоставления объектов в spatial join, кроме базового 'geometry'.
 # Предикат всегда записывается как pred(<первый аргумент>, <второй>), где
 # первый — сторона A, второй — сторона B. Если один из аргументов вырожден в
-# точку, часть предикатов теряет смысл и всегда даёт ложь.
-# centroid_b: pred(a.geom, точка) — точка внутри A, значит within/covered_by
-# («A внутри точки») исключены.
-_CENTROID_B_PREDICATES = {'intersects', 'contains', 'covers'}
-# centroid_a: pred(точка, b.geom) — точка внутри B, значит contains/covers
-# («точка содержит B») исключены.
-_CENTROID_A_PREDICATES = {'intersects', 'within', 'covered_by'}
+# точку, часть предикатов теряет смысл и всегда даёт ложь, поэтому у каждого
+# режима свой белый список.
+# Центроид считается на лету, поэтому GiST-индекс по выражению не работает —
+# в WHERE добавлен bbox-префильтр по колонке geom, его индекс использует.
+# Центроид всегда лежит внутри bbox своей геометрии, значит настоящих
+# совпадений префильтр не отбрасывает.
+_CENTROID_MATCHES = {
+    # pred(a.geom, точка): точка внутри A, поэтому within/covered_by
+    # («A внутри точки») исключены.
+    'centroid_b': {
+        'polygon_side': 'a',
+        'predicates': {'intersects', 'contains', 'covers'},
+        'geom_error': ('Соединение по центроиду B требует, чтобы слой A был '
+                       'полигональным: центроид B попадает внутрь полигона A.'),
+        'pred_error': ('Для соединения по центроиду B подходят предикаты '
+                       '«пересекает», «содержит» и «покрывает».'),
+        'where': 'b.geom && a.geom AND {pred}(a.geom, ST_Centroid(b.geom))',
+    },
+    # pred(точка, b.geom): точка внутри B, поэтому contains/covers
+    # («точка содержит B») исключены.
+    'centroid_a': {
+        'polygon_side': 'b',
+        'predicates': {'intersects', 'within', 'covered_by'},
+        'geom_error': ('Соединение по центроиду A требует, чтобы слой B был '
+                       'полигональным: центроид A попадает внутрь полигона B.'),
+        'pred_error': ('Для соединения по центроиду A подходят предикаты '
+                       '«пересекается», «внутри» и «покрыт».'),
+        'where': ('b.geom && ST_Centroid(a.geom) '
+                  'AND {pred}(ST_Centroid(a.geom), b.geom)'),
+    },
+}
 
 # Все допустимые операции (для валидации в API).
 ALL_OPS = set(OVERLAY_OPS) | set(SINGLE_OPS) | {'spatial_join'}
@@ -368,6 +391,24 @@ def _join_agg_expr(spec, b_types, used, index):
             {'name': str(label)[:200], 'db': as_name, 'type': col_type})
 
 
+def _join_match_where(match: str, pred: str, layer_a, layer_b):
+    """Проверить режим сопоставления и вернуть шаблон WHERE для LATERAL.
+
+    Шаблон содержит плейсхолдер ``{pred}`` под имя функции PostGIS.
+    """
+    if match == 'geometry':
+        return sql.SQL('{pred}(a.geom, b.geom)')
+    spec = _CENTROID_MATCHES.get(match)
+    if spec is None:
+        raise OverlayError('Неизвестный режим сопоставления объектов.')
+    polygon_layer = layer_a if spec['polygon_side'] == 'a' else layer_b
+    if polygon_layer.geom_kind != 'polygon':
+        raise OverlayError(spec['geom_error'])
+    if pred not in spec['predicates']:
+        raise OverlayError(spec['pred_error'])
+    return sql.SQL(spec['where'])
+
+
 def build_spatial_join_select(layer_a, layer_b, params: dict):
     """``(attr_meta, result_kind, select_sql, sql_params)`` для spatial join.
 
@@ -380,26 +421,7 @@ def build_spatial_join_select(layer_a, layer_b, params: dict):
     pred_fn = _JOIN_PREDICATES[pred]
 
     match = str(params.get('match') or 'geometry')
-    if match not in _JOIN_MATCH_MODES:
-        raise OverlayError('Неизвестный режим сопоставления объектов.')
-    if match == 'centroid_b':
-        if layer_a.geom_kind != 'polygon':
-            raise OverlayError(
-                'Соединение по центроиду B требует, чтобы слой A был '
-                'полигональным: центроид B попадает внутрь полигона A.')
-        if pred not in _CENTROID_B_PREDICATES:
-            raise OverlayError(
-                'Для соединения по центроиду B подходят предикаты '
-                '«пересекает», «содержит» и «покрывает».')
-    elif match == 'centroid_a':
-        if layer_b.geom_kind != 'polygon':
-            raise OverlayError(
-                'Соединение по центроиду A требует, чтобы слой B был '
-                'полигональным: центроид A попадает внутрь полигона B.')
-        if pred not in _CENTROID_A_PREDICATES:
-            raise OverlayError(
-                'Для соединения по центроиду A подходят предикаты '
-                '«пересекается», «внутри» и «покрыт».')
+    where = _join_match_where(match, pred, layer_a, layer_b)
 
     a_prefix, a_attrs = _a_cols(layer_a)
     b_types = _attr_db_types(layer_b)
@@ -418,17 +440,6 @@ def build_spatial_join_select(layer_a, layer_b, params: dict):
 
     j_cols = sql.SQL(', ').join(
         sql.SQL('j.{}').format(sql.Identifier(m['db'])) for m in new_attrs)
-    # Центроид считается на лету, поэтому GiST-индекс по выражению не работает.
-    # Добавляем bbox-префильтр по колонке b.geom — его индекс использует.
-    # Центроид всегда лежит внутри bbox своей геометрии, поэтому префильтр не
-    # отбрасывает ни одного настоящего совпадения.
-    if match == 'centroid_b':
-        where = sql.SQL('b.geom && a.geom AND {pred}(a.geom, ST_Centroid(b.geom))')
-    elif match == 'centroid_a':
-        where = sql.SQL('b.geom && ST_Centroid(a.geom) '
-                        'AND {pred}(ST_Centroid(a.geom), b.geom)')
-    else:
-        where = sql.SQL('{pred}(a.geom, b.geom)')
     lateral = sql.SQL(
         'LEFT JOIN LATERAL (SELECT {aggs} FROM {B} b WHERE {where}) j ON true'
     ).format(
