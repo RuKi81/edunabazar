@@ -966,10 +966,10 @@
 
       <div class="gis-layers-bar">
         <button id="gis-master-vis" class="gis-master-vis" type="button"
-                aria-pressed="false" title="Показать/скрыть все слои">🚫</button>
+                title="Скрыть все слои">🚫</button>
         <button id="gis-only-active" class="gis-master-vis gis-only-active" type="button"
                 aria-pressed="false"
-                title="Показать только включённые слои (видимость или редактирование)">☑</button>
+                title="Показать только выбранные слои (отмеченные чекбоксом)">☑</button>
         <button id="gis-layer-new" class="gis-master-vis gis-layer-new" type="button"
                 title="Создать новый слой — тип геометрии и атрибуты">➕</button>
         <button id="gis-folder-add" class="gis-master-vis gis-folder-add" type="button"
@@ -1784,10 +1784,9 @@
       farmlands:  { visible: false, editable: false },
       userfields: { visible: false, editable: false },
     };
-    /* Состояние мастер-переключателя (общая плашка) и хук слоёв SHP,
-       который регистрирует модуль загрузки (см. ниже) — чтобы «вкл/выкл
+    /* Хук слоёв SHP — для массового переключения видимости,
+       регистрируется модулем загрузки (см. ниже), чтобы «выключить
        все» доставал и до динамически добавленных слоёв. */
-    var masterVisible = false;
     var uploadedVisibilityHook = null;
 
     function applyLayerVisibility(key) {
@@ -1814,33 +1813,29 @@
       applyLayerVisibility(key);
     }
 
-    /* Мастер-переключатель: включить/выключить видимость ВСЕХ слоёв
+    /* Массовое переключение видимости ВСЕХ слоёв
        (статические ЗСН/«Мои поля» + все загруженные SHP). */
     function setAllLayersVisible(vis) {
-      masterVisible = vis;
       setStaticLayerVisible('farmlands', vis);
       setStaticLayerVisible('userfields', vis);
       if (typeof uploadedVisibilityHook === 'function') uploadedVisibilityHook(vis);
-      var mb = document.getElementById('gis-master-vis');
-      if (mb) {
-        mb.classList.toggle('active', vis);
-        mb.textContent = vis ? '👁' : '🚫';
-        mb.setAttribute('aria-pressed', vis ? 'true' : 'false');
-        mb.title = vis ? 'Скрыть все слои' : 'Показать все слои';
-      }
     }
 
+    /* Кнопка работает только в одну сторону — гасит всё видимое.
+       Обратного «показать все» нет сознательно: одновременный показ
+       десятков слоёв заваливает карту и тянет тайлы всех слоёв разом. */
     (function () {
       var mb = document.getElementById('gis-master-vis');
-      if (mb) mb.addEventListener('click', function () { setAllLayersVisible(!masterVisible); });
+      if (mb) mb.addEventListener('click', function () { setAllLayersVisible(false); });
     })();
 
-    /* ─────────────── Фильтр «только включённые слои» ────────────────────
-       При активации в левом сайдбаре остаются только те слои, у которых
-       включена видимость (👁) или редактирование (✏ у статических, ✎ у
-       загруженных). Состояние читается прямо из DOM (класс .active на
-       кнопках плашки), поэтому фильтр работает и для статических слоёв,
-       и для SHP-слоёв, и для растров без дублирования состояния.
+    /* ──────────────── Фильтр «только выбранные слои» ──────────────────
+       При активации в левом сайдбаре остаются только слои с отмеченным
+       чекбоксом выбора (.gis-layer__sel) — тем же, по которому работает
+       массовое удаление. Видимость слоя на карте значения НЕ имеет:
+       выбор — понятие, отдельное от отрисовки. Строки без чекбокса
+       (статические ЗСН/«Мои поля» и растры) выбранными быть не могут
+       и при включённом фильтре скрываются.
        Папка остаётся в списке, если внутри есть хотя бы один такой слой. */
     (function () {
       var btn = document.getElementById('gis-only-active');
@@ -1851,14 +1846,8 @@
       try { on = window.localStorage.getItem(STORE_KEY) === '1'; } catch (e) { on = false; }
 
       function rowIsOn(row) {
-        var sel = row.hasAttribute('data-layer')
-          ? '.gis-layer__btn[data-action="visibility"], .gis-layer__btn[data-action="edit"]'
-          : '.gis-layer__btn[data-a="vis"], .gis-layer__btn[data-a="geom"], .gis-raster__vis';
-        var btns = row.querySelectorAll(sel);
-        for (var i = 0; i < btns.length; i++) {
-          if (btns[i].classList.contains('active')) return true;
-        }
-        return false;
+        var box = row.querySelector('.gis-layer__sel');
+        return !!(box && box.checked);
       }
 
       function apply() {
@@ -1893,14 +1882,22 @@
           subtree: true, childList: true,
           attributes: true, attributeFilter: ['class'],
         });
+        /* Отметка чекбокса — это свойство checked, в атрибуты оно не
+           попадает и MutationObserver его не видит. Слушаем всплывающий
+           change на контейнере: строки слоёв пересоздаются, подписываться
+           на сами чекбоксы нельзя. */
+        box.addEventListener('change', function (e) {
+          if (e.target && e.target.classList &&
+              e.target.classList.contains('gis-layer__sel')) schedule();
+        });
       });
 
       function sync() {
         btn.classList.toggle('active', on);
         btn.setAttribute('aria-pressed', on ? 'true' : 'false');
         btn.title = on
-          ? 'Показаны только включённые слои — показать все'
-          : 'Показать только включённые слои (видимость или редактирование)';
+          ? 'Показаны только выбранные слои — показать все'
+          : 'Показать только выбранные слои (отмеченные чекбоксом)';
         apply();
       }
 
@@ -8831,7 +8828,7 @@
         colorEl.value = L.color; colorEl.title = 'Цвет слоя';
         var selEl = document.createElement('input');
         selEl.type = 'checkbox'; selEl.className = 'gis-layer__sel';
-        selEl.setAttribute('data-ord', '1'); selEl.title = 'Отметить слой для удаления';
+        selEl.setAttribute('data-ord', '1'); selEl.title = 'Выбрать слой';
         var zoomBtn = document.createElement('button');
         zoomBtn.className = 'gis-layer__btn'; zoomBtn.type = 'button';
         zoomBtn.setAttribute('data-a', 'zoom'); zoomBtn.setAttribute('data-ord', '2');
@@ -10225,10 +10222,9 @@
             var results = (j.results || []).slice().sort(function (a, b) {
               return (a.sort_order - b.sort_order) || (a.id - b.id);
             });
-            /* При старте портала слои грузятся согласно мастер-состоянию
-               (по умолчанию всё выключено). Слой с валидной папкой попадает
-               в её тело (layerContainer), иначе в корень. */
-            results.forEach(function (L) { ingest(L, false, masterVisible); });
+            /* При старте портала все слои выключены. Слой с валидной папкой
+               попадает в её тело (layerContainer), иначе в корень. */
+            results.forEach(function (L) { ingest(L, false, false); });
             /* Применяем видимость папок: скрытая папка гасит вложенные слои. */
             flds.forEach(function (f) {
               if (f.visible) return;
