@@ -23,6 +23,9 @@
 
 * ``spatial_join`` — перенос атрибутов B в A по предикату
   (intersects/contains/within/covers) с агрегатами (count/sum/avg/min/max/first).
+  Режим ``match``: ``geometry`` — по геометриям как есть; ``centroid_b`` —
+  объект B привязывается к A по своему центроиду (точке), что убирает ложные
+  совпадения по кромке при наложении двух полигональных слоёв.
 
 Тяжёлые операции выполняются асинхронно (см. management-команду
 ``run_gis_overlay`` и воркер ``run_ndvi_worker``): в ``create_layer_from_select``
@@ -73,6 +76,12 @@ _JOIN_PREDICATES = {
 }
 _JOIN_AGGS = {'count', 'sum', 'avg', 'min', 'max', 'first'}
 _NUMERIC_AGGS = {'sum', 'avg', 'min', 'max'}
+
+# Режимы сопоставления объектов B с объектами A в spatial join.
+_JOIN_MATCH_MODES = {'geometry', 'centroid_b'}
+# Для центроида (точки) осмысленны только предикаты «точка внутри A».
+# within/covered_by означали бы «A внутри точки» — всегда ложь.
+_CENTROID_PREDICATES = {'intersects', 'contains', 'covers'}
 
 # Все допустимые операции (для валидации в API).
 ALL_OPS = set(OVERLAY_OPS) | set(SINGLE_OPS) | {'spatial_join'}
@@ -363,6 +372,19 @@ def build_spatial_join_select(layer_a, layer_b, params: dict):
         raise OverlayError('Неизвестный пространственный предикат.')
     pred_fn = _JOIN_PREDICATES[pred]
 
+    match = str(params.get('match') or 'geometry')
+    if match not in _JOIN_MATCH_MODES:
+        raise OverlayError('Неизвестный режим сопоставления объектов.')
+    if match == 'centroid_b':
+        if layer_a.geom_kind != 'polygon':
+            raise OverlayError(
+                'Соединение по центроиду требует, чтобы слой A был '
+                'полигональным: центроид B попадает внутрь полигона A.')
+        if pred not in _CENTROID_PREDICATES:
+            raise OverlayError(
+                'Для соединения по центроиду подходят предикаты '
+                '«пересекает», «содержит» и «покрывает».')
+
     a_prefix, a_attrs = _a_cols(layer_a)
     b_types = _attr_db_types(layer_b)
     specs = params.get('joins')
@@ -380,13 +402,20 @@ def build_spatial_join_select(layer_a, layer_b, params: dict):
 
     j_cols = sql.SQL(', ').join(
         sql.SQL('j.{}').format(sql.Identifier(m['db'])) for m in new_attrs)
+    if match == 'centroid_b':
+        # Центроид считается на лету, поэтому GiST-индекс по выражению не
+        # работает. Добавляем bbox-префильтр `b.geom && a.geom`, который
+        # индекс использует: центроид всегда лежит внутри bbox своей
+        # геометрии, значит совпадения этот фильтр не отбрасывает.
+        where = sql.SQL('b.geom && a.geom AND {pred}(a.geom, ST_Centroid(b.geom))')
+    else:
+        where = sql.SQL('{pred}(a.geom, b.geom)')
     lateral = sql.SQL(
-        'LEFT JOIN LATERAL (SELECT {aggs} FROM {B} b '
-        'WHERE {pred}(a.geom, b.geom)) j ON true'
+        'LEFT JOIN LATERAL (SELECT {aggs} FROM {B} b WHERE {where}) j ON true'
     ).format(
         aggs=sql.SQL(', ').join(agg_exprs),
         B=sql.Identifier(layer_b.table_name),
-        pred=sql.SQL(pred_fn),
+        where=where.format(pred=sql.SQL(pred_fn)),
     )
     select = sql.SQL(
         'SELECT {aprefix}{jcols}, a.geom AS geom FROM {A} a {lateral}'
@@ -404,10 +433,12 @@ def run_spatial_join(layer_a, layer_b, title: str, owner=None, params=None):
     title = (title or '').strip()
     if not title:
         raise OverlayError('Укажите название слоя.')
+    mode = 'centroid' if (params or {}).get('match') == 'centroid_b' else 'geom'
     return create_layer_from_select(
         title, result_kind, attr_meta, select_sql, sql_params,
         owner=owner,
-        source_note=f'spatial_join:{layer_a.table_name}+{layer_b.table_name}',
+        source_note=(f'spatial_join:{mode}:'
+                     f'{layer_a.table_name}+{layer_b.table_name}'),
     )
 
 

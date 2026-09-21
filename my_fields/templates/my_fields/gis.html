@@ -10447,19 +10447,69 @@
           }
         }
 
-        /* ── Конструктор пространственного соединения ── */
+        /* ── Конструктор пространственного соединения ──
+           Режим сопоставления: по геометрии B как есть либо по её центроиду
+           (точке). Центроид убирает ложные совпадения по кромке, когда два
+           полигональных слоя чуть накладываются друг на друга: объект B
+           достаётся тому полигону A, внутри которого лежит его центр. ── */
+        var JOIN_PREDS = [
+          ['intersects', 'A пересекается с B'],
+          ['contains',   'A содержит B'],
+          ['within',     'A внутри B'],
+          ['covers',     'A покрывает B'],
+          ['covered_by', 'A покрыт B']
+        ];
+        /* Для точки-центроида осмысленны только «точка внутри A»; within и
+           covered_by означали бы «A внутри точки» — всегда ложь. */
+        var JOIN_PREDS_CENTROID = [
+          ['intersects', 'Центроид B внутри A'],
+          ['contains',   'A содержит центроид B'],
+          ['covers',     'A покрывает центроид B']
+        ];
+        function predOptions(list) {
+          return list.map(function (p) {
+            return '<option value="' + p[0] + '">' + esc(p[1]) + '</option>';
+          }).join('');
+        }
         function renderJoinBuilder() {
+          var aIsPolygon = (layerById(selA.value) || {}).geom_kind === 'polygon';
+
+          var matchWrap = document.createElement('label');
+          matchWrap.textContent = 'Сопоставление объектов B';
+          var match = document.createElement('select');
+          match.id = 'gis-p-match'; match.className = 'browser-default';
+          match.innerHTML =
+            '<option value="geometry">По геометрии B</option>' +
+            '<option value="centroid_b"' + (aIsPolygon ? '' : ' disabled') + '>' +
+            'По центроиду B — точка внутри полигона A' +
+            (aIsPolygon ? '' : ' (нужен полигональный слой A)') + '</option>';
+          matchWrap.appendChild(match); paramsBox.appendChild(matchWrap);
+
           var predWrap = document.createElement('label');
           predWrap.textContent = 'Пространственный предикат';
           var pred = document.createElement('select');
           pred.id = 'gis-p-predicate'; pred.className = 'browser-default';
-          pred.innerHTML =
-            '<option value="intersects">A пересекается с B</option>' +
-            '<option value="contains">A содержит B</option>' +
-            '<option value="within">A внутри B</option>' +
-            '<option value="covers">A покрывает B</option>' +
-            '<option value="covered_by">A покрыт B</option>';
+          pred.innerHTML = predOptions(JOIN_PREDS);
           predWrap.appendChild(pred); paramsBox.appendChild(predWrap);
+
+          var hint = document.createElement('p');
+          hint.className = 'gis-modal__note'; hint.id = 'gis-p-match-hint';
+          paramsBox.appendChild(hint);
+          function syncMatch() {
+            var centroid = match.value === 'centroid_b';
+            var list = centroid ? JOIN_PREDS_CENTROID : JOIN_PREDS;
+            var keep = pred.value;
+            pred.innerHTML = predOptions(list);
+            if (list.some(function (p) { return p[0] === keep; })) pred.value = keep;
+            hint.textContent = centroid
+              ? 'Объект B привязывается к полигону A, внутри которого лежит его '
+                + 'центроид. Подходит, когда слои чуть накладываются по кромке: '
+                + 'каждый объект B достанется ровно одному полигону A.'
+              : '';
+          }
+          match.addEventListener('change', syncMatch);
+          syncMatch();
+
           var lbl = document.createElement('div');
           lbl.textContent = 'Переносимые поля / агрегаты:';
           lbl.style.fontSize = '13px'; lbl.style.color = '#444';
@@ -10530,7 +10580,12 @@
           }
           if (op === 'spatial_join') {
             var p = document.getElementById('gis-p-predicate');
-            return { predicate: p ? p.value : 'intersects', joins: collectJoins() };
+            var m = document.getElementById('gis-p-match');
+            return {
+              predicate: p ? p.value : 'intersects',
+              match: m ? m.value : 'geometry',
+              joins: collectJoins()
+            };
           }
           return {};
         }
@@ -10601,7 +10656,11 @@
         });
         opSel.addEventListener('change', updateLayout);
         selA.addEventListener('change', function () {
-          if (opSel.value === 'dissolve') renderParams();
+          /* dissolve берёт поле группировки из A; spatial join — проверяет,
+             полигональный ли A (от этого зависит режим по центроиду). */
+          if (opSel.value === 'dissolve' || opSel.value === 'spatial_join') {
+            renderParams();
+          }
         });
         selB.addEventListener('change', function () {
           if (opSel.value === 'spatial_join') renderParams();

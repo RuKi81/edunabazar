@@ -467,6 +467,105 @@ class SpatialJoinTests(TestCase):
                                  {'agg': 'sum', 'field': 'missing'}]})
 
 
+class SpatialJoinCentroidTests(TestCase):
+    """Сопоставление объектов B по центроиду (``match='centroid_b'``).
+
+    Смысл режима — убрать ложные совпадения по кромке: полигон B, который лишь
+    касается A или заходит в него краем, не должен отдавать свои атрибуты.
+    Считается только тот B, чей центр лежит внутри полигона A.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user('spjc', password='x')
+        self.a = create_empty_layer(
+            'A', 'polygon',
+            attributes=[{'name': 'name', 'type': 'text'}], owner=self.user)
+        with connection.cursor() as cur:
+            t = sql.Identifier(self.a.table_name)
+            cur.execute(sql.SQL(
+                'INSERT INTO {t} (name, geom) VALUES '
+                '(%s, ST_SetSRID(ST_GeomFromText(%s), 4326))'
+            ).format(t=t), ['a1', _square(0, 0, 2, 2)])
+        # Слой B — полигоны с атрибутом:
+        #   b_in   — центроид (1.5, 1.5) внутри a1;
+        #   b_edge — только касается a1 в точке (2, 2), центроид (3, 3) снаружи.
+        # По геометрии ST_Intersects найдёт оба, по центроиду — только b_in.
+        self.b = create_empty_layer(
+            'B', 'polygon',
+            attributes=[{'name': 'code', 'type': 'text'},
+                        {'name': 'val', 'type': 'double precision'}],
+            owner=self.user)
+        with connection.cursor() as cur:
+            t = sql.Identifier(self.b.table_name)
+            for code, val, wkt in [
+                ('b_in', 10, _square(0.5, 0.5, 2.5, 2.5)),
+                ('b_edge', 99, _square(2, 2, 4, 4)),
+            ]:
+                cur.execute(sql.SQL(
+                    'INSERT INTO {t} (code, val, geom) VALUES '
+                    '(%s, %s, ST_SetSRID(ST_GeomFromText(%s), 4326))'
+                ).format(t=t), [code, val, wkt])
+
+    def _row(self, layer, cols):
+        with connection.cursor() as cur:
+            cur.execute(sql.SQL('SELECT {c} FROM {t}').format(
+                c=sql.SQL(', ').join(sql.Identifier(x) for x in cols),
+                t=sql.Identifier(layer.table_name)))
+            return cur.fetchone()
+
+    def _join(self, match, predicate='intersects'):
+        return run_spatial_join(
+            self.a, self.b, 'Join', owner=self.user,
+            params={'predicate': predicate, 'match': match, 'joins': [
+                {'agg': 'count', 'as': 'cnt'},
+                {'agg': 'first', 'field': 'code', 'as': 'code'},
+            ]})
+
+    def test_geometry_match_counts_edge_touch(self):
+        """Базовый режим: касание по кромке считается совпадением."""
+        out = self._join('geometry')
+        self.assertEqual(self._row(out, ['cnt'])[0], 2)
+
+    def test_centroid_match_ignores_edge_touch(self):
+        """Центроид: остаётся только b_in, его атрибут попадает в полигон A."""
+        out = self._join('centroid_b')
+        cnt, code = self._row(out, ['cnt', 'code'])
+        self.assertEqual(cnt, 1)
+        self.assertEqual(code, 'b_in')
+
+    def test_centroid_keeps_geometry_and_attrs_of_a(self):
+        out = self._join('centroid_b')
+        self.assertEqual(out.geom_kind, 'polygon')
+        self.assertEqual(out.feature_count, 1)      # одна строка на объект A
+        dbs = [a['db'] for a in out.attributes]
+        self.assertEqual(dbs, ['name', 'cnt', 'code'])
+
+    def test_centroid_requires_polygon_a(self):
+        """Для точечного/линейного A режим бессмысленен — явная ошибка."""
+        point_a = create_empty_layer(
+            'A-points', 'point',
+            attributes=[{'name': 'name', 'type': 'text'}], owner=self.user)
+        with self.assertRaises(OverlayError):
+            run_spatial_join(point_a, self.b, 'X', owner=self.user,
+                             params={'match': 'centroid_b', 'joins': [
+                                 {'agg': 'count'}]})
+
+    def test_centroid_rejects_inverted_predicates(self):
+        """within/covered_by означали бы «A внутри точки» — всегда ложь."""
+        for pred in ('within', 'covered_by'):
+            with self.assertRaises(OverlayError):
+                run_spatial_join(self.a, self.b, 'X', owner=self.user,
+                                 params={'predicate': pred,
+                                         'match': 'centroid_b',
+                                         'joins': [{'agg': 'count'}]})
+
+    def test_unknown_match_rejected(self):
+        with self.assertRaises(OverlayError):
+            run_spatial_join(self.a, self.b, 'X', owner=self.user,
+                             params={'match': 'nope', 'joins': [
+                                 {'agg': 'count'}]})
+
+
 class SingleOpEndpointTests(TestCase):
     """POST /overlay/ для одно-слойной операции и spatial join (полный цикл)."""
 
