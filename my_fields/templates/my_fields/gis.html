@@ -10448,10 +10448,10 @@
         }
 
         /* ── Конструктор пространственного соединения ──
-           Режим сопоставления: по геометрии B как есть либо по её центроиду
-           (точке). Центроид убирает ложные совпадения по кромке, когда два
-           полигональных слоя чуть накладываются друг на друга: объект B
-           достаётся тому полигону A, внутри которого лежит его центр. ── */
+           Режим сопоставления: по геометриям как есть либо по центроиду одной
+           из сторон. Центроид убирает ложные совпадения по кромке, когда два
+           полигональных слоя чуть накладываются друг на друга: сопоставление
+           идёт по точке-центру, а не по всей площади. ── */
         var JOIN_PREDS = [
           ['intersects', 'A пересекается с B'],
           ['contains',   'A содержит B'],
@@ -10459,12 +10459,19 @@
           ['covers',     'A покрывает B'],
           ['covered_by', 'A покрыт B']
         ];
-        /* Для точки-центроида осмысленны только «точка внутри A»; within и
-           covered_by означали бы «A внутри точки» — всегда ложь. */
-        var JOIN_PREDS_CENTROID = [
+        /* Центроид B — точка сравнивается с полигоном A; within и covered_by
+           означали бы «A внутри точки» — всегда ложь. */
+        var JOIN_PREDS_CENTROID_B = [
           ['intersects', 'Центроид B внутри A'],
           ['contains',   'A содержит центроид B'],
           ['covers',     'A покрывает центроид B']
+        ];
+        /* Центроид A — зеркально: contains и covers означали бы «точка
+           содержит B». */
+        var JOIN_PREDS_CENTROID_A = [
+          ['intersects', 'Центроид A внутри B'],
+          ['within',     'Центроид A строго внутри B (без границы)'],
+          ['covered_by', 'B покрывает центроид A (с границей)']
         ];
         function predOptions(list) {
           return list.map(function (p) {
@@ -10473,16 +10480,20 @@
         }
         function renderJoinBuilder() {
           var aIsPolygon = (layerById(selA.value) || {}).geom_kind === 'polygon';
+          var bIsPolygon = (layerById(selB.value) || {}).geom_kind === 'polygon';
 
           var matchWrap = document.createElement('label');
-          matchWrap.textContent = 'Сопоставление объектов B';
+          matchWrap.textContent = 'Сопоставление объектов';
           var match = document.createElement('select');
           match.id = 'gis-p-match'; match.className = 'browser-default';
           match.innerHTML =
-            '<option value="geometry">По геометрии B</option>' +
+            '<option value="geometry">По геометриям как есть</option>' +
             '<option value="centroid_b"' + (aIsPolygon ? '' : ' disabled') + '>' +
             'По центроиду B — точка внутри полигона A' +
-            (aIsPolygon ? '' : ' (нужен полигональный слой A)') + '</option>';
+            (aIsPolygon ? '' : ' (нужен полигональный слой A)') + '</option>' +
+            '<option value="centroid_a"' + (bIsPolygon ? '' : ' disabled') + '>' +
+            'По центроиду A — точка внутри полигона B' +
+            (bIsPolygon ? '' : ' (нужен полигональный слой B)') + '</option>';
           matchWrap.appendChild(match); paramsBox.appendChild(matchWrap);
 
           var predWrap = document.createElement('label');
@@ -10496,16 +10507,24 @@
           hint.className = 'gis-modal__note'; hint.id = 'gis-p-match-hint';
           paramsBox.appendChild(hint);
           function syncMatch() {
-            var centroid = match.value === 'centroid_b';
-            var list = centroid ? JOIN_PREDS_CENTROID : JOIN_PREDS;
+            var mode = match.value;
+            var list = JOIN_PREDS;
+            var text = '';
+            if (mode === 'centroid_b') {
+              list = JOIN_PREDS_CENTROID_B;
+              text = 'Объект B привязывается к полигону A, внутри которого лежит '
+                + 'его центроид. Подходит, когда слои чуть накладываются по '
+                + 'кромке: каждый объект B достанется ровно одному полигону A.';
+            } else if (mode === 'centroid_a') {
+              list = JOIN_PREDS_CENTROID_A;
+              text = 'Объект A получает атрибуты того полигона B, внутри которого '
+                + 'лежит центроид самого A. Каждому объекту A соответствует ровно '
+                + 'один полигон B — без задвоения по кромке.';
+            }
             var keep = pred.value;
             pred.innerHTML = predOptions(list);
             if (list.some(function (p) { return p[0] === keep; })) pred.value = keep;
-            hint.textContent = centroid
-              ? 'Объект B привязывается к полигону A, внутри которого лежит его '
-                + 'центроид. Подходит, когда слои чуть накладываются по кромке: '
-                + 'каждый объект B достанется ровно одному полигону A.'
-              : '';
+            hint.textContent = text;
           }
           match.addEventListener('change', syncMatch);
           syncMatch();

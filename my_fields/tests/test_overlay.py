@@ -468,11 +468,12 @@ class SpatialJoinTests(TestCase):
 
 
 class SpatialJoinCentroidTests(TestCase):
-    """Сопоставление объектов B по центроиду (``match='centroid_b'``).
+    """Сопоставление по центроиду: ``centroid_b`` и ``centroid_a``.
 
-    Смысл режима — убрать ложные совпадения по кромке: полигон B, который лишь
-    касается A или заходит в него краем, не должен отдавать свои атрибуты.
-    Считается только тот B, чей центр лежит внутри полигона A.
+    Смысл обоих режимов — убрать ложные совпадения по кромке: полигон, который
+    лишь касается второго или заходит в него краем, не должен участвовать в
+    соединении. ``centroid_b`` смотрит, чей центр B лежит внутри полигона A,
+    ``centroid_a`` — зеркально: центр A внутри полигона B.
     """
 
     def setUp(self):
@@ -533,6 +534,18 @@ class SpatialJoinCentroidTests(TestCase):
         self.assertEqual(cnt, 1)
         self.assertEqual(code, 'b_in')
 
+    def test_centroid_a_match_ignores_edge_touch(self):
+        """Центроид a1 — (1, 1): лежит в b_in и вне b_edge."""
+        out = self._join('centroid_a')
+        cnt, code = self._row(out, ['cnt', 'code'])
+        self.assertEqual(cnt, 1)
+        self.assertEqual(code, 'b_in')
+
+    def test_centroid_a_within_predicate_allowed(self):
+        """within для centroid_a осмыслен: точка строго внутри полигона B."""
+        out = self._join('centroid_a', predicate='within')
+        self.assertEqual(self._row(out, ['cnt'])[0], 1)
+
     def test_centroid_keeps_geometry_and_attrs_of_a(self):
         out = self._join('centroid_b')
         self.assertEqual(out.geom_kind, 'polygon')
@@ -557,6 +570,25 @@ class SpatialJoinCentroidTests(TestCase):
                 run_spatial_join(self.a, self.b, 'X', owner=self.user,
                                  params={'predicate': pred,
                                          'match': 'centroid_b',
+                                         'joins': [{'agg': 'count'}]})
+
+    def test_centroid_a_requires_polygon_b(self):
+        """Центроиду A некуда попадать, если B не полигональный."""
+        point_b = create_empty_layer(
+            'B-points', 'point',
+            attributes=[{'name': 'code', 'type': 'text'}], owner=self.user)
+        with self.assertRaises(OverlayError):
+            run_spatial_join(self.a, point_b, 'X', owner=self.user,
+                             params={'match': 'centroid_a', 'joins': [
+                                 {'agg': 'count'}]})
+
+    def test_centroid_a_rejects_inverted_predicates(self):
+        """contains/covers означали бы «точка содержит B» — всегда ложь."""
+        for pred in ('contains', 'covers'):
+            with self.assertRaises(OverlayError):
+                run_spatial_join(self.a, self.b, 'X', owner=self.user,
+                                 params={'predicate': pred,
+                                         'match': 'centroid_a',
                                          'joins': [{'agg': 'count'}]})
 
     def test_unknown_match_rejected(self):
