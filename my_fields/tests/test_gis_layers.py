@@ -1010,6 +1010,51 @@ class ColumnManagementTests(GisLayersTestCase):
     def test_delete_unknown_column_404(self):
         self.assertEqual(self.client.delete(self._col_url('nope')).status_code, 404)
 
+    # ── Массовое удаление (инструмент «убрать столбцы» в таблице слоя) ──
+    def _bulk_delete(self, dbs):
+        return self.client.delete(
+            f'/me/gis/api/layers/{self.layer.pk}/columns/',
+            data=json.dumps({'dbs': dbs}), content_type='application/json')
+
+    def test_bulk_delete_drops_several_columns_at_once(self):
+        dbs = [self._attr_db('name'), self._attr_db('num')]
+        resp = self._bulk_delete(dbs)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertEqual(sorted(body['dropped']), sorted(dbs))
+        self.assertEqual(body['unknown'], [])
+        self.layer.refresh_from_db()
+        self.assertEqual(self.layer.attributes, [])
+        cols = _table_columns(self.layer.table_name)
+        for db in dbs:
+            self.assertNotIn(db, cols)
+
+    def test_bulk_delete_reports_unknown_but_drops_known(self):
+        db = self._attr_db('num')
+        resp = self._bulk_delete([db, 'nope'])
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertEqual(body['dropped'], [db])
+        self.assertEqual(body['unknown'], ['nope'])
+        self.assertNotIn(db, _table_columns(self.layer.table_name))
+
+    def test_bulk_delete_resets_style_using_dropped_column(self):
+        db = self._attr_db('num')
+        self.layer.style = {'mode': 'graduated', 'field': db, 'stops': []}
+        self.layer.save(update_fields=['style'])
+        self.assertEqual(self._bulk_delete([db, self._attr_db('name')]).status_code, 200)
+        self.layer.refresh_from_db()
+        self.assertEqual(self.layer.style, {})
+
+    def test_bulk_delete_empty_list_400(self):
+        self.assertEqual(self._bulk_delete([]).status_code, 400)
+
+    def test_bulk_delete_all_unknown_404(self):
+        resp = self._bulk_delete(['nope', 'nope2'])
+        self.assertEqual(resp.status_code, 404)
+        self.layer.refresh_from_db()
+        self.assertEqual(len(self.layer.attributes), 2)
+
     # ── Доступ ──
     def test_add_requires_login(self):
         self.client.logout()
@@ -1021,6 +1066,153 @@ class ColumnManagementTests(GisLayersTestCase):
         self.assertEqual(self._add({'name': 'x', 'type': 'text'}).status_code, 403)
         db = self._attr_db('num')
         self.assertEqual(self.client.delete(self._col_url(db)).status_code, 403)
+        self.assertEqual(self._bulk_delete([db]).status_code, 403)
+
+
+class FillColumnTests(GisLayersTestCase):
+    """Массовое заполнение атрибута (инструмент «Заполнить» в таблице слоя).
+
+    Область применения — весь слой / структурный фильтр конструктора выборки /
+    подстрочный поиск / точечный список id, плюс режим «только пустые».
+    """
+
+    def setUp(self):
+        from my_fields.services.shp_import import create_empty_layer
+
+        self._login_admin()
+        self.layer = create_empty_layer('Поля', 'polygon', [
+            {'name': 'Культура', 'type': 'text'},
+            {'name': 'Площадь', 'type': 'integer'},
+        ])
+        self.crop = self._db('Культура')
+        self.area = self._db('Площадь')
+        self.ids = []
+        with connection.cursor() as cur:
+            for crop, area in (('пшеница', 10), (None, 20), ('', 30)):
+                cur.execute(sql.SQL(
+                    'INSERT INTO {t} ({c}, {a}, geom) VALUES (%s, %s, '
+                    'ST_GeomFromText(%s, 4326)) RETURNING id'
+                ).format(t=sql.Identifier(self.layer.table_name),
+                         c=sql.Identifier(self.crop),
+                         a=sql.Identifier(self.area)),
+                    [crop, area, 'POLYGON((34.1 45.1, 34.1 45.2, 34.2 45.2, 34.1 45.1))'])
+                self.ids.append(cur.fetchone()[0])
+
+    def _db(self, name):
+        return next(a['db'] for a in self.layer.attributes if a['name'] == name)
+
+    def _fill(self, body):
+        return self.client.post(
+            f'/me/gis/api/layers/{self.layer.pk}/fill/',
+            data=json.dumps(body), content_type='application/json')
+
+    def _values(self, db):
+        with connection.cursor() as cur:
+            cur.execute(sql.SQL('SELECT id, {c} FROM {t} ORDER BY id').format(
+                c=sql.Identifier(db), t=sql.Identifier(self.layer.table_name)))
+            return {row[0]: row[1] for row in cur.fetchall()}
+
+    # ── Область применения ──
+    def test_fill_whole_layer(self):
+        resp = self._fill({'field': self.crop, 'value': 'ячмень'})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['updated'], 3)
+        self.assertEqual(set(self._values(self.crop).values()), {'ячмень'})
+
+    def test_fill_only_selected_ids(self):
+        resp = self._fill({'field': self.crop, 'value': 'овёс',
+                           'ids': [self.ids[0], self.ids[2]]})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['updated'], 2)
+        vals = self._values(self.crop)
+        self.assertEqual(vals[self.ids[0]], 'овёс')
+        self.assertIsNone(vals[self.ids[1]])
+        self.assertEqual(vals[self.ids[2]], 'овёс')
+
+    def test_fill_by_filter_spec(self):
+        resp = self._fill({
+            'field': self.crop, 'value': 'соя',
+            'filter': {'match': 'all',
+                       'rules': [{'field': self.area, 'op': 'gte', 'value': 20}]},
+        })
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['updated'], 2)
+        self.assertEqual(self._values(self.crop)[self.ids[0]], 'пшеница')
+
+    def test_fill_by_search_text(self):
+        resp = self._fill({'field': self.crop, 'value': 'рожь', 'q': 'пшен'})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['updated'], 1)
+        self.assertEqual(self._values(self.crop)[self.ids[0]], 'рожь')
+
+    def test_fill_empty_ids_updates_nothing(self):
+        resp = self._fill({'field': self.crop, 'value': 'x', 'ids': []})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['updated'], 0)
+
+    # ── Только пустые / очистка ──
+    def test_only_empty_covers_null_and_blank_text(self):
+        resp = self._fill({'field': self.crop, 'value': 'кукуруза',
+                           'only_empty': True})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['updated'], 2)
+        vals = self._values(self.crop)
+        self.assertEqual(vals[self.ids[0]], 'пшеница')     # не тронута
+        self.assertEqual(vals[self.ids[1]], 'кукуруза')
+        self.assertEqual(vals[self.ids[2]], 'кукуруза')
+
+    def test_only_empty_numeric_counts_null_only(self):
+        with connection.cursor() as cur:
+            cur.execute(sql.SQL('UPDATE {t} SET {a} = NULL WHERE id = %s').format(
+                t=sql.Identifier(self.layer.table_name),
+                a=sql.Identifier(self.area)), [self.ids[1]])
+        resp = self._fill({'field': self.area, 'value': 99, 'only_empty': True})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['updated'], 1)
+        self.assertEqual(self._values(self.area)[self.ids[1]], 99)
+
+    def test_blank_value_clears_column_to_null(self):
+        resp = self._fill({'field': self.crop, 'value': '   '})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(set(self._values(self.crop).values()), {None})
+
+    def test_numeric_value_cast_from_string(self):
+        resp = self._fill({'field': self.area, 'value': '7'})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(set(self._values(self.area).values()), {7})
+
+    # ── Ошибки ──
+    def test_unknown_field_400(self):
+        self.assertEqual(self._fill({'field': 'nope', 'value': 'x'}).status_code, 400)
+
+    def test_no_field_400(self):
+        self.assertEqual(self._fill({'value': 'x'}).status_code, 400)
+
+    def test_invalid_filter_400(self):
+        resp = self._fill({
+            'field': self.crop, 'value': 'x',
+            'filter': {'match': 'all',
+                       'rules': [{'field': 'nope', 'op': 'eq', 'value': 1}]},
+        })
+        self.assertEqual(resp.status_code, 400)
+
+    def test_ids_not_list_400(self):
+        resp = self._fill({'field': self.crop, 'value': 'x', 'ids': 5})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_bad_numeric_value_400_not_500(self):
+        resp = self._fill({'field': self.area, 'value': 'не число'})
+        self.assertEqual(resp.status_code, 400)
+
+    # ── Доступ ──
+    def test_anonymous_401(self):
+        self.client.logout()
+        self.assertEqual(self._fill({'field': self.crop, 'value': 'x'}).status_code, 401)
+
+    def test_non_admin_denied(self):
+        self.client.logout()
+        self._login_plain()
+        self.assertEqual(self._fill({'field': self.crop, 'value': 'x'}).status_code, 403)
 
 
 class _FakeLayer:

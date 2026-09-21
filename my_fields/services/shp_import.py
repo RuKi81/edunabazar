@@ -26,7 +26,7 @@ from django.contrib.gis.gdal import CoordTransform, DataSource, SpatialReference
 from django.contrib.gis.gdal.field import (
     OFTDate, OFTDateTime, OFTInteger, OFTInteger64, OFTReal, OFTTime,
 )
-from django.db import connection, transaction
+from django.db import DataError, connection, transaction
 from django.db.models import Max
 from psycopg import sql
 
@@ -818,6 +818,103 @@ def update_feature(layer, fid: int, props: dict) -> int:
         return cur.rowcount
 
 
+# Предел на число id в точечном режиме массового заполнения: параметров в
+# одном запросе psycopg не может быть больше 65535, а IN-список на десятки
+# тысяч значений всё равно медленнее, чем заполнение по фильтру.
+MAX_FILL_IDS = 50000
+
+
+def _fill_scope_spec(db, pg_type, filter_spec, ids, only_empty):
+    """Собрать спецификацию фильтра для массового заполнения.
+
+    Все ограничения области (структурный фильтр конструктора, точечный список
+    id, «только пустые») выражаются правилами того же безопасного компилятора
+    :mod:`my_fields.services.layer_query` — своего SQL здесь не собираем.
+    Возвращает ``spec`` или ``None`` (без ограничений = весь слой).
+
+    Raises:
+        ShapefileImportError: слишком длинный список id.
+    """
+    rules = []
+    if filter_spec:
+        rules.append(filter_spec)
+    if ids is not None:
+        id_list = [int(i) for i in ids]
+        if len(id_list) > MAX_FILL_IDS:
+            raise ShapefileImportError(
+                f'Слишком много выбранных объектов (> {MAX_FILL_IDS}). '
+                'Заполните по фильтру выборки.')
+        rules.append({'field': 'id', 'op': 'in', 'value': id_list})
+    if only_empty:
+        empty = [{'field': db, 'op': 'is_null'}]
+        if pg_type == 'text':
+            # Пустая строка — тоже «пусто». Оператор eq с пустым значением
+            # компилятор отвергает (защита от случайного пустого условия в
+            # UI), поэтому берём in со списком из одной пустой строки.
+            empty.append({'field': db, 'op': 'in', 'value': ['']})
+        rules.append({'match': 'any', 'rules': empty})
+    return {'match': 'all', 'rules': rules} if rules else None
+
+
+def fill_column(layer, db: str, value, *, filter_spec=None, query_text='',
+                ids=None, only_empty=False) -> int:
+    """Массово заполнить атрибутивный столбец ОДНИМ значением.
+
+    Область применения задаётся комбинацией (все условия через AND):
+
+    * ``filter_spec`` / ``query_text`` — как в таблице атрибутов (конструктор
+      выборки + подстрочный поиск);
+    * ``ids`` — точечный список id (например, выбранные объекты); ``None`` —
+      без ограничения по id, пустой список — 0 строк;
+    * ``only_empty`` — заполнять только там, где сейчас ``NULL`` (для текста
+      ещё и пустая строка).
+
+    Пустое ``value`` (``None`` или строка из пробелов) очищает столбец в
+    ``NULL`` — так работает и «стереть значение у выборки».
+
+    Returns:
+        Число обновлённых строк.
+
+    Raises:
+        ShapefileImportError: столбца нет в meta слоя / слишком много id.
+        layer_query.LayerQueryError: некорректный фильтр.
+    """
+    from .layer_query import build_where
+
+    types = _attr_db_types(layer)
+    pg_type = types.get(db)
+    if pg_type is None:
+        raise ShapefileImportError('Столбец не найден среди атрибутов слоя.')
+    if pg_type not in _ALLOWED_CAST_TYPES:
+        pg_type = 'text'
+    if ids is not None and not list(ids):
+        return 0
+
+    spec = _fill_scope_spec(db, pg_type, filter_spec, ids, only_empty)
+    where_sql, params = build_where(layer, list(types.keys()), spec, query_text)
+
+    is_blank = value is None or (isinstance(value, str) and value.strip() == '')
+    if is_blank:
+        set_sql, set_params = sql.SQL('{} = NULL').format(sql.Identifier(db)), []
+    else:
+        set_sql = sql.SQL('{} = %s::{}').format(
+            sql.Identifier(db), sql.SQL(pg_type))
+        set_params = [value]
+
+    query = sql.SQL('UPDATE {t} SET {s}{where}').format(
+        t=sql.Identifier(layer.table_name), s=set_sql, where=where_sql)
+    # Savepoint: неподходящее под тип значение (например, «абв» в integer)
+    # обрывает транзакцию, а нам нужно вернуть 400 и продолжить работу.
+    try:
+        with transaction.atomic():
+            with connection.cursor() as cur:
+                cur.execute(query, set_params + params)
+                return cur.rowcount
+    except DataError as e:
+        raise ShapefileImportError(
+            f'Значение не подходит под тип столбца ({pg_type}).') from e
+
+
 # ── Управление АТРИБУТИВНЫМИ СТОЛБЦАМИ слоя ─────────────────────────────
 
 def _unique_column_db(layer, name: str, exclude: str = None) -> str:
@@ -872,29 +969,57 @@ def add_layer_column(layer, name: str, col_type: str) -> dict:
     return entry
 
 
+def drop_layer_columns(layer, dbs) -> dict:
+    """Удалить НЕСКОЛЬКО атрибутивных столбцов слоя одной транзакцией.
+
+    ``ALTER TABLE DROP COLUMN`` по каждому столбцу + однократное обновление
+    meta слоя. Транзакция нужна, чтобы meta и физическая схема не разъехались
+    при падении на середине списка.
+
+    Args:
+        dbs: db-имена столбцов (порядок не важен, дубликаты игнорируются).
+
+    Returns:
+        ``{'dropped': [db, ...], 'unknown': [db, ...]}`` — ``unknown`` это
+        имена, которых нет в meta слоя (их не удаляли).
+    """
+    meta = list(layer.attributes or [])
+    known = {a.get('db') for a in meta}
+    want, unknown = [], []
+    for raw in (dbs or []):
+        db = str(raw)
+        if db not in known:
+            unknown.append(db)
+        elif db not in want:
+            want.append(db)
+    if not want:
+        return {'dropped': [], 'unknown': unknown}
+
+    table = sql.Identifier(layer.table_name)
+    with transaction.atomic():
+        with connection.cursor() as cur:
+            for db in want:
+                cur.execute(
+                    sql.SQL('ALTER TABLE {t} DROP COLUMN IF EXISTS {c}').format(
+                        t=table, c=sql.Identifier(db)))
+        dropped = set(want)
+        layer.attributes = [a for a in meta if a.get('db') not in dropped]
+        update_fields = ['attributes']
+        if isinstance(layer.style, dict) and layer.style.get('field') in dropped:
+            layer.style = {}
+            update_fields.append('style')
+        layer.save(update_fields=update_fields)
+    return {'dropped': want, 'unknown': unknown}
+
+
 def drop_layer_column(layer, db: str) -> bool:
-    """Удалить атрибутивный столбец слоя: ``ALTER TABLE DROP COLUMN`` + meta.
+    """Удалить один атрибутивный столбец слоя (см. :func:`drop_layer_columns`).
 
     Возвращает ``False``, если столбца с таким ``db`` нет в meta слоя.
     Если удалённая колонка использовалась в тематической раскраске
     (``layer.style.field``) — раскраска сбрасывается.
     """
-    meta = list(layer.attributes or [])
-    idx = next((i for i, a in enumerate(meta) if a.get('db') == db), None)
-    if idx is None:
-        return False
-    with connection.cursor() as cur:
-        cur.execute(sql.SQL('ALTER TABLE {t} DROP COLUMN IF EXISTS {c}').format(
-            t=sql.Identifier(layer.table_name),
-            c=sql.Identifier(db)))
-    meta.pop(idx)
-    layer.attributes = meta
-    update_fields = ['attributes']
-    if isinstance(layer.style, dict) and layer.style.get('field') == db:
-        layer.style = {}
-        update_fields.append('style')
-    layer.save(update_fields=update_fields)
-    return True
+    return bool(drop_layer_columns(layer, [db])['dropped'])
 
 
 def rename_layer_column(layer, db: str, new_name: str) -> bool:

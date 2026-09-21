@@ -1171,12 +1171,16 @@ def _gis_layer_patch(request: HttpRequest, layer: GisLayer) -> JsonResponse:
 
 
 @csrf_exempt
-@require_http_methods(['POST'])
+@require_http_methods(['POST', 'DELETE'])
 def gis_layer_columns(request: HttpRequest, pk: int) -> JsonResponse:
-    """POST JSON — добавить атрибутивный столбец слою (``ALTER TABLE``).
+    """POST — добавить атрибутивный столбец; DELETE — удалить сразу
+    несколько столбцов (``ALTER TABLE``).
 
-    Body: ``{name, type}`` (type из NEW_LAYER_ATTR_TYPES). Схему меняет —
-    нужен уровень ``manage`` (как загрузка SHP / создание слоя).
+    Body POST: ``{name, type}`` (type из NEW_LAYER_ATTR_TYPES).
+    Body DELETE: ``{dbs: [<db>, ...]}`` — одна транзакция на все столбцы,
+    чтобы meta слоя и физическая схема не разъехались.
+
+    Схему меняет — нужен уровень ``manage`` (как загрузка SHP / создание слоя).
     """
     gate = _require_gis_access(request, level='manage', pk=pk)
     if gate:
@@ -1187,6 +1191,11 @@ def gis_layer_columns(request: HttpRequest, pk: int) -> JsonResponse:
         data = json.loads(request.body or b'{}')
     except (ValueError, TypeError):
         return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
+    if not isinstance(data, dict):
+        return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
+
+    if request.method == 'DELETE':
+        return _gis_columns_bulk_delete(layer, data.get('dbs'))
 
     name = str(data.get('name', '')).strip()
     col_type = data.get('type', 'text')
@@ -1204,6 +1213,97 @@ def gis_layer_columns(request: HttpRequest, pk: int) -> JsonResponse:
     return JsonResponse(
         {'ok': True, 'column': column, 'layer': _gis_layer_to_dict(layer)},
         status=201)
+
+
+def _gis_columns_bulk_delete(layer, dbs) -> JsonResponse:
+    """DELETE-ветка :func:`gis_layer_columns` — удаление списка столбцов."""
+    from .services.shp_import import drop_layer_columns
+
+    if not isinstance(dbs, list) or not dbs:
+        return JsonResponse(
+            {'ok': False, 'error': 'no_columns',
+             'detail': 'Укажите столбцы для удаления.'}, status=400)
+    try:
+        res = drop_layer_columns(layer, dbs)
+    except Exception as e:  # noqa: BLE001
+        return JsonResponse(
+            {'ok': False, 'error': 'drop_failed',
+             'detail': f'Ошибка удаления столбцов: {e}'}, status=400)
+    if not res['dropped']:
+        return JsonResponse(
+            {'ok': False, 'error': 'unknown_column',
+             'detail': 'Столбцы не найдены среди атрибутов слоя.'}, status=404)
+    return JsonResponse({
+        'ok': True, 'dropped': res['dropped'], 'unknown': res['unknown'],
+        'layer': _gis_layer_to_dict(layer),
+    })
+
+
+@csrf_exempt
+@require_http_methods(['POST'])
+def gis_layer_fill(request: HttpRequest, pk: int) -> JsonResponse:
+    """POST — массово заполнить атрибутивный столбец одним значением.
+
+    Тело JSON::
+
+        {"field": "<db>", "value": <значение|null>,
+         "filter": {...}?, "q": ""?, "ids": [1, 2]?, "only_empty": false?}
+
+    Область применения — как в таблице атрибутов: структурный фильтр
+    конструктора выборки + поиск + точечный список id (всё через AND).
+    Ничего не задано — затрагивается весь слой. Пустое ``value`` очищает
+    столбец в ``NULL``. Правка данных (не схемы) — уровень ``edit``.
+    """
+    gate = _require_gis_access(request, level='edit', pk=pk)
+    if gate:
+        return gate
+    layer = get_object_or_404(GisLayer, pk=pk)
+
+    try:
+        data = json.loads(request.body or b'{}')
+    except (ValueError, TypeError):
+        return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
+    if not isinstance(data, dict):
+        return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
+
+    field = str(data.get('field', '') or '')
+    if not field:
+        return JsonResponse(
+            {'ok': False, 'error': 'no_field',
+             'detail': 'Укажите столбец для заполнения.'}, status=400)
+    ids = data.get('ids')
+    if ids is not None and not isinstance(ids, list):
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_ids',
+             'detail': 'ids должен быть списком.'}, status=400)
+
+    return _gis_fill_apply(layer, field, ids, data)
+
+
+def _gis_fill_apply(layer, field: str, ids, data: dict) -> JsonResponse:
+    """Вызов :func:`fill_column` с переводом ошибок сервиса в JSON-ответы."""
+    from .services.layer_query import LayerQueryError
+    from .services.shp_import import ShapefileImportError, fill_column
+
+    try:
+        updated = fill_column(
+            layer, field, data.get('value'),
+            filter_spec=data.get('filter'),
+            query_text=str(data.get('q', '') or ''),
+            ids=ids,
+            only_empty=bool(data.get('only_empty')),
+        )
+    except LayerQueryError as e:
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_filter', 'detail': str(e)}, status=400)
+    except ShapefileImportError as e:
+        return JsonResponse(
+            {'ok': False, 'error': 'fill_failed', 'detail': str(e)}, status=400)
+    except (TypeError, ValueError) as e:
+        return JsonResponse(
+            {'ok': False, 'error': 'fill_failed',
+             'detail': f'Не удалось заполнить столбец: {e}'}, status=400)
+    return JsonResponse({'ok': True, 'updated': updated})
 
 
 @csrf_exempt

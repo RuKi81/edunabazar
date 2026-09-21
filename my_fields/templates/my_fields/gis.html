@@ -697,8 +697,11 @@
     /* Конструктор выборки (фильтр по атрибутам). */
     .gis-attrtable__filtertoggle { padding: 5px 8px; white-space: nowrap; }
     .gis-attrtable__filtertoggle.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
-    /* Кнопка «Добавить столбец» (только для загруженных SHP-слоёв). */
+    /* Кнопки «Добавить / удалить столбцы» (только для загруженных SHP-слоёв). */
     .gis-attrtable__addcol { padding: 5px 8px; white-space: nowrap; }
+    /* Кнопка «Заполнить атрибут» (массовое заполнение). */
+    .gis-attrtable__filltoggle { padding: 5px 8px; white-space: nowrap; }
+    .gis-attrtable__filltoggle.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
     .gis-attrtable__filterpanel {
       border-bottom: 1px solid rgba(0,0,0,.12); background: #fafafa;
       padding: 8px 10px; display: flex; flex-direction: column; gap: 8px;
@@ -1278,6 +1281,10 @@
                 title="Конструктор выборки (фильтр по атрибутам)" hidden>⚟ Фильтр</button>
         <button type="button" class="gis-attrtable__btn gis-attrtable__addcol" id="gis-attrtable-addcol"
                 title="Добавить атрибутивный столбец" hidden>➕ столбец</button>
+        <button type="button" class="gis-attrtable__btn gis-attrtable__addcol" id="gis-attrtable-delcol"
+                title="Удалить атрибутивные столбцы" hidden>➖ столбцы</button>
+        <button type="button" class="gis-attrtable__btn gis-attrtable__filltoggle" id="gis-attrtable-fill-toggle"
+                title="Массовое заполнение атрибута" hidden>✎ Заполнить атрибут</button>
         <span class="gis-attrtable__title" id="gis-attrtable-title">ЗСН (Росреестр)</span>
         <span class="gis-attrtable__count" id="gis-attrtable-count"></span>
         <select class="gis-attrtable__filter browser-default" id="gis-attrtable-filter" title="Фильтр по использованию">
@@ -1323,6 +1330,34 @@
           <button type="button" class="gis-fp__btn" id="gis-fp-reset">Сбросить</button>
           <button type="button" class="gis-fp__btn" id="gis-fp-save">Сохранить как слой…</button>
         </span>
+      </div>
+      <!-- Массовое заполнение атрибута: столбец + одно значение + область
+           применения (весь слой / текущая выборка / выбранные объекты). -->
+      <div class="gis-attrtable__filterpanel" id="gis-attrtable-fillpanel" hidden>
+        <div class="gis-fp__rule">
+          <span class="gis-fp__match">Столбец:
+            <select class="browser-default gis-fp__field" id="gis-fill-field"></select>
+          </span>
+          <span class="gis-fp__match">Значение:
+            <input class="gis-fp__val" type="text" id="gis-fill-value" placeholder="значение" step="any">
+          </span>
+          <label class="gis-fp__match" title="Не трогать объекты, у которых значение уже есть">
+            <input type="checkbox" id="gis-fill-only-empty"> только пустые
+          </label>
+          <span class="gis-fp__match">Куда:
+            <select class="browser-default" id="gis-fill-scope">
+              <option value="filter">текущая выборка (фильтр + поиск)</option>
+              <option value="selected">выбранные объекты</option>
+              <option value="all">весь слой</option>
+            </select>
+          </span>
+          <span class="gis-fp__actions">
+            <button type="button" class="gis-fp__btn gis-fp__btn--primary" id="gis-fill-apply">Заполнить</button>
+            <button type="button" class="gis-fp__btn" id="gis-fill-clear"
+                    title="Стереть значение столбца в указанной области (NULL)">Очистить</button>
+          </span>
+        </div>
+        <div class="gis-colmenu__filterhint" id="gis-fill-hint"></div>
       </div>
       <div class="gis-attrtable__body" id="gis-attrtable-body"></div>
     </section>
@@ -5492,6 +5527,9 @@
       var filterEl = document.getElementById('gis-attrtable-filter');
       var fpToggle = document.getElementById('gis-attrtable-filter-toggle');
       var addColBtn = document.getElementById('gis-attrtable-addcol');
+      var delColBtn = document.getElementById('gis-attrtable-delcol');
+      var fillToggle = document.getElementById('gis-attrtable-fill-toggle');
+      var fillPanel = document.getElementById('gis-attrtable-fillpanel');
       var fpPanel  = document.getElementById('gis-attrtable-filterpanel');
       var fpRules  = document.getElementById('gis-fp-rules');
       var fpActions = document.getElementById('gis-fp-actions');
@@ -6807,6 +6845,9 @@
         if (typeof closeColMenu === 'function') closeColMenu();
         if (typeof fpResetUI === 'function') fpResetUI();
         if (typeof fpClosePanel === 'function') fpClosePanel();
+        /* Инструменты по столбцам привязаны к колонкам слоя — закрываем. */
+        if (typeof closeDelColMenu === 'function') closeDelColMenu();
+        if (typeof fillClosePanel === 'function') fillClosePanel();
         syncTabs();
         /* SHP-слой всегда перезагружаем страницу под текущую сортировку/поиск
            (rows кэша могли остаться от прежних параметров). */
@@ -6837,8 +6878,11 @@
       function syncTabs() {
         if (titleEl) titleEl.textContent = layerTitleFor(state.layer);
         if (typeof fpSyncToggle === 'function') fpSyncToggle();
-        /* «Добавить столбец» — только для загруженных SHP-слоёв. */
+        /* Инструменты по столбцам (добавить / удалить / заполнить) —
+           только для загруженных SHP-слоёв (у них есть свои эндпоинты). */
         if (addColBtn) addColBtn.hidden = !dynLayers[state.layer];
+        if (typeof delColSyncToggle === 'function') delColSyncToggle();
+        if (typeof fillSyncToggle === 'function') fillSyncToggle();
       }
       function loadDyn(key, after) {
         var def = dynLayers[key];
@@ -6957,7 +7001,12 @@
           });
         },
         /* Перезагрузить текущую страницу активного SHP-слоя. */
-        reload: function () { if (state.open) reloadDynPage(); },
+        reload: function () {
+          /* Состав столбцов мог измениться (добавили/удалили) — обновим
+             список в панели заполнения, иначе в нём осталась бы удалённая колонка. */
+          if (typeof fillSyncToggle === 'function') fillSyncToggle();
+          if (state.open) reloadDynPage();
+        },
         /* Активный набор id режима «только выбранные» для указанного слоя
            (массив строк) или null, если режим выключен / таблица закрыта /
            открыт другой слой. Нужен редактору геометрии, чтобы грузить в draw
@@ -7104,6 +7153,87 @@
       if (addColBtn) addColBtn.addEventListener('click', function (e) {
         e.stopPropagation();
         if (addColMenuEl) closeAddColMenu(); else openAddColMenu();
+      });
+
+      /* ─── Удаление атрибутивных столбцов (SHP-слои) ───
+         Попап со списком колонок слоя: отмеченные удаляются ОДНИМ запросом
+         (DELETE columns/ {dbs}) — в отличие от кебаба в заголовке столбца,
+         который работает по одному. Данные теряются безвозвратно, поэтому
+         перед отправкой — confirm со списком имён. */
+      var delColMenuEl = null;
+      function closeDelColMenu() {
+        if (delColMenuEl) { delColMenuEl.remove(); delColMenuEl = null; }
+        document.removeEventListener('mousedown', onDelColOutside, true);
+      }
+      function onDelColOutside(e) {
+        if (!delColMenuEl) return;
+        if (delColMenuEl.contains(e.target)) return;
+        if (delColBtn && delColBtn.contains(e.target)) return;
+        closeDelColMenu();
+      }
+      function delColSyncToggle() {
+        if (!delColBtn) return;
+        var avail = !!dynLayers[state.layer];
+        delColBtn.hidden = !avail;
+        if (!avail) closeDelColMenu();
+      }
+      /* Атрибутивные столбцы слоя (без служебного ID — его не удалить). */
+      function attrCols() {
+        return (COLUMNS[state.layer] || []).filter(function (c) { return !!c.edit; });
+      }
+      function openDelColMenu() {
+        closeDelColMenu();
+        if (!dynLayers[state.layer]) return;
+        var lid = parseInt(state.layer.slice('gisup:'.length), 10);
+        var cols = attrCols();
+        var menu = document.createElement('div');
+        menu.className = 'gis-colmenu';
+        menu.innerHTML =
+          '<div class="gis-colmenu__filterhint">Удалить столбцы:</div>' +
+          (cols.length
+            ? '<div class="gis-colmenu__list">' + cols.map(function (c) {
+                return '<label class="gis-colmenu__item">' +
+                  '<input type="checkbox" value="' + esc(c.key) + '">' +
+                  '<span class="gis-colmenu__lbl">' + esc(c.label || c.key) + '</span></label>';
+              }).join('') + '</div>'
+            : '<div class="gis-colmenu__empty">У слоя нет атрибутов.</div>') +
+          '<div class="gis-colmenu__note">Данные в отмеченных столбцах будут ' +
+            'потеряны безвозвратно.</div>' +
+          '<div class="gis-colmenu__foot">' +
+            '<button type="button" class="gis-fp__btn" data-dc="cancel">Отмена</button>' +
+            '<span class="gis-fp__spacer"></span>' +
+            '<button type="button" class="gis-fp__btn gis-colmenu__act--danger" ' +
+              'data-dc="del">Удалить</button>' +
+          '</div>';
+        document.body.appendChild(menu);
+        delColMenuEl = menu;
+
+        var r = delColBtn.getBoundingClientRect();
+        menu.style.left = Math.max(6, Math.min(r.left, window.innerWidth - 250)) + 'px';
+        menu.style.top = (r.bottom + 4) + 'px';
+
+        menu.querySelector('[data-dc="cancel"]').addEventListener('click', closeDelColMenu);
+        menu.querySelector('[data-dc="del"]').addEventListener('click', function () {
+          var checked = menu.querySelectorAll('.gis-colmenu__list input:checked');
+          if (!checked.length) { toast('Отметьте столбцы для удаления', true); return; }
+          var dbs = [], labels = [];
+          checked.forEach(function (inp) {
+            dbs.push(inp.value);
+            var lbl = inp.parentNode.querySelector('.gis-colmenu__lbl');
+            labels.push(lbl ? lbl.textContent : inp.value);
+          });
+          if (!window.confirm('Удалить столбцы: ' + labels.join(', ') +
+              '? Данные в них будут потеряны безвозвратно.')) return;
+          closeDelColMenu();
+          if (window.__gisUpColumns) window.__gisUpColumns.removeMany(lid, dbs);
+        });
+        setTimeout(function () {
+          document.addEventListener('mousedown', onDelColOutside, true);
+        }, 0);
+      }
+      if (delColBtn) delColBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (delColMenuEl) closeDelColMenu(); else openDelColMenu();
       });
 
       /* Лупа-переключатель: разворачивает/сворачивает поле поиска по клику. */
@@ -7354,6 +7484,163 @@
                   (o.j.layer ? ' (' + o.j.layer.feature_count + ' об.)' : ''));
           })
           .catch(function () { fpSaveBtn.disabled = false; toast('Ошибка сети при создании слоя.', true); });
+      });
+
+      /* ─── Массовое заполнение атрибута («✎ Заполнить атрибут») ───
+         Устроено по аналогии с конструктором выборки, но вместо WHERE собирает
+         UPDATE: один столбец + одно значение + область применения (текущая
+         выборка / выбранные объекты / весь слой). Область компилируется на
+         сервере (POST /fill/) тем же безопасным компилятором фильтра — сырой
+         SQL с клиента не уходит. */
+      var fillFieldSel = document.getElementById('gis-fill-field');
+      var fillValInp   = document.getElementById('gis-fill-value');
+      var fillScopeSel = document.getElementById('gis-fill-scope');
+      var fillEmptyChk = document.getElementById('gis-fill-only-empty');
+      var fillHintEl   = document.getElementById('gis-fill-hint');
+      var fillApplyBtn = document.getElementById('gis-fill-apply');
+      var fillClearBtn = document.getElementById('gis-fill-clear');
+
+      function fillAvailable() { return !!dynLayers[state.layer]; }
+      function fillClosePanel() { if (fillPanel) fillPanel.hidden = true; }
+      function fillSyncToggle() {
+        if (!fillToggle) return;
+        var avail = fillAvailable();
+        fillToggle.hidden = !avail;
+        if (!avail) { fillClosePanel(); fillToggle.classList.remove('active'); }
+        else if (fillPanel && !fillPanel.hidden) { fillRenderFields(); fillSyncHint(); }
+        fillToggle.classList.toggle('active', avail && !!(fillPanel && !fillPanel.hidden));
+      }
+      function fillColByKey(key) {
+        return attrCols().filter(function (c) { return c.key === key; })[0] || null;
+      }
+      /* Тип поля ввода под тип столбца: число — number (иначе кириллица в
+         integer уходила бы на сервер и возвращалась ошибкой 400). */
+      function fillSyncValType() {
+        if (!fillValInp) return;
+        var col = fillColByKey(fillFieldSel ? fillFieldSel.value : '');
+        var kind = (col && col.edit && col.edit.kind) || 'str';
+        var t = (kind === 'int' || kind === 'num') ? 'number' : 'text';
+        if (fillValInp.type !== t) fillValInp.type = t;
+      }
+      function fillRenderFields() {
+        if (!fillFieldSel) return;
+        var prev = fillFieldSel.value;
+        var cols = attrCols();
+        fillFieldSel.innerHTML = cols.map(function (c) {
+          return '<option value="' + esc(c.key) + '">' + esc(c.label || c.key) + '</option>';
+        }).join('');
+        if (prev && cols.some(function (c) { return c.key === prev; })) fillFieldSel.value = prev;
+        fillSyncValType();
+      }
+      /* Подсказка под строкой: сколько объектов затронет выбранная область. */
+      function fillSyncHint() {
+        if (!fillHintEl) return;
+        var scope = fillScopeSel ? fillScopeSel.value : 'filter';
+        var txt;
+        if (scope === 'selected') {
+          txt = 'Выбрано объектов: ' + selectedIdSet().size + '.';
+        } else if (scope === 'all') {
+          txt = 'Будут затронуты ВСЕ объекты слоя (' + (state.total || 0) + ').';
+        } else {
+          txt = 'Объектов в текущей выборке: ' + (state.total || 0) +
+                ((state.filter || state.query) ? '.' : ' (фильтр и поиск не заданы — это весь слой).');
+        }
+        if (fillEmptyChk && fillEmptyChk.checked) txt += ' Заполняются только пустые значения.';
+        fillHintEl.textContent = txt;
+      }
+      function fillOpenPanel() {
+        if (!fillPanel) return;
+        fillRenderFields();
+        fillPanel.hidden = false;
+        fillSyncHint();
+        if (fillValInp) fillValInp.focus();
+      }
+      /* Область применения → часть тела запроса ({} = весь слой) либо {error}. */
+      function fillScopePayload(scope) {
+        if (scope === 'all') return {};
+        if (scope === 'selected') {
+          var ids = [];
+          selectedIdSet().forEach(function (sid) {
+            var n = parseInt(sid, 10);
+            if (!isNaN(n)) ids.push(n);
+          });
+          if (!ids.length) return { error: 'Сначала выберите объекты в таблице или на карте.' };
+          return { ids: ids };
+        }
+        return { filter: state.filter || null, q: state.query || '' };
+      }
+      function fillScopeText(scope, sc) {
+        if (scope === 'all') return 'у ВСЕХ объектов слоя';
+        if (scope === 'selected') return 'у выбранных объектов (' + sc.ids.length + ')';
+        return 'у объектов текущей выборки (' + (state.total || 0) + ')';
+      }
+      /* clear=true — стереть значение (NULL) вместо заполнения. */
+      function fillSubmit(clear) {
+        if (!fillAvailable()) return;
+        var db = fillFieldSel ? fillFieldSel.value : '';
+        if (!db) { toast('У слоя нет атрибутивных столбцов.', true); return; }
+        var raw = fillValInp ? String(fillValInp.value) : '';
+        if (!clear && raw.trim() === '') {
+          toast('Укажите значение (или нажмите «Очистить», чтобы стереть).', true);
+          if (fillValInp) fillValInp.focus();
+          return;
+        }
+        var scope = fillScopeSel ? fillScopeSel.value : 'filter';
+        var sc = fillScopePayload(scope);
+        if (sc.error) { toast(sc.error, true); return; }
+        var col = fillColByKey(db);
+        var label = (col && (col.label || col.key)) || db;
+        var act = clear ? 'Стереть значения' : ('Заполнить значением «' + raw.trim() + '»');
+        if (!window.confirm(act + ' в столбце «' + label + '» ' +
+            fillScopeText(scope, sc) + '?')) return;
+
+        var body = {
+          field: db,
+          value: clear ? null : raw,
+          only_empty: !!(!clear && fillEmptyChk && fillEmptyChk.checked),
+        };
+        if (sc.ids) body.ids = sc.ids;
+        if (sc.filter !== undefined) { body.filter = sc.filter; body.q = sc.q; }
+
+        var lid = state.layer.slice('gisup:'.length);
+        if (fillApplyBtn) fillApplyBtn.disabled = true;
+        if (fillClearBtn) fillClearBtn.disabled = true;
+        var done = function () {
+          if (fillApplyBtn) fillApplyBtn.disabled = false;
+          if (fillClearBtn) fillClearBtn.disabled = false;
+        };
+        fetch('/me/gis/api/layers/' + lid + '/fill/', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify(body),
+        }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+          .then(function (o) {
+            done();
+            if (!o.ok || !o.j || !o.j.ok) {
+              toast((o.j && o.j.detail) || 'Не удалось заполнить столбец.', true);
+              return;
+            }
+            toast((clear ? 'Очищено объектов: ' : 'Заполнено объектов: ') + o.j.updated);
+            /* Тайлы держат значения атрибутов (раскраска/подписи) — сбрасываем
+               их кэш, иначе карта покажет старые значения. */
+            if (window.__gisUpRefreshTiles) window.__gisUpRefreshTiles(lid);
+            if (state.open) reloadDynPage();
+          })
+          .catch(function () { done(); toast('Ошибка сети при заполнении столбца.', true); });
+      }
+
+      if (fillToggle) fillToggle.addEventListener('click', function () {
+        if (!fillAvailable()) return;
+        if (fillPanel.hidden) fillOpenPanel(); else fillClosePanel();
+        fillToggle.classList.toggle('active', !fillPanel.hidden);
+      });
+      if (fillFieldSel) fillFieldSel.addEventListener('change', fillSyncValType);
+      if (fillScopeSel) fillScopeSel.addEventListener('change', fillSyncHint);
+      if (fillEmptyChk) fillEmptyChk.addEventListener('change', fillSyncHint);
+      if (fillApplyBtn) fillApplyBtn.addEventListener('click', function () { fillSubmit(false); });
+      if (fillClearBtn) fillClearBtn.addEventListener('click', function () { fillSubmit(true); });
+      if (fillValInp) fillValInp.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); fillSubmit(false); }
       });
 
       /* Переключение режима правки слоя (кнопка ✏): перерисуем таблицу и,
@@ -7671,6 +7958,37 @@
             toast('Не удалось удалить столбец', true); if (cb) cb(false);
           });
         },
+        /* Удалить СРАЗУ НЕСКОЛЬКО столбцов — один DELETE на коллекцию
+           с телом {dbs}: сервер делает все ALTER TABLE в одной транзакции,
+           иначе при ошибке на середине meta слоя и схема расходятся. */
+        removeMany: function (id, dbs, cb) {
+          fetch(API + id + '/columns/', {
+            method: 'DELETE', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({ dbs: dbs || [] }),
+          }).then(function (r) {
+            return r.json().then(function (j) { return { ok: r.ok, j: j }; });
+          }).then(function (res) {
+            if (res.ok && res.j.ok) {
+              applyLayerAttrsUpdate(id, res.j.layer);
+              toast('Удалено столбцов: ' + (res.j.dropped || []).length);
+              if (cb) cb(true);
+            } else {
+              toast((res.j && res.j.detail) || 'Не удалось удалить столбцы', true);
+              if (cb) cb(false);
+            }
+          }).catch(function () {
+            toast('Не удалось удалить столбцы', true); if (cb) cb(false);
+          });
+        },
+      };
+
+      /* Мост для модуля таблицы: сбросить кэш MVT-тайлов слоя после
+         массовой правки атрибутов — тайлы несут значения полей (раскраска,
+         подписи), иначе карта покажет старые данные. */
+      window.__gisUpRefreshTiles = function (id) {
+        var L = uploaded[id];
+        if (L) { try { gupRefreshTiles(L); } catch (_) {} }
       };
 
       function fitExtent(ext) {
