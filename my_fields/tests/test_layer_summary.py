@@ -250,6 +250,8 @@ class DashboardsPageTests(GisLayersTestCase):
         resp = self.client.get('/me/gis/dashboards/')
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'dash-build')
+        # Переключатель малых диаграмм по значениям разреза.
+        self.assertContains(resp, 'dash-bysplit')
 
     def test_non_admin_gets_404(self):
         self._login_plain()

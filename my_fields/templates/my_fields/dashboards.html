@@ -97,6 +97,42 @@
     }
     .dash-legend__val { margin-left: auto; color: #777; white-space: nowrap; }
 
+    /* Малые диаграммы по значениям разреза: сетка плиток с пайчартом
+       и компактной легендой внутри каждой. */
+    .dash-multi { margin: 6px 0 24px; }
+    .dash-multi__h {
+      font-size: 14px; font-weight: 700; color: #444; margin-bottom: 10px;
+    }
+    .dash-multi__grid {
+      display: grid; gap: 14px;
+      grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    }
+    .dash-tile {
+      border: 1px solid rgba(0,0,0,.1); border-radius: 8px; padding: 10px 12px;
+      background: #fcfcfc; min-width: 0;
+    }
+    .dash-tile__h {
+      font-size: 13px; font-weight: 700; color: #333; margin-bottom: 2px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .dash-tile__sub { font-size: 11px; color: #888; margin-bottom: 8px; }
+    .dash-tile__pie { display: block; margin: 0 auto 8px; }
+    .dash-tile__pie path, .dash-tile__pie circle {
+      stroke: #fff; stroke-width: 1;
+    }
+    .dash-tile .dash-legend { gap: 4px; }
+    .dash-tile .dash-legend__row { font-size: 11px; }
+
+    .dash-check {
+      display: flex; align-items: center; gap: 7px; height: 38px;
+      font-size: 13px; color: #444; cursor: pointer; line-height: 1.25;
+    }
+    /* Materialize перекрывает нативные checkbox — возвращаем обычный вид. */
+    .dash-check input[type="checkbox"] {
+      position: static; opacity: 1; width: 16px; height: 16px; margin: 0;
+      pointer-events: auto; left: auto; flex: 0 0 auto;
+    }
+
     .dash-tablewrap { overflow-x: auto; }
     .dash-table { border-collapse: collapse; width: 100%; font-size: 13px; }
     .dash-table th, .dash-table td {
@@ -173,6 +209,15 @@
       </div>
 
       <div class="dash-field">
+        <label>Диаграммы</label>
+        <label class="dash-check" for="dash-bysplit">
+          <input type="checkbox" id="dash-bysplit" checked>
+          отдельная диаграмма на каждое значение разреза
+        </label>
+        <span class="dash-hint" id="dash-bysplit-hint"></span>
+      </div>
+
+      <div class="dash-field">
         <label>&nbsp;</label>
         <button class="dash-btn" id="dash-build" type="button" disabled>
           📊 Собрать дашборд
@@ -198,6 +243,8 @@
     var layerEl    = document.getElementById('dash-layer');
     var groupEl    = document.getElementById('dash-group');
     var splitEl    = document.getElementById('dash-split');
+    var bySplitEl  = document.getElementById('dash-bysplit');
+    var bySplitHint = document.getElementById('dash-bysplit-hint');
     var buildEl    = document.getElementById('dash-build');
     var buildHint  = document.getElementById('dash-build-hint');
     var distHint   = document.getElementById('dash-district-hint');
@@ -219,6 +266,10 @@
     /* Секторов больше десятка глазом не различить — хвост сворачиваем
        в «прочие», но в ТАБЛИЦЕ остаются все категории. */
     var MAX_SLICES = 12;
+    /* В малой плитке различимо ещё меньше секторов, а самих плиток
+       (значений разреза) может быть много. */
+    var MAX_SMALL_SLICES = 8;
+    var MAX_SMALL_CHARTS = 24;
 
     var nf1 = new Intl.NumberFormat('ru-RU',
       { minimumFractionDigits: 1, maximumFractionDigits: 1 });
@@ -268,6 +319,7 @@
       if (layerEl.value) p.set('layer', layerEl.value);
       if (groupEl.value) p.set('group', groupEl.value);
       if (splitEl.value) p.set('split', splitEl.value);
+      if (!bySplitEl.checked) p.set('bysplit', '0');
       var qs = p.toString();
       history.replaceState(null, '', qs ? ('?' + qs) : location.pathname);
     }
@@ -278,6 +330,10 @@
     }
 
     function currentLayer() { return layersById[layerEl.value] || null; }
+
+    /* Последний ответ сводки: переключение вида диаграмм перерисовывает
+       уже посчитанные данные, без повторного (дорогого) запроса. */
+    var lastResp = null;
 
     /* Человеческое имя атрибута из meta слоя (db-имя — техническое). */
     function fieldLabel(db) {
@@ -331,23 +387,34 @@
       var ok = !!(layerEl.value && groupEl.value);
       buildEl.disabled = !ok;
       buildHint.textContent = ok ? '' : 'нужны слой и поле группировки';
+      bySplitEl.disabled = !splitEl.value;
+      bySplitHint.textContent = splitEl.value ? '' : 'нужен разрез';
     }
 
-    /* ── Пайчарт: инлайновый SVG, без внешних библиотек ── */
-    function pieSvg(slices) {
-      var cx = 120, cy = 120, r = 110;
+    /* ── Пайчарт: инлайновый SVG, без внешних библиотек ──
+       Доли внутри чарта нормируются на их сумму: у малых плиток хвост
+       категорий может быть срезан, и без нормировки круг не сомкнётся. */
+    function pieSvg(slices, opts) {
+      opts = opts || {};
+      var cls = opts.cls || 'dash-pie';
+      var size = opts.size || 240;
+      var cx = size / 2, cy = size / 2, r = size / 2 - 5;
+      var open = '<svg class="' + cls + '" viewBox="0 0 ' + size + ' ' + size +
+        '" width="' + size + '" height="' + size + '" role="img">';
       var drawable = slices.filter(function (s) { return s.share > 0; });
       if (!drawable.length) return '';
+      var sum = drawable.reduce(function (a, s) { return a + s.share; }, 0) || 1;
       if (drawable.length === 1) {
-        return '<svg class="dash-pie" viewBox="0 0 240 240" role="img">' +
+        return open +
           '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="' +
           drawable[0].color + '"><title>' + esc(drawable[0].label) +
-          ' — 100%</title></circle></svg>';
+          ' — ' + fmtPct(drawable[0].share) + '</title></circle></svg>';
       }
       var a0 = -Math.PI / 2, parts = '';
       drawable.forEach(function (s) {
-        var a1 = a0 + 2 * Math.PI * s.share;
-        var large = s.share > 0.5 ? 1 : 0;
+        var frac = s.share / sum;
+        var a1 = a0 + 2 * Math.PI * frac;
+        var large = frac > 0.5 ? 1 : 0;
         var x0 = (cx + r * Math.cos(a0)).toFixed(2);
         var y0 = (cy + r * Math.sin(a0)).toFixed(2);
         var x1 = (cx + r * Math.cos(a1)).toFixed(2);
@@ -358,8 +425,7 @@
           fmtPct(s.share) + '</title></path>';
         a0 = a1;
       });
-      return '<svg class="dash-pie" viewBox="0 0 240 240" role="img">' +
-        parts + '</svg>';
+      return open + parts + '</svg>';
     }
 
     function buildSlices(rows, polygonal) {
@@ -397,6 +463,75 @@
       }).join('') + '</div>';
     }
 
+    /* ── Малые диаграммы: по одной на каждое значение разреза ──
+       Сектора — те же категории группировки, но доли считаются ВНУТРИ
+       значения разреза (сумма по плитке = 100%). Цвет категории берётся
+       по её позиции в общей сводке, поэтому совпадает с большим чартом
+       и со строкой таблицы. Данные уже есть в ответе (row.splits) —
+       дополнительных запросов к серверу не требуется. */
+    function rowColor(i) {
+      return i < MAX_SLICES ? PALETTE[i % PALETTE.length] : OTHER_COLOR;
+    }
+
+    function splitSlices(rows, polygonal, key) {
+      var items = [];
+      rows.forEach(function (row, i) {
+        var cell = (row.splits || {})[key];
+        if (!cell) return;
+        var measure = polygonal ? cell.area_ha : cell.count;
+        if (!(measure > 0)) return;
+        items.push({
+          label: catLabel(row.value), measure: measure, color: rowColor(i),
+        });
+      });
+      items.sort(function (a, b) { return b.measure - a.measure; });
+      var total = items.reduce(function (a, s) { return a + s.measure; }, 0);
+      var head = items.slice(0, MAX_SMALL_SLICES);
+      var tail = items.slice(MAX_SMALL_SLICES);
+      if (tail.length) {
+        head.push({
+          label: 'прочие (' + tail.length + ')', color: OTHER_COLOR,
+          measure: tail.reduce(function (a, s) { return a + s.measure; }, 0),
+        });
+      }
+      head.forEach(function (s) { s.share = total ? (s.measure / total) : 0; });
+      return { slices: head, total: total, categories: items.length };
+    }
+
+    function tileHtml(s, sp) {
+      var polygonal = s.polygonal;
+      var data = splitSlices(s.rows, polygonal, splitKey(sp.value));
+      var sub = [polygonal ? (fmtHa(sp.area_ha) + ' га')
+                           : (fmtInt(sp.count) + ' об.')];
+      if (polygonal) sub.push(fmtInt(sp.count) + ' об.');
+      sub.push('категорий: ' + fmtInt(data.categories));
+      var inner = data.slices.length
+        ? (pieSvg(data.slices, { cls: 'dash-tile__pie', size: 150 }) +
+           legendHtml(data.slices, polygonal))
+        : '<div class="dash-empty">нет объектов</div>';
+      return '<div class="dash-tile">' +
+        '<div class="dash-tile__h">' + catHtml(sp.value) + '</div>' +
+        '<div class="dash-tile__sub">' + esc(sub.join(' · ')) + '</div>' +
+        inner + '</div>';
+    }
+
+    function multiHtml(s) {
+      var splits = s.splits || [];
+      if (!s.split || !splits.length) return '';
+      var shown = splits.slice(0, MAX_SMALL_CHARTS);
+      var head = '<div class="dash-multi__h">«' + esc(fieldLabel(s.group)) +
+        '» по каждому значению разреза «' + esc(fieldLabel(s.split)) +
+        '» (' + fmtInt(shown.length) + ')</div>';
+      var note = splits.length > shown.length
+        ? ('<div class="dash-note">Значений разреза ' + fmtInt(splits.length) +
+           ' — показаны первые ' + fmtInt(shown.length) + '.</div>')
+        : '';
+      return '<div class="dash-multi">' + head + note +
+        '<div class="dash-multi__grid">' +
+        shown.map(function (sp) { return tileHtml(s, sp); }).join('') +
+        '</div></div>';
+    }
+
     /* ── Таблица итогов: все категории + колонки разреза ── */
     function tableHtml(s) {
       var polygonal = s.polygonal;
@@ -410,9 +545,8 @@
       head += '</tr>';
 
       var body = s.rows.map(function (row, i) {
-        var color = i < MAX_SLICES ? PALETTE[i % PALETTE.length] : OTHER_COLOR;
         var tr = '<tr><td><span class="dash-table__sw" style="background:' +
-          color + '"></span>' + catHtml(row.value) + '</td>';
+          rowColor(i) + '"></span>' + catHtml(row.value) + '</td>';
         if (polygonal) tr += '<td>' + fmtHa(row.area_ha) + '</td>';
         tr += '<td>' + fmtPct(row.share) + '</td>';
         tr += '<td>' + fmtInt(row.count) + '</td>';
@@ -479,6 +613,7 @@
       var slices = buildSlices(rows, s.polygonal);
       parts.push('<div class="dash-chart">' + pieSvg(slices) +
         legendHtml(slices, s.polygonal) + '</div>');
+      if (s.split && bySplitEl.checked) parts.push(multiHtml(s));
       parts.push(tableHtml(s));
       bodyEl.innerHTML = parts.join('');
     }
@@ -503,6 +638,7 @@
               esc((j && j.detail) || 'Не удалось построить сводку.') + '</div>';
             return;
           }
+          lastResp = j;
           renderDashboard(j);
         })
         .catch(function () {
@@ -599,11 +735,16 @@
       syncUrl();
       updateBuildState();
     });
+    bySplitEl.addEventListener('change', function () {
+      syncUrl();
+      if (lastResp) renderDashboard(lastResp);
+    });
     buildEl.addEventListener('click', buildDashboard);
 
     /* Стартовое состояние из query-string. */
     var q = new URLSearchParams(location.search);
     if (q.get('region')) regionEl.value = q.get('region');
+    if (q.get('bysplit') === '0') bySplitEl.checked = false;
     Promise.all([
       loadDistricts(q.get('district')),
       loadLayers(q.get('layer')),
