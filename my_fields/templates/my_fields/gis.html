@@ -1088,11 +1088,16 @@
     <button class="gis-collapse-btn" id="gis-collapse-right" type="button" title="Свернуть/развернуть атрибуты">›</button>
 
     <aside class="gis-ui__right" id="gis-right">
-      <nav class="gis-rmenu" aria-label="Разделы">
+      {% comment %}
+        Именно <div role="navigation">, а НЕ <nav>: Materialize стилизует голый
+        тег nav как шапку сайта (background #ee6e73 — красная плашка, height и
+        line-height 56px), из-за чего меню разделов ломалось.
+      {% endcomment %}
+      <div class="gis-rmenu" role="navigation" aria-label="Разделы">
         <a class="gis-rmenu__btn" id="gis-dashboards-link"
            href="{% url 'my_fields:ui_gis_dashboards' %}"
            title="Дашборды: сводки по слоям в разрезе региона и района">📊 Дашборды</a>
-      </nav>
+      </div>
       <h2 class="gis-h2">ℹ Объект</h2>
       <div id="gis-info">
         <div class="gis-info-empty">

@@ -50,6 +50,7 @@ urlpatterns = [
     path('me/gis/api/layers/<int:pk>/export/', api.gis_layer_export, name='api_gis_layer_export'),
     path('me/gis/api/layers/<int:pk>/field-stats/', api.gis_layer_field_stats, name='api_gis_layer_field_stats'),
     path('me/gis/api/layers/<int:pk>/field-values/', api.gis_layer_field_values, name='api_gis_layer_field_values'),
+    path('me/gis/api/layers/<int:pk>/summary/', api.gis_layer_summary, name='api_gis_layer_summary'),
     path('me/gis/api/layers/<int:pk>/features/<int:fid>/',
          api.gis_layer_feature_detail, name='api_gis_layer_feature_detail'),
     path('me/gis/api/layers/<int:pk>/tiles/<int:z>/<int:x>/<int:y>.pbf',

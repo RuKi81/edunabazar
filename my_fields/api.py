@@ -1573,6 +1573,52 @@ def gis_layer_field_values(request: HttpRequest, pk: int) -> JsonResponse:
     return JsonResponse({'ok': True, **info})
 
 
+@require_http_methods(['GET'])
+def gis_layer_summary(request: HttpRequest, pk: int) -> JsonResponse:
+    """GET — сводка слоя по атрибуту: объекты + итоговые площади (дашборды).
+
+    Параметры: ``group`` (обязателен, db-имя атрибута), ``split`` (второе
+    измерение, опц.), ``district`` (``agro_district.id`` — оставить объекты,
+    пересекающие район). Уровень доступа ``view``.
+
+    Считает :func:`my_fields.services.layer_summary.summary_by_field`;
+    некорректное поле или слишком большой слой → 400 с текстом для UI.
+    """
+    gate = _require_gis_access(request, level='view', pk=pk)
+    if gate:
+        return gate
+    layer = get_object_or_404(GisLayer, pk=pk)
+
+    group = (request.GET.get('group') or '').strip()
+    if not group:
+        return JsonResponse(
+            {'ok': False, 'error': 'no_group',
+             'detail': 'Укажите поле группировки (group).'},
+            status=400,
+        )
+    split = (request.GET.get('split') or '').strip() or None
+    try:
+        district_id = int(request.GET.get('district') or 0) or None
+    except (TypeError, ValueError):
+        district_id = None
+
+    from .services.layer_summary import LayerSummaryError, summary_by_field
+    try:
+        data = summary_by_field(
+            layer, group, split=split, district_id=district_id)
+    except LayerSummaryError as exc:
+        return JsonResponse(
+            {'ok': False, 'error': 'bad_summary', 'detail': str(exc)},
+            status=400,
+        )
+    return JsonResponse({
+        'ok': True,
+        'layer': {'id': layer.pk, 'title': layer.title,
+                  'geom_kind': layer.geom_kind},
+        'summary': data,
+    })
+
+
 @csrf_exempt
 @require_http_methods(['POST'])
 def gis_layer_query(request: HttpRequest, pk: int) -> JsonResponse:
