@@ -656,33 +656,48 @@
     .gis-ui.attrtable-open .gis-toolbar { bottom: calc(var(--gis-attrtable-h) + 12px); }
     .gis-ui.attrtable-open .gis-massbar { bottom: calc(var(--gis-attrtable-h) + 60px); }
 
+    /* Шапка таблицы: ЕДИНЫЙ кегль 9pt на всё содержимое — все подписи,
+       кнопки, поля и чекбоксы наследуют его (разнобой 11/12/13px убран). */
     .gis-attrtable__head {
-      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-      padding: 8px 12px; border-bottom: 1px solid #eee; background: #fafafa;
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      padding: 6px 10px; border-bottom: 1px solid #eee; background: #fafafa;
+      font-size: 9pt; line-height: 1.2;
+    }
+    .gis-attrtable__head button,
+    .gis-attrtable__head input,
+    .gis-attrtable__head select,
+    .gis-attrtable__head label,
+    .gis-attrtable__head span { font-size: inherit; font-family: inherit; }
+    /* Вертикальный разделитель смысловых групп кнопок в шапке. */
+    .gis-attrtable__sep {
+      width: 1px; align-self: stretch; margin: 0 2px;
+      background: rgba(0,0,0,.12);
     }
     /* Подпись активного слоя (в одну строку) вместо вкладок. */
     .gis-attrtable__title {
-      font-size: 13px; font-weight: 700; color: #2e7d32;
+      font-weight: 700; color: #2e7d32;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       max-width: 340px;
     }
-    .gis-attrtable__count { font-size: 12px; color: #777; white-space: nowrap; }
+    .gis-attrtable__count { color: #777; white-space: nowrap; }
     .gis-attrtable__search {
-      width: 180px; padding: 5px 8px; border: 1px solid rgba(0,0,0,.18);
-      border-radius: 6px; font-size: 12px; background: #fff;
+      width: 170px; padding: 4px 8px; border: 1px solid rgba(0,0,0,.18);
+      border-radius: 6px; background: #fff;
     }
     .gis-attrtable__filter {
-      padding: 5px 6px; border: 1px solid rgba(0,0,0,.18);
-      border-radius: 6px; font-size: 12px; background: #fff; color: #444;
+      padding: 4px 6px; border: 1px solid rgba(0,0,0,.18);
+      border-radius: 6px; background: #fff; color: #444;
     }
-    .gis-attrtable__edithint { font-size: 11px; color: #2e7d32; font-weight: 600; }
+    .gis-attrtable__edithint { color: #2e7d32; font-weight: 600; white-space: nowrap; }
     .gis-attrtable__spacer { flex: 1; }
-    /* Чекбокс «показать только выбранные» — подпись в общем стиле шапки. */
+    /* Чекбоксы шапки («выбрать все», «только выбранные») — чипы одного вида. */
     .gis-attrtable__onlysel {
       display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
-      font-family: inherit; font-size: 11px; font-weight: 400; color: #777;
-      cursor: pointer; user-select: none;
+      font-weight: 400; color: #666; cursor: pointer; user-select: none;
+      border: 1px solid rgba(0,0,0,.12); border-radius: 6px;
+      padding: 4px 8px; background: #fff;
     }
+    .gis-attrtable__onlysel:hover { background: #f0f0f0; }
     .gis-attrtable__onlysel input {
       width: 15px !important; height: 15px !important; min-width: 15px !important;
       min-height: 15px !important; opacity: 1 !important; position: static !important;
@@ -690,7 +705,10 @@
       display: inline-block !important; appearance: auto !important;
       -webkit-appearance: checkbox !important;
     }
-    .gis-attrtable__onlysel.active { color: #2e7d32; font-weight: 600; }
+    .gis-attrtable__onlysel.active {
+      color: #2e7d32; font-weight: 600;
+      background: #c8e6c9; border-color: #a5d6a7;
+    }
     /* Лупа-переключатель поиска (в левом верхнем углу шапки). */
     .gis-attrtable__searchtoggle { padding: 5px 8px; }
     .gis-attrtable__searchtoggle.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
@@ -699,6 +717,23 @@
     .gis-attrtable__filtertoggle.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
     /* Кнопки «Добавить / удалить столбцы» (только для загруженных SHP-слоёв). */
     .gis-attrtable__addcol { padding: 5px 8px; white-space: nowrap; }
+    /* Панели фильтра и заполнения — тот же кегль, что и шапка. */
+    .gis-attrtable__filterpanel { font-size: 9pt; }
+    .gis-attrtable__filterpanel button,
+    .gis-attrtable__filterpanel input,
+    .gis-attrtable__filterpanel select,
+    .gis-attrtable__filterpanel label,
+    .gis-attrtable__filterpanel span,
+    .gis-attrtable__filterpanel div { font-size: inherit; font-family: inherit; }
+    /* Materialize прячет нативные чекбоксы (opacity:0, position:absolute) —
+       возвращаем их в панелях, иначе подпись висит без квадратика. */
+    .gis-attrtable__filterpanel input[type=checkbox] {
+      width: 15px !important; height: 15px !important; min-width: 15px !important;
+      min-height: 15px !important; opacity: 1 !important; position: static !important;
+      pointer-events: auto !important; margin: 0 !important; cursor: pointer;
+      display: inline-block !important; appearance: auto !important;
+      -webkit-appearance: checkbox !important;
+    }
     /* Кнопка «Заполнить атрибут» (массовое заполнение). */
     .gis-attrtable__filltoggle { padding: 5px 8px; white-space: nowrap; }
     .gis-attrtable__filltoggle.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
@@ -708,19 +743,20 @@
       max-height: 40%; overflow-y: auto;
     }
     .gis-fp__head, .gis-fp__foot { display: flex; align-items: center; gap: 8px; }
-    .gis-fp__match { font-size: 12px; color: #555; display: inline-flex; align-items: center; gap: 6px; }
+    .gis-fp__match { color: #555; display: inline-flex; align-items: center; gap: 6px; }
     .gis-fp__spacer { flex: 1; }
     .gis-fp__rules { display: flex; flex-direction: column; gap: 6px; }
     .gis-fp__rule { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
     .gis-fp__rule select, .gis-fp__rule input {
-      height: 30px; padding: 3px 8px; box-sizing: border-box; border: 1px solid #ccc;
-      border-radius: 5px; font-size: 12px; background: #fff;
+      height: 28px; padding: 3px 8px; box-sizing: border-box; border: 1px solid #ccc;
+      border-radius: 5px; background: #fff;
     }
+    .gis-fp__rule input[type=checkbox] { height: auto; }
     .gis-fp__rule .gis-fp__field { min-width: 120px; }
     .gis-fp__rule .gis-fp__op { min-width: 130px; }
     .gis-fp__rule .gis-fp__val { min-width: 120px; flex: 0 1 220px; }
-    /* Блок кнопок фильтра: переносится JS в строку последнего условия и
-       прижимается вправо (margin-left:auto). Без условий — обычный блок. */
+    /* Блок кнопок: в конструкторе выборки живёт в постоянной нижней строке,
+       в панели заполнения — внутри строки, прижат вправо (margin-left:auto). */
     .gis-fp__actions { display: inline-flex; align-items: center; gap: 8px; }
     .gis-fp__rule .gis-fp__actions { margin-left: auto; }
     .gis-fp__rule .gis-fp__del {
@@ -730,7 +766,7 @@
     .gis-fp__rule .gis-fp__del:hover { background: #ffebee; }
     .gis-fp__btn {
       border: 1px solid rgba(0,0,0,.18); background: #fff; border-radius: 5px;
-      padding: 5px 12px; cursor: pointer; font-size: 12px; font-weight: 600; color: #444;
+      padding: 5px 12px; cursor: pointer; font-weight: 600; color: #444;
     }
     .gis-fp__btn:hover { background: #f0f0f0; }
     .gis-fp__btn--primary { background: #2e7d32; color: #fff; border-color: #2e7d32; }
@@ -800,7 +836,7 @@
     .gis-attrtable td.dirty { box-shadow: inset 3px 0 0 0 #fb8c00; }
     .gis-attrtable__btn {
       border: 1px solid rgba(0,0,0,.12); background: #fff; cursor: pointer;
-      padding: 5px 10px; border-radius: 6px; font-size: 12px; color: #555;
+      padding: 5px 10px; border-radius: 6px; color: #555;
     }
     .gis-attrtable__btn:hover { background: #f0f0f0; }
     .gis-attrtable__x {
@@ -1284,7 +1320,8 @@
         <button type="button" class="gis-attrtable__btn gis-attrtable__addcol" id="gis-attrtable-delcol"
                 title="Удалить атрибутивные столбцы" hidden>➖ столбцы</button>
         <button type="button" class="gis-attrtable__btn gis-attrtable__filltoggle" id="gis-attrtable-fill-toggle"
-                title="Массовое заполнение атрибута" hidden>✎ Заполнить атрибут</button>
+                title="Массовое заполнение атрибута одним значением" hidden>✎ Заполнить</button>
+        <span class="gis-attrtable__sep"></span>
         <span class="gis-attrtable__title" id="gis-attrtable-title">ЗСН (Росреестр)</span>
         <span class="gis-attrtable__count" id="gis-attrtable-count"></span>
         <select class="gis-attrtable__filter browser-default" id="gis-attrtable-filter" title="Фильтр по использованию">
@@ -1293,20 +1330,22 @@
           <option value="0">Не используется</option>
           <option value="-1">Неизвестно</option>
         </select>
-        <span class="gis-attrtable__edithint" id="gis-attrtable-edithint">✎ кликните ячейку с подсветкой — правка идёт в очередь (💾 сохранить, ↶ отменить)</span>
+        <span class="gis-attrtable__edithint" id="gis-attrtable-edithint" style="display:none"
+              title="Кликните ячейку с подсветкой — правка идёт в очередь (💾 сохранить, ↶ отменить)">✎ режим правки</span>
         <span class="gis-attrtable__spacer"></span>
         <label class="gis-attrtable__onlysel" id="gis-attrtable-selall-lbl"
                title="Выделить все объекты слоя (все страницы, без учёта фильтра/поиска)">
-          <input type="checkbox" id="gis-attrtable-selall"> выделить все объекты
+          <input type="checkbox" id="gis-attrtable-selall"> выбрать все
         </label>
         <label class="gis-attrtable__onlysel" id="gis-attrtable-selallf-lbl"
                title="Выделить все объекты, удовлетворяющие текущему фильтру/поиску (все страницы)">
-          <input type="checkbox" id="gis-attrtable-selallf"> выделить все отфильтрованные
+          <input type="checkbox" id="gis-attrtable-selallf"> выбрать по фильтру
         </label>
         <label class="gis-attrtable__onlysel" id="gis-attrtable-onlysel-lbl"
                title="Показать на карте и в таблице только выбранные объекты">
-          <input type="checkbox" id="gis-attrtable-onlysel"> показать только выбранные
+          <input type="checkbox" id="gis-attrtable-onlysel"> только выбранные
         </label>
+        <span class="gis-attrtable__sep"></span>
         <button type="button" class="gis-attrtable__btn" id="gis-attrtable-refresh"
                 title="Обновить объекты из видимой области">⟳ Обновить</button>
         <button type="button" class="gis-attrtable__x" id="gis-attrtable-close" title="Закрыть таблицу">✕</button>
@@ -1319,17 +1358,19 @@
               <option value="any">любое условие (ИЛИ)</option>
             </select>
           </span>
-          <span class="gis-fp__spacer"></span>
-          <button type="button" class="gis-fp__btn" id="gis-fp-add">+ условие</button>
         </div>
         <div class="gis-fp__rules" id="gis-fp-rules"></div>
-        <!-- Блок кнопок JS переносит вправо в строку последнего условия
-             (fpPlaceActions). Если условий нет — остаётся здесь. -->
-        <span class="gis-fp__actions" id="gis-fp-actions">
-          <button type="button" class="gis-fp__btn gis-fp__btn--primary" id="gis-fp-apply">Применить</button>
-          <button type="button" class="gis-fp__btn" id="gis-fp-reset">Сбросить</button>
-          <button type="button" class="gis-fp__btn" id="gis-fp-save">Сохранить как слой…</button>
-        </span>
+        <!-- Все действия конструктора — в ОДНОЙ нижней строке:
+             слева добавление условия, справа применение/сброс/сохранение. -->
+        <div class="gis-fp__foot">
+          <button type="button" class="gis-fp__btn" id="gis-fp-add">+ условие</button>
+          <span class="gis-fp__spacer"></span>
+          <span class="gis-fp__actions" id="gis-fp-actions">
+            <button type="button" class="gis-fp__btn gis-fp__btn--primary" id="gis-fp-apply">Применить</button>
+            <button type="button" class="gis-fp__btn" id="gis-fp-reset">Сбросить</button>
+            <button type="button" class="gis-fp__btn" id="gis-fp-save">Сохранить как слой…</button>
+          </span>
+        </div>
       </div>
       <!-- Массовое заполнение атрибута: столбец + одно значение + область
            применения (весь слой / текущая выборка / выбранные объекты). -->
@@ -1338,19 +1379,19 @@
           <span class="gis-fp__match">Столбец:
             <select class="browser-default gis-fp__field" id="gis-fill-field"></select>
           </span>
-          <span class="gis-fp__match">Значение:
+          <span class="gis-fp__match">значение:
             <input class="gis-fp__val" type="text" id="gis-fill-value" placeholder="значение" step="any">
           </span>
-          <label class="gis-fp__match" title="Не трогать объекты, у которых значение уже есть">
-            <input type="checkbox" id="gis-fill-only-empty"> только пустые
-          </label>
-          <span class="gis-fp__match">Куда:
+          <span class="gis-fp__match">где:
             <select class="browser-default" id="gis-fill-scope">
               <option value="filter">текущая выборка (фильтр + поиск)</option>
               <option value="selected">выбранные объекты</option>
               <option value="all">весь слой</option>
             </select>
           </span>
+          <label class="gis-fp__match" title="Не трогать объекты, у которых значение уже есть">
+            <input type="checkbox" id="gis-fill-only-empty"> только пустые
+          </label>
           <span class="gis-fp__actions">
             <button type="button" class="gis-fp__btn gis-fp__btn--primary" id="gis-fill-apply">Заполнить</button>
             <button type="button" class="gis-fp__btn" id="gis-fill-clear"
@@ -5532,7 +5573,6 @@
       var fillPanel = document.getElementById('gis-attrtable-fillpanel');
       var fpPanel  = document.getElementById('gis-attrtable-filterpanel');
       var fpRules  = document.getElementById('gis-fp-rules');
-      var fpActions = document.getElementById('gis-fp-actions');
       var fpMatch  = document.getElementById('gis-fp-match');
       var editHint = document.getElementById('gis-attrtable-edithint');
       var titleEl  = document.getElementById('gis-attrtable-title');
@@ -5957,6 +5997,11 @@
         }
         if (refreshBtn) refreshBtn.style.display = (state.layer === 'farmlands' || dynLayers[state.layer]) ? '' : 'none';
         if (filterEl) filterEl.style.display = state.layer === 'farmlands' ? '' : 'none';
+        /* Подсказка про правку — только когда у слоя есть редактируемые
+           ячейки, иначе она просто занимала место в шапке. */
+        if (editHint) {
+          editHint.style.display = (cols || []).some(function (c) { return !!c.edit; }) ? '' : 'none';
+        }
         /* Чекбокс «показать только выбранные» — для слоёв с мультивыбором. */
         if (onlySelLbl) onlySelLbl.style.display = canMultiSelect() ? '' : 'none';
         if (onlySelEl) onlySelEl.checked = state.onlySelected;
@@ -7350,7 +7395,6 @@
         oEl.addEventListener('change', syncVal);
         row.querySelector('.gis-fp__del').addEventListener('click', function () {
           row.remove();
-          fpPlaceActions();
         });
         if (preset) {
           if (preset.field) fEl.value = preset.field;
@@ -7358,23 +7402,6 @@
         }
         syncVal();
         if (preset && preset.value != null) fpSetVal(vWrap, oEl.value, preset.value);
-        fpPlaceActions();
-      }
-
-      /* Перенести блок кнопок «Применить / Сбросить / Сохранить как слой» вправо
-         в строку последнего условия (по просьбе — экономия вертикали). Если
-         условий нет — блок остаётся в панели под списком правил. */
-      function fpPlaceActions() {
-        if (!fpActions || !fpRules) return;
-        var rows = fpRules.querySelectorAll('.gis-fp__rule');
-        if (!rows.length) {
-          if (fpActions.parentNode !== fpPanel) fpPanel.appendChild(fpActions);
-          return;
-        }
-        var last = rows[rows.length - 1];
-        var del = last.querySelector('.gis-fp__del');
-        if (del) last.insertBefore(fpActions, del);
-        else last.appendChild(fpActions);
       }
       /* Собрать filter_spec из UI → {spec} либо {error}. */
       function fpBuildSpec() {
@@ -7422,7 +7449,7 @@
         if (fpRules && !fpRules.querySelector('.gis-fp__rule')) fpAddRule();
       }
       function fpClosePanel() { if (fpPanel) fpPanel.hidden = true; }
-      function fpResetUI() { if (fpRules) fpRules.innerHTML = ''; fpPlaceActions(); }
+      function fpResetUI() { if (fpRules) fpRules.innerHTML = ''; }
 
       if (fpToggle) fpToggle.addEventListener('click', function () {
         if (!fpAvailable()) return;
