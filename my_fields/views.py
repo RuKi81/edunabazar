@@ -127,3 +127,25 @@ def gis_page(request: HttpRequest) -> HttpResponse:
     return render(request, 'my_fields/gis.html', {
         'active_section': 'gis',
     })
+
+
+@login_required(login_url='/login/')
+def gis_dashboards_page(request: HttpRequest) -> HttpResponse:
+    """Страница «Дашборды» — сводки по региону/району в разрезе ГИС-слоя.
+
+    Доступ тот же, что у ``/me/gis`` (``can_open_gis_page``), и так же
+    404 вместо 403, чтобы раздел не «светился» посторонним.
+
+    Справочник регионов рендерим на сервере: он маленький и статичный,
+    а лишний AJAX на старте страницы ничего не даёт. Районы (зависят от
+    выбранного региона) и список слоёв подгружает JS — районов много, а
+    слои надо отфильтровать по грантам пользователя.
+    """
+    from access.services import can_open_gis_page
+    if not can_open_gis_page(getattr(request, 'legacy_user', None)):
+        raise Http404
+    from agrocosmos.models import Region
+    return render(request, 'my_fields/dashboards.html', {
+        'active_section': 'gis',
+        'regions': Region.objects.only('id', 'name').order_by('name'),
+    })

@@ -67,6 +67,20 @@
       font-size: 15px; font-weight: 700; margin: 0 0 12px 0;
       display: flex; align-items: center; gap: 6px;
     }
+    /* Меню разделов в шапке правого сайдбара (переходы на отдельные
+       страницы: дашборды и т.п.). */
+    .gis-rmenu {
+      display: flex; flex-wrap: wrap; gap: 6px;
+      margin: 0 0 12px 0; padding-bottom: 12px;
+      border-bottom: 1px solid rgba(0,0,0,.08);
+    }
+    .gis-rmenu__btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 10px; border: 1px solid rgba(0,0,0,.14); border-radius: 6px;
+      background: #fff; color: #555; font-size: 12px; font-weight: 600;
+      text-decoration: none; cursor: pointer; white-space: nowrap;
+    }
+    .gis-rmenu__btn:hover { background: #c8e6c9; border-color: #a5d6a7; color: #2e7d32; }
     /* Компактный мастер-переключатель видимости над списком слоёв
        (без текстовой плашки — только иконка-глаз). */
     .gis-layers-bar {
@@ -1074,6 +1088,11 @@
     <button class="gis-collapse-btn" id="gis-collapse-right" type="button" title="Свернуть/развернуть атрибуты">›</button>
 
     <aside class="gis-ui__right" id="gis-right">
+      <nav class="gis-rmenu" aria-label="Разделы">
+        <a class="gis-rmenu__btn" id="gis-dashboards-link"
+           href="{% url 'my_fields:ui_gis_dashboards' %}"
+           title="Дашборды: сводки по слоям в разрезе региона и района">📊 Дашборды</a>
+      </nav>
       <h2 class="gis-h2">ℹ Объект</h2>
       <div id="gis-info">
         <div class="gis-info-empty">

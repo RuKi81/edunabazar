@@ -999,6 +999,38 @@ def _gis_layers_list(request: HttpRequest) -> JsonResponse:
     })
 
 
+@require_http_methods(['GET'])
+def gis_districts(request: HttpRequest) -> JsonResponse:
+    """GET ``?region=<id>`` — справочник районов региона для ``<select>``.
+
+    Только ``id`` и ``name``, без геометрии: GeoJSON-эндпоинт
+    ``agrocosmos:api_districts`` отдаёт упрощённые полигоны и для
+    выпадающего списка неоправданно тяжёл.
+
+    Гейт — ``view`` на ГИС-слои: справочник нужен странице «Дашборды»,
+    которая открыта тем же, кому открыта ``/me/gis``. Без ``region``
+    (или с мусорным значением) возвращается пустой список, а не 400 —
+    селект просто остаётся пустым.
+    """
+    gate = _require_gis_access(request, level='view')
+    if gate:
+        return gate
+
+    try:
+        region_id = int(request.GET.get('region') or 0)
+    except (TypeError, ValueError):
+        region_id = 0
+    if region_id <= 0:
+        return JsonResponse({'ok': True, 'results': []})
+
+    from agrocosmos.models import District
+    rows = (District.objects
+            .filter(region_id=region_id)
+            .order_by('name')
+            .values('id', 'name'))
+    return JsonResponse({'ok': True, 'results': list(rows)})
+
+
 def _gis_layers_upload(request: HttpRequest) -> JsonResponse:
     """POST — создание слоёв из ZIP (multipart). Нужен whole-class 'manage'."""
     gate = _require_gis_access(request, level='manage')

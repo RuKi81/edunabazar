@@ -1,0 +1,244 @@
+{% extends 'legacy/base.html' %}
+
+{% block title %}Дашборды — Эдунабазар{% endblock %}
+{% block meta_description %}Сводки по ГИС-слоям в разрезе региона и района.{% endblock %}
+
+{% block head %}
+  <style>
+    .dash-wrap { max-width: 1100px; margin: 0 auto; padding: 16px 12px 40px; }
+    .dash-head {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+    .dash-head h1 {
+      margin: 0; font-size: 22px; font-weight: 700; color: #2e7d32;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .dash-back {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 32px; height: 32px; border-radius: 6px; text-decoration: none;
+      border: 1px solid rgba(0,0,0,.14); color: #555; font-size: 17px;
+      background: #fff;
+    }
+    .dash-back:hover { background: #f0f0f0; color: #2e7d32; }
+
+    /* Панель выбора: три селекта в одну строку, на узких экранах — в столбец. */
+    .dash-filters {
+      display: grid; gap: 12px; align-items: end;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      background: #fff; border: 1px solid rgba(0,0,0,.1); border-radius: 10px;
+      padding: 14px 16px; box-shadow: 0 1px 4px rgba(0,0,0,.05);
+    }
+    @media (max-width: 800px) { .dash-filters { grid-template-columns: 1fr; } }
+    .dash-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+    .dash-field label {
+      font-size: 12px; font-weight: 600; color: #666; text-transform: uppercase;
+      letter-spacing: .02em;
+    }
+    /* Materialize глобально прячет нативные <select> (display:none) и
+       подменяет их своими дропдаунами — класс browser-default это
+       отключает, но высоту/отступы всё равно задаём сами. */
+    .dash-field select.browser-default {
+      display: block; width: 100%; box-sizing: border-box; height: 38px;
+      padding: 6px 10px; border: 1px solid rgba(0,0,0,.2); border-radius: 6px;
+      background: #fff; color: #333; font-size: 14px; margin: 0;
+    }
+    .dash-field select:disabled { background: #f5f5f5; color: #999; }
+    .dash-hint { font-size: 11px; color: #999; min-height: 14px; }
+
+    .dash-body {
+      margin-top: 16px; background: #fff; border: 1px solid rgba(0,0,0,.1);
+      border-radius: 10px; padding: 28px 20px; box-shadow: 0 1px 4px rgba(0,0,0,.05);
+    }
+    .dash-empty {
+      text-align: center; color: #999; font-size: 14px; line-height: 1.6;
+    }
+    .dash-empty__icon { font-size: 40px; display: block; margin-bottom: 8px; }
+    .dash-sel { color: #2e7d32; font-weight: 600; }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <div class="dash-wrap">
+    <div class="dash-head">
+      <a class="dash-back" href="{% url 'my_fields:ui_gis' %}"
+         title="Назад в ГИС" aria-label="Назад в ГИС">←</a>
+      <h1>📊 Дашборды</h1>
+    </div>
+
+    <div class="dash-filters">
+      <div class="dash-field">
+        <label for="dash-region">Регион</label>
+        <select class="browser-default" id="dash-region">
+          <option value="">— не выбран —</option>
+          {% for r in regions %}
+            <option value="{{ r.id }}">{{ r.name }}</option>
+          {% endfor %}
+        </select>
+        <span class="dash-hint"></span>
+      </div>
+
+      <div class="dash-field">
+        <label for="dash-district">Район</label>
+        <select class="browser-default" id="dash-district" disabled>
+          <option value="">— сначала выберите регион —</option>
+        </select>
+        <span class="dash-hint" id="dash-district-hint"></span>
+      </div>
+
+      <div class="dash-field">
+        <label for="dash-layer">Слой</label>
+        <select class="browser-default" id="dash-layer" disabled>
+          <option value="">— загрузка… —</option>
+        </select>
+        <span class="dash-hint" id="dash-layer-hint"></span>
+      </div>
+    </div>
+
+    <div class="dash-body" id="dash-body">
+      <div class="dash-empty" id="dash-empty">
+        <span class="dash-empty__icon">📈</span>
+        Выберите регион, район и слой — здесь появится сводка.
+      </div>
+    </div>
+  </div>
+
+  <script>
+  (function () {
+    'use strict';
+
+    var regionEl   = document.getElementById('dash-region');
+    var districtEl = document.getElementById('dash-district');
+    var layerEl    = document.getElementById('dash-layer');
+    var distHint   = document.getElementById('dash-district-hint');
+    var layerHint  = document.getElementById('dash-layer-hint');
+    var emptyEl    = document.getElementById('dash-empty');
+
+    function jget(url) {
+      return fetch(url, {
+        credentials: 'same-origin',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      }).then(function (r) { return r.json(); });
+    }
+
+    function setOptions(sel, items, placeholder) {
+      var html = '<option value="">' + placeholder + '</option>';
+      items.forEach(function (it) {
+        html += '<option value="' + it.value + '">' + it.label + '</option>';
+      });
+      sel.innerHTML = html;
+    }
+
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    /* Состояние держим в query-string, чтобы ссылку на дашборд можно
+       было переслать/сохранить в закладках и вернуться к тому же срезу. */
+    function syncUrl() {
+      var p = new URLSearchParams();
+      if (regionEl.value) p.set('region', regionEl.value);
+      if (districtEl.value) p.set('district', districtEl.value);
+      if (layerEl.value) p.set('layer', layerEl.value);
+      var qs = p.toString();
+      history.replaceState(null, '', qs ? ('?' + qs) : location.pathname);
+    }
+
+    function selectedText(sel) {
+      var o = sel.options[sel.selectedIndex];
+      return (sel.value && o) ? o.textContent : '';
+    }
+
+    function renderBody() {
+      var region = selectedText(regionEl);
+      var district = selectedText(districtEl);
+      var layer = selectedText(layerEl);
+      if (!region || !layer) {
+        emptyEl.innerHTML = '<span class="dash-empty__icon">📈</span>' +
+          'Выберите регион, район и слой — здесь появится сводка.';
+        return;
+      }
+      emptyEl.innerHTML = '<span class="dash-empty__icon">📈</span>' +
+        'Выбрано: <span class="dash-sel">' + esc(region) + '</span>' +
+        (district ? ' → <span class="dash-sel">' + esc(district) + '</span>' : '') +
+        ' → <span class="dash-sel">' + esc(layer) + '</span><br>' +
+        'Содержимое дашборда появится здесь.';
+    }
+
+    /* ── Районы выбранного региона ── */
+    function loadDistricts(preselect) {
+      var rid = regionEl.value;
+      if (!rid) {
+        districtEl.disabled = true;
+        setOptions(districtEl, [], '— сначала выберите регион —');
+        distHint.textContent = '';
+        return Promise.resolve();
+      }
+      districtEl.disabled = true;
+      setOptions(districtEl, [], '— загрузка… —');
+      distHint.textContent = '';
+      return jget('/me/gis/api/districts/?region=' + encodeURIComponent(rid))
+        .then(function (j) {
+          var items = ((j && j.results) || []).map(function (d) {
+            return { value: d.id, label: esc(d.name) };
+          });
+          setOptions(districtEl, items, '— все районы —');
+          districtEl.disabled = false;
+          if (preselect) districtEl.value = preselect;
+          distHint.textContent = items.length
+            ? ('районов: ' + items.length) : 'районы не найдены';
+        })
+        .catch(function () {
+          setOptions(districtEl, [], '— ошибка загрузки —');
+          distHint.textContent = 'не удалось загрузить районы';
+        });
+    }
+
+    /* ── Слои портала: реестр загруженных SHP-слоёв, отфильтрованный по
+       грантам пользователя. Встроенные «ЗСН (Росреестр)» и «Мои поля»
+       сюда не попадают — они не записи реестра, а статические слои
+       карты, поэтому отдельного исключения не требуется. ── */
+    function loadLayers(preselect) {
+      return jget('/me/gis/api/layers/')
+        .then(function (j) {
+          var rows = (j && j.results) || [];
+          rows.sort(function (a, b) {
+            return (a.sort_order - b.sort_order) ||
+              String(a.title).localeCompare(String(b.title), 'ru');
+          });
+          var items = rows.map(function (l) {
+            return {
+              value: l.id,
+              label: esc(l.title) + ' (' + (l.feature_count || 0) + ')',
+            };
+          });
+          setOptions(layerEl, items, '— не выбран —');
+          layerEl.disabled = !items.length;
+          if (preselect) layerEl.value = preselect;
+          layerHint.textContent = items.length
+            ? ('слоёв: ' + items.length) : 'доступных слоёв нет';
+        })
+        .catch(function () {
+          setOptions(layerEl, [], '— ошибка загрузки —');
+          layerEl.disabled = true;
+          layerHint.textContent = 'не удалось загрузить слои';
+        });
+    }
+
+    regionEl.addEventListener('change', function () {
+      loadDistricts(null).then(function () { syncUrl(); renderBody(); });
+    });
+    districtEl.addEventListener('change', function () { syncUrl(); renderBody(); });
+    layerEl.addEventListener('change', function () { syncUrl(); renderBody(); });
+
+    /* Стартовое состояние из query-string. */
+    var q = new URLSearchParams(location.search);
+    if (q.get('region')) regionEl.value = q.get('region');
+    Promise.all([
+      loadDistricts(q.get('district')),
+      loadLayers(q.get('layer')),
+    ]).then(renderBody);
+  })();
+  </script>
+{% endblock %}
