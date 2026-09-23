@@ -1619,6 +1619,230 @@ def gis_layer_summary(request: HttpRequest, pk: int) -> JsonResponse:
     })
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Сохранённые дашборды (пресеты настроек отчёта) + отправка на email
+# ─────────────────────────────────────────────────────────────────────
+
+def _gis_dashboard_to_dict(item) -> dict:
+    return {
+        'id': item.pk,
+        'name': item.name,
+        'layer': item.layer_id,
+        'layer_title': item.layer.title,
+        'params': item.params or {},
+        'created_at': item.created_at.isoformat(),
+        'updated_at': item.updated_at.isoformat(),
+    }
+
+
+def _dashboard_body(request: HttpRequest):
+    """Разобрать JSON-тело и достать доступный слой. → ``(data, layer, error)``."""
+    try:
+        data = json.loads(request.body or b'{}')
+    except (ValueError, TypeError):
+        return None, None, JsonResponse(
+            {'ok': False, 'error': 'invalid_json'}, status=400)
+    if not isinstance(data, dict):
+        return None, None, JsonResponse(
+            {'ok': False, 'error': 'invalid_json'}, status=400)
+
+    try:
+        layer_id = int(data.get('layer') or 0)
+    except (TypeError, ValueError):
+        layer_id = 0
+    if layer_id <= 0:
+        return None, None, JsonResponse(
+            {'ok': False, 'error': 'no_layer', 'detail': 'Укажите слой.'},
+            status=400)
+
+    # Доступ проверяем к КОНКРЕТНОМУ слою: пресет — это ссылка на его данные.
+    gate = _require_gis_access(request, level='view', pk=layer_id)
+    if gate:
+        return None, None, gate
+    layer = GisLayer.objects.filter(pk=layer_id).first()
+    if layer is None:
+        return None, None, JsonResponse(
+            {'ok': False, 'error': 'layer_not_found'}, status=404)
+    return data, layer, None
+
+
+def _user_dashboards(request: HttpRequest):
+    """Пресеты текущего пользователя по доступным ему слоям."""
+    from access.services import accessible_gis_layer_ids
+    from .models import GisDashboard
+
+    qs = (GisDashboard.objects
+          .filter(owner=request.user)
+          .select_related('layer'))
+    ids = accessible_gis_layer_ids(getattr(request, 'legacy_user', None))
+    if ids is not None:
+        qs = qs.filter(layer_id__in=ids)
+    return qs
+
+
+@csrf_exempt
+@require_http_methods(['GET', 'POST'])
+def gis_dashboards_collection(request: HttpRequest) -> JsonResponse:
+    """GET — свои сохранённые дашборды; POST — сохранить пресет настроек.
+
+    POST body: ``{"name", "layer", "params": {region, district, group,
+    split, bysplit}}``. Пресет с тем же названием у того же пользователя
+    ПЕРЕЗАПИСЫВАЕТСЯ (иначе «Сохранить» плодило бы дубли одноимённых
+    отчётов). Уровень доступа — ``view`` на слой пресета.
+    """
+    gate = _require_gis_access(request, level='view')
+    if gate:
+        return gate
+
+    if request.method == 'GET':
+        rows = list(_user_dashboards(request))
+        return JsonResponse({
+            'ok': True, 'count': len(rows),
+            'results': [_gis_dashboard_to_dict(x) for x in rows],
+        })
+
+    data, layer, err = _dashboard_body(request)
+    if err:
+        return err
+
+    name = str(data.get('name') or '').strip()
+    if not name:
+        return JsonResponse(
+            {'ok': False, 'error': 'empty_name',
+             'detail': 'Укажите название отчёта.'}, status=400)
+    name = name[:200]
+
+    from .models import GisDashboard
+    from .services.dashboard_presets import (
+        DashboardParamsError, normalize_params,
+    )
+    try:
+        params = normalize_params(layer, data.get('params'))
+    except DashboardParamsError as exc:
+        return JsonResponse(
+            {'ok': False, 'error': 'bad_params', 'detail': str(exc)}, status=400)
+
+    item = GisDashboard.objects.filter(owner=request.user, name=name).first()
+    if item is None:
+        item = GisDashboard.objects.create(
+            owner=request.user, name=name, layer=layer, params=params)
+        status = 201
+    else:
+        item.layer = layer
+        item.params = params
+        item.save(update_fields=['layer', 'params', 'updated_at'])
+        status = 200
+    return JsonResponse(
+        {'ok': True, 'dashboard': _gis_dashboard_to_dict(item)}, status=status)
+
+
+def _dashboard_patch(request: HttpRequest, item) -> JsonResponse:
+    """PATCH пресета: название и/или параметры (оба поля опциональны)."""
+    try:
+        data = json.loads(request.body or b'{}')
+    except (ValueError, TypeError):
+        return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
+
+    fields = []
+    if 'name' in data:
+        name = str(data.get('name') or '').strip()
+        if not name:
+            return JsonResponse(
+                {'ok': False, 'error': 'empty_name',
+                 'detail': 'Укажите название отчёта.'}, status=400)
+        item.name = name[:200]
+        fields.append('name')
+
+    if 'params' in data:
+        from .services.dashboard_presets import (
+            DashboardParamsError, normalize_params,
+        )
+        try:
+            item.params = normalize_params(item.layer, data.get('params'))
+        except DashboardParamsError as exc:
+            return JsonResponse(
+                {'ok': False, 'error': 'bad_params', 'detail': str(exc)},
+                status=400)
+        fields.append('params')
+
+    if fields:
+        item.save(update_fields=fields + ['updated_at'])
+    return JsonResponse({'ok': True, 'dashboard': _gis_dashboard_to_dict(item)})
+
+
+@csrf_exempt
+@require_http_methods(['PATCH', 'DELETE'])
+def gis_dashboard_detail(request: HttpRequest, pk: int) -> JsonResponse:
+    """PATCH — переименовать пресет / обновить параметры; DELETE — удалить.
+
+    Владелец — только он сам: пресет это личная настройка, и админ-гейт
+    здесь не нужен (чужие пресеты просто не попадают в выборку → 404).
+    """
+    gate = _require_gis_access(request, level='view')
+    if gate:
+        return gate
+
+    item = _user_dashboards(request).filter(pk=pk).first()
+    if item is None:
+        return JsonResponse({'ok': False, 'error': 'not_found'}, status=404)
+
+    if request.method == 'DELETE':
+        item.delete()
+        return JsonResponse({'ok': True})
+    return _dashboard_patch(request, item)
+
+
+@csrf_exempt
+@require_http_methods(['POST'])
+def gis_dashboard_send(request: HttpRequest) -> JsonResponse:
+    """POST — отправить сводку по email.
+
+    Body: ``{"layer", "params": {...}, "to": "a@b.ru, c@d.ru", "note": ""}``.
+
+    Сводка ПЕРЕСЧИТЫВАЕТСЯ на сервере теми же средствами, что и дашборд —
+    в письмо не попадает ничего, что прислал браузер, кроме сопроводительной
+    записки. Ответ содержит число доставленных писем.
+    """
+    gate = _require_gis_access(request, level='view')
+    if gate:
+        return gate
+
+    data, layer, err = _dashboard_body(request)
+    if err:
+        return err
+
+    from .services.dashboard_presets import (
+        DashboardParamsError, clean_recipients, normalize_params,
+        send_summary_email,
+    )
+    from .services.layer_summary import LayerSummaryError, summary_by_field
+    try:
+        params = normalize_params(layer, data.get('params'))
+        recipients = clean_recipients(data.get('to'))
+    except DashboardParamsError as exc:
+        return JsonResponse(
+            {'ok': False, 'error': 'bad_params', 'detail': str(exc)}, status=400)
+
+    try:
+        summary = summary_by_field(
+            layer, params['group'], split=params['split'],
+            district_id=params['district'])
+    except LayerSummaryError as exc:
+        return JsonResponse(
+            {'ok': False, 'error': 'bad_summary', 'detail': str(exc)}, status=400)
+
+    note = str(data.get('note') or '').strip()[:1000]
+    delivered = send_summary_email(
+        layer, params, summary, recipients, note=note)
+    if not delivered:
+        return JsonResponse(
+            {'ok': False, 'error': 'send_failed',
+             'detail': 'Письмо не отправлено: почтовый сервер недоступен.'},
+            status=502)
+    return JsonResponse(
+        {'ok': True, 'delivered': delivered, 'total': len(recipients)})
+
+
 @csrf_exempt
 @require_http_methods(['POST'])
 def gis_layer_query(request: HttpRequest, pk: int) -> JsonResponse:

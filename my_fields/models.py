@@ -538,6 +538,49 @@ class RasterLayer(models.Model):
         return f'{self.title} ({self.get_status_display()})'
 
 
+class GisDashboard(models.Model):
+    """Сохранённый пресет настроек отчёта на странице «Дашборды».
+
+    Хранит не результат сводки (он всегда пересчитывается по актуальным
+    данным слоя), а только НАБОР ПАРАМЕТРОВ: слой, поле группировки,
+    опциональный разрез, регион/район и флаг малых диаграмм. Поэтому пресет
+    остаётся валидным при обновлении данных слоя и «весит» одну строку.
+
+    Параметры лежат в ``params`` (JSON), а не отдельными колонками: набор
+    фильтров страницы будет расти (сортировка, единицы, фильтр по значениям),
+    и каждая новая опция не должна требовать миграции. Валидация — в
+    ``services/dashboard_presets.normalize_params`` (поля проверяются по
+    ``layer.attributes``, посторонние ключи отбрасываются).
+
+    Привязка к слою жёсткая (``CASCADE``): без слоя пресет бессмыслен.
+    """
+
+    name = models.CharField(max_length=200, verbose_name='Название отчёта')
+    layer = models.ForeignKey(
+        GisLayer, on_delete=models.CASCADE, related_name='dashboards',
+        verbose_name='Слой',
+    )
+    # {'region': int|None, 'district': int|None, 'group': str,
+    #  'split': str|None, 'bysplit': bool}
+    params = models.JSONField(default=dict, blank=True, verbose_name='Параметры')
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.CASCADE, related_name='gis_dashboards',
+        verbose_name='Владелец',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'myf_gis_dashboard'
+        ordering = ['name', 'id']
+        verbose_name = 'Сохранённый дашборд'
+        verbose_name_plural = 'Сохранённые дашборды'
+
+    def __str__(self):
+        return f'{self.name} ({self.layer_id})'
+
+
 class FieldPhoto(models.Model):
     """Фотография поля или события. GPS извлекается из EXIF при загрузке."""
 

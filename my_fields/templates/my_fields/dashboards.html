@@ -56,16 +56,25 @@
     .dash-empty__icon { font-size: 40px; display: block; margin-bottom: 8px; }
     .dash-sel { color: #2e7d32; font-weight: 600; }
 
-    /* Кнопка сборки: занимает всю ширину своей ячейки грида и стоит на
-       одной базовой линии с селектами (высота как у select). */
+    /* Кнопки панели действий: высота как у селектов, ширина по содержимому. */
     .dash-btn {
       display: inline-flex; align-items: center; justify-content: center; gap: 6px;
       height: 38px; padding: 0 16px; border: 0; border-radius: 6px;
       background: #2e7d32; color: #fff; font-size: 14px; font-weight: 600;
-      cursor: pointer; width: 100%;
+      cursor: pointer; white-space: nowrap;
     }
     .dash-btn:hover:not(:disabled) { background: #1b5e20; }
     .dash-btn:disabled { background: #cfd8dc; color: #78909c; cursor: default; }
+    /* Второстепенные действия — контурные, чтобы «Собрать дашборд»
+       оставалась единственной акцентной кнопкой. */
+    .dash-btn--ghost {
+      background: #fff; color: #2e7d32; border: 1px solid rgba(46,125,50,.45);
+      font-weight: 600;
+    }
+    .dash-btn--ghost:hover:not(:disabled) { background: #f1f8e9; color: #1b5e20; }
+    .dash-btn--ghost:disabled {
+      background: #fff; color: #b0bec5; border-color: rgba(0,0,0,.12);
+    }
 
     .dash-title {
       margin: 0 0 4px; font-size: 17px; font-weight: 700; color: #333;
@@ -123,15 +132,90 @@
     .dash-tile .dash-legend { gap: 4px; }
     .dash-tile .dash-legend__row { font-size: 11px; }
 
-    .dash-check {
-      display: flex; align-items: center; gap: 7px; height: 38px;
-      font-size: 13px; color: #444; cursor: pointer; line-height: 1.25;
+    /* Чекбокс — тоже <label> внутри .dash-field, поэтому надо явно
+       снять с него стили заголовка поля (uppercase/bold), иначе
+       подпись кричит капсом и наезжает на соседнюю колонку. */
+    .dash-field label.dash-check {
+      display: flex; align-items: flex-start; gap: 7px; min-height: 38px;
+      font-size: 13px; font-weight: 400; color: #444; cursor: pointer;
+      line-height: 1.3; text-transform: none; letter-spacing: normal;
+      padding-top: 2px;
     }
     /* Materialize перекрывает нативные checkbox — возвращаем обычный вид. */
     .dash-check input[type="checkbox"] {
-      position: static; opacity: 1; width: 16px; height: 16px; margin: 0;
+      position: static; opacity: 1; width: 16px; height: 16px; margin: 1px 0 0;
       pointer-events: auto; left: auto; flex: 0 0 auto;
     }
+
+    /* Панель действий под фильтрами: сборка, пресеты, экспорт. */
+    .dash-actions {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      margin-top: 12px;
+    }
+    .dash-actions__sep { flex: 1 1 auto; }
+    .dash-actions .dash-hint { flex: 0 0 auto; }
+
+    .dash-menu-wrap { position: relative; }
+    .dash-menu {
+      position: absolute; z-index: 30; top: calc(100% + 4px); left: 0;
+      min-width: 300px; max-width: 420px; max-height: 340px; overflow: auto;
+      background: #fff; border: 1px solid rgba(0,0,0,.15); border-radius: 8px;
+      box-shadow: 0 4px 16px rgba(0,0,0,.16); padding: 6px; display: none;
+    }
+    .dash-menu.is-open { display: block; }
+    .dash-menu__empty { padding: 10px; color: #999; font-size: 13px; }
+    .dash-menu__row { display: flex; align-items: center; gap: 4px; }
+    .dash-menu__pick {
+      flex: 1 1 auto; min-width: 0; text-align: left; background: none;
+      border: 0; padding: 7px 8px; border-radius: 6px; cursor: pointer;
+    }
+    .dash-menu__pick:hover { background: #f1f8e9; }
+    .dash-menu__name {
+      display: block; font-size: 13px; font-weight: 600; color: #333;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .dash-menu__sub {
+      display: block; font-size: 11px; color: #999;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .dash-menu__del {
+      flex: 0 0 auto; border: 0; background: none; color: #b71c1c;
+      cursor: pointer; font-size: 14px; padding: 5px 7px; border-radius: 6px;
+    }
+    .dash-menu__del:hover { background: #ffebee; }
+
+    /* Модалка отправки по email. */
+    .dash-modal {
+      position: fixed; inset: 0; z-index: 60; padding: 16px;
+      background: rgba(0,0,0,.4); display: none;
+      align-items: center; justify-content: center;
+    }
+    .dash-modal.is-open { display: flex; }
+    .dash-modal__box {
+      background: #fff; border-radius: 10px; padding: 18px; width: 100%;
+      max-width: 440px; box-shadow: 0 10px 30px rgba(0,0,0,.28);
+    }
+    .dash-modal__h { font-size: 16px; font-weight: 700; margin-bottom: 4px; }
+    .dash-modal__sub { font-size: 12px; color: #888; margin-bottom: 12px; }
+    .dash-modal label {
+      display: block; font-size: 12px; font-weight: 600; color: #666;
+      margin-bottom: 4px;
+    }
+    .dash-modal input.browser-default,
+    .dash-modal textarea.browser-default {
+      display: block; width: 100%; box-sizing: border-box; height: auto;
+      border: 1px solid rgba(0,0,0,.2); border-radius: 6px; padding: 8px 10px;
+      font-size: 14px; background: #fff; margin: 0 0 12px;
+      font-family: inherit;
+    }
+    .dash-modal__row {
+      display: flex; align-items: center; gap: 8px; justify-content: flex-end;
+    }
+    .dash-modal__msg {
+      font-size: 12px; margin-right: auto; color: #666; min-height: 16px;
+    }
+    .dash-modal__msg.is-err { color: #c62828; }
+    .dash-modal__msg.is-ok { color: #2e7d32; }
 
     .dash-tablewrap { overflow-x: auto; }
     .dash-table { border-collapse: collapse; width: 100%; font-size: 13px; }
@@ -152,6 +236,23 @@
     .dash-error {
       color: #c62828; background: #ffebee; border: 1px solid #ffcdd2;
       border-radius: 6px; padding: 10px 12px; font-size: 13px;
+    }
+
+    /* Экспорт в PDF — штатная печать браузера («Сохранить как PDF»):
+       серверная генерация потребовала бы новой зависимости, а SVG-
+       диаграммы и таблица печатаются как есть. Скрываем шапку
+       сайта, фильтры и кнопки — в отчёте остаётся только сводка. */
+    @media print {
+      nav, footer, .sidenav, .dash-filters, .dash-actions, .dash-back,
+      .dash-modal { display: none !important; }
+      body { background: #fff; }
+      .dash-wrap { max-width: none; padding: 0; }
+      .dash-body {
+        border: 0; box-shadow: none; padding: 0; margin-top: 8px;
+      }
+      .dash-head h1 { font-size: 18px; }
+      .dash-tile, .dash-chart, .dash-table tr { break-inside: avoid; }
+      .dash-tablewrap { overflow: visible; }
     }
   </style>
 {% endblock %}
@@ -209,27 +310,75 @@
       </div>
 
       <div class="dash-field">
-        <label>Диаграммы</label>
         <label class="dash-check" for="dash-bysplit">
           <input type="checkbox" id="dash-bysplit" checked>
-          отдельная диаграмма на каждое значение разреза
+          <span>Отдельная диаграмма на каждое значение разреза</span>
         </label>
         <span class="dash-hint" id="dash-bysplit-hint"></span>
       </div>
+    </div>
 
-      <div class="dash-field">
-        <label>&nbsp;</label>
-        <button class="dash-btn" id="dash-build" type="button" disabled>
-          📊 Собрать дашборд
+    <div class="dash-actions">
+      <button class="dash-btn" id="dash-build" type="button" disabled>
+        📊 Собрать дашборд
+      </button>
+      <button class="dash-btn dash-btn--ghost" id="dash-save" type="button"
+              disabled title="Сохранить текущие настройки как отчёт">
+        💾 Сохранить
+      </button>
+
+      <span class="dash-menu-wrap">
+        <button class="dash-btn dash-btn--ghost" id="dash-presets" type="button"
+                aria-haspopup="true" aria-expanded="false">
+          📁 Сохранённые дашборды <span id="dash-presets-count"></span>
         </button>
-        <span class="dash-hint" id="dash-build-hint"></span>
-      </div>
+        <div class="dash-menu" id="dash-presets-menu" role="menu"></div>
+      </span>
+
+      <span class="dash-actions__sep"></span>
+
+      <button class="dash-btn dash-btn--ghost" id="dash-pdf" type="button"
+              disabled title="Печать / сохранение в PDF">
+        🖨 PDF
+      </button>
+      <button class="dash-btn dash-btn--ghost" id="dash-email" type="button"
+              disabled title="Отправить сводку по email">
+        ✉ Email
+      </button>
+      <button class="dash-btn dash-btn--ghost" id="dash-link" type="button"
+              title="Скопировать ссылку на этот срез">
+        🔗 Ссылка
+      </button>
+      <span class="dash-hint" id="dash-build-hint"></span>
     </div>
 
     <div class="dash-body" id="dash-body">
       <div class="dash-empty" id="dash-empty">
         <span class="dash-empty__icon">📈</span>
         Выберите регион, район и слой — здесь появится сводка.
+      </div>
+    </div>
+  </div>
+
+  <div class="dash-modal" id="dash-mail" role="dialog" aria-modal="true"
+       aria-labelledby="dash-mail-h">
+    <div class="dash-modal__box">
+      <div class="dash-modal__h" id="dash-mail-h">Отправить отчёт по email</div>
+      <div class="dash-modal__sub">
+        Письмо содержит таблицу сводки и ссылку на дашборд.
+        Сводка пересчитывается на сервере в момент отправки.
+      </div>
+      <label for="dash-mail-to">Получатели (через запятую, не более 5)</label>
+      <input class="browser-default" type="text" id="dash-mail-to"
+             placeholder="agronom@example.ru">
+      <label for="dash-mail-note">Примечание (необязательно)</label>
+      <textarea class="browser-default" id="dash-mail-note" rows="3"
+                placeholder="Пара слов к отчёту"></textarea>
+      <div class="dash-modal__row">
+        <span class="dash-modal__msg" id="dash-mail-msg"></span>
+        <button class="dash-btn dash-btn--ghost" id="dash-mail-cancel"
+                type="button">Отмена</button>
+        <button class="dash-btn" id="dash-mail-send" type="button">Отправить</button>
       </div>
     </div>
   </div>
@@ -250,7 +399,19 @@
     var distHint   = document.getElementById('dash-district-hint');
     var layerHint  = document.getElementById('dash-layer-hint');
     var bodyEl     = document.getElementById('dash-body');
-    var emptyEl    = document.getElementById('dash-empty');
+    var saveEl     = document.getElementById('dash-save');
+    var presetsEl  = document.getElementById('dash-presets');
+    var presetsCnt = document.getElementById('dash-presets-count');
+    var menuEl     = document.getElementById('dash-presets-menu');
+    var pdfEl      = document.getElementById('dash-pdf');
+    var emailEl    = document.getElementById('dash-email');
+    var linkEl     = document.getElementById('dash-link');
+    var mailEl     = document.getElementById('dash-mail');
+    var mailToEl   = document.getElementById('dash-mail-to');
+    var mailNoteEl = document.getElementById('dash-mail-note');
+    var mailMsgEl  = document.getElementById('dash-mail-msg');
+    var mailSendEl = document.getElementById('dash-mail-send');
+    var mailCancel = document.getElementById('dash-mail-cancel');
 
     /* Слои держим целиком (в ответе /api/layers/ есть attributes) —
        селекты полей наполняются без дополнительного запроса. */
@@ -295,6 +456,22 @@
         credentials: 'same-origin',
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
       }).then(function (r) { return r.json(); });
+    }
+
+    /* Эндпоинты дашбордов csrf_exempt (как и остальное ГИС-API), поэтому
+       токен не передаём — сессии достаточно. */
+    function jsend(url, method, body) {
+      return fetch(url, {
+        method: method,
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        body: body ? JSON.stringify(body) : null,
+      }).then(function (r) {
+        return r.json().catch(function () { return { ok: false }; });
+      });
     }
 
     function setOptions(sel, items, placeholder) {
@@ -350,6 +527,9 @@
     }
 
     function renderIdle() {
+      /* Дашборд не собран — экспорт недоступен. */
+      lastResp = null;
+      updateBuildState();
       var layer = selectedText(layerEl);
       if (!layer) {
         setPlaceholder('<span class="dash-empty__icon">📈</span>' +
@@ -386,9 +566,14 @@
     function updateBuildState() {
       var ok = !!(layerEl.value && groupEl.value);
       buildEl.disabled = !ok;
+      saveEl.disabled = !ok;
       buildHint.textContent = ok ? '' : 'нужны слой и поле группировки';
       bySplitEl.disabled = !splitEl.value;
       bySplitHint.textContent = splitEl.value ? '' : 'нужен разрез';
+      /* PDF и письмо отправляют СОБРАННУЮ сводку — до сборки бессмысленны. */
+      var built = !!lastResp;
+      pdfEl.disabled = !built;
+      emailEl.disabled = !built;
     }
 
     /* ── Пайчарт: инлайновый SVG, без внешних библиотек ──
@@ -623,6 +808,7 @@
       if (!pk || !group) return;
       buildEl.disabled = true;
       buildHint.textContent = 'считаем…';
+      lastResp = null;
       setPlaceholder('<span class="dash-empty__icon">⏳</span>Считаем сводку…');
 
       var p = new URLSearchParams();
@@ -649,6 +835,176 @@
           buildHint.textContent = '';
           updateBuildState();
         });
+    }
+
+    /* ── Сохранённые дашборды (пресеты настроек отчёта) ──
+       Пресет хранит НАСТРОЙКИ, а не результат: применяя его, страница
+       пересобирает сводку по актуальным данным слоя. */
+    var presets = [];
+
+    function currentParams() {
+      return {
+        region: regionEl.value ? Number(regionEl.value) : null,
+        district: districtEl.value ? Number(districtEl.value) : null,
+        group: groupEl.value,
+        split: splitEl.value || null,
+        bysplit: !!bySplitEl.checked,
+      };
+    }
+
+    function closeMenu() {
+      menuEl.classList.remove('is-open');
+      presetsEl.setAttribute('aria-expanded', 'false');
+    }
+
+    function presetSub(p) {
+      var parts = [p.layer_title || ('слой #' + p.layer)];
+      var params = p.params || {};
+      if (params.group) parts.push('по «' + params.group + '»');
+      if (params.split) parts.push('разрез «' + params.split + '»');
+      return parts.join(' · ');
+    }
+
+    function renderPresets() {
+      presetsCnt.textContent = presets.length ? ('(' + presets.length + ')') : '';
+      if (!presets.length) {
+        menuEl.innerHTML = '<div class="dash-menu__empty">Сохранённых отчётов' +
+          ' нет. Настройте срез и нажмите «Сохранить».</div>';
+        return;
+      }
+      menuEl.innerHTML = presets.map(function (p) {
+        return '<div class="dash-menu__row">' +
+          '<button type="button" class="dash-menu__pick" data-id="' + p.id + '">' +
+          '<span class="dash-menu__name">' + esc(p.name) + '</span>' +
+          '<span class="dash-menu__sub">' + esc(presetSub(p)) + '</span>' +
+          '</button>' +
+          '<button type="button" class="dash-menu__del" data-del="' + p.id +
+          '" title="Удалить отчёт" aria-label="Удалить отчёт">✕</button>' +
+          '</div>';
+      }).join('');
+    }
+
+    function loadPresets() {
+      return jget('/me/gis/api/dashboards/')
+        .then(function (j) {
+          presets = (j && j.results) || [];
+          renderPresets();
+        })
+        .catch(function () { presets = []; renderPresets(); });
+    }
+
+    /* Применение пресета: сначала регион (он подгружает районы), затем
+       слой (он наполняет селекты полей), и только потом group/split —
+       порядок важен, иначе значения выставляются в пустые селекты. */
+    function applyPreset(p) {
+      var params = p.params || {};
+      closeMenu();
+      regionEl.value = params.region ? String(params.region) : '';
+      bySplitEl.checked = params.bysplit !== false;
+      layerEl.value = String(p.layer);
+      if (!layerEl.value || !layersById[layerEl.value]) {
+        buildHint.textContent = 'слой отчёта недоступен';
+        return;
+      }
+      loadDistricts(params.district ? String(params.district) : null)
+        .then(function () {
+          fillFieldSelects(params.group, params.split);
+          syncUrl();
+          if (groupEl.value === params.group) buildDashboard();
+          else renderIdle();
+        });
+    }
+
+    function savePreset() {
+      if (!layerEl.value || !groupEl.value) return;
+      var suggested = selectedText(layerEl).replace(/\s*\(\d+\)\s*$/, '') +
+        ' — ' + fieldLabel(groupEl.value);
+      var name = window.prompt('Название отчёта:', suggested);
+      if (name === null) return;
+      name = name.trim();
+      if (!name) return;
+      saveEl.disabled = true;
+      jsend('/me/gis/api/dashboards/', 'POST', {
+        name: name, layer: Number(layerEl.value), params: currentParams(),
+      }).then(function (j) {
+        if (!j || !j.ok) {
+          buildHint.textContent = (j && j.detail) || 'не удалось сохранить';
+          return;
+        }
+        buildHint.textContent = 'отчёт сохранён';
+        return loadPresets();
+      }).catch(function () {
+        buildHint.textContent = 'сервер недоступен';
+      }).then(function () { updateBuildState(); });
+    }
+
+    function deletePreset(id) {
+      jsend('/me/gis/api/dashboards/' + id + '/', 'DELETE', null)
+        .then(function () { return loadPresets(); });
+    }
+
+    /* ── Экспорт: печать (PDF), письмо, ссылка ── */
+    function copyLink() {
+      var url = location.href;
+      var done = function (ok) {
+        buildHint.textContent = ok ? 'ссылка скопирована' : url;
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url)
+          .then(function () { done(true); })
+          .catch(function () { done(false); });
+        return;
+      }
+      /* Старые браузеры/HTTP: копируем через скрытое поле. */
+      var ta = document.createElement('textarea');
+      ta.value = url;
+      ta.setAttribute('readonly', 'readonly');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      done(ok);
+    }
+
+    function openMail() {
+      if (!lastResp) return;
+      mailMsgEl.textContent = '';
+      mailMsgEl.className = 'dash-modal__msg';
+      mailEl.classList.add('is-open');
+      mailToEl.focus();
+    }
+
+    function closeMail() { mailEl.classList.remove('is-open'); }
+
+    function sendMail() {
+      var to = (mailToEl.value || '').trim();
+      if (!to) {
+        mailMsgEl.textContent = 'Укажите адрес получателя.';
+        mailMsgEl.className = 'dash-modal__msg is-err';
+        return;
+      }
+      mailSendEl.disabled = true;
+      mailMsgEl.textContent = 'Отправляем…';
+      mailMsgEl.className = 'dash-modal__msg';
+      jsend('/me/gis/api/dashboards/send/', 'POST', {
+        layer: Number(layerEl.value), params: currentParams(),
+        to: to, note: (mailNoteEl.value || '').trim(),
+      }).then(function (j) {
+        if (!j || !j.ok) {
+          mailMsgEl.textContent = (j && j.detail) || 'Не удалось отправить.';
+          mailMsgEl.className = 'dash-modal__msg is-err';
+          return;
+        }
+        mailMsgEl.textContent = 'Отправлено: ' + j.delivered + ' из ' + j.total;
+        mailMsgEl.className = 'dash-modal__msg is-ok';
+        window.setTimeout(closeMail, 1200);
+      }).catch(function () {
+        mailMsgEl.textContent = 'Сервер недоступен.';
+        mailMsgEl.className = 'dash-modal__msg is-err';
+      }).then(function () { mailSendEl.disabled = false; });
     }
 
     /* ── Районы выбранного региона ── */
@@ -727,11 +1083,15 @@
     groupEl.addEventListener('change', function () {
       /* Разрез по тому же полю, что и группировка, смысла не имеет. */
       if (splitEl.value && splitEl.value === groupEl.value) splitEl.value = '';
+      /* Срез изменился — прежняя сводка больше не соответствует фильтрам,
+         поэтому PDF/письмо снова блокируются до пересборки. */
+      lastResp = null;
       syncUrl();
       updateBuildState();
     });
     splitEl.addEventListener('change', function () {
       if (splitEl.value && splitEl.value === groupEl.value) splitEl.value = '';
+      lastResp = null;
       syncUrl();
       updateBuildState();
     });
@@ -740,11 +1100,50 @@
       if (lastResp) renderDashboard(lastResp);
     });
     buildEl.addEventListener('click', buildDashboard);
+    saveEl.addEventListener('click', savePreset);
+    pdfEl.addEventListener('click', function () { window.print(); });
+    linkEl.addEventListener('click', copyLink);
+    emailEl.addEventListener('click', openMail);
+    mailCancel.addEventListener('click', closeMail);
+    mailSendEl.addEventListener('click', sendMail);
+    mailEl.addEventListener('click', function (e) {
+      /* Клик по затемнению (а не по карточке) закрывает окно. */
+      if (e.target === mailEl) closeMail();
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape') return;
+      closeMail();
+      closeMenu();
+    });
+
+    presetsEl.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var open = menuEl.classList.toggle('is-open');
+      presetsEl.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    menuEl.addEventListener('click', function (e) {
+      var del = e.target.closest('.dash-menu__del');
+      if (del) {
+        deletePreset(Number(del.getAttribute('data-del')));
+        return;
+      }
+      var pick = e.target.closest('.dash-menu__pick');
+      if (!pick) return;
+      var id = Number(pick.getAttribute('data-id'));
+      var found = presets.filter(function (p) { return p.id === id; })[0];
+      if (found) applyPreset(found);
+    });
+    document.addEventListener('click', function (e) {
+      if (!menuEl.classList.contains('is-open')) return;
+      if (menuEl.contains(e.target)) return;
+      closeMenu();
+    });
 
     /* Стартовое состояние из query-string. */
     var q = new URLSearchParams(location.search);
     if (q.get('region')) regionEl.value = q.get('region');
     if (q.get('bysplit') === '0') bySplitEl.checked = false;
+    loadPresets();
     Promise.all([
       loadDistricts(q.get('district')),
       loadLayers(q.get('layer')),
