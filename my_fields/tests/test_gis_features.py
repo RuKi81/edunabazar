@@ -370,6 +370,21 @@ class GisFeaturesTestCase(TestCase):
         self.assertAlmostEqual(st['min'], 10.5)
         self.assertAlmostEqual(st['max'], 20.0)
 
+    def test_field_stats_numeric_also_lists_values(self):
+        """Регрессия: раскраска ПО КАТЕГОРИЯМ по числовому полю (коды зон).
+
+        Раньше числовая ветка отдавала только min/max, и редактор раскраски
+        писал «Нет значений для раскраски», хотя градиент по тому же полю
+        работал.
+        """
+        self._login('viewer')
+        st = self.client.get(self._stats_url('area')).json()['stats']
+        self.assertTrue(st['numeric'])
+        # Значения — текстом: карта сравнивает их через ['to-string', ...].
+        self.assertEqual(sorted(v['value'] for v in st['values']),
+                         ['10.5', '20'])
+        self.assertFalse(st['truncated'])
+
     def test_field_stats_text_distinct(self):
         self._login('viewer')
         r = self.client.get(self._stats_url('name'))
