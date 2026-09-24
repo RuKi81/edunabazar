@@ -167,19 +167,30 @@
     }
     .dash-vals__act:hover { background: #e8f5e9; }
     .dash-vals__list { max-height: 132px; overflow-y: auto; padding: 3px 0; }
-    .dash-vals__row {
-      display: flex; align-items: flex-start; gap: 6px; padding: 3px 8px;
-      font-size: 12px; font-weight: 400; color: #444; cursor: pointer;
-      text-transform: none; letter-spacing: normal; line-height: 1.3;
+    /* Строка списка — тоже <label> внутри .dash-field, а у `.dash-field label`
+       специфичность выше голого класса: без `.dash-field` в селекторе
+       значения наследовали капс/жирный заголовка поля. */
+    .dash-field label.dash-vals__row {
+      display: flex; align-items: flex-start; gap: 6px; padding: 2px 8px;
+      font-size: 11.5px; font-weight: 400; color: #444; cursor: pointer;
+      text-transform: none; letter-spacing: normal; line-height: 1.25;
       margin: 0;
     }
     .dash-vals__row:hover { background: #f1f8e9; }
-    .dash-vals__row input[type="checkbox"] {
-      position: static; opacity: 1; width: 14px; height: 14px;
+    .dash-field label.dash-vals__row input[type="checkbox"] {
+      position: static; opacity: 1; width: 13px; height: 13px;
       margin: 1px 0 0; pointer-events: auto; left: auto; flex: 0 0 auto;
     }
-    .dash-vals__row span { flex: 1 1 auto; min-width: 0; word-break: break-word; }
-    .dash-vals__row small { color: #999; }
+    /* Materialize рисует свой бокс с галочкой на <span> после чекбокса
+       (`[type=checkbox] + span:not(.lever)`): отступ 35px и ::after съезжали
+       на текст — отсюда вторая «птичка» и наезжающие строки. */
+    .dash-field label.dash-vals__row > span {
+      flex: 1 1 auto; min-width: 0; word-break: break-word;
+      padding-left: 0; line-height: inherit; font-size: inherit; height: auto;
+    }
+    .dash-field label.dash-vals__row > span::before,
+    .dash-field label.dash-vals__row > span::after { display: none; }
+    .dash-vals__row small { font-size: 11px; color: #999; }
     .dash-vals__row--null span { color: #999; font-style: italic; }
     .dash-vals__msg { padding: 7px 8px; font-size: 11px; color: #999; }
 

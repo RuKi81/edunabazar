@@ -332,6 +332,18 @@ class DashboardsPageControlsTests(GisLayersTestCase):
         for marker in ('dash-group-vals', 'dash-split-vals', 'dash-vals__list'):
             self.assertContains(resp, marker)
 
+    def test_value_rows_override_field_label_style(self):
+        """Строки значений — <label>, и их стиль должен бить `.dash-field label`.
+
+        Без `.dash-field` в селекторе значения наследовали капс/жирный
+        заголовка поля и наезжали друг на друга.
+        """
+        self._login_admin()
+        html = self.client.get('/me/gis/dashboards/').content.decode()
+        self.assertIn('.dash-field label.dash-vals__row', html)
+        # Бокс с галочкой, который Materialize рисует на <span>, погашен.
+        self.assertIn('.dash-field label.dash-vals__row > span::after', html)
+
     def test_chart_checkbox_has_no_group_label(self):
         self._login_admin()
         html = self.client.get('/me/gis/dashboards/').content.decode()
