@@ -147,6 +147,42 @@
       pointer-events: auto; left: auto; flex: 0 0 auto;
     }
 
+    /* Перечень значений атрибута (чекбоксы) под селектом: выборка строится
+       только по отмеченным значениям. Список скроллится — категорий может
+       быть несколько сотен, а высота ячейки фильтров должна остаться
+       предсказуемой. */
+    .dash-vals {
+      margin-top: 6px; border: 1px solid rgba(0,0,0,.14); border-radius: 6px;
+      background: #fff; overflow: hidden;
+    }
+    .dash-vals__head {
+      display: flex; align-items: center; gap: 6px; padding: 5px 8px;
+      background: #fafafa; border-bottom: 1px solid rgba(0,0,0,.08);
+      font-size: 11px; color: #777;
+    }
+    .dash-vals__cnt { flex: 1 1 auto; min-width: 0; }
+    .dash-vals__act {
+      border: 0; background: none; padding: 1px 4px; border-radius: 4px;
+      color: #2e7d32; font-size: 11px; cursor: pointer;
+    }
+    .dash-vals__act:hover { background: #e8f5e9; }
+    .dash-vals__list { max-height: 132px; overflow-y: auto; padding: 3px 0; }
+    .dash-vals__row {
+      display: flex; align-items: flex-start; gap: 6px; padding: 3px 8px;
+      font-size: 12px; font-weight: 400; color: #444; cursor: pointer;
+      text-transform: none; letter-spacing: normal; line-height: 1.3;
+      margin: 0;
+    }
+    .dash-vals__row:hover { background: #f1f8e9; }
+    .dash-vals__row input[type="checkbox"] {
+      position: static; opacity: 1; width: 14px; height: 14px;
+      margin: 1px 0 0; pointer-events: auto; left: auto; flex: 0 0 auto;
+    }
+    .dash-vals__row span { flex: 1 1 auto; min-width: 0; word-break: break-word; }
+    .dash-vals__row small { color: #999; }
+    .dash-vals__row--null span { color: #999; font-style: italic; }
+    .dash-vals__msg { padding: 7px 8px; font-size: 11px; color: #999; }
+
     /* Панель действий под фильтрами: сборка, пресеты, экспорт. */
     .dash-actions {
       display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
@@ -298,6 +334,7 @@
         <select class="browser-default" id="dash-group" disabled>
           <option value="">— сначала выберите слой —</option>
         </select>
+        <div class="dash-vals" id="dash-group-vals" hidden></div>
         <span class="dash-hint">по значениям этого атрибута</span>
       </div>
 
@@ -306,6 +343,7 @@
         <select class="browser-default" id="dash-split" disabled>
           <option value="">— без разреза —</option>
         </select>
+        <div class="dash-vals" id="dash-split-vals" hidden></div>
         <span class="dash-hint">добавит колонки в таблицу</span>
       </div>
 
@@ -497,6 +535,12 @@
       if (groupEl.value) p.set('group', groupEl.value);
       if (splitEl.value) p.set('split', splitEl.value);
       if (!bySplitEl.checked) p.set('bysplit', '0');
+      /* Значения — ПОВТОРЯЮЩИМИСЯ gv/sv: в них бывают запятые,
+         так что склеить в один параметр нельзя. */
+      (valTokens('group') || []).forEach(function (t) { p.append('gv', t); });
+      if (splitEl.value) {
+        (valTokens('split') || []).forEach(function (t) { p.append('sv', t); });
+      }
       var qs = p.toString();
       history.replaceState(null, '', qs ? ('?' + qs) : location.pathname);
     }
@@ -541,6 +585,163 @@
         ' нажмите «Собрать дашборд».');
     }
 
+    /* ── Перечень значений атрибута (чекбоксы под селектами) ──
+       Выборка строится только по отмеченным значениям: без этого сводка по
+       «Зонированию» тянет все зоны сразу, а агроному нужны 2-3 из сорока.
+       Значения берутся из готового /field-values/ (тот же список, что в
+       фильтре таблицы атрибутов): там уже есть count, NULL отдельным
+       пунктом и приведение к тексту — сводка сравнивает так же. */
+    var VAL_NULL = '__null__';
+    var valBox   = { group: document.getElementById('dash-group-vals'),
+                     split: document.getElementById('dash-split-vals') };
+    var valSelEl = { group: groupEl, split: splitEl };
+    var valState = { group: null, split: null };
+    /* Предвыбор из ссылки/пресета: применяется к ПЕРВОЙ загрузке значений
+       (поля ещё не наполнены, когда разбирается query-string). */
+    var valPending = { group: null, split: null };
+    /* Счётчик запросов на поле: ответ по уже смененному полю игнорируем. */
+    var valSeq = { group: 0, split: 0 };
+
+    function valCountText(st) {
+      return 'Выбрано ' + st.sel.size + ' из ' + st.items.length +
+        (st.truncated ? ' (список усечён)' : '');
+    }
+
+    /* Токены для запроса: если отмечено ВСЁ — фильтра нет (null), чтобы не
+       раздувать ссылку и не ломать сводку при появлении новых значений. */
+    function valTokens(kind) {
+      var st = valState[kind];
+      if (!st || !st.items.length) return null;
+      if (st.sel.size >= st.items.length) return null;
+      return st.items.filter(function (it) { return st.sel.has(it.token); })
+                     .map(function (it) { return it.token; });
+    }
+
+    function valEmpty(kind) {
+      var st = valState[kind];
+      return !!(st && st.items.length && st.sel.size === 0);
+    }
+
+    function renderVals(kind) {
+      var box = valBox[kind], st = valState[kind];
+      if (!st) { box.hidden = true; box.innerHTML = ''; return; }
+      box.hidden = false;
+      if (st.error) {
+        box.innerHTML = '<div class="dash-vals__msg">' + esc(st.error) + '</div>';
+        return;
+      }
+      if (!st.items.length) {
+        box.innerHTML = '<div class="dash-vals__msg">Значений нет.</div>';
+        return;
+      }
+      var rows = st.items.map(function (it) {
+        return '<label class="dash-vals__row' +
+          (it.isNull ? ' dash-vals__row--null' : '') + '">' +
+          '<input type="checkbox" value="' + esc(it.token) + '"' +
+          (st.sel.has(it.token) ? ' checked' : '') + '>' +
+          '<span>' + esc(it.label) + ' <small>(' + it.count + ')</small></span>' +
+          '</label>';
+      }).join('');
+      box.innerHTML =
+        '<div class="dash-vals__head">' +
+          '<span class="dash-vals__cnt">' + esc(valCountText(st)) + '</span>' +
+          '<button type="button" class="dash-vals__act" data-act="all">все</button>' +
+          '<button type="button" class="dash-vals__act" data-act="none">снять</button>' +
+        '</div>' +
+        '<div class="dash-vals__list">' + rows + '</div>';
+    }
+
+    /* Смена набора значений — это другой срез: собранная сводка устарела. */
+    function valsChanged() {
+      lastResp = null;
+      syncUrl();
+      updateBuildState();
+    }
+
+    function bindVals(kind) {
+      valBox[kind].addEventListener('click', function (e) {
+        var st = valState[kind];
+        var act = e.target.closest('.dash-vals__act');
+        if (!st || !act) return;
+        if (act.getAttribute('data-act') === 'all') {
+          st.items.forEach(function (it) { st.sel.add(it.token); });
+        } else {
+          st.sel.clear();
+        }
+        renderVals(kind);
+        valsChanged();
+      });
+      valBox[kind].addEventListener('change', function (e) {
+        var st = valState[kind];
+        if (!st || e.target.type !== 'checkbox') return;
+        if (e.target.checked) st.sel.add(e.target.value);
+        else st.sel.delete(e.target.value);
+        /* Перерисовать весь список нельзя — уедет скролл; правим счётчик. */
+        var cnt = valBox[kind].querySelector('.dash-vals__cnt');
+        if (cnt) cnt.textContent = valCountText(st);
+        valsChanged();
+      });
+    }
+    bindVals('group');
+    bindVals('split');
+
+    function valItem(v) {
+      var isNull = (v.value === null || v.value === undefined);
+      var text = isNull ? '' : String(v.value);
+      return {
+        token: isNull ? VAL_NULL : text,
+        label: isNull ? '(не задано)' : (text === '' ? '(пусто)' : text),
+        count: v.count, isNull: isNull,
+      };
+    }
+
+    function valFail(kind, seq, message) {
+      if (seq !== valSeq[kind]) return;
+      valState[kind] = { items: [], sel: new Set(), truncated: false,
+                         error: message };
+      renderVals(kind);
+    }
+
+    function loadVals(kind, preselect) {
+      var field = valSelEl[kind].value, pk = layerEl.value;
+      valSeq[kind] += 1;
+      var seq = valSeq[kind];
+      if (!field || !pk) {
+        valState[kind] = null;
+        renderVals(kind);
+        return Promise.resolve();
+      }
+      valState[kind] = { items: [], sel: new Set(), truncated: false,
+                         error: 'Загрузка значений…' };
+      renderVals(kind);
+      return jget('/me/gis/api/layers/' + encodeURIComponent(pk) +
+                  '/field-values/?field=' + encodeURIComponent(field))
+        .then(function (j) {
+          if (seq !== valSeq[kind]) return;
+          if (!j || !j.ok) {
+            valFail(kind, seq, (j && j.detail) || 'Не удалось загрузить значения.');
+            return;
+          }
+          var items = (j.values || []).map(valItem);
+          var sel = new Set();
+          var want = {};
+          (preselect || []).forEach(function (t) { want[String(t)] = true; });
+          items.forEach(function (it) {
+            if (!preselect || !preselect.length || want[it.token]) sel.add(it.token);
+          });
+          /* Предвыбор из ссылки не совпал ни с одним значением (слой
+             перезалили, значения изменились) — честнее взять все. */
+          if (!sel.size) items.forEach(function (it) { sel.add(it.token); });
+          valState[kind] = { items: items, sel: sel,
+                             truncated: !!j.truncated, error: '' };
+          renderVals(kind);
+        })
+        .catch(function () {
+          valFail(kind, seq, 'Не удалось загрузить значения.');
+        })
+        .then(function () { updateBuildState(); });
+    }
+
     /* ── Селекты полей слоя ── */
     function fillFieldSelects(preGroup, preSplit) {
       var lyr = currentLayer();
@@ -561,13 +762,26 @@
       else if (items.length) groupEl.value = items[0].value;
       if (preSplit && names[preSplit]) splitEl.value = preSplit;
       updateBuildState();
+      /* Списки значений — под новые поля; предвыбор из ссылки/пресета
+         одноразовый. */
+      var pend = valPending;
+      valPending = { group: null, split: null };
+      return Promise.all([
+        loadVals('group', pend.group),
+        loadVals('split', pend.split),
+      ]);
     }
 
     function updateBuildState() {
-      var ok = !!(layerEl.value && groupEl.value);
+      var fields = !!(layerEl.value && groupEl.value);
+      /* Сняты все галки — выборка пустая, считать нечего. */
+      var noVals = valEmpty('group') || (!!splitEl.value && valEmpty('split'));
+      var ok = fields && !noVals;
       buildEl.disabled = !ok;
       saveEl.disabled = !ok;
-      buildHint.textContent = ok ? '' : 'нужны слой и поле группировки';
+      buildHint.textContent = fields
+        ? (noVals ? 'отметьте хотя бы одно значение' : '')
+        : 'нужны слой и поле группировки';
       bySplitEl.disabled = !splitEl.value;
       bySplitHint.textContent = splitEl.value ? '' : 'нужен разрез';
       /* PDF и письмо отправляют СОБРАННУЮ сводку — до сборки бессмысленны. */
@@ -788,6 +1002,21 @@
         parts.push('<div class="dash-note">Категорий больше, чем помещается в' +
           ' сводку — показаны крупнейшие.</div>');
       }
+      /* Выборочный набор значений обязан быть виден в самой сводке: иначе на
+         распечатке (PDF) её примут за полный итог по слою. */
+      var filt = [];
+      if (s.group_values && s.group_values.length) {
+        filt.push('«' + esc(fieldLabel(s.group)) + '» — ' +
+          fmtInt(s.group_values.length) + ' знач.');
+      }
+      if (s.split && s.split_values && s.split_values.length) {
+        filt.push('«' + esc(fieldLabel(s.split)) + '» — ' +
+          fmtInt(s.split_values.length) + ' знач.');
+      }
+      if (filt.length) {
+        parts.push('<div class="dash-note">Выборка по отмеченным значениям: ' +
+          filt.join('; ') + '. Итоги считаны только по ним.</div>');
+      }
 
       if (!rows.length) {
         parts.push('<div class="dash-empty">Нет объектов для выбранного среза.</div>');
@@ -815,6 +1044,10 @@
       p.set('group', group);
       if (splitEl.value) p.set('split', splitEl.value);
       if (districtEl.value) p.set('district', districtEl.value);
+      (valTokens('group') || []).forEach(function (t) { p.append('gv', t); });
+      if (splitEl.value) {
+        (valTokens('split') || []).forEach(function (t) { p.append('sv', t); });
+      }
 
       jget('/me/gis/api/layers/' + encodeURIComponent(pk) + '/summary/?' +
         p.toString())
@@ -849,6 +1082,8 @@
         group: groupEl.value,
         split: splitEl.value || null,
         bysplit: !!bySplitEl.checked,
+        group_values: valTokens('group'),
+        split_values: splitEl.value ? valTokens('split') : null,
       };
     }
 
@@ -906,9 +1141,11 @@
         buildHint.textContent = 'слой отчёта недоступен';
         return;
       }
+      valPending = { group: params.group_values || null,
+                     split: params.split_values || null };
       loadDistricts(params.district ? String(params.district) : null)
+        .then(function () { return fillFieldSelects(params.group, params.split); })
         .then(function () {
-          fillFieldSelects(params.group, params.split);
           syncUrl();
           if (groupEl.value === params.group) buildDashboard();
           else renderIdle();
@@ -1082,16 +1319,21 @@
     });
     groupEl.addEventListener('change', function () {
       /* Разрез по тому же полю, что и группировка, смысла не имеет. */
-      if (splitEl.value && splitEl.value === groupEl.value) splitEl.value = '';
+      var splitReset = splitEl.value && splitEl.value === groupEl.value;
+      if (splitReset) splitEl.value = '';
       /* Срез изменился — прежняя сводка больше не соответствует фильтрам,
          поэтому PDF/письмо снова блокируются до пересборки. */
       lastResp = null;
+      /* Другое поле — другие значения: список галок перезагружаем. */
+      loadVals('group', null);
+      if (splitReset) loadVals('split', null);
       syncUrl();
       updateBuildState();
     });
     splitEl.addEventListener('change', function () {
       if (splitEl.value && splitEl.value === groupEl.value) splitEl.value = '';
       lastResp = null;
+      loadVals('split', null);
       syncUrl();
       updateBuildState();
     });
@@ -1143,13 +1385,20 @@
     var q = new URLSearchParams(location.search);
     if (q.get('region')) regionEl.value = q.get('region');
     if (q.get('bysplit') === '0') bySplitEl.checked = false;
+    valPending = { group: q.getAll('gv'), split: q.getAll('sv') };
     loadPresets();
     Promise.all([
       loadDistricts(q.get('district')),
       loadLayers(q.get('layer')),
     ]).then(function () {
-      if (layerEl.value) fillFieldSelects(q.get('group'), q.get('split'));
-      else updateBuildState();
+      if (!layerEl.value) {
+        updateBuildState();
+        return null;
+      }
+      /* Ждём и списки значений: автосборка по ссылке должна учесть gv/sv,
+         иначе первый дашборд посчитается без фильтра. */
+      return fillFieldSelects(q.get('group'), q.get('split'));
+    }).then(function () {
       /* Ссылка с готовым срезом (есть слой и поле) строится сразу — так
          пересланный дашборд открывается без лишнего клика. */
       if (layerEl.value && q.get('group') && groupEl.value === q.get('group')) {

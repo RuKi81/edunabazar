@@ -1579,7 +1579,12 @@ def gis_layer_summary(request: HttpRequest, pk: int) -> JsonResponse:
 
     Параметры: ``group`` (обязателен, db-имя атрибута), ``split`` (второе
     измерение, опц.), ``district`` (``agro_district.id`` — оставить объекты,
-    пересекающие район). Уровень доступа ``view``.
+    пересекающие район), ``gv``/``sv`` — ПОВТОРЯЮЩИЕСЯ параметры с перечнем
+    значений группировки/разреза (чекбоксы в UI; без них берутся все
+    значения). Уровень доступа ``view``.
+
+    Повторяющиеся параметры, а не один через запятую: значения атрибутов
+    сами содержат и запятые, и точки с запятой.
 
     Считает :func:`my_fields.services.layer_summary.summary_by_field`;
     некорректное поле или слишком большой слой → 400 с текстом для UI.
@@ -1605,7 +1610,9 @@ def gis_layer_summary(request: HttpRequest, pk: int) -> JsonResponse:
     from .services.layer_summary import LayerSummaryError, summary_by_field
     try:
         data = summary_by_field(
-            layer, group, split=split, district_id=district_id)
+            layer, group, split=split, district_id=district_id,
+            group_values=request.GET.getlist('gv') or None,
+            split_values=request.GET.getlist('sv') or None)
     except LayerSummaryError as exc:
         return JsonResponse(
             {'ok': False, 'error': 'bad_summary', 'detail': str(exc)},
@@ -1826,7 +1833,9 @@ def gis_dashboard_send(request: HttpRequest) -> JsonResponse:
     try:
         summary = summary_by_field(
             layer, params['group'], split=params['split'],
-            district_id=params['district'])
+            district_id=params['district'],
+            group_values=params.get('group_values'),
+            split_values=params.get('split_values'))
     except LayerSummaryError as exc:
         return JsonResponse(
             {'ok': False, 'error': 'bad_summary', 'detail': str(exc)}, status=400)

@@ -31,7 +31,8 @@ from django.utils.html import escape
 logger = logging.getLogger(__name__)
 
 # Ключи, которые вообще могут храниться в пресете и попадать в ссылку.
-PARAM_KEYS = ('region', 'district', 'group', 'split', 'bysplit')
+PARAM_KEYS = ('region', 'district', 'group', 'split', 'bysplit',
+              'group_values', 'split_values')
 
 # Писем за один запрос: защита от превращения кнопки «отправить» в рассыльщик.
 MAX_RECIPIENTS = 5
@@ -86,12 +87,24 @@ def normalize_params(layer, raw: dict | None) -> dict:
     if split and split not in names:
         raise DashboardParamsError(f'Поле разреза не найдено в слое: {split}.')
 
+    # Перечни значений (чекбоксы) валидирует сама сводка — там же, где
+    # они попадают в SQL. Здесь только приводим тип и снимаем дубли.
+    from .layer_summary import LayerSummaryError, clean_values
+    try:
+        gvals = clean_values(raw.get('group_values'), 'Значения группировки')
+        svals = clean_values(raw.get('split_values'), 'Значения разреза')
+    except LayerSummaryError as exc:
+        raise DashboardParamsError(str(exc)) from None
+
     return {
         'region': _int_or_none(raw.get('region')),
         'district': _int_or_none(raw.get('district')),
         'group': group,
         'split': split,
         'bysplit': bool(raw.get('bysplit', True)),
+        'group_values': gvals,
+        # Без разреза его фильтр бессмыслен и только мусорит ссылку.
+        'split_values': svals if split else None,
     }
 
 
@@ -114,8 +127,14 @@ def dashboard_url(layer, params: dict) -> str:
         query['split'] = params['split']
     if not params.get('bysplit', True):
         query['bysplit'] = '0'
+    # gv/sv — ПОВТОРЯЮЩИЕСЯ параметры (doseq): сами значения атрибутов
+    # содержат запятые, так что склеить их в одну строку нельзя.
+    if params.get('group_values'):
+        query['gv'] = list(params['group_values'])
+    if params.get('split') and params.get('split_values'):
+        query['sv'] = list(params['split_values'])
     path = reverse('my_fields:ui_gis_dashboards')
-    return f'{_site_url()}{path}?{urlencode(query)}'
+    return f'{_site_url()}{path}?{urlencode(query, doseq=True)}'
 
 
 def field_label(layer, db: str) -> str:
@@ -124,6 +143,22 @@ def field_label(layer, db: str) -> str:
         if attr.get('db') == db:
             return attr.get('name') or db
     return db
+
+
+def _filter_note(layer, summary: dict) -> str:
+    """Подпись о выборочности отчёта (чекбоксы значений).
+
+    Без неё получатель письма принял бы усечённую выборку за полный
+    итог по слою.
+    """
+    parts = []
+    if summary.get('group_values'):
+        parts.append(f'{field_label(layer, summary["group"])} — '
+                     f'{len(summary["group_values"])} знач.')
+    if summary.get('split') and summary.get('split_values'):
+        parts.append(f'{field_label(layer, summary["split"])} — '
+                     f'{len(summary["split_values"])} знач.')
+    return ('выбраны значения: ' + '; '.join(parts)) if parts else ''
 
 
 def _scope_names(params: dict) -> list[str]:
@@ -229,6 +264,9 @@ def _text_lines(layer, summary: dict, params: dict, url: str, note: str) -> str:
     lines.append('Группировка: ' + field_label(layer, summary['group']))
     if summary.get('split'):
         lines.append('Разрез: ' + field_label(layer, summary['split']))
+    filt = _filter_note(layer, summary)
+    if filt:
+        lines.append('Фильтр: ' + filt)
     lines.append(f'Объектов: {_num(total.get("count"), 0)}')
     if polygonal:
         lines.append(f'Площадь: {_num(total.get("area_ha"))} га')
@@ -258,6 +296,9 @@ def build_email(layer, params: dict, summary: dict, note: str = '') -> tuple:
     sub.append('группировка: ' + field_label(layer, summary['group']))
     if summary.get('split'):
         sub.append('разрез: ' + field_label(layer, summary['split']))
+    filt = _filter_note(layer, summary)
+    if filt:
+        sub.append(filt)
     head.append('<p style="margin:0 0 14px; color:#888; font-size:13px;">'
                 + escape(' · '.join(sub)) + '</p>')
     if note:

@@ -7,6 +7,8 @@
 * не-полигональные слои: площади нет, доли считаются по числу объектов;
 * NULL как отдельная категория (``value = None``), а не выпадение строки;
 * фильтр по району: остаются только пересекающие объекты, площадь ПОЛНАЯ;
+* фильтр по перечню значений (чекбоксы у группировки и разреза),
+  включая токен NULL и повторяющиеся параметры ``gv``/``sv``;
 * валидацию (чужое поле → LayerSummaryError/400) и доступ к эндпоинту.
 
 Требуют PostGIS. Локально: $env:PROJ_LIB='' (конфликт PROJ/GDAL).
@@ -17,7 +19,7 @@ from psycopg import sql
 
 from agrocosmos.models import District, Region
 from my_fields.services.layer_summary import (
-    LayerSummaryError, summary_by_field,
+    MAX_FILTER_VALUES, NULL_TOKEN, LayerSummaryError, summary_by_field,
 )
 from my_fields.services.shp_import import create_empty_layer
 
@@ -151,6 +153,101 @@ class LayerSummaryServiceTests(_LayerFactoryMixin, GisLayersTestCase):
             summary_by_field(self.layer, 'soil')
 
 
+class LayerSummaryValueFilterTests(_LayerFactoryMixin, GisLayersTestCase):
+    """Выборка по отмеченным значениям атрибутов."""
+
+    def setUp(self):
+        self.layer = self._make_layer('polygon')
+
+    def test_group_values_limit_rows(self):
+        s = summary_by_field(self.layer, 'soil', group_values=['Серая'])
+        self.assertEqual(list(_rows(s)), ['Серая'])
+        self.assertEqual(s['total']['count'], 1)
+        # Доли пересчитаны по ВЫБОРКЕ, а не по всему слою.
+        self.assertAlmostEqual(s['rows'][0]['share'], 1.0, places=6)
+        self.assertEqual(s['group_values'], ['Серая'])
+
+    def test_null_token_selects_empty_cells(self):
+        s = summary_by_field(self.layer, 'soil', group_values=[NULL_TOKEN])
+        self.assertEqual(list(_rows(s)), [None])
+        self.assertEqual(s['total']['count'], 1)
+
+    def test_empty_string_is_not_null(self):
+        """Пустая строка — не NULL: токены не должны их смешивать."""
+        s = summary_by_field(self.layer, 'soil', group_values=[''])
+        self.assertEqual(s['total']['count'], 0)
+
+    def test_split_values_limit_columns(self):
+        s = summary_by_field(self.layer, 'soil', split='zone',
+                             split_values=['A'])
+        self.assertEqual([x['value'] for x in s['splits']], ['A'])
+        self.assertEqual(s['total']['count'], 2)
+        self.assertEqual(s['split_values'], ['A'])
+
+    def test_both_filters_combine(self):
+        s = summary_by_field(self.layer, 'soil', split='zone',
+                             group_values=['Чернозём'], split_values=['B'])
+        self.assertEqual(s['total']['count'], 1)
+        self.assertEqual(list(_rows(s)), ['Чернозём'])
+
+    def test_split_values_ignored_without_split(self):
+        s = summary_by_field(self.layer, 'soil', split_values=['A'])
+        self.assertIsNone(s['split_values'])
+        self.assertEqual(s['total']['count'], 4)
+
+    def test_empty_list_means_no_filter(self):
+        s = summary_by_field(self.layer, 'soil', group_values=[])
+        self.assertIsNone(s['group_values'])
+        self.assertEqual(s['total']['count'], 4)
+
+    def test_duplicates_dropped(self):
+        s = summary_by_field(self.layer, 'soil',
+                             group_values=['Серая', 'Серая'])
+        self.assertEqual(s['group_values'], ['Серая'])
+
+    def test_unknown_value_gives_empty_summary(self):
+        s = summary_by_field(self.layer, 'soil', group_values=['нету'])
+        self.assertEqual(s['rows'], [])
+        self.assertEqual(s['total']['count'], 0)
+
+    def test_numeric_values_compare_as_text(self):
+        layer = create_empty_layer(
+            'Зоны', 'polygon',
+            attributes=[{'name': 'zone_2', 'type': 'integer'}],
+            owner=self.admin_user,
+        )
+        t = sql.Identifier(layer.table_name)
+        with connection.cursor() as cur:
+            for code in (3, 3, 7):
+                cur.execute(sql.SQL(
+                    'INSERT INTO {t} (zone_2, geom) VALUES (%s, ST_SetSRID('
+                    'ST_MakeEnvelope(34.1, 45.1, 34.15, 45.15), 4326))'
+                ).format(t=t), [code])
+        layer.feature_count = 3
+        layer.save(update_fields=['feature_count'])
+
+        s = summary_by_field(layer, 'zone_2', group_values=['3'])
+        self.assertEqual(list(_rows(s)), ['3'])
+        self.assertEqual(s['total']['count'], 2)
+
+    def test_too_many_values_raises(self):
+        with self.assertRaises(LayerSummaryError):
+            summary_by_field(
+                self.layer, 'soil',
+                group_values=[str(i) for i in range(MAX_FILTER_VALUES + 1)])
+
+    def test_string_instead_of_list_raises(self):
+        with self.assertRaises(LayerSummaryError):
+            summary_by_field(self.layer, 'soil', group_values='Серая')
+
+    def test_sql_injection_in_value_is_just_a_value(self):
+        s = summary_by_field(
+            self.layer, 'soil', group_values=["'; DROP TABLE x; --"])
+        self.assertEqual(s['rows'], [])
+        # Таблица жива: значения идут параметрами, а не в тело SQL.
+        self.assertEqual(summary_by_field(self.layer, 'soil')['total']['count'], 4)
+
+
 class LayerSummaryDistrictTests(_LayerFactoryMixin, GisLayersTestCase):
     """Фильтр по району: отбор по пересечению, площадь без обрезки."""
 
@@ -220,6 +317,32 @@ class LayerSummaryEndpointTests(GisLayersTestCase):
 
     def test_bad_group_is_400(self):
         resp = self._get('?group=nope')
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()['error'], 'bad_summary')
+
+    def test_gv_param_filters(self):
+        with connection.cursor() as cur:
+            cur.execute(sql.SQL(
+                'INSERT INTO {t} (soil, geom) VALUES (%s, ST_SetSRID('
+                'ST_MakeEnvelope(34.2, 45.1, 34.25, 45.15), 4326))'
+            ).format(t=sql.Identifier(self.layer.table_name)), ['Серая'])
+
+        full = self._get('?group=soil').json()['summary']
+        self.assertEqual(full['total']['count'], 2)
+        self.assertIsNone(full['group_values'])
+
+        s = self._get('?group=soil&gv=Серая').json()['summary']
+        self.assertEqual(s['total']['count'], 1)
+        self.assertEqual(s['group_values'], ['Серая'])
+
+    def test_repeated_gv_params_accumulate(self):
+        s = self._get('?group=soil&gv=Чернозём&gv=Серая').json()['summary']
+        self.assertEqual(s['group_values'], ['Чернозём', 'Серая'])
+
+    def test_too_many_gv_is_400(self):
+        query = '?group=soil' + ''.join(
+            f'&gv={i}' for i in range(MAX_FILTER_VALUES + 1))
+        resp = self._get(query)
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.json()['error'], 'bad_summary')
 

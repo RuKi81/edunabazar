@@ -70,7 +70,27 @@ class NormalizeParamsTests(_DashboardTestCase):
         self.assertEqual(out, {
             'region': 71, 'district': 5, 'group': 'soil',
             'split': 'zone', 'bysplit': False,
+            'group_values': None, 'split_values': None,
         })
+
+    def test_keeps_value_filters(self):
+        out = normalize_params(self.layer, {
+            'group': 'soil', 'split': 'zone',
+            'group_values': ['Чернозём', 'Чернозём'],
+            'split_values': ['A'],
+        })
+        self.assertEqual(out['group_values'], ['Чернозём'])
+        self.assertEqual(out['split_values'], ['A'])
+
+    def test_split_values_dropped_without_split(self):
+        out = normalize_params(
+            self.layer, {'group': 'soil', 'split_values': ['A']})
+        self.assertIsNone(out['split_values'])
+
+    def test_bad_value_filter_rejected(self):
+        with self.assertRaises(DashboardParamsError):
+            normalize_params(
+                self.layer, {'group': 'soil', 'group_values': 'Чернозём'})
 
     def test_split_equal_to_group_is_dropped(self):
         out = normalize_params(self.layer, {'group': 'soil', 'split': 'soil'})
@@ -104,6 +124,14 @@ class NormalizeParamsTests(_DashboardTestCase):
         self.assertIn('group=soil', url)
         self.assertIn('split=zone', url)
         self.assertIn('bysplit=0', url)
+
+    def test_url_carries_value_filters_as_repeated_params(self):
+        url = dashboard_url(self.layer, normalize_params(self.layer, {
+            'group': 'soil', 'split': 'zone',
+            'group_values': ['Чернозём', 'Серая'], 'split_values': ['A'],
+        }))
+        self.assertEqual(url.count('gv='), 2)
+        self.assertIn('sv=A', url)
 
 
 class RecipientsTests(GisLayersTestCase):
@@ -253,6 +281,15 @@ class DashboardSendTests(_DashboardTestCase):
         self.assertIn('<table', html)
         self.assertIn('Чернозём', html)
 
+    def test_filter_is_mentioned_in_letter(self):
+        """Выборку нельзя подать как полный итог по слою."""
+        mail.outbox = []
+        resp = self._send(params=self._params(group_values=['Чернозём']))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        msg = mail.outbox[0]
+        self.assertIn('выбраны значения', msg.body)
+        self.assertIn('gv=', msg.body)
+
     def test_each_recipient_gets_own_message(self):
         mail.outbox = []
         resp = self._send(to='a@b.ru, c@d.ru')
@@ -288,6 +325,12 @@ class DashboardsPageControlsTests(GisLayersTestCase):
                        'dash-email', 'dash-link'):
             self.assertContains(resp, marker)
         self.assertContains(resp, 'Сохранённые дашборды')
+
+    def test_page_has_value_checkbox_lists(self):
+        self._login_admin()
+        resp = self.client.get('/me/gis/dashboards/')
+        for marker in ('dash-group-vals', 'dash-split-vals', 'dash-vals__list'):
+            self.assertContains(resp, marker)
 
     def test_chart_checkbox_has_no_group_label(self):
         self._login_admin()

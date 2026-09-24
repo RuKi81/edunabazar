@@ -17,9 +17,17 @@
 границ OSM; для слоя, целиком лежащего в одном районе (обычный случай)
 разницы нет вообще.
 
+Значения атрибутов можно ограничить перечнем (``group_values`` /
+``split_values``) — это чекбоксы в UI рядом с селектами «Группировка» и
+«Разрез». Сравнение идёт ПО ТЕКСТОВОМУ представлению (``col::text``) — так же,
+как строятся сами группы и как отдаёт значения ``/field-values/``, чтобы
+числовые коды и текст работали одинаково. SQL ``NULL`` в перечне обозначается
+токеном :data:`NULL_TOKEN` (пустая строка — отдельное, непустое значение, и
+путать их нельзя).
+
 Имена колонок в SQL подставляются только через ``psycopg.sql.Identifier`` и
-только после проверки по ``layer.attributes`` — произвольный SQL от клиента
-исключён.
+только после проверки по ``layer.attributes``; сами значения — только
+параметрами запроса (``= ANY(%s)``). Произвольный SQL от клиента исключён.
 """
 from __future__ import annotations
 
@@ -41,6 +49,53 @@ MAX_FEATURES = 300_000
 # могут дать декартово произведение — режем и помечаем truncated.
 MAX_GROUPS = 200
 MAX_SPLITS = 40
+# Длина перечня значений в фильтре (чекбоксы): совпадает с лимитом
+# ``/field-values/``, больше значений UI всё равно не покажет.
+MAX_FILTER_VALUES = 500
+# Токен SQL ``NULL`` в перечне значений фильтра.
+NULL_TOKEN = '__null__'
+
+
+def clean_values(raw, what: str):
+    """Нормализовать перечень значений фильтра → ``list[str] | None``.
+
+    ``None`` или пустой перечень — фильтра нет (берутся все значения). Дубли
+    снимаются, порядок сохраняется (стабильные ссылки и пресеты).
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, (str, bytes)) or not isinstance(raw, (list, tuple, set)):
+        raise LayerSummaryError(f'{what}: ожидается список значений.')
+    out, seen = [], set()
+    for item in raw:
+        val = NULL_TOKEN if item is None else str(item)
+        if val in seen:
+            continue
+        seen.add(val)
+        out.append(val)
+    if len(out) > MAX_FILTER_VALUES:
+        raise LayerSummaryError(
+            f'{what}: слишком много значений (>{MAX_FILTER_VALUES}).')
+    return out or None
+
+
+def _value_filter(field, values):
+    """Условие ``WHERE`` по перечню значений колонки → ``(SQL, params)``.
+
+    Пустой перечень — ``(None, [])`` (фильтра нет). :data:`NULL_TOKEN`
+    превращается в отдельное ``IS NULL``: ``= ANY`` NULL-ы не ловит.
+    """
+    if not values:
+        return None, []
+    col = sql.Identifier(field)
+    plain = [v for v in values if v != NULL_TOKEN]
+    parts, params = [], []
+    if plain:
+        parts.append(sql.SQL('l.{}::text = ANY(%s)').format(col))
+        params.append(plain)
+    if len(plain) != len(values):
+        parts.append(sql.SQL('l.{} IS NULL').format(col))
+    return sql.SQL('({})').format(sql.SQL(' OR ').join(parts)), params
 
 
 def _area_expr(polygonal):
@@ -50,7 +105,8 @@ def _area_expr(polygonal):
     return sql.SQL('COALESCE(sum(ST_Area(l.geom::geography)), 0) / 10000.0')
 
 
-def _fetch_rows(layer, group, split, district_id, polygonal, row_limit):
+def _fetch_rows(layer, group, split, district_id, polygonal, row_limit,
+                group_values=None, split_values=None):
     """Выполнить GROUP BY и вернуть сырые строки ``(g[, s], count, area_ha)``."""
     select = [sql.SQL('l.{}::text AS g').format(sql.Identifier(group))]
     group_by = [sql.SQL('1')]
@@ -67,13 +123,27 @@ def _fetch_rows(layer, group, split, district_id, polygonal, row_limit):
             ' JOIN agro_district d ON d.id = %s AND ST_Intersects(l.geom, d.geom)')
         params.append(int(district_id))
 
+    where_parts = []
+    for field, values in ((group, group_values), (split, split_values)):
+        if not field:
+            continue
+        cond, cond_params = _value_filter(field, values)
+        if cond is not None:
+            where_parts.append(cond)
+            params.extend(cond_params)
+    where = sql.SQL('')
+    if where_parts:
+        where = sql.SQL(' WHERE {}').format(
+            sql.SQL(' AND ').join(where_parts))
+
     query = sql.SQL(
-        'SELECT {select} FROM {table} l{join} '
+        'SELECT {select} FROM {table} l{join}{where} '
         'GROUP BY {group_by} ORDER BY area_ha DESC, n DESC LIMIT %s'
     ).format(
         select=sql.SQL(', ').join(select),
         table=sql.Identifier(layer.table_name),
         join=join,
+        where=where,
         group_by=sql.SQL(', ').join(group_by),
     )
     params.append(row_limit + 1)
@@ -122,7 +192,8 @@ def _sort_key(polygonal):
 
 
 def summary_by_field(layer, group: str, split: str | None = None,
-                     district_id: int | None = None) -> dict:
+                     district_id: int | None = None,
+                     group_values=None, split_values=None) -> dict:
     """Сводка слоя: количество объектов и площадь по значениям ``group``.
 
     Args:
@@ -132,6 +203,10 @@ def summary_by_field(layer, group: str, split: str | None = None,
             ``group`` трактуется как отсутствие разреза.
         district_id: ``agro_district.id`` — оставить только объекты,
             пересекающие границу района (площади при этом ПОЛНЫЕ, см. модуль).
+        group_values: перечень значений ``group`` (чекбоксы в UI) или ``None``
+            — тогда берутся все. Сравнение по тексту, ``NULL`` —
+            :data:`NULL_TOKEN`.
+        split_values: то же для ``split``. Игнорируется без ``split``.
 
     Returns:
         ``{'group', 'split', 'polygonal', 'rows', 'splits', 'total',
@@ -155,9 +230,15 @@ def summary_by_field(layer, group: str, split: str | None = None,
             'Слой слишком большой для сводки '
             f'(объектов {layer.feature_count}, максимум {MAX_FEATURES}).')
 
+    group_values = clean_values(group_values, 'Значения группировки')
+    split_values = clean_values(split_values, 'Значения разреза')
+    if not split:
+        split_values = None
+
     polygonal = layer.geom_kind == 'polygon'
     row_limit = MAX_GROUPS * MAX_SPLITS if split else MAX_GROUPS
-    rows = _fetch_rows(layer, group, split, district_id, polygonal, row_limit)
+    rows = _fetch_rows(layer, group, split, district_id, polygonal, row_limit,
+                       group_values=group_values, split_values=split_values)
     truncated = len(rows) > row_limit
     groups = _accumulate(rows[:row_limit], split)
 
@@ -199,6 +280,10 @@ def summary_by_field(layer, group: str, split: str | None = None,
         'split': split,
         'polygonal': polygonal,
         'district_id': int(district_id) if district_id else None,
+        # Эхо применённых фильтров: письмо и подпись сводки должны честно
+        # показывать, что выборка неполная.
+        'group_values': group_values,
+        'split_values': split_values,
         'rows': out_rows,
         'splits': [
             {'value': s['value'], 'count': s['count'],
