@@ -21,6 +21,18 @@
       background: #fff;
     }
     .dash-back:hover { background: #f0f0f0; color: #2e7d32; }
+    /* Иконка раскрытия панели параметров: та же кнопка-квадрат, что и
+       «назад», но <button> — гасим браузерные отступы и шрифт. */
+    .dash-toggle {
+      padding: 0; font-family: inherit; line-height: 1; cursor: pointer;
+    }
+    .dash-toggle.is-on {
+      background: #e8f5e9; border-color: #a5d6a7; color: #2e7d32;
+    }
+    /* Панель параметров по умолчанию свёрнута: на готовом дашборде она
+       занимает пол-экрана, а меняют срез редко. Класс, а не [hidden]:
+       .dash-filters задаёт display:grid и перебил бы атрибут. */
+    .dash-filters.dash-filters--off { display: none; }
 
     /* Панель выбора: три селекта в одну строку, на узких экранах — в столбец. */
     .dash-filters {
@@ -310,9 +322,12 @@
       <a class="dash-back" href="{% url 'my_fields:ui_gis' %}"
          title="Назад в ГИС" aria-label="Назад в ГИС">←</a>
       <h1>📊 Дашборды</h1>
+      <button class="dash-back dash-toggle" id="dash-filters-toggle" type="button"
+              aria-expanded="false" aria-controls="dash-filters"
+              title="Параметры сводки" aria-label="Параметры сводки">⚙</button>
     </div>
 
-    <div class="dash-filters">
+    <div class="dash-filters dash-filters--off" id="dash-filters">
       <div class="dash-field">
         <label for="dash-region">Регион</label>
         <select class="browser-default" id="dash-region">
@@ -404,7 +419,8 @@
     <div class="dash-body" id="dash-body">
       <div class="dash-empty" id="dash-empty">
         <span class="dash-empty__icon">📈</span>
-        Выберите регион, район и слой — здесь появится сводка.
+        Нажмите ⚙ вверху, выберите регион, район и слой —
+        здесь появится сводка.
       </div>
     </div>
   </div>
@@ -461,6 +477,8 @@
     var mailMsgEl  = document.getElementById('dash-mail-msg');
     var mailSendEl = document.getElementById('dash-mail-send');
     var mailCancel = document.getElementById('dash-mail-cancel');
+    var filtersEl  = document.getElementById('dash-filters');
+    var filtersTgl = document.getElementById('dash-filters-toggle');
 
     /* Слои держим целиком (в ответе /api/layers/ есть attributes) —
        селекты полей наполняются без дополнительного запроса. */
@@ -577,6 +595,23 @@
       return db;
     }
 
+    /* ── Панель параметров: свёрнута по умолчанию ──
+       Состояние запоминается на браузер: кто правит срез постоянно,
+       держит панель открытой и не кликает иконку на каждой загрузке. */
+    var FILTERS_KEY = 'gisDashFiltersOpen';
+
+    function setFiltersOpen(open, remember) {
+      filtersEl.classList.toggle('dash-filters--off', !open);
+      filtersTgl.classList.toggle('is-on', open);
+      filtersTgl.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (!remember) return;
+      try { localStorage.setItem(FILTERS_KEY, open ? '1' : '0'); } catch (e) {}
+    }
+
+    filtersTgl.addEventListener('click', function () {
+      setFiltersOpen(filtersEl.classList.contains('dash-filters--off'), true);
+    });
+
     function setPlaceholder(html) {
       bodyEl.innerHTML = '<div class="dash-empty">' + html + '</div>';
     }
@@ -588,7 +623,8 @@
       var layer = selectedText(layerEl);
       if (!layer) {
         setPlaceholder('<span class="dash-empty__icon">📈</span>' +
-          'Выберите слой и поле группировки, затем нажмите «Собрать дашборд».');
+          'В параметрах (⚙ вверху) выберите слой и поле группировки,' +
+          ' затем нажмите «Собрать дашборд».');
         return;
       }
       setPlaceholder('<span class="dash-empty__icon">📈</span>' +
@@ -1394,6 +1430,9 @@
 
     /* Стартовое состояние из query-string. */
     var q = new URLSearchParams(location.search);
+    var filtersPref = null;
+    try { filtersPref = localStorage.getItem(FILTERS_KEY); } catch (e) {}
+    setFiltersOpen(filtersPref === '1', false);
     if (q.get('region')) regionEl.value = q.get('region');
     if (q.get('bysplit') === '0') bySplitEl.checked = false;
     valPending = { group: q.getAll('gv'), split: q.getAll('sv') };

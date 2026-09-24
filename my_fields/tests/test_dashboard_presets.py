@@ -332,6 +332,14 @@ class DashboardsPageControlsTests(GisLayersTestCase):
         for marker in ('dash-group-vals', 'dash-split-vals', 'dash-vals__list'):
             self.assertContains(resp, marker)
 
+    def test_filters_collapsed_by_default(self):
+        """Панель параметров приходит свёрнутой, раскрывается иконкой ⚙."""
+        self._login_admin()
+        html = self.client.get('/me/gis/dashboards/').content.decode()
+        self.assertIn('class="dash-filters dash-filters--off"', html)
+        self.assertIn('id="dash-filters-toggle"', html)
+        self.assertIn('.dash-filters.dash-filters--off { display: none; }', html)
+
     def test_value_rows_override_field_label_style(self):
         """Строки значений — <label>, и их стиль должен бить `.dash-field label`.
 
