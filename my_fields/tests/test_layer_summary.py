@@ -4,6 +4,8 @@
 * группировку по атрибуту: количество объектов, геодезическая площадь (га),
   доли и порядок строк (по убыванию площади);
 * разрез вторым атрибутом (кросс-таб) и итоги по значениям разреза;
+* ВТОРОЙ УРОВЕНЬ группировки (``group2``): категория = пара значений,
+  свой перечень значений, снятие повторов с group/split;
 * не-полигональные слои: площади нет, доли считаются по числу объектов;
 * NULL как отдельная категория (``value = None``), а не выпадение строки;
 * фильтр по району: остаются только пересекающие объекты, площадь ПОЛНАЯ;
@@ -248,6 +250,71 @@ class LayerSummaryValueFilterTests(_LayerFactoryMixin, GisLayersTestCase):
         self.assertEqual(summary_by_field(self.layer, 'soil')['total']['count'], 4)
 
 
+class LayerSummaryTwoLevelTests(_LayerFactoryMixin, GisLayersTestCase):
+    """Второй уровень группировки: строка = пара (group, group2)."""
+
+    def setUp(self):
+        self.layer = self._make_layer('polygon')
+
+    def _pairs(self, s):
+        return {(r['value'], r['value2']): r['count'] for r in s['rows']}
+
+    def test_rows_are_pairs(self):
+        s = summary_by_field(self.layer, 'soil', group2='zone')
+        self.assertEqual(s['group2'], 'zone')
+        self.assertEqual(self._pairs(s), {
+            ('Чернозём', 'A'): 1,
+            ('Чернозём', 'B'): 1,
+            ('Серая', 'A'): 1,
+            (None, 'B'): 1,
+        })
+        self.assertEqual(s['total']['count'], 4)
+        self.assertAlmostEqual(sum(r['share'] for r in s['rows']), 1.0, places=6)
+
+    def test_without_group2_value2_is_none(self):
+        s = summary_by_field(self.layer, 'soil')
+        self.assertIsNone(s['group2'])
+        self.assertTrue(all(r['value2'] is None for r in s['rows']))
+
+    def test_same_field_as_group_is_dropped(self):
+        s = summary_by_field(self.layer, 'soil', group2='soil')
+        self.assertIsNone(s['group2'])
+        self.assertEqual(len(s['rows']), 3)
+
+    def test_split_equal_to_group2_is_dropped(self):
+        s = summary_by_field(self.layer, 'soil', group2='zone', split='zone')
+        self.assertEqual(s['group2'], 'zone')
+        self.assertIsNone(s['split'])
+        self.assertEqual(s['splits'], [])
+
+    def test_group2_values_filter_rows(self):
+        s = summary_by_field(self.layer, 'soil', group2='zone',
+                             group2_values=['A'])
+        self.assertEqual(s['group2_values'], ['A'])
+        self.assertEqual(set(self._pairs(s)), {('Чернозём', 'A'),
+                                              ('Серая', 'A')})
+        self.assertEqual(s['total']['count'], 2)
+
+    def test_group2_values_ignored_without_group2(self):
+        s = summary_by_field(self.layer, 'soil', group2_values=['A'])
+        self.assertIsNone(s['group2_values'])
+        self.assertEqual(s['total']['count'], 4)
+
+    def test_bad_group2_raises(self):
+        with self.assertRaises(LayerSummaryError):
+            summary_by_field(self.layer, 'soil', group2='nope')
+
+    def test_cross_tab_kept_with_two_levels(self):
+        layer = self._make_layer('polygon', env=(
+            ('Чернозём', 'A', 34.10, 45.10),
+            ('Чернозём', 'A', 34.20, 45.10),
+        ))
+        s = summary_by_field(layer, 'soil', group2='zone', split='soil')
+        # split совпал с group → снят, осталась чистая двухуровневая сводка.
+        self.assertIsNone(s['split'])
+        self.assertEqual(self._pairs(s), {('Чернозём', 'A'): 2})
+
+
 class LayerSummaryDistrictTests(_LayerFactoryMixin, GisLayersTestCase):
     """Фильтр по району: отбор по пересечению, площадь без обрезки."""
 
@@ -346,6 +413,32 @@ class LayerSummaryEndpointTests(GisLayersTestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.json()['error'], 'bad_summary')
 
+    def test_group2_and_g2v_params(self):
+        with connection.cursor() as cur:
+            cur.execute(sql.SQL(
+                'ALTER TABLE {t} ADD COLUMN zone text'
+            ).format(t=sql.Identifier(self.layer.table_name)))
+        self.layer.attributes = (self.layer.attributes or []) + [
+            {'name': 'zone', 'db': 'zone', 'type': 'text'}]
+        self.layer.save(update_fields=['attributes'])
+        with connection.cursor() as cur:
+            cur.execute(sql.SQL(
+                'UPDATE {t} SET zone = %s'
+            ).format(t=sql.Identifier(self.layer.table_name)), ['A'])
+
+        s = self._get('?group=soil&group2=zone').json()['summary']
+        self.assertEqual(s['group2'], 'zone')
+        self.assertEqual(s['rows'][0]['value2'], 'A')
+
+        s = self._get('?group=soil&group2=zone&g2v=B').json()['summary']
+        self.assertEqual(s['group2_values'], ['B'])
+        self.assertEqual(s['rows'], [])
+
+    def test_bad_group2_is_400(self):
+        resp = self._get('?group=soil&group2=nope')
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()['error'], 'bad_summary')
+
     def test_bad_district_is_ignored(self):
         resp = self._get('?group=soil&district=abc')
         self.assertEqual(resp.status_code, 200, resp.content)
@@ -375,6 +468,8 @@ class DashboardsPageTests(GisLayersTestCase):
         self.assertContains(resp, 'dash-build')
         # Переключатель малых диаграмм по значениям разреза.
         self.assertContains(resp, 'dash-bysplit')
+        # Второй уровень группировки — по кнопке, блок скрыт.
+        self.assertContains(resp, 'dash-group2-add')
 
     def test_non_admin_gets_404(self):
         self._login_plain()

@@ -6,6 +6,12 @@
 второе измерение (например, зоны ``zone_2``) и разворачивается в таблицу
 кросс-табом на клиенте.
 
+Группировок может быть ДВЕ (``group`` + ``group2``) — второй уровень
+детализирует строки: категорией становится ПАРА значений, в таблице на
+каждый уровень своя колонка. Больше двух уровней сознательно нет: число
+строк растёт произведением, а диаграмма по комбинациям уже нечитаема
+(секторы строятся по ПЕРВОМУ уровню).
+
 Площадь считается ГЕОДЕЗИЧЕСКИ — ``ST_Area(geom::geography) / 10000`` (га),
 а не в градусах: слои хранятся в EPSG:4326, где площадь в единицах СК
 физического смысла не имеет. Для точечных и линейных слоёв площади нет —
@@ -18,12 +24,12 @@
 разницы нет вообще.
 
 Значения атрибутов можно ограничить перечнем (``group_values`` /
-``split_values``) — это чекбоксы в UI рядом с селектами «Группировка» и
-«Разрез». Сравнение идёт ПО ТЕКСТОВОМУ представлению (``col::text``) — так же,
-как строятся сами группы и как отдаёт значения ``/field-values/``, чтобы
-числовые коды и текст работали одинаково. SQL ``NULL`` в перечне обозначается
-токеном :data:`NULL_TOKEN` (пустая строка — отдельное, непустое значение, и
-путать их нельзя).
+``group2_values`` / ``split_values``) — это чекбоксы в UI под селектами
+«Группировка» и «Разрез». Сравнение идёт ПО ТЕКСТОВОМУ представлению
+(``col::text``) — так же, как строятся сами группы и как отдаёт значения
+``/field-values/``, чтобы числовые коды и текст работали одинаково. SQL
+``NULL`` в перечне обозначается токеном :data:`NULL_TOKEN` (пустая строка —
+отдельное, непустое значение, и путать их нельзя).
 
 Имена колонок в SQL подставляются только через ``psycopg.sql.Identifier`` и
 только после проверки по ``layer.attributes``; сами значения — только
@@ -105,14 +111,17 @@ def _area_expr(polygonal):
     return sql.SQL('COALESCE(sum(ST_Area(l.geom::geography)), 0) / 10000.0')
 
 
-def _fetch_rows(layer, group, split, district_id, polygonal, row_limit,
-                group_values=None, split_values=None):
-    """Выполнить GROUP BY и вернуть сырые строки ``(g[, s], count, area_ha)``."""
-    select = [sql.SQL('l.{}::text AS g').format(sql.Identifier(group))]
-    group_by = [sql.SQL('1')]
-    if split:
-        select.append(sql.SQL('l.{}::text AS s').format(sql.Identifier(split)))
-        group_by.append(sql.SQL('2'))
+def _fetch_rows(layer, fields, district_id, polygonal, row_limit,
+                filters=()):
+    """Выполнить GROUP BY по ``fields`` → строки ``(*ключи, count, area_ha)``.
+
+    ``fields`` — кортеж db-имён в порядке ключей строки (уровни группировки,
+    затем разрез); ``filters`` — пары ``(поле, перечень значений)``.
+    """
+    select, group_by = [], []
+    for pos, field in enumerate(fields, start=1):
+        select.append(sql.SQL('l.{}::text').format(sql.Identifier(field)))
+        group_by.append(sql.SQL(str(pos)))
     select.append(sql.SQL('count(*) AS n'))
     select.append(sql.SQL('{} AS area_ha').format(_area_expr(polygonal)))
 
@@ -124,7 +133,7 @@ def _fetch_rows(layer, group, split, district_id, polygonal, row_limit,
         params.append(int(district_id))
 
     where_parts = []
-    for field, values in ((group, group_values), (split, split_values)):
+    for field, values in filters:
         if not field:
             continue
         cond, cond_params = _value_filter(field, values)
@@ -153,16 +162,23 @@ def _fetch_rows(layer, group, split, district_id, polygonal, row_limit,
         return cur.fetchall()
 
 
-def _accumulate(rows, split):
-    """Свернуть сырые строки в ``{group_value: {count, area_ha, splits}}``."""
+def _accumulate(rows, levels, split):
+    """Свернуть сырые строки в ``{ключ-категория: {count, area_ha, splits}}``.
+
+    ``levels`` — сколько первых колонок строки образуют категорию (1 или 2).
+    Ключ словаря — кортеж значений уровней, чтобы одинаковые значения
+    второго уровня под разными первыми не слипались.
+    """
     groups = {}
     for row in rows:
-        if split:
-            gval, sval, count, area = row[0], row[1], row[2], row[3]
-        else:
-            gval, sval, count, area = row[0], None, row[1], row[2]
-        item = groups.setdefault(
-            gval, {'value': gval, 'count': 0, 'area_ha': 0.0, 'splits': {}})
+        key = tuple(row[:levels])
+        sval = row[levels] if split else None
+        count, area = row[-2], row[-1]
+        item = groups.setdefault(key, {
+            'value': key[0],
+            'value2': key[1] if levels > 1 else None,
+            'count': 0, 'area_ha': 0.0, 'splits': {},
+        })
         item['count'] += int(count or 0)
         item['area_ha'] += float(area or 0.0)
         if split:
@@ -186,61 +202,91 @@ def _split_totals(groups):
 
 def _sort_key(polygonal):
     """Сортировка категорий: по площади, а без площади — по числу объектов."""
+    def label(x):
+        return (str(x['value'] or ''), str(x.get('value2') or ''))
     if polygonal:
-        return lambda x: (-x['area_ha'], -x['count'], str(x['value'] or ''))
-    return lambda x: (-x['count'], str(x['value'] or ''))
+        return lambda x: (-x['area_ha'], -x['count'], label(x))
+    return lambda x: (-x['count'], label(x))
+
+
+def _resolve_fields(layer, group, group2, split):
+    """Проверить поля сводки → ``(group, group2, split)``.
+
+    Повторы снимаются (тот же атрибут во втором уровне или разрезе дал бы
+    дубль-колонку без новой информации), неизвестное поле — ошибка.
+    """
+    types = _attr_db_types(layer)
+    if group not in types:
+        raise LayerSummaryError(f'Недопустимое поле группировки: {group!r}.')
+    if group2 == group:
+        group2 = None
+    if group2 and group2 not in types:
+        raise LayerSummaryError(
+            f'Недопустимое поле второй группировки: {group2!r}.')
+    if split in (group, group2):
+        split = None
+    if split and split not in types:
+        raise LayerSummaryError(f'Недопустимое поле разреза: {split!r}.')
+    return group, group2, split
 
 
 def summary_by_field(layer, group: str, split: str | None = None,
                      district_id: int | None = None,
-                     group_values=None, split_values=None) -> dict:
+                     group_values=None, split_values=None,
+                     group2: str | None = None, group2_values=None) -> dict:
     """Сводка слоя: количество объектов и площадь по значениям ``group``.
 
     Args:
         layer: :class:`my_fields.models.GisLayer`.
         group: db-имя атрибута для группировки (обязателен).
-        split: db-имя атрибута второго измерения или ``None``. Совпадение с
-            ``group`` трактуется как отсутствие разреза.
+        split: db-имя атрибута разреза (колонки кросс-таба) или ``None``.
+            Совпадение с уровнем группировки = отсутствие разреза.
         district_id: ``agro_district.id`` — оставить только объекты,
             пересекающие границу района (площади при этом ПОЛНЫЕ, см. модуль).
         group_values: перечень значений ``group`` (чекбоксы в UI) или ``None``
             — тогда берутся все. Сравнение по тексту, ``NULL`` —
             :data:`NULL_TOKEN`.
         split_values: то же для ``split``. Игнорируется без ``split``.
+        group2: db-имя второго уровня группировки или ``None``:
+            категорией становится пара ``(group, group2)``.
+        group2_values: то же для ``group2``. Игнорируется без ``group2``.
 
     Returns:
-        ``{'group', 'split', 'polygonal', 'rows', 'splits', 'total',
-        'truncated'}``. ``rows`` — список ``{value, count, area_ha, share,
-        splits}`` (``share`` — доля от итога, 0..1), отсортированный по
-        убыванию площади (или количества для не-полигональных слоёв).
+        ``{'group', 'group2', 'split', 'polygonal', 'rows', 'splits', 'total',
+        'truncated'}``. ``rows`` — список ``{value, value2, count, area_ha,
+        share, splits}`` (``value2`` — ``None`` без ``group2``; ``share`` —
+        доля от итога, 0..1), отсортированный по убыванию площади (или
+        количества для не-полигональных слоёв).
 
     Raises:
         LayerSummaryError: поле не является атрибутом слоя либо слой слишком
             велик для синхронной сводки.
     """
-    types = _attr_db_types(layer)
-    if group not in types:
-        raise LayerSummaryError(f'Недопустимое поле группировки: {group!r}.')
-    if split == group:
-        split = None
-    if split and split not in types:
-        raise LayerSummaryError(f'Недопустимое поле разреза: {split!r}.')
+    group, group2, split = _resolve_fields(layer, group, group2, split)
     if (layer.feature_count or 0) > MAX_FEATURES:
         raise LayerSummaryError(
             'Слой слишком большой для сводки '
             f'(объектов {layer.feature_count}, максимум {MAX_FEATURES}).')
 
     group_values = clean_values(group_values, 'Значения группировки')
+    group2_values = clean_values(group2_values, 'Значения 2-й группировки')
     split_values = clean_values(split_values, 'Значения разреза')
+    if not group2:
+        group2_values = None
     if not split:
         split_values = None
 
     polygonal = layer.geom_kind == 'polygon'
+    levels = 2 if group2 else 1
+    fields = (group, group2, split) if group2 else (group, split)
+    fields = tuple(f for f in fields if f)
     row_limit = MAX_GROUPS * MAX_SPLITS if split else MAX_GROUPS
-    rows = _fetch_rows(layer, group, split, district_id, polygonal, row_limit,
-                       group_values=group_values, split_values=split_values)
+    rows = _fetch_rows(
+        layer, fields, district_id, polygonal, row_limit,
+        filters=((group, group_values), (group2, group2_values),
+                 (split, split_values)))
     truncated = len(rows) > row_limit
-    groups = _accumulate(rows[:row_limit], split)
+    groups = _accumulate(rows[:row_limit], levels, split)
 
     items = sorted(groups.values(), key=_sort_key(polygonal))
     if len(items) > MAX_GROUPS:
@@ -263,6 +309,7 @@ def summary_by_field(layer, group: str, split: str | None = None,
         measure = item['area_ha'] if polygonal else item['count']
         out_rows.append({
             'value': item['value'],
+            'value2': item['value2'],
             'count': item['count'],
             'area_ha': round(item['area_ha'], 4),
             'share': (measure / denom) if denom else 0.0,
@@ -277,12 +324,14 @@ def summary_by_field(layer, group: str, split: str | None = None,
 
     return {
         'group': group,
+        'group2': group2,
         'split': split,
         'polygonal': polygonal,
         'district_id': int(district_id) if district_id else None,
         # Эхо применённых фильтров: письмо и подпись сводки должны честно
         # показывать, что выборка неполная.
         'group_values': group_values,
+        'group2_values': group2_values,
         'split_values': split_values,
         'rows': out_rows,
         'splits': [

@@ -34,18 +34,44 @@
        .dash-filters задаёт display:grid и перебил бы атрибут. */
     .dash-filters.dash-filters--off { display: none; }
 
-    /* Панель выбора: три селекта в одну строку, на узких экранах — в столбец. */
+    /* Панель выбора: три селекта в одну строку, на узких экранах — в столбец.
+       align-items:start — ПРИНЦИПИАЛЬНО: при выравнивании по низу
+       появление списка значений в одной колонке сдвигало селекты
+       соседних — вёрстка «прыгала» при каждой загрузке значений. */
     .dash-filters {
-      display: grid; gap: 12px; align-items: end;
+      display: grid; gap: 12px; align-items: start;
       grid-template-columns: repeat(3, minmax(0, 1fr));
       background: #fff; border: 1px solid rgba(0,0,0,.1); border-radius: 10px;
       padding: 14px 16px; box-shadow: 0 1px 4px rgba(0,0,0,.05);
     }
     @media (max-width: 800px) { .dash-filters { grid-template-columns: 1fr; } }
     .dash-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+    /* display:flex перебивает атрибут hidden — возвращаем ему силу
+       (второй уровень группировки по умолчанию скрыт). */
+    .dash-field[hidden] { display: none; }
     .dash-field label {
       font-size: 12px; font-weight: 600; color: #666; text-transform: uppercase;
       letter-spacing: .02em;
+      /* Длинная подпись не должна переноситься: иначе селект этой
+         колонки уезжает ниже соседних. */
+      display: flex; align-items: center; gap: 6px; min-height: 16px;
+    }
+    .dash-field__title {
+      flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    /* Кнопка «+ Добавить группировку» и крестик её снятия. */
+    .dash-addlvl {
+      align-self: flex-start; border: 1px dashed rgba(46,125,50,.5);
+      background: #fff; color: #2e7d32; border-radius: 6px;
+      padding: 3px 8px; font-size: 11.5px; font-family: inherit;
+      cursor: pointer; text-transform: none; letter-spacing: normal;
+    }
+    .dash-addlvl:hover { background: #e8f5e9; }
+    .dash-droplvl {
+      border: 0; background: none; padding: 0 2px; cursor: pointer;
+      color: #b71c1c; font-size: 12px; font-family: inherit; line-height: 1;
+      flex: 0 0 auto;
     }
     /* Materialize глобально прячет нативные <select> (display:none) и
        подменяет их своими дропдаунами — класс browser-default это
@@ -144,20 +170,27 @@
     .dash-tile .dash-legend { gap: 4px; }
     .dash-tile .dash-legend__row { font-size: 11px; }
 
-    /* Чекбокс — тоже <label> внутри .dash-field, поэтому надо явно
-       снять с него стили заголовка поля (uppercase/bold), иначе
-       подпись кричит капсом и наезжает на соседнюю колонку. */
-    .dash-field label.dash-check {
-      display: flex; align-items: flex-start; gap: 7px; min-height: 38px;
-      font-size: 13px; font-weight: 400; color: #444; cursor: pointer;
-      line-height: 1.3; text-transform: none; letter-spacing: normal;
-      padding-top: 2px;
+    /* Чекбокс «Диаграммы по разрезу» живёт в панели действий (не среди
+       фильтров): это настройка ПОКАЗА, а не выборки. Стили заголовка
+       поля (uppercase/bold) снимаем явно — в .dash-field он их наследовал. */
+    .dash-check {
+      display: inline-flex; align-items: center; gap: 7px; margin: 0;
+      font-size: 12.5px; font-weight: 400; color: #444; cursor: pointer;
+      line-height: 1.25; text-transform: none; letter-spacing: normal;
     }
     /* Materialize перекрывает нативные checkbox — возвращаем обычный вид. */
     .dash-check input[type="checkbox"] {
-      position: static; opacity: 1; width: 16px; height: 16px; margin: 1px 0 0;
+      position: static; opacity: 1; width: 15px; height: 15px; margin: 0;
       pointer-events: auto; left: auto; flex: 0 0 auto;
     }
+    /* …и гасим его же бокс с галочкой на <span> после чекбокса
+       (`[type=checkbox] + span:not(.lever)`) — иначе рядом с нативным
+       появляется вторая «птичка» и отступ 35px. */
+    .dash-check input[type="checkbox"] + span {
+      padding-left: 0; line-height: inherit; font-size: inherit; height: auto;
+    }
+    .dash-check input[type="checkbox"] + span::before,
+    .dash-check input[type="checkbox"] + span::after { display: none; }
 
     /* Перечень значений атрибута (чекбоксы) под селектом: выборка строится
        только по отмеченным значениям. Список скроллится — категорий может
@@ -356,29 +389,36 @@
       </div>
 
       <div class="dash-field">
-        <label for="dash-group">Группировка</label>
+        <label for="dash-group"><span class="dash-field__title">Группировка</span></label>
         <select class="browser-default" id="dash-group" disabled>
           <option value="">— сначала выберите слой —</option>
         </select>
         <div class="dash-vals" id="dash-group-vals" hidden></div>
-        <span class="dash-hint">по значениям этого атрибута</span>
+        <button class="dash-addlvl" id="dash-group2-add" type="button"
+                title="Детализировать строки вторым атрибутом">
+          ＋ Добавить группировку
+        </button>
+      </div>
+
+      <div class="dash-field" id="dash-group2-field" hidden>
+        <label for="dash-group2">
+          <span class="dash-field__title">Группировка 2</span>
+          <button class="dash-droplvl" id="dash-group2-del" type="button"
+                  title="Убрать вторую группировку"
+                  aria-label="Убрать вторую группировку">✕</button>
+        </label>
+        <select class="browser-default" id="dash-group2" disabled>
+          <option value="">— не выбрано —</option>
+        </select>
+        <div class="dash-vals" id="dash-group2-vals" hidden></div>
       </div>
 
       <div class="dash-field">
-        <label for="dash-split">Разрез (необязательно)</label>
+        <label for="dash-split"><span class="dash-field__title">Разрез</span></label>
         <select class="browser-default" id="dash-split" disabled>
           <option value="">— без разреза —</option>
         </select>
         <div class="dash-vals" id="dash-split-vals" hidden></div>
-        <span class="dash-hint">добавит колонки в таблицу</span>
-      </div>
-
-      <div class="dash-field">
-        <label class="dash-check" for="dash-bysplit">
-          <input type="checkbox" id="dash-bysplit" checked>
-          <span>Отдельная диаграмма на каждое значение разреза</span>
-        </label>
-        <span class="dash-hint" id="dash-bysplit-hint"></span>
       </div>
     </div>
 
@@ -398,6 +438,13 @@
         </button>
         <div class="dash-menu" id="dash-presets-menu" role="menu"></div>
       </span>
+
+      <label class="dash-check" for="dash-bysplit"
+             title="Отдельная диаграмма на каждое значение разреза">
+        <input type="checkbox" id="dash-bysplit" checked>
+        <span>Диаграммы по разрезу</span>
+      </label>
+      <span class="dash-hint" id="dash-bysplit-hint"></span>
 
       <span class="dash-actions__sep"></span>
 
@@ -456,6 +503,10 @@
     var districtEl = document.getElementById('dash-district');
     var layerEl    = document.getElementById('dash-layer');
     var groupEl    = document.getElementById('dash-group');
+    var group2El   = document.getElementById('dash-group2');
+    var group2Fld  = document.getElementById('dash-group2-field');
+    var group2Add  = document.getElementById('dash-group2-add');
+    var group2Del  = document.getElementById('dash-group2-del');
     var splitEl    = document.getElementById('dash-split');
     var bySplitEl  = document.getElementById('dash-bysplit');
     var bySplitHint = document.getElementById('dash-bysplit-hint');
@@ -562,11 +613,15 @@
       if (districtEl.value) p.set('district', districtEl.value);
       if (layerEl.value) p.set('layer', layerEl.value);
       if (groupEl.value) p.set('group', groupEl.value);
+      if (group2Value()) p.set('group2', group2Value());
       if (splitEl.value) p.set('split', splitEl.value);
       if (!bySplitEl.checked) p.set('bysplit', '0');
-      /* Значения — ПОВТОРЯЮЩИМИСЯ gv/sv: в них бывают запятые,
+      /* Значения — ПОВТОРЯЮЩИМИСЯ gv/g2v/sv: в них бывают запятые,
          так что склеить в один параметр нельзя. */
       (valTokens('group') || []).forEach(function (t) { p.append('gv', t); });
+      if (group2Value()) {
+        (valTokens('group2') || []).forEach(function (t) { p.append('g2v', t); });
+      }
       if (splitEl.value) {
         (valTokens('split') || []).forEach(function (t) { p.append('sv', t); });
       }
@@ -640,14 +695,15 @@
        пунктом и приведение к тексту — сводка сравнивает так же. */
     var VAL_NULL = '__null__';
     var valBox   = { group: document.getElementById('dash-group-vals'),
+                     group2: document.getElementById('dash-group2-vals'),
                      split: document.getElementById('dash-split-vals') };
-    var valSelEl = { group: groupEl, split: splitEl };
-    var valState = { group: null, split: null };
+    var valSelEl = { group: groupEl, group2: group2El, split: splitEl };
+    var valState = { group: null, group2: null, split: null };
     /* Предвыбор из ссылки/пресета: применяется к ПЕРВОЙ загрузке значений
        (поля ещё не наполнены, когда разбирается query-string). */
-    var valPending = { group: null, split: null };
+    var valPending = { group: null, group2: null, split: null };
     /* Счётчик запросов на поле: ответ по уже смененному полю игнорируем. */
-    var valSeq = { group: 0, split: 0 };
+    var valSeq = { group: 0, group2: 0, split: 0 };
 
     function valCountText(st) {
       return 'Выбрано ' + st.sel.size + ' из ' + st.items.length +
@@ -730,6 +786,7 @@
       });
     }
     bindVals('group');
+    bindVals('group2');
     bindVals('split');
 
     function valItem(v) {
@@ -750,7 +807,8 @@
     }
 
     function loadVals(kind, preselect) {
-      var field = valSelEl[kind].value, pk = layerEl.value;
+      var field = (kind === 'group2') ? group2Value() : valSelEl[kind].value;
+      var pk = layerEl.value;
       valSeq[kind] += 1;
       var seq = valSeq[kind];
       if (!field || !pk) {
@@ -789,8 +847,27 @@
         .then(function () { updateBuildState(); });
     }
 
+    /* ── Второй уровень группировки ──
+       Блок скрыт, пока его не добавили кнопкой: большинству сводок
+       второй уровень не нужен, а панель фильтров и без него плотная.
+       Скрытый блок ВСЕГДА считается пустым — отсюда group2Value(). */
+    function group2Value() {
+      return group2Fld.hidden ? '' : (group2El.value || '');
+    }
+
+    function setGroup2Open(open) {
+      group2Fld.hidden = !open;
+      group2Add.hidden = open;
+      if (open) return;
+      /* Сняли уровень — стираем и его выборку, иначе скрытые галки
+         продолжали бы блокировать кнопку сборки. */
+      group2El.value = '';
+      valState.group2 = null;
+      renderVals('group2');
+    }
+
     /* ── Селекты полей слоя ── */
-    function fillFieldSelects(preGroup, preSplit) {
+    function fillFieldSelects(preGroup, preSplit, preGroup2) {
       var lyr = currentLayer();
       var attrs = (lyr && lyr.attributes) || [];
       var items = [], names = {};
@@ -800,21 +877,27 @@
         items.push({ value: a.db, label: esc(a.name || a.db) });
       });
       setOptions(groupEl, items, '— не выбрано —');
+      setOptions(group2El, items, '— не выбрано —');
       setOptions(splitEl, items, '— без разреза —');
-      groupEl.disabled = splitEl.disabled = !items.length;
+      groupEl.disabled = group2El.disabled = splitEl.disabled = !items.length;
 
       /* Разумный дефолт: значение из ссылки, иначе первое поле слоя
          (для почвенных слоёв это сразу подтип почвы — колонка первая). */
       if (preGroup && names[preGroup]) groupEl.value = preGroup;
       else if (items.length) groupEl.value = items[0].value;
+      var g2 = (preGroup2 && names[preGroup2] && preGroup2 !== groupEl.value)
+        ? preGroup2 : '';
+      setGroup2Open(!!g2);
+      if (g2) group2El.value = g2;
       if (preSplit && names[preSplit]) splitEl.value = preSplit;
       updateBuildState();
       /* Списки значений — под новые поля; предвыбор из ссылки/пресета
          одноразовый. */
       var pend = valPending;
-      valPending = { group: null, split: null };
+      valPending = { group: null, group2: null, split: null };
       return Promise.all([
         loadVals('group', pend.group),
+        loadVals('group2', pend.group2),
         loadVals('split', pend.split),
       ]);
     }
@@ -822,7 +905,9 @@
     function updateBuildState() {
       var fields = !!(layerEl.value && groupEl.value);
       /* Сняты все галки — выборка пустая, считать нечего. */
-      var noVals = valEmpty('group') || (!!splitEl.value && valEmpty('split'));
+      var noVals = valEmpty('group') ||
+        (!!group2Value() && valEmpty('group2')) ||
+        (!!splitEl.value && valEmpty('split'));
       var ok = fields && !noVals;
       buildEl.disabled = !ok;
       saveEl.disabled = !ok;
@@ -874,6 +959,50 @@
       return open + parts + '</svg>';
     }
 
+    /* Ключ категории: NULL и строка 'null' — разные значения. */
+    function catKey(v) {
+      return (v === null || v === undefined) ? '\u0000null' : String(v);
+    }
+
+    /* Строки ПЕРВОГО уровня: диаграмма строится по нему даже со вторым
+       уровнем — секторы по комбинациям «A / B» глазом не разобрать. */
+    function level1Rows(s) {
+      var rows = s.rows || [];
+      if (!s.group2) return rows;
+      var byKey = {}, out = [];
+      rows.forEach(function (row) {
+        var k = catKey(row.value), acc = byKey[k];
+        if (!acc) {
+          acc = { value: row.value, count: 0, area_ha: 0, share: 0 };
+          byKey[k] = acc;
+          out.push(acc);
+        }
+        acc.count += row.count || 0;
+        acc.area_ha += row.area_ha || 0;
+        acc.share += row.share || 0;
+      });
+      out.sort(function (a, b) {
+        return s.polygonal ? (b.area_ha - a.area_ha) : (b.count - a.count);
+      });
+      return out;
+    }
+
+    /* Цвет строки берётся от её категории ПЕРВОГО уровня, иначе со вторым
+       уровнем квадратики в таблице не совпадали бы с легендой диаграммы. */
+    function colorFor(s) {
+      var idx = {};
+      level1Rows(s).forEach(function (r, i) { idx[catKey(r.value)] = rowColor(i); });
+      return function (row) { return idx[catKey(row.value)] || OTHER_COLOR; };
+    }
+
+    /* Подпись строки в легендах малых диаграмм: со вторым уровнем
+       без него несколько строк выглядели бы одинаково. */
+    function rowLabel(s, row) {
+      var text = catLabel(row.value);
+      if (s.group2) text += ' / ' + catLabel(row.value2);
+      return text;
+    }
+
     function buildSlices(rows, polygonal) {
       var slices = [];
       rows.slice(0, MAX_SLICES).forEach(function (row, i) {
@@ -919,15 +1048,15 @@
       return i < MAX_SLICES ? PALETTE[i % PALETTE.length] : OTHER_COLOR;
     }
 
-    function splitSlices(rows, polygonal, key) {
-      var items = [];
-      rows.forEach(function (row, i) {
+    function splitSlices(s, key) {
+      var polygonal = s.polygonal, items = [], color = colorFor(s);
+      (s.rows || []).forEach(function (row) {
         var cell = (row.splits || {})[key];
         if (!cell) return;
         var measure = polygonal ? cell.area_ha : cell.count;
         if (!(measure > 0)) return;
         items.push({
-          label: catLabel(row.value), measure: measure, color: rowColor(i),
+          label: rowLabel(s, row), measure: measure, color: color(row),
         });
       });
       items.sort(function (a, b) { return b.measure - a.measure; });
@@ -946,7 +1075,7 @@
 
     function tileHtml(s, sp) {
       var polygonal = s.polygonal;
-      var data = splitSlices(s.rows, polygonal, splitKey(sp.value));
+      var data = splitSlices(s, splitKey(sp.value));
       var sub = [polygonal ? (fmtHa(sp.area_ha) + ' га')
                            : (fmtInt(sp.count) + ' об.')];
       if (polygonal) sub.push(fmtInt(sp.count) + ' об.');
@@ -983,6 +1112,7 @@
       var polygonal = s.polygonal;
       var splits = s.splits || [];
       var head = '<tr><th>' + esc(fieldLabel(s.group)) + '</th>';
+      if (s.group2) head += '<th>' + esc(fieldLabel(s.group2)) + '</th>';
       if (polygonal) head += '<th>Площадь, га</th>';
       head += '<th>Доля</th><th>Объектов</th>';
       splits.forEach(function (sp) {
@@ -990,9 +1120,11 @@
       });
       head += '</tr>';
 
-      var body = s.rows.map(function (row, i) {
+      var color = colorFor(s);
+      var body = s.rows.map(function (row) {
         var tr = '<tr><td><span class="dash-table__sw" style="background:' +
-          rowColor(i) + '"></span>' + catHtml(row.value) + '</td>';
+          color(row) + '"></span>' + catHtml(row.value) + '</td>';
+        if (s.group2) tr += '<td>' + catHtml(row.value2) + '</td>';
         if (polygonal) tr += '<td>' + fmtHa(row.area_ha) + '</td>';
         tr += '<td>' + fmtPct(row.share) + '</td>';
         tr += '<td>' + fmtInt(row.count) + '</td>';
@@ -1006,6 +1138,7 @@
       }).join('');
 
       var foot = '<tr><td>Итого</td>';
+      if (s.group2) foot += '<td></td>';
       if (polygonal) foot += '<td>' + fmtHa(s.total.area_ha) + '</td>';
       foot += '<td>' + (s.rows.length ? '100,0%' : '—') + '</td>';
       foot += '<td>' + fmtInt(s.total.count) + '</td>';
@@ -1031,7 +1164,8 @@
       var sub = [];
       if (region) sub.push(esc(region));
       if (district) sub.push(esc(district));
-      sub.push('группировка: ' + esc(fieldLabel(s.group)));
+      sub.push('группировка: ' + esc(fieldLabel(s.group)) +
+        (s.group2 ? (' + ' + esc(fieldLabel(s.group2))) : ''));
       if (s.split) sub.push('разрез: ' + esc(fieldLabel(s.split)));
       sub.push('объектов: ' + fmtInt(s.total.count));
       if (s.polygonal) sub.push('площадь: ' + fmtHa(s.total.area_ha) + ' га');
@@ -1052,14 +1186,13 @@
       /* Выборочный набор значений обязан быть виден в самой сводке: иначе на
          распечатке (PDF) её примут за полный итог по слою. */
       var filt = [];
-      if (s.group_values && s.group_values.length) {
-        filt.push('«' + esc(fieldLabel(s.group)) + '» — ' +
-          fmtInt(s.group_values.length) + ' знач.');
-      }
-      if (s.split && s.split_values && s.split_values.length) {
-        filt.push('«' + esc(fieldLabel(s.split)) + '» — ' +
-          fmtInt(s.split_values.length) + ' знач.');
-      }
+      [['group', 'group_values'], ['group2', 'group2_values'],
+       ['split', 'split_values']].forEach(function (pair) {
+        var field = s[pair[0]], values = s[pair[1]];
+        if (!field || !values || !values.length) return;
+        filt.push('«' + esc(fieldLabel(field)) + '» — ' +
+          fmtInt(values.length) + ' знач.');
+      });
       if (filt.length) {
         parts.push('<div class="dash-note">Выборка по отмеченным значениям: ' +
           filt.join('; ') + '. Итоги считаны только по ним.</div>');
@@ -1071,9 +1204,14 @@
         return;
       }
 
-      var slices = buildSlices(rows, s.polygonal);
+      var slices = buildSlices(level1Rows(s), s.polygonal);
       parts.push('<div class="dash-chart">' + pieSvg(slices) +
         legendHtml(slices, s.polygonal) + '</div>');
+      if (s.group2) {
+        parts.push('<div class="dash-note">Диаграмма — по первому уровню' +
+          ' группировки «' + esc(fieldLabel(s.group)) + '»; детализация по «' +
+          esc(fieldLabel(s.group2)) + '» — в таблице.</div>');
+      }
       if (s.split && bySplitEl.checked) parts.push(multiHtml(s));
       parts.push(tableHtml(s));
       bodyEl.innerHTML = parts.join('');
@@ -1089,9 +1227,13 @@
 
       var p = new URLSearchParams();
       p.set('group', group);
+      if (group2Value()) p.set('group2', group2Value());
       if (splitEl.value) p.set('split', splitEl.value);
       if (districtEl.value) p.set('district', districtEl.value);
       (valTokens('group') || []).forEach(function (t) { p.append('gv', t); });
+      if (group2Value()) {
+        (valTokens('group2') || []).forEach(function (t) { p.append('g2v', t); });
+      }
       if (splitEl.value) {
         (valTokens('split') || []).forEach(function (t) { p.append('sv', t); });
       }
@@ -1127,9 +1269,11 @@
         region: regionEl.value ? Number(regionEl.value) : null,
         district: districtEl.value ? Number(districtEl.value) : null,
         group: groupEl.value,
+        group2: group2Value() || null,
         split: splitEl.value || null,
         bysplit: !!bySplitEl.checked,
         group_values: valTokens('group'),
+        group2_values: group2Value() ? valTokens('group2') : null,
         split_values: splitEl.value ? valTokens('split') : null,
       };
     }
@@ -1142,7 +1286,10 @@
     function presetSub(p) {
       var parts = [p.layer_title || ('слой #' + p.layer)];
       var params = p.params || {};
-      if (params.group) parts.push('по «' + params.group + '»');
+      if (params.group) {
+        parts.push('по «' + params.group +
+          (params.group2 ? ('» + «' + params.group2) : '') + '»');
+      }
       if (params.split) parts.push('разрез «' + params.split + '»');
       return parts.join(' · ');
     }
@@ -1189,9 +1336,12 @@
         return;
       }
       valPending = { group: params.group_values || null,
+                     group2: params.group2_values || null,
                      split: params.split_values || null };
       loadDistricts(params.district ? String(params.district) : null)
-        .then(function () { return fillFieldSelects(params.group, params.split); })
+        .then(function () {
+          return fillFieldSelects(params.group, params.split, params.group2);
+        })
         .then(function () {
           syncUrl();
           if (groupEl.value === params.group) buildDashboard();
@@ -1365,20 +1515,50 @@
       renderIdle();
     });
     groupEl.addEventListener('change', function () {
-      /* Разрез по тому же полю, что и группировка, смысла не имеет. */
+      /* Второй уровень/разрез по тому же полю смысла не имеют. */
       var splitReset = splitEl.value && splitEl.value === groupEl.value;
       if (splitReset) splitEl.value = '';
+      var g2Reset = group2Value() && group2Value() === groupEl.value;
+      if (g2Reset) group2El.value = '';
       /* Срез изменился — прежняя сводка больше не соответствует фильтрам,
          поэтому PDF/письмо снова блокируются до пересборки. */
       lastResp = null;
       /* Другое поле — другие значения: список галок перезагружаем. */
       loadVals('group', null);
+      if (g2Reset) loadVals('group2', null);
       if (splitReset) loadVals('split', null);
       syncUrl();
       updateBuildState();
     });
+    group2El.addEventListener('change', function () {
+      if (group2El.value === groupEl.value) group2El.value = '';
+      var splitReset = splitEl.value && splitEl.value === group2Value();
+      if (splitReset) splitEl.value = '';
+      lastResp = null;
+      loadVals('group2', null);
+      if (splitReset) loadVals('split', null);
+      syncUrl();
+      updateBuildState();
+    });
+    group2Add.addEventListener('click', function () {
+      setGroup2Open(true);
+      /* Поле по умолчанию не выбрано: первый атрибут слоя обычно
+         уже взят первым уровнем, а угадывать второй нечего. */
+      group2El.focus();
+      syncUrl();
+      updateBuildState();
+    });
+    group2Del.addEventListener('click', function () {
+      setGroup2Open(false);
+      lastResp = null;
+      syncUrl();
+      updateBuildState();
+    });
     splitEl.addEventListener('change', function () {
-      if (splitEl.value && splitEl.value === groupEl.value) splitEl.value = '';
+      if (splitEl.value &&
+          (splitEl.value === groupEl.value || splitEl.value === group2Value())) {
+        splitEl.value = '';
+      }
       lastResp = null;
       loadVals('split', null);
       syncUrl();
@@ -1435,7 +1615,8 @@
     setFiltersOpen(filtersPref === '1', false);
     if (q.get('region')) regionEl.value = q.get('region');
     if (q.get('bysplit') === '0') bySplitEl.checked = false;
-    valPending = { group: q.getAll('gv'), split: q.getAll('sv') };
+    valPending = { group: q.getAll('gv'), group2: q.getAll('g2v'),
+                   split: q.getAll('sv') };
     loadPresets();
     Promise.all([
       loadDistricts(q.get('district')),
@@ -1447,7 +1628,7 @@
       }
       /* Ждём и списки значений: автосборка по ссылке должна учесть gv/sv,
          иначе первый дашборд посчитается без фильтра. */
-      return fillFieldSelects(q.get('group'), q.get('split'));
+      return fillFieldSelects(q.get('group'), q.get('split'), q.get('group2'));
     }).then(function () {
       /* Ссылка с готовым срезом (есть слой и поле) строится сразу — так
          пересланный дашборд открывается без лишнего клика. */

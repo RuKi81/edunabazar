@@ -69,8 +69,9 @@ class NormalizeParamsTests(_DashboardTestCase):
         })
         self.assertEqual(out, {
             'region': 71, 'district': 5, 'group': 'soil',
-            'split': 'zone', 'bysplit': False,
-            'group_values': None, 'split_values': None,
+            'group2': None, 'split': 'zone', 'bysplit': False,
+            'group_values': None, 'group2_values': None,
+            'split_values': None,
         })
 
     def test_keeps_value_filters(self):
@@ -99,11 +100,33 @@ class NormalizeParamsTests(_DashboardTestCase):
         self.assertTrue(out['bysplit'])
         self.assertIsNone(out['region'])
 
+    def test_keeps_second_grouping(self):
+        out = normalize_params(self.layer, {
+            'group': 'soil', 'group2': 'zone', 'group2_values': ['A', 'A'],
+        })
+        self.assertEqual(out['group2'], 'zone')
+        self.assertEqual(out['group2_values'], ['A'])
+
+    def test_group2_equal_to_group_is_dropped(self):
+        out = normalize_params(
+            self.layer, {'group': 'soil', 'group2': 'soil',
+                         'group2_values': ['A']})
+        self.assertIsNone(out['group2'])
+        self.assertIsNone(out['group2_values'])
+
+    def test_split_equal_to_group2_is_dropped(self):
+        out = normalize_params(
+            self.layer, {'group': 'soil', 'group2': 'zone', 'split': 'zone'})
+        self.assertEqual(out['group2'], 'zone')
+        self.assertIsNone(out['split'])
+
     def test_unknown_field_rejected(self):
         with self.assertRaises(DashboardParamsError):
             normalize_params(self.layer, {'group': 'nope'})
         with self.assertRaises(DashboardParamsError):
             normalize_params(self.layer, {'group': 'soil', 'split': 'nope'})
+        with self.assertRaises(DashboardParamsError):
+            normalize_params(self.layer, {'group': 'soil', 'group2': 'nope'})
 
     def test_group_required(self):
         with self.assertRaises(DashboardParamsError):
@@ -132,6 +155,13 @@ class NormalizeParamsTests(_DashboardTestCase):
         }))
         self.assertEqual(url.count('gv='), 2)
         self.assertIn('sv=A', url)
+
+    def test_url_carries_second_grouping(self):
+        url = dashboard_url(self.layer, normalize_params(self.layer, {
+            'group': 'soil', 'group2': 'zone', 'group2_values': ['A'],
+        }))
+        self.assertIn('group2=zone', url)
+        self.assertIn('g2v=A', url)
 
 
 class RecipientsTests(GisLayersTestCase):
@@ -290,6 +320,19 @@ class DashboardSendTests(_DashboardTestCase):
         self.assertIn('выбраны значения', msg.body)
         self.assertIn('gv=', msg.body)
 
+    def test_second_grouping_adds_column(self):
+        mail.outbox = []
+        resp = self._send(params=self._params(group2='zone'))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        msg = mail.outbox[0]
+        self.assertIn('Вторая группировка: zone', msg.body)
+        # Строка текстовой версии — пара значений.
+        self.assertIn('Чернозём / A', msg.body)
+        self.assertIn('group2=zone', msg.body)
+        html = msg.alternatives[0][0]
+        # Колонки: группировка, вторая группировка, площадь, доля, объектов.
+        self.assertEqual(html.count('<th style'), 5)
+
     def test_each_recipient_gets_own_message(self):
         mail.outbox = []
         resp = self._send(to='a@b.ru, c@d.ru')
@@ -358,3 +401,30 @@ class DashboardsPageControlsTests(GisLayersTestCase):
         # Подпись-заголовок «Диаграммы» над чекбоксом убрана (ломала вёрстку).
         self.assertNotIn('<label>Диаграммы</label>', html)
         self.assertIn('dash-bysplit', html)
+
+    def test_chart_checkbox_lives_in_actions_panel(self):
+        """Чекбокс — настройка показа, его место в панели действий.
+
+        Среди фильтров он занимал целую ячейку грида длинной подписью и
+        наезжал на соседнюю колонку.
+        """
+        self._login_admin()
+        html = self.client.get('/me/gis/dashboards/').content.decode()
+        # Чекбокс стоит между началом панели действий и телом дашборда.
+        self.assertLess(html.index('class="dash-actions"'),
+                        html.index('id="dash-bysplit"'))
+        self.assertLess(html.index('id="dash-bysplit"'),
+                        html.index('id="dash-body"'))
+        self.assertIn('Диаграммы по разрезу', html)
+        self.assertNotIn('Отдельная диаграмма на каждое значение разреза<', html)
+
+    def test_filters_are_top_aligned(self):
+        """Колонки фильтров выровнены по верху — иначе вёрстка «прыгала».
+
+        При align-items:end появление списка значений в одной колонке
+        сдвигало селекты соседних.
+        """
+        self._login_admin()
+        html = self.client.get('/me/gis/dashboards/').content.decode()
+        self.assertIn('align-items: start', html)
+        self.assertNotIn('align-items: end', html)

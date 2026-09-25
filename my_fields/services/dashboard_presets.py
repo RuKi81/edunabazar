@@ -31,8 +31,8 @@ from django.utils.html import escape
 logger = logging.getLogger(__name__)
 
 # Ключи, которые вообще могут храниться в пресете и попадать в ссылку.
-PARAM_KEYS = ('region', 'district', 'group', 'split', 'bysplit',
-              'group_values', 'split_values')
+PARAM_KEYS = ('region', 'district', 'group', 'group2', 'split', 'bysplit',
+              'group_values', 'group2_values', 'split_values')
 
 # Писем за один запрос: защита от превращения кнопки «отправить» в рассыльщик.
 MAX_RECIPIENTS = 5
@@ -64,9 +64,9 @@ def normalize_params(layer, raw: dict | None) -> dict:
         raw: словарь от клиента (лишние ключи игнорируются).
 
     Returns:
-        ``{'region', 'district', 'group', 'split', 'bysplit'}``; ``region``/
-        ``district`` — ``int`` либо ``None``, ``split`` — ``str`` либо
-        ``None`` (разрез по полю группировки = отсутствие разреза).
+        словарь по :data:`PARAM_KEYS`; ``region``/``district`` — ``int`` либо
+        ``None``, ``group2``/``split`` — ``str`` либо ``None`` (повтор поля
+        группировки = отсутствие второго уровня/разреза).
 
     Raises:
         DashboardParamsError: нет ``group`` либо поле не является атрибутом
@@ -81,8 +81,15 @@ def normalize_params(layer, raw: dict | None) -> dict:
     if group not in names:
         raise DashboardParamsError(f'Поле группировки не найдено в слое: {group}.')
 
+    group2 = str(raw.get('group2') or '').strip() or None
+    if group2 == group:
+        group2 = None
+    if group2 and group2 not in names:
+        raise DashboardParamsError(
+            f'Поле второй группировки не найдено в слое: {group2}.')
+
     split = str(raw.get('split') or '').strip() or None
-    if split == group:
+    if split in (group, group2):
         split = None
     if split and split not in names:
         raise DashboardParamsError(f'Поле разреза не найдено в слое: {split}.')
@@ -92,6 +99,8 @@ def normalize_params(layer, raw: dict | None) -> dict:
     from .layer_summary import LayerSummaryError, clean_values
     try:
         gvals = clean_values(raw.get('group_values'), 'Значения группировки')
+        g2vals = clean_values(raw.get('group2_values'),
+                              'Значения 2-й группировки')
         svals = clean_values(raw.get('split_values'), 'Значения разреза')
     except LayerSummaryError as exc:
         raise DashboardParamsError(str(exc)) from None
@@ -100,10 +109,12 @@ def normalize_params(layer, raw: dict | None) -> dict:
         'region': _int_or_none(raw.get('region')),
         'district': _int_or_none(raw.get('district')),
         'group': group,
+        'group2': group2,
         'split': split,
         'bysplit': bool(raw.get('bysplit', True)),
         'group_values': gvals,
-        # Без разреза его фильтр бессмыслен и только мусорит ссылку.
+        # Без самого поля его фильтр бессмыслен и только мусорит ссылку.
+        'group2_values': g2vals if group2 else None,
         'split_values': svals if split else None,
     }
 
@@ -123,14 +134,18 @@ def dashboard_url(layer, params: dict) -> str:
     if params.get('district'):
         query['district'] = params['district']
     query['group'] = params['group']
+    if params.get('group2'):
+        query['group2'] = params['group2']
     if params.get('split'):
         query['split'] = params['split']
     if not params.get('bysplit', True):
         query['bysplit'] = '0'
-    # gv/sv — ПОВТОРЯЮЩИЕСЯ параметры (doseq): сами значения атрибутов
-    # содержат запятые, так что склеить их в одну строку нельзя.
+    # gv/g2v/sv — ПОВТОРЯЮЩИЕСЯ параметры (doseq): сами значения
+    # атрибутов содержат запятые, склеить их в одну строку нельзя.
     if params.get('group_values'):
         query['gv'] = list(params['group_values'])
+    if params.get('group2') and params.get('group2_values'):
+        query['g2v'] = list(params['group2_values'])
     if params.get('split') and params.get('split_values'):
         query['sv'] = list(params['split_values'])
     path = reverse('my_fields:ui_gis_dashboards')
@@ -152,12 +167,14 @@ def _filter_note(layer, summary: dict) -> str:
     итог по слою.
     """
     parts = []
-    if summary.get('group_values'):
-        parts.append(f'{field_label(layer, summary["group"])} — '
-                     f'{len(summary["group_values"])} знач.')
-    if summary.get('split') and summary.get('split_values'):
-        parts.append(f'{field_label(layer, summary["split"])} — '
-                     f'{len(summary["split_values"])} знач.')
+    for field_key, values_key in (('group', 'group_values'),
+                                  ('group2', 'group2_values'),
+                                  ('split', 'split_values')):
+        field = summary.get(field_key)
+        values = summary.get(values_key)
+        if not field or not values:
+            continue
+        parts.append(f'{field_label(layer, field)} — {len(values)} знач.')
     return ('выбраны значения: ' + '; '.join(parts)) if parts else ''
 
 
@@ -204,6 +221,9 @@ def _table_html(layer, summary: dict) -> str:
     left = ' text-align:left;'
 
     head = f'<th style="{th}{left}">{escape(field_label(layer, summary["group"]))}</th>'
+    group2 = summary.get('group2')
+    if group2:
+        head += f'<th style="{th}{left}">{escape(field_label(layer, group2))}</th>'
     if polygonal:
         head += f'<th style="{th}">Площадь, га</th>'
     head += f'<th style="{th}">Доля</th><th style="{th}">Объектов</th>'
@@ -214,6 +234,8 @@ def _table_html(layer, summary: dict) -> str:
     body = ''
     for row in rows:
         body += f'<tr><td style="{td}{left}">{escape(_cat(row["value"]))}</td>'
+        if group2:
+            body += f'<td style="{td}{left}">{escape(_cat(row.get("value2")))}</td>'
         if polygonal:
             body += f'<td style="{td}">{_num(row["area_ha"])}</td>'
         body += f'<td style="{td}">{_num((row.get("share") or 0) * 100)}%</td>'
@@ -231,6 +253,8 @@ def _table_html(layer, summary: dict) -> str:
 
     total = summary.get('total') or {}
     foot = f'<tr><td style="{td}{left}"><strong>Итого</strong></td>'
+    if group2:
+        foot += f'<td style="{td}"></td>'
     if polygonal:
         foot += f'<td style="{td}"><strong>{_num(total.get("area_ha"))}</strong></td>'
     foot += f'<td style="{td}">100,0%</td>'
@@ -262,6 +286,9 @@ def _text_lines(layer, summary: dict, params: dict, url: str, note: str) -> str:
     if scope:
         lines.append('Территория: ' + ', '.join(scope))
     lines.append('Группировка: ' + field_label(layer, summary['group']))
+    if summary.get('group2'):
+        lines.append('Вторая группировка: '
+                     + field_label(layer, summary['group2']))
     if summary.get('split'):
         lines.append('Разрез: ' + field_label(layer, summary['split']))
     filt = _filter_note(layer, summary)
@@ -274,7 +301,10 @@ def _text_lines(layer, summary: dict, params: dict, url: str, note: str) -> str:
     for row in (summary.get('rows') or [])[:MAX_EMAIL_ROWS]:
         measure = (f'{_num(row["area_ha"])} га' if polygonal
                    else f'{_num(row["count"], 0)} об.')
-        lines.append(f'  {_cat(row["value"])}: {measure} '
+        cat = _cat(row['value'])
+        if summary.get('group2'):
+            cat += ' / ' + _cat(row.get('value2'))
+        lines.append(f'  {cat}: {measure} '
                      f'({_num((row.get("share") or 0) * 100)}%)')
     lines.append('')
     if note:
@@ -294,6 +324,8 @@ def build_email(layer, params: dict, summary: dict, note: str = '') -> tuple:
     head = [f'<h2 style="margin:0 0 4px; font-size:18px;">{escape(layer.title)}</h2>']
     sub = list(scope)
     sub.append('группировка: ' + field_label(layer, summary['group']))
+    if summary.get('group2'):
+        sub.append('+ ' + field_label(layer, summary['group2']))
     if summary.get('split'):
         sub.append('разрез: ' + field_label(layer, summary['split']))
     filt = _filter_note(layer, summary)

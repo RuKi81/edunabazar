@@ -1577,10 +1577,11 @@ def gis_layer_field_values(request: HttpRequest, pk: int) -> JsonResponse:
 def gis_layer_summary(request: HttpRequest, pk: int) -> JsonResponse:
     """GET — сводка слоя по атрибуту: объекты + итоговые площади (дашборды).
 
-    Параметры: ``group`` (обязателен, db-имя атрибута), ``split`` (второе
-    измерение, опц.), ``district`` (``agro_district.id`` — оставить объекты,
-    пересекающие район), ``gv``/``sv`` — ПОВТОРЯЮЩИЕСЯ параметры с перечнем
-    значений группировки/разреза (чекбоксы в UI; без них берутся все
+    Параметры: ``group`` (обязателен, db-имя атрибута), ``group2`` (второй
+    уровень группировки, опц.), ``split`` (разрез-колонки, опц.),
+    ``district`` (``agro_district.id`` — оставить объекты, пересекающие
+    район), ``gv``/``g2v``/``sv`` — ПОВТОРЯЮЩИЕСЯ параметры с перечнем
+    значений соответствующего поля (чекбоксы в UI; без них берутся все
     значения). Уровень доступа ``view``.
 
     Повторяющиеся параметры, а не один через запятую: значения атрибутов
@@ -1601,6 +1602,7 @@ def gis_layer_summary(request: HttpRequest, pk: int) -> JsonResponse:
              'detail': 'Укажите поле группировки (group).'},
             status=400,
         )
+    group2 = (request.GET.get('group2') or '').strip() or None
     split = (request.GET.get('split') or '').strip() or None
     try:
         district_id = int(request.GET.get('district') or 0) or None
@@ -1612,7 +1614,9 @@ def gis_layer_summary(request: HttpRequest, pk: int) -> JsonResponse:
         data = summary_by_field(
             layer, group, split=split, district_id=district_id,
             group_values=request.GET.getlist('gv') or None,
-            split_values=request.GET.getlist('sv') or None)
+            split_values=request.GET.getlist('sv') or None,
+            group2=group2,
+            group2_values=request.GET.getlist('g2v') or None)
     except LayerSummaryError as exc:
         return JsonResponse(
             {'ok': False, 'error': 'bad_summary', 'detail': str(exc)},
@@ -1835,7 +1839,9 @@ def gis_dashboard_send(request: HttpRequest) -> JsonResponse:
             layer, params['group'], split=params['split'],
             district_id=params['district'],
             group_values=params.get('group_values'),
-            split_values=params.get('split_values'))
+            split_values=params.get('split_values'),
+            group2=params.get('group2'),
+            group2_values=params.get('group2_values'))
     except LayerSummaryError as exc:
         return JsonResponse(
             {'ok': False, 'error': 'bad_summary', 'detail': str(exc)}, status=400)
