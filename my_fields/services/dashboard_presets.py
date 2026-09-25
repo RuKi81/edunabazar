@@ -209,61 +209,85 @@ def _cat(value) -> str:
     return str(value)
 
 
+_TH = ('padding:6px 10px; border-bottom:2px solid #ddd; text-align:right;'
+       ' font-size:13px; color:#555;')
+_TD = 'padding:6px 10px; border-bottom:1px solid #eee; text-align:right;'
+_LEFT = ' text-align:left;'
+
+
+def _split_cell(row, sp, polygonal: bool) -> str:
+    """Ячейка кросс-таба: пустая комбинация категории и разреза — «—»."""
+    cell = (row.get('splits') or {}).get(
+        '' if sp['value'] is None else str(sp['value']))
+    if not cell:
+        return f'<td style="{_TD}">—</td>'
+    value = (_num(cell['area_ha']) if polygonal
+             else _num(cell['count'], 0))
+    return f'<td style="{_TD}">{value}</td>'
+
+
+def _table_head(layer, summary: dict, splits, polygonal: bool) -> str:
+    """Шапка таблицы письма."""
+    group = escape(field_label(layer, summary['group']))
+    head = f'<th style="{_TH}{_LEFT}">{group}</th>'
+    if summary.get('group2'):
+        name = escape(field_label(layer, summary['group2']))
+        head += f'<th style="{_TH}{_LEFT}">{name}</th>'
+    if polygonal:
+        head += f'<th style="{_TH}">Площадь, га</th>'
+    head += f'<th style="{_TH}">Доля</th><th style="{_TH}">Объектов</th>'
+    unit = ', га' if polygonal else ', об.'
+    for sp in splits:
+        head += f'<th style="{_TH}">{escape(_cat(sp["value"]) + unit)}</th>'
+    return head
+
+
+def _table_body(rows, splits, polygonal: bool, group2: bool) -> str:
+    """Строки таблицы письма."""
+    body = ''
+    for row in rows:
+        body += f'<tr><td style="{_TD}{_LEFT}">{escape(_cat(row["value"]))}</td>'
+        if group2:
+            cat2 = escape(_cat(row.get('value2')))
+            body += f'<td style="{_TD}{_LEFT}">{cat2}</td>'
+        if polygonal:
+            body += f'<td style="{_TD}">{_num(row["area_ha"])}</td>'
+        body += f'<td style="{_TD}">{_num((row.get("share") or 0) * 100)}%</td>'
+        body += f'<td style="{_TD}">{_num(row["count"], 0)}</td>'
+        for sp in splits:
+            body += _split_cell(row, sp, polygonal)
+        body += '</tr>'
+    return body
+
+
+def _table_foot(total: dict, splits, polygonal: bool, group2: bool) -> str:
+    """Итоговая строка таблицы письма."""
+    foot = f'<tr><td style="{_TD}{_LEFT}"><strong>Итого</strong></td>'
+    if group2:
+        foot += f'<td style="{_TD}"></td>'
+    if polygonal:
+        area = _num(total.get('area_ha'))
+        foot += f'<td style="{_TD}"><strong>{area}</strong></td>'
+    foot += f'<td style="{_TD}">100,0%</td>'
+    count = _num(total.get('count'), 0)
+    foot += f'<td style="{_TD}"><strong>{count}</strong></td>'
+    for sp in splits:
+        value = (_num(sp['area_ha']) if polygonal
+                 else _num(sp['count'], 0))
+        foot += f'<td style="{_TD}">{value}</td>'
+    return foot + '</tr>'
+
+
 def _table_html(layer, summary: dict) -> str:
     """Таблица сводки для письма (инлайновые стили — почтовики режут CSS)."""
-    polygonal = summary.get('polygonal')
+    polygonal = bool(summary.get('polygonal'))
+    group2 = bool(summary.get('group2'))
     splits = (summary.get('splits') or [])[:MAX_EMAIL_SPLITS]
     rows = (summary.get('rows') or [])[:MAX_EMAIL_ROWS]
 
-    th = ('padding:6px 10px; border-bottom:2px solid #ddd; text-align:right;'
-          ' font-size:13px; color:#555;')
-    td = 'padding:6px 10px; border-bottom:1px solid #eee; text-align:right;'
-    left = ' text-align:left;'
-
-    head = f'<th style="{th}{left}">{escape(field_label(layer, summary["group"]))}</th>'
-    group2 = summary.get('group2')
-    if group2:
-        head += f'<th style="{th}{left}">{escape(field_label(layer, group2))}</th>'
-    if polygonal:
-        head += f'<th style="{th}">Площадь, га</th>'
-    head += f'<th style="{th}">Доля</th><th style="{th}">Объектов</th>'
-    for sp in splits:
-        unit = ', га' if polygonal else ', об.'
-        head += f'<th style="{th}">{escape(_cat(sp["value"]) + unit)}</th>'
-
-    body = ''
-    for row in rows:
-        body += f'<tr><td style="{td}{left}">{escape(_cat(row["value"]))}</td>'
-        if group2:
-            body += f'<td style="{td}{left}">{escape(_cat(row.get("value2")))}</td>'
-        if polygonal:
-            body += f'<td style="{td}">{_num(row["area_ha"])}</td>'
-        body += f'<td style="{td}">{_num((row.get("share") or 0) * 100)}%</td>'
-        body += f'<td style="{td}">{_num(row["count"], 0)}</td>'
-        for sp in splits:
-            cell = (row.get('splits') or {}).get(
-                '' if sp['value'] is None else str(sp['value']))
-            if not cell:
-                body += f'<td style="{td}">—</td>'
-            else:
-                body += (f'<td style="{td}">'
-                         f'{_num(cell["area_ha"]) if polygonal else _num(cell["count"], 0)}'
-                         '</td>')
-        body += '</tr>'
-
-    total = summary.get('total') or {}
-    foot = f'<tr><td style="{td}{left}"><strong>Итого</strong></td>'
-    if group2:
-        foot += f'<td style="{td}"></td>'
-    if polygonal:
-        foot += f'<td style="{td}"><strong>{_num(total.get("area_ha"))}</strong></td>'
-    foot += f'<td style="{td}">100,0%</td>'
-    foot += f'<td style="{td}"><strong>{_num(total.get("count"), 0)}</strong></td>'
-    for sp in splits:
-        foot += (f'<td style="{td}">'
-                 f'{_num(sp["area_ha"]) if polygonal else _num(sp["count"], 0)}'
-                 '</td>')
-    foot += '</tr>'
+    head = _table_head(layer, summary, splits, polygonal)
+    body = _table_body(rows, splits, polygonal, group2)
+    foot = _table_foot(summary.get('total') or {}, splits, polygonal, group2)
 
     note = ''
     if len(summary.get('rows') or []) > len(rows):
