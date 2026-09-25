@@ -1261,3 +1261,16 @@ class IterFeaturesRobustTests(TestCase):
         from my_fields.services.shp_import import _iter_features
         layer = _FakeLayer(6, bad={0, 3, 5})
         self.assertEqual(list(_iter_features(layer)), ['feat1', 'feat2', 'feat4'])
+
+
+class StaticLayersPanelTests(GisLayersTestCase):
+    """Статические плашки слоёв на /me/gis."""
+
+    def test_page_has_region_boundaries_layer(self):
+        self._login_admin()
+        html = self.client.get('/me/gis/').content.decode()
+        self.assertIn('data-layer="regions"', html)
+        self.assertIn('Границы субъектов', html)
+        # Геометрия берётся из готового GeoJSON-эндпоинта агрокосмоса.
+        self.assertIn('/agrocosmos/api/regions/', html)
+        self.assertIn('regions-outline', html)

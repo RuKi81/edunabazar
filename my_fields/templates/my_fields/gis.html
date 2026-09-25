@@ -1073,6 +1073,23 @@
           </div>
           <div class="gis-layer__meta" id="gis-userfields-meta">загрузка…</div>
         </div>
+
+        <div class="gis-layer" data-layer="regions" draggable="true">
+          <div class="gis-layer__head">
+            <div class="gis-layer__controls">
+              <span class="gis-layer__grip" title="Перетащите, чтобы поменять порядок">⋮⋮</span>
+              <div class="gis-layer__icons">
+                <button class="gis-layer__btn" data-action="visibility" data-ord="0" type="button" title="Видимость">👁</button>
+              </div>
+              <div class="gis-layer__menu">
+                <button class="gis-layer__btn gis-layer__kebab" type="button" title="Действия">⋮</button>
+                <div class="gis-layer__menu-pop" hidden></div>
+              </div>
+            </div>
+            <span class="name">Границы субъектов</span>
+          </div>
+          <div class="gis-layer__meta">Агрокосмос · GeoJSON · упрощение ≈200 м</div>
+        </div>
       </div>
 
       <div id="gis-uploaded-layers"></div>
@@ -1883,16 +1900,54 @@
     var layerState = {
       farmlands:  { visible: false, editable: false },
       userfields: { visible: false, editable: false },
+      regions:    { visible: false, editable: false },
     };
+
+    /* Идентификаторы слоёв карты для каждой статической плашки. */
+    var STATIC_LAYER_IDS = {
+      farmlands:  ['farmlands-fill', 'farmlands-outline'],
+      userfields: ['userfields-fill', 'userfields-outline'],
+      regions:    ['regions-outline'],
+    };
+
+    /* Границы субъектов РФ из Агрокосмоса (agrocosmos:api_regions).
+       Источник добавляется ЛЕНИВО при первом включении слоя: MapLibre
+       начинает скачивать geojson сразу после addSource, а payload —
+       упрощённая (≈200 м) геометрия всех субъектов, тянуть её при
+       каждой загрузке страницы незачем. Эндпоинт отдаёт ETag и
+       Cache-Control на неделю, поэтому повторные включения бесплатны. */
+    var REGIONS_GEOJSON_URL = location.origin + '/agrocosmos/api/regions/';
+    function ensureRegionsLayers() {
+      if (map.getSource('regions')) return;
+      /* addSource до готовности стиля бросает «Style is not done loading» —
+         дожидаемся idle и повторяем через applyLayerVisibility. */
+      if (!map.isStyleLoaded()) {
+        map.once('idle', function () { applyLayerVisibility('regions'); });
+        return;
+      }
+      map.addSource('regions', { type: 'geojson', data: REGIONS_GEOJSON_URL });
+      /* Контур кладём поверх ЗСН/полей, но под индикатор snap, чтобы
+         границы не перекрывались заливками и сами ничего не ловили. */
+      var before = map.getLayer('snap-indicator') ? 'snap-indicator' : undefined;
+      map.addLayer({
+        id: 'regions-outline',
+        type: 'line', source: 'regions',
+        layout: { visibility: 'none', 'line-join': 'round' },
+        paint: {
+          'line-color': '#5e35b1',
+          'line-width': ['interpolate', ['linear'], ['zoom'], 3, 1, 8, 2, 12, 3],
+          'line-opacity': 0.9,
+        },
+      }, before);
+    }
     /* Хук слоёв SHP — для массового переключения видимости,
        регистрируется модулем загрузки (см. ниже), чтобы «выключить
        все» доставал и до динамически добавленных слоёв. */
     var uploadedVisibilityHook = null;
 
     function applyLayerVisibility(key) {
-      var ids = key === 'farmlands'
-        ? ['farmlands-fill', 'farmlands-outline']
-        : ['userfields-fill', 'userfields-outline'];
+      if (key === 'regions' && layerState.regions.visible) ensureRegionsLayers();
+      var ids = STATIC_LAYER_IDS[key] || [];
       var v = layerState[key].visible ? 'visible' : 'none';
       ids.forEach(function (id) {
         if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', v);
@@ -1918,6 +1973,7 @@
     function setAllLayersVisible(vis) {
       setStaticLayerVisible('farmlands', vis);
       setStaticLayerVisible('userfields', vis);
+      setStaticLayerVisible('regions', vis);
       if (typeof uploadedVisibilityHook === 'function') uploadedVisibilityHook(vis);
     }
 
@@ -5441,6 +5497,7 @@
     var LAYER_RENDER_GROUPS = {
       farmlands:  ['farmlands-fill', 'farmlands-outline'],
       userfields: ['userfields-fill', 'userfields-outline'],
+      regions:    ['regions-outline'],
     };
     /* Применить порядок DOM к z-order карты.
        Конвенция: первая строка в списке = верхний слой на карте.
