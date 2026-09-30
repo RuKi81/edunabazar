@@ -770,19 +770,14 @@
     }
     /* Зона панелей (фильтр + заполнение) — один сворачиваемый блок: открытые
        панели отнимают до половины высоты таблицы и мешают правке атрибутов.
-       Полоса-переключатель прячет их содержимое, НЕ сбрасывая настройки. */
+       Кнопка шапки прячет их содержимое, НЕ сбрасывая настройки. */
     .gis-attrtable__panels {
       display: flex; flex-direction: column; min-height: 0;
       max-height: 55%; overflow-y: auto;
     }
-    .gis-attrtable__panelbar {
-      display: flex; align-items: center; gap: 6px; cursor: pointer;
-      padding: 3px 10px; font-size: 9pt; color: #555; background: #f1f8e9;
-      border-bottom: 1px solid rgba(0,0,0,.12); user-select: none;
-      flex: 0 0 auto;
-    }
-    .gis-attrtable__panelbar[hidden] { display: none; }
-    .gis-attrtable__panelbar:hover { background: #e8f5e9; color: #2e7d32; }
+    /* Кнопка шапки «Свернуть / Показать панели». */
+    .gis-attrtable__panelstoggle { padding: 5px 8px; white-space: nowrap; }
+    .gis-attrtable__panelstoggle.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
     .gis-attrtable__panels--collapsed .gis-attrtable__filterpanel { display: none; }
     .gis-fp__head, .gis-fp__foot { display: flex; align-items: center; gap: 8px; }
     .gis-fp__match { color: #555; display: inline-flex; align-items: center; gap: 6px; }
@@ -1414,6 +1409,10 @@
                 title="Удалить атрибутивные столбцы" hidden>➖ столбцы</button>
         <button type="button" class="gis-attrtable__btn gis-attrtable__filltoggle" id="gis-attrtable-fill-toggle"
                 title="Массовое заполнение атрибута одним значением" hidden>✎ Заполнить</button>
+        <!-- Сворачивание открытых панелей (фильтр + заполнение) одной кнопкой:
+             настройки панелей сохраняются, освобождается высота под таблицу. -->
+        <button type="button" class="gis-attrtable__btn gis-attrtable__panelstoggle" id="gis-attrtable-panels-toggle"
+                title="Свернуть панели, не сбрасывая их настройки" hidden>⌃ Свернуть панели</button>
         <span class="gis-attrtable__sep"></span>
         <span class="gis-attrtable__title" id="gis-attrtable-title">ЗСН (Росреестр)</span>
         <span class="gis-attrtable__count" id="gis-attrtable-count"></span>
@@ -1443,14 +1442,9 @@
                 title="Обновить объекты из видимой области">⟳ Обновить</button>
         <button type="button" class="gis-attrtable__x" id="gis-attrtable-close" title="Закрыть таблицу">✕</button>
       </div>
-      <!-- Зона панелей: конструктор выборки + массовое заполнение. Полоса
-           сверху сворачивает ОБЕ панели одним кликом (настройки сохраняются). -->
+      <!-- Зона панелей: конструктор выборки + массовое заполнение. Сворачивается
+           целиком кнопкой шапки «⌃ Свернуть панели» (настройки сохраняются). -->
       <div class="gis-attrtable__panels" id="gis-attrtable-panels">
-      <div class="gis-attrtable__panelbar" id="gis-attrtable-panelbar" hidden
-           title="Свернуть/развернуть панели (настройки сохраняются)">
-        <span id="gis-attrtable-panelbar-ic">▾</span>
-        <span id="gis-attrtable-panelbar-txt">Панели</span>
-      </div>
       <div class="gis-attrtable__filterpanel" id="gis-attrtable-filterpanel" hidden>
         <div class="gis-fp__head">
           <span class="gis-fp__match">Совпадение:
@@ -7877,18 +7871,16 @@
 
       /* ─── Сворачивание зоны панелей (фильтр + заполнение) ───
          Две открытые панели отнимают половину высоты таблицы и мешают
-         работать с атрибутами. Полоса-переключатель прячет их содержимое,
-         НЕ закрывая сами панели: собранный фильтр, столбец и формула
+         работать с атрибутами. Кнопка шапки прячет их содержимое, НЕ
+         закрывая сами панели: собранный фильтр, столбец и формула
          остаются на месте и вернутся в том же виде. */
       var panelsWrap = document.getElementById('gis-attrtable-panels');
-      var panelBar   = document.getElementById('gis-attrtable-panelbar');
-      var panelBarIc = document.getElementById('gis-attrtable-panelbar-ic');
-      var panelBarTx = document.getElementById('gis-attrtable-panelbar-txt');
+      var panelsBtn  = document.getElementById('gis-attrtable-panels-toggle');
       var panelsCollapsed = false;
       var panelsWasOpen = { filter: false, fill: false };
 
       function panelsSync() {
-        if (!panelsWrap || !panelBar) return;
+        if (!panelsWrap || !panelsBtn) return;
         var st = {
           filter: !!(fpPanel && !fpPanel.hidden),
           fill: !!(fillPanel && !fillPanel.hidden),
@@ -7900,19 +7892,18 @@
           panelsCollapsed = false;
         }
         panelsWasOpen = st;
-        var names = [];
-        if (st.filter) names.push('фильтр');
-        if (st.fill) names.push('заполнение');
-        panelBar.hidden = !names.length;
+        var anyOpen = st.filter || st.fill;
+        panelsBtn.hidden = !anyOpen;
         panelsWrap.classList.toggle('gis-attrtable__panels--collapsed',
-                                    !!names.length && panelsCollapsed);
-        if (panelBarIc) panelBarIc.textContent = panelsCollapsed ? '▸' : '▾';
-        if (panelBarTx) {
-          panelBarTx.textContent = (panelsCollapsed ? 'Показать' : 'Свернуть') +
-            ' панели: ' + names.join(', ');
-        }
+                                    anyOpen && panelsCollapsed);
+        panelsBtn.classList.toggle('active', anyOpen && panelsCollapsed);
+        panelsBtn.textContent = panelsCollapsed
+          ? '⌄ Показать панели' : '⌃ Свернуть панели';
+        panelsBtn.title = panelsCollapsed
+          ? 'Показать панели с ранее заданными настройками'
+          : 'Свернуть панели, не сбрасывая их настройки';
       }
-      if (panelBar) panelBar.addEventListener('click', function () {
+      if (panelsBtn) panelsBtn.addEventListener('click', function () {
         panelsCollapsed = !panelsCollapsed;
         panelsSync();
       });

@@ -145,10 +145,9 @@ class GisPageMarkupTests(GisLayersTestCase):
         for node in ('gis-fill-expr', 'gis-fill-expr-apply'):
             self.assertIn(node, self.html)
 
-    def test_panels_collapse_bar_present(self):
-        # Полоса сворачивает зону панелей (фильтр + заполнение) целиком.
-        for node in ('gis-attrtable-panels', 'gis-attrtable-panelbar',
-                     'gis-attrtable-panelbar-txt'):
+    def test_panels_collapse_button_present(self):
+        # Кнопка шапки сворачивает зону панелей (фильтр + заполнение) целиком.
+        for node in ('gis-attrtable-panels', 'gis-attrtable-panels-toggle'):
             self.assertIn(node, self.html)
 
 
