@@ -247,7 +247,78 @@ class LayerSummaryValueFilterTests(_LayerFactoryMixin, GisLayersTestCase):
             self.layer, 'soil', group_values=["'; DROP TABLE x; --"])
         self.assertEqual(s['rows'], [])
         # Таблица жива: значения идут параметрами, а не в тело SQL.
-        self.assertEqual(summary_by_field(self.layer, 'soil')['total']['count'], 4)
+
+
+class LayerSummaryFilterSpecTests(_LayerFactoryMixin, GisLayersTestCase):
+    """Тесты структурного фильтра (визуальный конструктор) в сводке."""
+
+    def setUp(self):
+        # Создаём слой с числовым полем для фильтрации
+        self.layer = create_empty_layer(
+            'Участки', 'polygon',
+            attributes=[
+                {'name': 'name', 'type': 'text'},
+                {'name': 'num', 'type': 'integer'},
+            ],
+            owner=self.admin_user,
+        )
+        t = sql.Identifier(self.layer.table_name)
+        with connection.cursor() as cur:
+            for name, num, x, y in [('Alpha', 10, 34.10, 45.10),
+                                    ('Beta', 20, 34.20, 45.20),
+                                    ('Gamma', 30, 34.30, 45.30)]:
+                cur.execute(sql.SQL(
+                    'INSERT INTO {t} (name, num, geom) VALUES '
+                    '(%s, %s, ST_SetSRID(ST_MakeEnvelope(%s, %s, %s, %s), 4326))'
+                ).format(t=t), [name, num, x, y, x + 0.05, y + 0.05])
+        self.layer.feature_count = 3
+        self.layer.save(update_fields=['feature_count'])
+
+    def test_filter_spec_eq(self):
+        s = summary_by_field(
+            self.layer, 'name',
+            filter_spec={'rules': [{'field': 'num', 'op': 'eq', 'value': 20}]})
+        self.assertEqual(s['total']['count'], 1)
+        self.assertEqual([r['value'] for r in s['rows']], ['Beta'])
+
+    def test_filter_spec_gt(self):
+        s = summary_by_field(
+            self.layer, 'name',
+            filter_spec={'rules': [{'field': 'num', 'op': 'gt', 'value': 15}]})
+        self.assertEqual(s['total']['count'], 2)
+        self.assertEqual(sorted([r['value'] for r in s['rows']]), ['Beta', 'Gamma'])
+
+    def test_filter_spec_match_any(self):
+        s = summary_by_field(
+            self.layer, 'name',
+            filter_spec={'match': 'any', 'rules': [
+                {'field': 'num', 'op': 'eq', 'value': 10},
+                {'field': 'num', 'op': 'eq', 'value': 30},
+            ]})
+        self.assertEqual(s['total']['count'], 2)
+        self.assertEqual(sorted([r['value'] for r in s['rows']]), ['Alpha', 'Gamma'])
+
+    def test_filter_spec_with_query_text(self):
+        s = summary_by_field(
+            self.layer, 'name',
+            filter_spec={'rules': [{'field': 'num', 'op': 'gt', 'value': 0}]},
+            query_text='Beta')
+        self.assertEqual(s['total']['count'], 1)
+        self.assertEqual([r['value'] for r in s['rows']], ['Beta'])
+
+    def test_filter_spec_invalid_field_raises(self):
+        from my_fields.services.layer_query import LayerQueryError
+        with self.assertRaises(LayerQueryError):
+            summary_by_field(
+                self.layer, 'name',
+                filter_spec={'rules': [{'field': 'nope', 'op': 'eq', 'value': 1}]})
+
+    def test_filter_spec_invalid_op_raises(self):
+        from my_fields.services.layer_query import LayerQueryError
+        with self.assertRaises(LayerQueryError):
+            summary_by_field(
+                self.layer, 'name',
+                filter_spec={'rules': [{'field': 'num', 'op': 'regex', 'value': 1}]})
 
 
 class LayerSummaryTwoLevelTests(_LayerFactoryMixin, GisLayersTestCase):

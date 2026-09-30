@@ -1277,6 +1277,22 @@ def _gis_columns_bulk_delete(layer, dbs) -> JsonResponse:
 
 
 @csrf_exempt
+@require_http_methods(['GET'])
+def gis_formula_presets(request: HttpRequest) -> JsonResponse:
+    """GET — список готовых пресетов формул для заполнения атрибутов.
+
+    Возвращает список пресетов с id, name, description, template и params.
+    Используется в UI для быстрого выбора формулы без ручного ввода.
+    Уровень доступа view (доступен всем авторизованным пользователям).
+    """
+    from .services.layer_expr import FORMULA_PRESETS
+    return JsonResponse({
+        'ok': True,
+        'presets': FORMULA_PRESETS,
+    })
+
+
+@csrf_exempt
 @require_http_methods(['POST'])
 def gis_layer_fill(request: HttpRequest, pk: int) -> JsonResponse:
     """POST — массово заполнить атрибутивный столбец одним значением.
@@ -1594,7 +1610,9 @@ def gis_layer_summary(request: HttpRequest, pk: int) -> JsonResponse:
     ``district`` (``agro_district.id`` — оставить объекты, пересекающие
     район), ``gv``/``g2v``/``sv`` — ПОВТОРЯЮЩИЕСЯ параметры с перечнем
     значений соответствующего поля (чекбоксы в UI; без них берутся все
-    значения). Уровень доступа ``view``.
+    значения), ``filter`` — JSON-строка со структурным фильтром из
+    визуального конструктора (см. :mod:`my_fields.services.layer_query`),
+    ``q`` — подстрочный поиск. Уровень доступа ``view``.
 
     Повторяющиеся параметры, а не один через запятую: значения атрибутов
     сами содержат и запятые, и точки с запятой.
@@ -1621,17 +1639,38 @@ def gis_layer_summary(request: HttpRequest, pk: int) -> JsonResponse:
     except (TypeError, ValueError):
         district_id = None
 
+    # Парсинг filter_spec из query string (JSON-строка)
+    filter_spec = None
+    filter_str = request.GET.get('filter')
+    if filter_str:
+        try:
+            filter_spec = json.loads(filter_str)
+        except json.JSONDecodeError:
+            return JsonResponse(
+                {'ok': False, 'error': 'invalid_filter',
+                 'detail': 'filter должен быть валидным JSON.'},
+                status=400,
+            )
+    query_text = (request.GET.get('q') or '').strip()
+
     from .services.layer_summary import LayerSummaryError, summary_by_field
+    from .services.layer_query import LayerQueryError
     try:
         data = summary_by_field(
             layer, group, split=split, district_id=district_id,
             group_values=request.GET.getlist('gv') or None,
             split_values=request.GET.getlist('sv') or None,
             group2=group2,
-            group2_values=request.GET.getlist('g2v') or None)
+            group2_values=request.GET.getlist('g2v') or None,
+            filter_spec=filter_spec, query_text=query_text)
     except LayerSummaryError as exc:
         return JsonResponse(
             {'ok': False, 'error': 'bad_summary', 'detail': str(exc)},
+            status=400,
+        )
+    except LayerQueryError as exc:
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_filter', 'detail': str(exc)},
             status=400,
         )
     return JsonResponse({
@@ -1838,6 +1877,7 @@ def gis_dashboard_send(request: HttpRequest) -> JsonResponse:
         DashboardParamsError, clean_recipients, normalize_params,
         send_summary_email,
     )
+    from .services.layer_query import LayerQueryError
     from .services.layer_summary import LayerSummaryError, summary_by_field
     try:
         params = normalize_params(layer, data.get('params'))
@@ -1853,10 +1893,15 @@ def gis_dashboard_send(request: HttpRequest) -> JsonResponse:
             group_values=params.get('group_values'),
             split_values=params.get('split_values'),
             group2=params.get('group2'),
-            group2_values=params.get('group2_values'))
+            group2_values=params.get('group2_values'),
+            filter_spec=params.get('filter'),
+            query_text=params.get('q', ''))
     except LayerSummaryError as exc:
         return JsonResponse(
             {'ok': False, 'error': 'bad_summary', 'detail': str(exc)}, status=400)
+    except LayerQueryError as exc:
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_filter', 'detail': str(exc)}, status=400)
 
     note = str(data.get('note') or '').strip()[:1000]
     delivered = send_summary_email(

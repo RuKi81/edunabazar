@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 # Ключи, которые вообще могут храниться в пресете и попадать в ссылку.
 PARAM_KEYS = ('region', 'district', 'group', 'group2', 'split', 'bysplit',
-              'group_values', 'group2_values', 'split_values')
+              'group_values', 'group2_values', 'split_values', 'filter', 'q')
 
 # Писем за один запрос: защита от превращения кнопки «отправить» в рассыльщик.
 MAX_RECIPIENTS = 5
@@ -105,6 +105,13 @@ def normalize_params(layer, raw: dict | None) -> dict:
     except LayerSummaryError as exc:
         raise DashboardParamsError(str(exc)) from None
 
+    # filter_spec (структурный фильтр) — валидируется layer_query.build_where
+    # при вызове summary_by_field. Здесь только проверяем, что это dict.
+    filter_spec = raw.get('filter')
+    if filter_spec is not None and not isinstance(filter_spec, dict):
+        raise DashboardParamsError('filter должен быть объектом.')
+    query_text = str(raw.get('q') or '').strip()
+
     return {
         'region': _int_or_none(raw.get('region')),
         'district': _int_or_none(raw.get('district')),
@@ -116,6 +123,8 @@ def normalize_params(layer, raw: dict | None) -> dict:
         # Без самого поля его фильтр бессмыслен и только мусорит ссылку.
         'group2_values': g2vals if group2 else None,
         'split_values': svals if split else None,
+        'filter': filter_spec,
+        'q': query_text,
     }
 
 
@@ -148,6 +157,12 @@ def dashboard_url(layer, params: dict) -> str:
         query['g2v'] = list(params['group2_values'])
     if params.get('split') and params.get('split_values'):
         query['sv'] = list(params['split_values'])
+    # filter (структурный фильтр) — JSON-строка в query string
+    if params.get('filter'):
+        import json
+        query['filter'] = json.dumps(params['filter'])
+    if params.get('q'):
+        query['q'] = params['q']
     path = reverse('my_fields:ui_gis_dashboards')
     return f'{_site_url()}{path}?{urlencode(query, doseq=True)}'
 

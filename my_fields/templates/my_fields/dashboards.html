@@ -420,6 +420,21 @@
         </select>
         <div class="dash-vals" id="dash-split-vals" hidden></div>
       </div>
+
+      <div class="dash-field">
+        <label for="dash-q">Поиск по тексту</label>
+        <input class="browser-default" type="text" id="dash-q"
+               placeholder="Подстрока в любом поле" disabled>
+      </div>
+
+      <div class="dash-field">
+        <label>Условный фильтр</label>
+        <button class="dash-btn dash-btn--ghost" id="dash-filter-builder" type="button"
+                disabled title="Построить фильтр по условиям">
+          🔧 Условия
+        </button>
+        <span class="dash-hint" id="dash-filter-hint"></span>
+      </div>
     </div>
 
     <div class="dash-actions">
@@ -510,6 +525,9 @@
     var splitEl    = document.getElementById('dash-split');
     var bySplitEl  = document.getElementById('dash-bysplit');
     var bySplitHint = document.getElementById('dash-bysplit-hint');
+    var qEl        = document.getElementById('dash-q');
+    var filterBuilderEl = document.getElementById('dash-filter-builder');
+    var filterHint = document.getElementById('dash-filter-hint');
     var buildEl    = document.getElementById('dash-build');
     var buildHint  = document.getElementById('dash-build-hint');
     var distHint   = document.getElementById('dash-district-hint');
@@ -534,6 +552,9 @@
     /* Слои держим целиком (в ответе /api/layers/ есть attributes) —
        селекты полей наполняются без дополнительного запроса. */
     var layersById = {};
+
+    /* Структурный фильтр (визуальный конструктор условий) — храним как JSON. */
+    var filterSpec = null;
 
     /* Палитра категорий: цвет один и тот же в пайчарте и в таблице,
        чтобы строку можно было найти по сектору. */
@@ -880,6 +901,9 @@
       setOptions(group2El, items, '— не выбрано —');
       setOptions(splitEl, items, '— без разреза —');
       groupEl.disabled = group2El.disabled = splitEl.disabled = !items.length;
+      // Активируем подстрочный поиск и кнопку конструктора условий при выборе слоя
+      qEl.disabled = !items.length;
+      filterBuilderEl.disabled = !items.length;
 
       /* Разумный дефолт: значение из ссылки, иначе первое поле слоя
          (для почвенных слоёв это сразу подтип почвы — колонка первая). */
@@ -920,6 +944,17 @@
       var built = !!lastResp;
       pdfEl.disabled = !built;
       emailEl.disabled = !built;
+    }
+
+    function updateFilterHint() {
+      var parts = [];
+      if (filterSpec) {
+        parts.push('условия: ' + (filterSpec.rules ? filterSpec.rules.length : 0));
+      }
+      if (qEl.value.trim()) {
+        parts.push('поиск: "' + qEl.value.trim() + '"');
+      }
+      filterHint.textContent = parts.length ? parts.join(', ') : '';
     }
 
     /* ── Пайчарт: инлайновый SVG, без внешних библиотек ──
@@ -1237,6 +1272,14 @@
       if (splitEl.value) {
         (valTokens('split') || []).forEach(function (t) { p.append('sv', t); });
       }
+      // Подстрочный поиск
+      if (qEl.value.trim()) {
+        p.set('q', qEl.value.trim());
+      }
+      // Структурный фильтр (JSON-строка)
+      if (filterSpec) {
+        p.set('filter', JSON.stringify(filterSpec));
+      }
 
       jget('/me/gis/api/layers/' + encodeURIComponent(pk) + '/summary/?' +
         p.toString())
@@ -1275,6 +1318,8 @@
         group_values: valTokens('group'),
         group2_values: group2Value() ? valTokens('group2') : null,
         split_values: splitEl.value ? valTokens('split') : null,
+        filter: filterSpec,
+        q: qEl.value.trim() || null,
       };
     }
 
@@ -1335,6 +1380,10 @@
         buildHint.textContent = 'слой отчёта недоступен';
         return;
       }
+      // Восстанавливаем параметры фильтра
+      filterSpec = params.filter || null;
+      qEl.value = params.q || '';
+      updateFilterHint();
       valPending = { group: params.group_values || null,
                      group2: params.group2_values || null,
                      split: params.split_values || null };
@@ -1567,6 +1616,16 @@
     bySplitEl.addEventListener('change', function () {
       syncUrl();
       if (lastResp) renderDashboard(lastResp);
+    });
+    // Подстрочный поиск
+    qEl.addEventListener('input', function () {
+      updateFilterHint();
+      syncUrl();
+      if (lastResp) buildDashboard();
+    });
+    // Кнопка визуального конструктора условий (заглушка - реализация позже)
+    filterBuilderEl.addEventListener('click', function () {
+      alert('Визуальный конструктор условий будет реализован позже.');
     });
     buildEl.addEventListener('click', buildDashboard);
     saveEl.addEventListener('click', savePreset);

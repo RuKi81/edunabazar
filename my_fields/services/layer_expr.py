@@ -30,6 +30,39 @@
     coalesce(code, '') || '-' || id
     CASE WHEN area > 100 THEN 'крупное' ELSE 'мелкое' END
 """
+
+
+# Готовые пресеты формул для UI. Каждая формула — это словарь с ключами:
+#   - name: название для UI
+#   - template: шаблон формулы (использует {field} для подстановки атрибута)
+#   - description: описание
+#   - params: список параметров (field, value и т.п.)
+FORMULA_PRESETS = [
+    {
+        'id': 'area_m2',
+        'name': 'Площадь в м²',
+        'template': 'ST_Area(geom::geography)',
+        'description': 'Геодезическая площадь объекта в квадратных метрах',
+        'params': [],
+    },
+    {
+        'id': 'area_ha',
+        'name': 'Площадь в гектарах',
+        'template': 'ST_Area(geom::geography) / 10000',
+        'description': 'Геодезическая площадь объекта в гектарах',
+        'params': [],
+    },
+    {
+        'id': 'capacity',
+        'name': 'Вместимость (атрибут × коэффициент)',
+        'template': '{field} * {value}',
+        'description': 'Расчёт вместимости: выбранный атрибут умножается на коэффициент',
+        'params': [
+            {'key': 'field', 'label': 'Атрибут', 'type': 'field', 'numeric': True},
+            {'key': 'value', 'label': 'Коэффициент', 'type': 'number', 'default': 1.0},
+        ],
+    },
+]
 from __future__ import annotations
 
 import re
@@ -244,3 +277,36 @@ def compile_expression(layer, text: str):
 
     parts = _compile_tokens(_tokenize(text), _columns(layer))
     return sql.SQL('({})').format(sql.SQL(' ').join(parts))
+
+
+def apply_preset(preset_id: str, params: dict) -> str:
+    """Применить пресет формулы с подстановкой параметров.
+
+    Args:
+        preset_id: ID пресета из :data:`FORMULA_PRESETS`.
+        params: словарь значений параметров (например, {'field': 'area', 'value': 2.5}).
+
+    Returns:
+        Текст формулы с подставленными значениями.
+
+    Raises:
+        LayerExprError: пресет не найден или отсутствует обязательный параметр.
+    """
+    preset = next((p for p in FORMULA_PRESETS if p['id'] == preset_id), None)
+    if not preset:
+        raise LayerExprError(f'Пресет {preset_id!r} не найден.')
+
+    template = preset['template']
+    for param_def in preset['params']:
+        key = param_def['key']
+        if key not in params:
+            raise LayerExprError(f'Отсутствует обязательный параметр: {key}')
+        value = params[key]
+        # Для поля подставляем имя атрибута как есть
+        if param_def.get('type') == 'field':
+            template = template.replace('{' + key + '}', str(value))
+        else:
+            # Для чисел подставляем как число
+            template = template.replace('{' + key + '}', str(value))
+
+    return template

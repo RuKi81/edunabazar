@@ -1523,6 +1523,22 @@
                     title="Заполнить столбец вычисленным значением">Заполнить формулой</button>
           </span>
         </div>
+        <!-- Готовые пресеты формулы: собирают текст в поле выше, чтобы не
+             набирать SQL руками. Загружаются с сервера (/me/gis/api/formula-presets/). -->
+        <div class="gis-fp__rule">
+          <span class="gis-fp__match">пресет:
+            <select class="browser-default" id="gis-fill-preset">
+              <option value="">— выберите —</option>
+              <!-- Пресеты загружаются динамически -->
+            </select>
+          </span>
+          <span class="gis-fp__match" id="gis-fill-preset-args" hidden>атрибут:
+            <select class="browser-default gis-fp__field" id="gis-fill-preset-col"></select>
+            <input class="browser-default gis-fp__val" type="number" id="gis-fill-preset-value"
+                   placeholder="коэффициент" step="0.1" style="width: 100px;">
+            <button type="button" class="gis-fp__btn" id="gis-fill-preset-apply">Применить</button>
+          </span>
+        </div>
         <div class="gis-colmenu__filterhint" id="gis-fill-exprhint">
           Примеры: <code>ST_Area(geom::geography) / 10000</code> — площадь, га ·
           <code>upper(trim(name))</code> ·
@@ -7780,6 +7796,14 @@
       var fillClearBtn = document.getElementById('gis-fill-clear');
       var fillExprInp  = document.getElementById('gis-fill-expr');
       var fillExprBtn  = document.getElementById('gis-fill-expr-apply');
+      var fillPresetSel  = document.getElementById('gis-fill-preset');
+      var fillPresetArgs = document.getElementById('gis-fill-preset-args');
+      var fillPresetCol  = document.getElementById('gis-fill-preset-col');
+      var fillPresetValue = document.getElementById('gis-fill-preset-value');
+      var fillPresetApply = document.getElementById('gis-fill-preset-apply');
+
+      // Хранилище загруженных пресетов
+      var formulaPresets = [];
 
       function fillAvailable() { return !!dynLayers[state.layer]; }
       function fillClosePanel() { if (fillPanel) fillPanel.hidden = true; }
@@ -7828,6 +7852,102 @@
         if (fillValInp) fillValInp.disabled = none;
         if (fillExprInp) fillExprInp.disabled = none;
         fillSyncValType();
+        fillRenderPresetCols();
+      }
+      /* ── Пресеты формулы ──
+         Собирают текст формулы в поле #gis-fill-expr, чтобы не набирать SQL
+         руками. Второй пресет читает ДРУГОЙ атрибут слоя: список колонок тот
+         же, что и у заполняемого столбца. */
+      function fillRenderPresetCols() {
+        if (!fillPresetCol) return;
+        var prev = fillPresetCol.value;
+        var cols = attrCols();
+        fillPresetCol.innerHTML = cols.length
+          ? cols.map(function (c) {
+              return '<option value="' + esc(c.key) + '">' + esc(c.label || c.key) + '</option>';
+            }).join('')
+          : '<option value="">— нет столбцов —</option>';
+        if (prev && cols.some(function (c) { return c.key === prev; })) fillPresetCol.value = prev;
+      }
+      /* Загрузка пресетов формул с сервера */
+      function loadFormulaPresets() {
+        if (!fillPresetSel) return;
+        fetch('/me/gis/api/formula-presets/', {
+          credentials: 'same-origin',
+          headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        })
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          if (!j || !j.ok || !j.presets) return;
+          formulaPresets = j.presets;
+          fillPresetSel.innerHTML = '<option value="">— выберите —</option>' +
+            formulaPresets.map(function (p) {
+              return '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>';
+            }).join('');
+        })
+        .catch(function () {
+          // Ошибка загрузки — оставляем пустой список
+        });
+      }
+
+      /* Показ аргументов пресета в зависимости от выбранного пресета */
+      function fillPresetSyncArgs() {
+        var presetId = fillPresetSel ? fillPresetSel.value : '';
+        var preset = formulaPresets.find(function (p) { return p.id === presetId; });
+        if (!preset || !preset.params || !preset.params.length) {
+          if (fillPresetArgs) fillPresetArgs.hidden = true;
+          return;
+        }
+        if (fillPresetArgs) fillPresetArgs.hidden = false;
+        // Показываем только нужные поля параметров
+        var hasField = preset.params.some(function (p) { return p.key === 'field'; });
+        var hasValue = preset.params.some(function (p) { return p.key === 'value'; });
+        if (fillPresetCol) fillPresetCol.hidden = !hasField;
+        if (fillPresetValue) fillPresetValue.hidden = !hasValue;
+        // Если есть параметр field, заполняем его списком атрибутов слоя
+        if (hasField && fillPresetCol) {
+          fillPresetSyncFields();
+        }
+      }
+
+      /* Заполнение списка атрибутов для пресета */
+      function fillPresetSyncFields() {
+        if (!fillPresetCol) return;
+        var layer = dynLayers[state.layer];
+        var cols = layer ? (layer.attributes || []) : [];
+        fillPresetCol.innerHTML = cols.length
+          ? cols.map(function (c) {
+              return '<option value="' + esc(c.key) + '">' + esc(c.label || c.key) + '</option>';
+            }).join('')
+          : '<option value="">— нет столбцов —</option>';
+      }
+
+      /* Текст формулы по выбранному пресету с подстановкой параметров */
+      function fillPresetExpr() {
+        var presetId = fillPresetSel ? fillPresetSel.value : '';
+        var preset = formulaPresets.find(function (p) { return p.id === presetId; });
+        if (!preset) {
+          toast('Выберите пресет формулы.', true);
+          return null;
+        }
+        var template = preset.template;
+        var params = {};
+        // Сбор параметров из UI
+        (preset.params || []).forEach(function (p) {
+          if (p.key === 'field') {
+            params.field = fillPresetCol ? fillPresetCol.value : '';
+          } else if (p.key === 'value') {
+            params.value = fillPresetValue ? String(fillPresetValue.value).trim() : '';
+          }
+        });
+        // Подстановка параметров в шаблон
+        var expr = template;
+        for (var key in params) {
+          if (params.hasOwnProperty(key)) {
+            expr = expr.replace('{' + key + '}', params[key]);
+          }
+        }
+        return expr;
       }
       /* Подсказка под строкой: сколько объектов затронет выбранная область. */
       function fillSyncHint() {
@@ -7958,12 +8078,22 @@
       if (fillApplyBtn) fillApplyBtn.addEventListener('click', function () { fillSubmit('value'); });
       if (fillClearBtn) fillClearBtn.addEventListener('click', function () { fillSubmit('clear'); });
       if (fillExprBtn) fillExprBtn.addEventListener('click', function () { fillSubmit('expr'); });
+      if (fillPresetSel) fillPresetSel.addEventListener('change', fillPresetSyncArgs);
+      if (fillPresetApply) fillPresetApply.addEventListener('click', function () {
+        var expr = fillPresetExpr();
+        if (!expr) return;
+        if (fillExprInp) fillExprInp.value = expr;
+        toast('Формула подставлена в поле выше. Нажмите «Заполнить формулой» для применения.', false);
+      });
       if (fillValInp) fillValInp.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') { e.preventDefault(); fillSubmit('value'); }
       });
       if (fillExprInp) fillExprInp.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') { e.preventDefault(); fillSubmit('expr'); }
       });
+
+      // Загрузка пресетов формул при инициализации
+      loadFormulaPresets();
 
       /* ─── Сворачивание зоны панелей (фильтр + заполнение) ───
          Две открытые панели отнимают половину высоты таблицы и мешают

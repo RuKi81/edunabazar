@@ -40,6 +40,7 @@ from __future__ import annotations
 from django.db import connection
 from psycopg import sql
 
+from .layer_query import _search_sql, build_filter, build_where, LayerQueryError
 from .shp_import import _attr_db_types
 
 
@@ -112,11 +113,13 @@ def _area_expr(polygonal):
 
 
 def _fetch_rows(layer, fields, district_id, polygonal, row_limit,
-                filters=()):
+                filters=(), filter_spec=None, query_text=''):
     """Выполнить GROUP BY по ``fields`` → строки ``(*ключи, count, area_ha)``.
 
     ``fields`` — кортеж db-имён в порядке ключей строки (уровни группировки,
-    затем разрез); ``filters`` — пары ``(поле, перечень значений)``.
+    затем разрез); ``filters`` — пары ``(поле, перечень значений)`` для
+    чекбокс-фильтра; ``filter_spec`` — структурный фильтр из визуального
+    конструктора (layer_query); ``query_text`` — подстрочный поиск.
     """
     select, group_by = [], []
     for pos, field in enumerate(fields, start=1):
@@ -133,6 +136,7 @@ def _fetch_rows(layer, fields, district_id, polygonal, row_limit,
         params.append(int(district_id))
 
     where_parts = []
+    # Чекбокс-фильтр по значениям (group_values/split_values)
     for field, values in filters:
         if not field:
             continue
@@ -140,6 +144,20 @@ def _fetch_rows(layer, fields, district_id, polygonal, row_limit,
         if cond is not None:
             where_parts.append(cond)
             params.extend(cond_params)
+
+    # Визуальный конструктор условий (filter_spec) + подстрочный поиск
+    # Используем build_filter и _search_sql напрямую, чтобы получить только условия
+    # без слова WHERE (build_where добавляет WHERE, а мы его добавляем сами)
+    cols = _attr_db_types(layer).keys()
+    filt_sql, filt_params = build_filter(layer, filter_spec)
+    if filt_sql is not None:
+        where_parts.append(filt_sql)
+        params.extend(filt_params)
+    search_sql, search_params = _search_sql(cols, query_text)
+    if search_sql is not None:
+        where_parts.append(search_sql)
+        params.extend(search_params)
+
     where = sql.SQL('')
     if where_parts:
         where = sql.SQL(' WHERE {}').format(
@@ -233,7 +251,8 @@ def _resolve_fields(layer, group, group2, split):
 def summary_by_field(layer, group: str, split: str | None = None,
                      district_id: int | None = None,
                      group_values=None, split_values=None,
-                     group2: str | None = None, group2_values=None) -> dict:
+                     group2: str | None = None, group2_values=None,
+                     filter_spec=None, query_text: str = '') -> dict:
     """Сводка слоя: количество объектов и площадь по значениям ``group``.
 
     Args:
@@ -250,6 +269,10 @@ def summary_by_field(layer, group: str, split: str | None = None,
         group2: db-имя второго уровня группировки или ``None``:
             категорией становится пара ``(group, group2)``.
         group2_values: то же для ``group2``. Игнорируется без ``group2``.
+        filter_spec: структурный фильтр из визуального конструктора условий
+            (см. :mod:`my_fields.services.layer_query`) или ``None``.
+        query_text: подстрочный поиск по всем колонкам (комбинируется с
+            filter_spec через AND).
 
     Returns:
         ``{'group', 'group2', 'split', 'polygonal', 'rows', 'splits', 'total',
@@ -261,6 +284,7 @@ def summary_by_field(layer, group: str, split: str | None = None,
     Raises:
         LayerSummaryError: поле не является атрибутом слоя либо слой слишком
             велик для синхронной сводки.
+        LayerQueryError: некорректный ``filter_spec`` (неизвестное поле/оператор).
     """
     group, group2, split = _resolve_fields(layer, group, group2, split)
     if (layer.feature_count or 0) > MAX_FEATURES:
@@ -284,7 +308,8 @@ def summary_by_field(layer, group: str, split: str | None = None,
     rows = _fetch_rows(
         layer, fields, district_id, polygonal, row_limit,
         filters=((group, group_values), (group2, group2_values),
-                 (split, split_values)))
+                 (split, split_values)),
+        filter_spec=filter_spec, query_text=query_text)
     truncated = len(rows) > row_limit
     groups = _accumulate(rows[:row_limit], levels, split)
 
