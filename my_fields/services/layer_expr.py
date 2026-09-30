@@ -175,6 +175,52 @@ def _ident_sql(tokens, i, columns):
         f'geom, id и функции из списка.')
 
 
+def _op_sql(value: str, depth: int):
+    """Оператор/скобка → ``(sql, новая глубина вложенности)``.
+
+    Raises:
+        LayerExprError: лишняя закрывающая скобка / слишком глубокая
+            вложенность.
+    """
+    if value == '(':
+        depth += 1
+        if depth > MAX_DEPTH:
+            raise LayerExprError('Слишком глубокая вложенность скобок.')
+    elif value == ')':
+        depth -= 1
+        if depth < 0:
+            raise LayerExprError('Лишняя закрывающая скобка.')
+    return sql.SQL(value), depth
+
+
+def _compile_tokens(tokens, columns) -> list:
+    """Токены → список Composable-частей выражения (с проверкой скобок)."""
+    parts = []
+    depth = 0
+    i = 0
+    while i < len(tokens):
+        kind, value = tokens[i]
+        if kind == 'num':
+            parts.append(sql.SQL(value))
+            i += 1
+        elif kind == 'str':
+            parts.append(sql.Literal(value))
+            i += 1
+        elif kind == 'ident':
+            parts.append(_ident_sql(tokens, i, columns))
+            i += 1
+        elif value == '::':
+            cast, i = _cast_type(tokens, i + 1)
+            parts.append(sql.SQL('::' + cast))
+        else:
+            part, depth = _op_sql(value, depth)
+            parts.append(part)
+            i += 1
+    if depth:
+        raise LayerExprError('Не закрыта скобка.')
+    return parts
+
+
 def compile_expression(layer, text: str):
     """Скомпилировать формулу в SQL-выражение (``psycopg.sql.Composed``).
 
@@ -196,37 +242,5 @@ def compile_expression(layer, text: str):
         raise LayerExprError(
             f'Формула слишком длинная (> {MAX_EXPR_LEN} символов).')
 
-    columns = _columns(layer)
-    tokens = _tokenize(text)
-    parts = []
-    depth = 0
-    i = 0
-    while i < len(tokens):
-        kind, value = tokens[i]
-        if kind == 'num':
-            parts.append(sql.SQL(value))
-            i += 1
-        elif kind == 'str':
-            parts.append(sql.Literal(value))
-            i += 1
-        elif kind == 'ident':
-            parts.append(_ident_sql(tokens, i, columns))
-            i += 1
-        else:  # op
-            if value == '::':
-                cast, i = _cast_type(tokens, i + 1)
-                parts.append(sql.SQL('::' + cast))
-                continue
-            if value == '(':
-                depth += 1
-                if depth > MAX_DEPTH:
-                    raise LayerExprError('Слишком глубокая вложенность скобок.')
-            elif value == ')':
-                depth -= 1
-                if depth < 0:
-                    raise LayerExprError('Лишняя закрывающая скобка.')
-            parts.append(sql.SQL(value))
-            i += 1
-    if depth:
-        raise LayerExprError('Не закрыта скобка.')
+    parts = _compile_tokens(_tokenize(text), _columns(layer))
     return sql.SQL('({})').format(sql.SQL(' ').join(parts))
