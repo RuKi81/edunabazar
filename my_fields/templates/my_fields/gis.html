@@ -772,17 +772,23 @@
     /* Кнопка «Заполнить атрибут» (массовое заполнение). */
     .gis-attrtable__filltoggle { padding: 5px 8px; white-space: nowrap; }
     .gis-attrtable__filltoggle.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
+    /* БЕЗ собственного max-height/overflow: вложенное ограничение высоты
+       (40% внутри 55% у обёртки) обрезало вторую строку панели заполнения
+       («формула SQL» + подсказки) — обрезок выглядел как белая заглушка под
+       шапкой таблицы. Прокрутка — одна, на обёртке .gis-attrtable__panels. */
     .gis-attrtable__filterpanel {
       border-bottom: 1px solid rgba(0,0,0,.12); background: #fafafa;
       padding: 8px 10px; display: flex; flex-direction: column; gap: 8px;
-      max-height: 40%; overflow-y: auto;
+      flex: 0 0 auto;
     }
     /* Зона панелей (фильтр + заполнение) — один сворачиваемый блок: открытые
        панели отнимают до половины высоты таблицы и мешают правке атрибутов.
-       Кнопка шапки прячет их содержимое, НЕ сбрасывая настройки. */
+       Кнопка шапки прячет их содержимое, НЕ сбрасывая настройки.
+       flex: 0 0 auto — зона высотой ровно по содержимому (до max-height) и
+       не сжимается соседним телом таблицы. */
     .gis-attrtable__panels {
       display: flex; flex-direction: column; min-height: 0;
-      max-height: 55%; overflow-y: auto;
+      flex: 0 0 auto; max-height: 55%; overflow-y: auto;
     }
     /* Кнопка шапки «Свернуть / Показать панели». */
     .gis-attrtable__panelstoggle { padding: 5px 8px; white-space: nowrap; }
@@ -892,7 +898,9 @@
     }
     .gis-attrtable__x:hover { background: #eee; color: #333; }
 
-    .gis-attrtable__body { flex: 1; overflow: auto; }
+    /* min-height: 0 — иначе тело таблицы не сжимается ниже своего
+       содержимого и выдавливает панели за нижний край таблицы. */
+    .gis-attrtable__body { flex: 1; min-height: 0; overflow: auto; }
     .gis-attrtable table { border-collapse: collapse; width: 100%; font-size: 12px; }
     .gis-attrtable thead th {
       position: sticky; top: 0; z-index: 2; background: #f1f8e9;
