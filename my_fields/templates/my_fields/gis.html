@@ -768,6 +768,22 @@
       padding: 8px 10px; display: flex; flex-direction: column; gap: 8px;
       max-height: 40%; overflow-y: auto;
     }
+    /* Зона панелей (фильтр + заполнение) — один сворачиваемый блок: открытые
+       панели отнимают до половины высоты таблицы и мешают правке атрибутов.
+       Полоса-переключатель прячет их содержимое, НЕ сбрасывая настройки. */
+    .gis-attrtable__panels {
+      display: flex; flex-direction: column; min-height: 0;
+      max-height: 55%; overflow-y: auto;
+    }
+    .gis-attrtable__panelbar {
+      display: flex; align-items: center; gap: 6px; cursor: pointer;
+      padding: 3px 10px; font-size: 9pt; color: #555; background: #f1f8e9;
+      border-bottom: 1px solid rgba(0,0,0,.12); user-select: none;
+      flex: 0 0 auto;
+    }
+    .gis-attrtable__panelbar[hidden] { display: none; }
+    .gis-attrtable__panelbar:hover { background: #e8f5e9; color: #2e7d32; }
+    .gis-attrtable__panels--collapsed .gis-attrtable__filterpanel { display: none; }
     .gis-fp__head, .gis-fp__foot { display: flex; align-items: center; gap: 8px; }
     .gis-fp__match { color: #555; display: inline-flex; align-items: center; gap: 6px; }
     .gis-fp__spacer { flex: 1; }
@@ -1427,6 +1443,14 @@
                 title="Обновить объекты из видимой области">⟳ Обновить</button>
         <button type="button" class="gis-attrtable__x" id="gis-attrtable-close" title="Закрыть таблицу">✕</button>
       </div>
+      <!-- Зона панелей: конструктор выборки + массовое заполнение. Полоса
+           сверху сворачивает ОБЕ панели одним кликом (настройки сохраняются). -->
+      <div class="gis-attrtable__panels" id="gis-attrtable-panels">
+      <div class="gis-attrtable__panelbar" id="gis-attrtable-panelbar" hidden
+           title="Свернуть/развернуть панели (настройки сохраняются)">
+        <span id="gis-attrtable-panelbar-ic">▾</span>
+        <span id="gis-attrtable-panelbar-txt">Панели</span>
+      </div>
       <div class="gis-attrtable__filterpanel" id="gis-attrtable-filterpanel" hidden>
         <div class="gis-fp__head">
           <span class="gis-fp__match">Совпадение:
@@ -1496,6 +1520,7 @@
           <code>CASE WHEN area &gt; 100 THEN 'крупное' ELSE 'мелкое' END</code>
         </div>
         <div class="gis-colmenu__filterhint" id="gis-fill-hint"></div>
+      </div>
       </div>
       <div class="gis-attrtable__body" id="gis-attrtable-body"></div>
     </section>
@@ -7849,6 +7874,58 @@
       if (fillExprInp) fillExprInp.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') { e.preventDefault(); fillSubmit('expr'); }
       });
+
+      /* ─── Сворачивание зоны панелей (фильтр + заполнение) ───
+         Две открытые панели отнимают половину высоты таблицы и мешают
+         работать с атрибутами. Полоса-переключатель прячет их содержимое,
+         НЕ закрывая сами панели: собранный фильтр, столбец и формула
+         остаются на месте и вернутся в том же виде. */
+      var panelsWrap = document.getElementById('gis-attrtable-panels');
+      var panelBar   = document.getElementById('gis-attrtable-panelbar');
+      var panelBarIc = document.getElementById('gis-attrtable-panelbar-ic');
+      var panelBarTx = document.getElementById('gis-attrtable-panelbar-txt');
+      var panelsCollapsed = false;
+      var panelsWasOpen = { filter: false, fill: false };
+
+      function panelsSync() {
+        if (!panelsWrap || !panelBar) return;
+        var st = {
+          filter: !!(fpPanel && !fpPanel.hidden),
+          fill: !!(fillPanel && !fillPanel.hidden),
+        };
+        /* Панель только что открыли кнопкой шапки — разворачиваем зону, иначе
+           клик по «⚟ Фильтр» / «✎ Заполнить» выглядел бы как «ничего не
+           произошло». */
+        if ((st.filter && !panelsWasOpen.filter) || (st.fill && !panelsWasOpen.fill)) {
+          panelsCollapsed = false;
+        }
+        panelsWasOpen = st;
+        var names = [];
+        if (st.filter) names.push('фильтр');
+        if (st.fill) names.push('заполнение');
+        panelBar.hidden = !names.length;
+        panelsWrap.classList.toggle('gis-attrtable__panels--collapsed',
+                                    !!names.length && panelsCollapsed);
+        if (panelBarIc) panelBarIc.textContent = panelsCollapsed ? '▸' : '▾';
+        if (panelBarTx) {
+          panelBarTx.textContent = (panelsCollapsed ? 'Показать' : 'Свернуть') +
+            ' панели: ' + names.join(', ');
+        }
+      }
+      if (panelBar) panelBar.addEventListener('click', function () {
+        panelsCollapsed = !panelsCollapsed;
+        panelsSync();
+      });
+      /* Панели показывают/прячут из разных мест (кнопки шапки, смена слоя,
+         закрытие таблицы) — вместо правки каждого места слушаем сам атрибут
+         hidden. */
+      if (window.MutationObserver && panelsWrap) {
+        var panelsObs = new MutationObserver(panelsSync);
+        [fpPanel, fillPanel].forEach(function (p) {
+          if (p) panelsObs.observe(p, { attributes: true, attributeFilter: ['hidden'] });
+        });
+      }
+      panelsSync();
 
       /* Переключение режима правки слоя (кнопка ✏): перерисуем таблицу и,
          если для слоя включили правку, переключим вкладку таблицы на этот
