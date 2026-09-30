@@ -122,6 +122,30 @@ class AuthTests(GisLayersTestCase):
         self.assertEqual(GisLayer.objects.count(), 0)
 
 
+class GisPageMarkupTests(GisLayersTestCase):
+    """Разметка страницы /me/gis: узлы инструментов таблицы атрибутов.
+
+    JS страницы инлайновый, поэтому единственная дешёвая регрессия на
+    «инструмент пропал из вёрстки» — наличие его id в HTML.
+    """
+
+    def setUp(self):
+        self._login_admin()
+        resp = self.client.get('/me/gis/')
+        self.assertEqual(resp.status_code, 200)
+        self.html = resp.content.decode('utf-8')
+
+    def test_feature_card_modal_present(self):
+        # Правый клик по объекту на карте → модальная карточка атрибутов.
+        for node in ('gis-featmodal', 'gis-featmodal-body',
+                     'gis-featmodal-save', 'gis-featmodal-zoom'):
+            self.assertIn(node, self.html)
+
+    def test_fill_expression_row_present(self):
+        for node in ('gis-fill-expr', 'gis-fill-expr-apply'):
+            self.assertIn(node, self.html)
+
+
 class ImportTests(GisLayersTestCase):
     def setUp(self):
         self._login_admin()
@@ -1180,6 +1204,37 @@ class FillColumnTests(GisLayersTestCase):
         resp = self._fill({'field': self.area, 'value': '7'})
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertEqual(set(self._values(self.area).values()), {7})
+
+    # ── SQL-формула (отдельная строка панели «✎ Заполнить») ──
+    def test_fill_by_expression(self):
+        resp = self._fill({'field': self.crop, 'expr': "upper(" + self.crop + ")"})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['updated'], 3)
+        self.assertEqual(self._values(self.crop)[self.ids[0]], 'ПШЕНИЦА')
+
+    def test_fill_expression_uses_geometry(self):
+        resp = self._fill({'field': self.area,
+                           'expr': 'ST_Area(geom::geography) / 10000'})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        for v in self._values(self.area).values():
+            self.assertIsNotNone(v)
+
+    def test_fill_expression_respects_ids(self):
+        resp = self._fill({'field': self.crop, 'expr': "'формула'",
+                           'ids': [self.ids[1]]})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['updated'], 1)
+        self.assertEqual(self._values(self.crop)[self.ids[1]], 'формула')
+
+    def test_invalid_expression_400(self):
+        resp = self._fill({'field': self.crop, 'expr': '1; DROP TABLE users'})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()['error'], 'invalid_expr')
+
+    def test_unknown_function_in_expression_400(self):
+        resp = self._fill({'field': self.crop, 'expr': 'pg_sleep(5)'})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()['error'], 'invalid_expr')
 
     # ── Ошибки ──
     def test_unknown_field_400(self):

@@ -1278,13 +1278,15 @@ def gis_layer_fill(request: HttpRequest, pk: int) -> JsonResponse:
 
     Тело JSON::
 
-        {"field": "<db>", "value": <значение|null>,
+        {"field": "<db>", "value": <значение|null>, "expr": "<SQL-формула>"?,
          "filter": {...}?, "q": ""?, "ids": [1, 2]?, "only_empty": false?}
 
     Область применения — как в таблице атрибутов: структурный фильтр
     конструктора выборки + поиск + точечный список id (всё через AND).
     Ничего не задано — затрагивается весь слой. Пустое ``value`` очищает
-    столбец в ``NULL``. Правка данных (не схемы) — уровень ``edit``.
+    столбец в ``NULL``; непустой ``expr`` вычисляет значение по формуле для
+    каждого объекта (безопасный компилятор, сырой SQL не исполняется).
+    Правка данных (не схемы) — уровень ``edit``.
     """
     gate = _require_gis_access(request, level='edit', pk=pk)
     if gate:
@@ -1314,6 +1316,7 @@ def gis_layer_fill(request: HttpRequest, pk: int) -> JsonResponse:
 
 def _gis_fill_apply(layer, field: str, ids, data: dict) -> JsonResponse:
     """Вызов :func:`fill_column` с переводом ошибок сервиса в JSON-ответы."""
+    from .services.layer_expr import LayerExprError
     from .services.layer_query import LayerQueryError
     from .services.shp_import import ShapefileImportError, fill_column
 
@@ -1324,7 +1327,11 @@ def _gis_fill_apply(layer, field: str, ids, data: dict) -> JsonResponse:
             query_text=str(data.get('q', '') or ''),
             ids=ids,
             only_empty=bool(data.get('only_empty')),
+            expr=data.get('expr'),
         )
+    except LayerExprError as e:
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_expr', 'detail': str(e)}, status=400)
     except LayerQueryError as e:
         return JsonResponse(
             {'ok': False, 'error': 'invalid_filter', 'detail': str(e)}, status=400)

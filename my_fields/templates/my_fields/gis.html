@@ -368,6 +368,18 @@
       border-radius: 5px; padding: 8px 16px; cursor: pointer; font-size: 13px; }
     .gis-modal__note { font-size: 12px; color: #777; margin: 10px 0 0; line-height: 1.4; }
 
+    /* Карточка объекта (правый клик по объекту на карте). */
+    .gis-featcard__meta { font-size: 11px; color: #999; margin: -2px 0 10px; }
+    .gis-featcard__row { display: grid; grid-template-columns: 140px 1fr;
+      align-items: center; gap: 8px; padding: 6px 0; }
+    .gis-featcard__row + .gis-featcard__row { border-top: 1px dashed #eee; }
+    .gis-featcard__label { font-size: 12px; color: #555; word-break: break-word; }
+    .gis-featcard__row input {
+      width: 100%; padding: 6px 8px; border: 1px solid #ccc;
+      border-radius: 5px; font-size: 13px; box-sizing: border-box; }
+    .gis-featcard__row input:disabled { background: #f5f5f5; color: #888; }
+    .gis-featcard__empty { font-size: 12px; color: #999; padding: 6px 0; }
+
     /* Стиль растрового слоя. */
     .gis-rstyle-row { display: flex; align-items: flex-end; gap: 12px; margin: 8px 0; flex-wrap: wrap; }
     .gis-rstyle-row > label { font-size: 12px; color: #555; display: flex; flex-direction: column; gap: 3px; }
@@ -1199,6 +1211,30 @@
       </div>
     </div>
 
+    <!-- Карточка объекта: открывается ПРАВЫМ кликом по объекту загруженного
+         слоя на карте. Значения атрибутов читаются с сервера (а не из
+         MVT-тайла) и правятся прямо здесь. -->
+    <div class="gis-modal" id="gis-featmodal" hidden>
+      <div class="gis-modal__backdrop" data-feat-close></div>
+      <div class="gis-modal__box" role="dialog" aria-modal="true" aria-labelledby="gis-featmodal-title">
+        <div class="gis-modal__head">
+          <span id="gis-featmodal-title">Объект</span>
+          <button type="button" class="gis-modal__x" data-feat-close title="Закрыть">✕</button>
+        </div>
+        <div class="gis-modal__body">
+          <div class="gis-featcard__meta" id="gis-featmodal-meta"></div>
+          <div class="gis-featcard" id="gis-featmodal-body"></div>
+        </div>
+        <div class="gis-modal__foot">
+          <button type="button" class="btn-secondary" id="gis-featmodal-zoom"
+                  title="Приблизить карту к объекту">⤢ К объекту</button>
+          <span style="flex:1 1 auto"></span>
+          <button type="button" class="btn-secondary" data-feat-close>Закрыть</button>
+          <button type="button" class="btn-primary" id="gis-featmodal-save">Сохранить</button>
+        </div>
+      </div>
+    </div>
+
     <div class="gis-modal" id="gis-stylemodal" hidden>
       <div class="gis-modal__backdrop" data-style-close></div>
       <div class="gis-modal__box" role="dialog" aria-modal="true" aria-labelledby="gis-stylemodal-title">
@@ -1438,6 +1474,26 @@
             <button type="button" class="gis-fp__btn" id="gis-fill-clear"
                     title="Стереть значение столбца в указанной области (NULL)">Очистить</button>
           </span>
+        </div>
+        <!-- Отдельная строка: заполнение ВЫЧИСЛЯЕМЫМ значением (SQL-формула).
+             Формула компилируется на сервере из белого списка колонок и
+             функций — сырой SQL не исполняется. -->
+        <div class="gis-fp__rule">
+          <span class="gis-fp__match" style="flex:1 1 420px;">формула SQL:
+            <input class="gis-fp__val" type="text" id="gis-fill-expr" style="flex:1 1 320px;"
+                   placeholder="например: ST_Area(geom::geography) / 10000"
+                   title="Выражение вычисляется для каждого объекта. Доступны столбцы слоя, geom, id и функции из белого списка.">
+          </span>
+          <span class="gis-fp__actions">
+            <button type="button" class="gis-fp__btn gis-fp__btn--primary" id="gis-fill-expr-apply"
+                    title="Заполнить столбец вычисленным значением">Заполнить формулой</button>
+          </span>
+        </div>
+        <div class="gis-colmenu__filterhint" id="gis-fill-exprhint">
+          Примеры: <code>ST_Area(geom::geography) / 10000</code> — площадь, га ·
+          <code>upper(trim(name))</code> ·
+          <code>coalesce(code, '') || '-' || id</code> ·
+          <code>CASE WHEN area &gt; 100 THEN 'крупное' ELSE 'мелкое' END</code>
         </div>
         <div class="gis-colmenu__filterhint" id="gis-fill-hint"></div>
       </div>
@@ -7607,6 +7663,8 @@
       var fillHintEl   = document.getElementById('gis-fill-hint');
       var fillApplyBtn = document.getElementById('gis-fill-apply');
       var fillClearBtn = document.getElementById('gis-fill-clear');
+      var fillExprInp  = document.getElementById('gis-fill-expr');
+      var fillExprBtn  = document.getElementById('gis-fill-expr-apply');
 
       function fillAvailable() { return !!dynLayers[state.layer]; }
       function fillClosePanel() { if (fillPanel) fillPanel.hidden = true; }
@@ -7630,19 +7688,41 @@
         var t = (kind === 'int' || kind === 'num') ? 'number' : 'text';
         if (fillValInp.type !== t) fillValInp.type = t;
       }
+      /* У слоя может не быть НИ ОДНОГО атрибутивного столбца (например, слой
+         создан пустым и в нём пока только геометрия). Тогда выпадающий список
+         пуст и заполнять нечего — говорим об этом прямо и гасим кнопки,
+         вместо молчаливого «не выбирается». */
+      function fillNoColumns() { return attrCols().length === 0; }
       function fillRenderFields() {
         if (!fillFieldSel) return;
         var prev = fillFieldSel.value;
         var cols = attrCols();
-        fillFieldSel.innerHTML = cols.map(function (c) {
-          return '<option value="' + esc(c.key) + '">' + esc(c.label || c.key) + '</option>';
-        }).join('');
-        if (prev && cols.some(function (c) { return c.key === prev; })) fillFieldSel.value = prev;
+        if (!cols.length) {
+          fillFieldSel.innerHTML =
+            '<option value="">— у слоя нет столбцов —</option>';
+        } else {
+          fillFieldSel.innerHTML = cols.map(function (c) {
+            return '<option value="' + esc(c.key) + '">' + esc(c.label || c.key) + '</option>';
+          }).join('');
+          if (prev && cols.some(function (c) { return c.key === prev; })) fillFieldSel.value = prev;
+        }
+        var none = !cols.length;
+        [fillApplyBtn, fillClearBtn, fillExprBtn].forEach(function (b) {
+          if (b) b.disabled = none;
+        });
+        if (fillValInp) fillValInp.disabled = none;
+        if (fillExprInp) fillExprInp.disabled = none;
         fillSyncValType();
       }
       /* Подсказка под строкой: сколько объектов затронет выбранная область. */
       function fillSyncHint() {
         if (!fillHintEl) return;
+        if (fillNoColumns()) {
+          fillHintEl.textContent = 'У слоя нет атрибутивных столбцов: ' +
+            'сначала создайте столбец кнопкой «➕ столбец», затем его можно ' +
+            'будет заполнить значением или формулой.';
+          return;
+        }
         var scope = fillScopeSel ? fillScopeSel.value : 'filter';
         var txt;
         if (scope === 'selected') {
@@ -7682,13 +7762,25 @@
         if (scope === 'selected') return 'у выбранных объектов (' + sc.ids.length + ')';
         return 'у объектов текущей выборки (' + (state.total || 0) + ')';
       }
-      /* clear=true — стереть значение (NULL) вместо заполнения. */
-      function fillSubmit(clear) {
+      /* mode: 'value' — одно значение, 'clear' — стереть (NULL),
+         'expr' — вычислить SQL-формулой (своя строка панели). */
+      function fillSubmit(mode) {
         if (!fillAvailable()) return;
+        var clear = (mode === 'clear');
+        var useExpr = (mode === 'expr');
         var db = fillFieldSel ? fillFieldSel.value : '';
-        if (!db) { toast('У слоя нет атрибутивных столбцов.', true); return; }
+        if (!db) {
+          toast('У слоя нет атрибутивных столбцов — добавьте столбец кнопкой «➕ столбец».', true);
+          return;
+        }
         var raw = fillValInp ? String(fillValInp.value) : '';
-        if (!clear && raw.trim() === '') {
+        var expr = fillExprInp ? String(fillExprInp.value) : '';
+        if (useExpr && expr.trim() === '') {
+          toast('Введите формулу (например, ST_Area(geom::geography)/10000).', true);
+          if (fillExprInp) fillExprInp.focus();
+          return;
+        }
+        if (!clear && !useExpr && raw.trim() === '') {
           toast('Укажите значение (или нажмите «Очистить», чтобы стереть).', true);
           if (fillValInp) fillValInp.focus();
           return;
@@ -7698,24 +7790,26 @@
         if (sc.error) { toast(sc.error, true); return; }
         var col = fillColByKey(db);
         var label = (col && (col.label || col.key)) || db;
-        var act = clear ? 'Стереть значения' : ('Заполнить значением «' + raw.trim() + '»');
+        var act = clear ? 'Стереть значения'
+          : useExpr ? ('Вычислить по формуле «' + expr.trim() + '»')
+          : ('Заполнить значением «' + raw.trim() + '»');
         if (!window.confirm(act + ' в столбце «' + label + '» ' +
             fillScopeText(scope, sc) + '?')) return;
 
         var body = {
           field: db,
-          value: clear ? null : raw,
+          value: (clear || useExpr) ? null : raw,
           only_empty: !!(!clear && fillEmptyChk && fillEmptyChk.checked),
         };
+        if (useExpr) body.expr = expr;
         if (sc.ids) body.ids = sc.ids;
         if (sc.filter !== undefined) { body.filter = sc.filter; body.q = sc.q; }
 
         var lid = state.layer.slice('gisup:'.length);
-        if (fillApplyBtn) fillApplyBtn.disabled = true;
-        if (fillClearBtn) fillClearBtn.disabled = true;
+        var btns = [fillApplyBtn, fillClearBtn, fillExprBtn];
+        btns.forEach(function (b) { if (b) b.disabled = true; });
         var done = function () {
-          if (fillApplyBtn) fillApplyBtn.disabled = false;
-          if (fillClearBtn) fillClearBtn.disabled = false;
+          btns.forEach(function (b) { if (b) b.disabled = false; });
         };
         fetch('/me/gis/api/layers/' + lid + '/fill/', {
           method: 'POST', credentials: 'same-origin',
@@ -7729,6 +7823,7 @@
               return;
             }
             toast((clear ? 'Очищено объектов: ' : 'Заполнено объектов: ') + o.j.updated);
+            if (window.__gisFeatCardRefresh) window.__gisFeatCardRefresh();
             /* Тайлы держат значения атрибутов (раскраска/подписи) — сбрасываем
                их кэш, иначе карта покажет старые значения. */
             if (window.__gisUpRefreshTiles) window.__gisUpRefreshTiles(lid);
@@ -7745,10 +7840,14 @@
       if (fillFieldSel) fillFieldSel.addEventListener('change', fillSyncValType);
       if (fillScopeSel) fillScopeSel.addEventListener('change', fillSyncHint);
       if (fillEmptyChk) fillEmptyChk.addEventListener('change', fillSyncHint);
-      if (fillApplyBtn) fillApplyBtn.addEventListener('click', function () { fillSubmit(false); });
-      if (fillClearBtn) fillClearBtn.addEventListener('click', function () { fillSubmit(true); });
+      if (fillApplyBtn) fillApplyBtn.addEventListener('click', function () { fillSubmit('value'); });
+      if (fillClearBtn) fillClearBtn.addEventListener('click', function () { fillSubmit('clear'); });
+      if (fillExprBtn) fillExprBtn.addEventListener('click', function () { fillSubmit('expr'); });
       if (fillValInp) fillValInp.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') { e.preventDefault(); fillSubmit(false); }
+        if (e.key === 'Enter') { e.preventDefault(); fillSubmit('value'); }
+      });
+      if (fillExprInp) fillExprInp.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); fillSubmit('expr'); }
       });
 
       /* Переключение режима правки слоя (кнопка ✏): перерисуем таблицу и,
@@ -8123,6 +8222,139 @@
           '</table></div>';
       }
 
+      /* ── Карточка объекта (правый клик по объекту слоя на карте) ──
+         Значения атрибутов берём НЕ из MVT-тайла (там они могут быть
+         обрезаны/приведены), а с сервера — тем же безопасным /query/, что и
+         таблица. Правка уходит PATCH-ом на /features/<fid>/. */
+      var featModal = document.getElementById('gis-featmodal');
+      var featBodyEl = document.getElementById('gis-featmodal-body');
+      var featMetaEl = document.getElementById('gis-featmodal-meta');
+      var featTitleEl = document.getElementById('gis-featmodal-title');
+      var featSaveBtn = document.getElementById('gis-featmodal-save');
+      var featZoomBtn = document.getElementById('gis-featmodal-zoom');
+      var featCard = { layer: null, fid: null, inputs: {} };
+
+      function featClose() {
+        if (featModal) featModal.hidden = true;
+        featCard.layer = null; featCard.fid = null; featCard.inputs = {};
+      }
+      function featInputType(a) {
+        var t = a.type || 'text';
+        return (t === 'integer' || t === 'bigint' || t === 'double precision')
+          ? 'number' : 'text';
+      }
+      function featRenderRows(L, props) {
+        featCard.inputs = {};
+        featBodyEl.innerHTML = '';
+        var attrs = L.attributes || [];
+        if (!attrs.length) {
+          featBodyEl.innerHTML =
+            '<div class="gis-featcard__empty">У слоя нет атрибутивных столбцов — ' +
+            'их можно добавить в таблице атрибутов кнопкой «➕ столбец».</div>';
+          return;
+        }
+        attrs.forEach(function (a) {
+          var row = document.createElement('div');
+          row.className = 'gis-featcard__row';
+          var lab = document.createElement('div');
+          lab.className = 'gis-featcard__label';
+          lab.textContent = a.name || a.db;
+          lab.title = a.db + ' · ' + (a.type || 'text');
+          var inp = document.createElement('input');
+          inp.type = featInputType(a);
+          if (inp.type === 'number') inp.step = 'any';
+          var v = props ? props[a.db] : null;
+          inp.value = (v === null || v === undefined) ? '' : String(v);
+          featCard.inputs[a.db] = inp;
+          row.appendChild(lab); row.appendChild(inp);
+          featBodyEl.appendChild(row);
+        });
+      }
+      function featLoad(L, fid) {
+        featMetaEl.textContent = L.table_name + ' · id ' + fid + ' · загрузка…';
+        fetch(API + L.id + '/query/', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({
+            filter: { match: 'all', rules: [{ field: 'id', op: 'eq', value: fid }] },
+            limit: 1, offset: 0,
+          }),
+        }).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+          .then(function (j) {
+            if (featCard.layer !== L || featCard.fid !== fid) return;  /* уже другой объект */
+            var row = (j.results || [])[0];
+            featMetaEl.textContent = L.table_name + ' · id ' + fid;
+            featRenderRows(L, row ? row.props : null);
+            if (!row) featMetaEl.textContent += ' · объект не найден';
+          })
+          .catch(function () {
+            if (featCard.layer !== L || featCard.fid !== fid) return;
+            featMetaEl.textContent = L.table_name + ' · id ' + fid;
+            featRenderRows(L, null);
+            toast('Не удалось загрузить атрибуты объекта', true);
+          });
+      }
+      function featOpen(L, fid) {
+        if (!featModal || fid == null) return;
+        featCard.layer = L; featCard.fid = fid;
+        featTitleEl.textContent = L.title || 'Объект';
+        featBodyEl.innerHTML = '';
+        featModal.hidden = false;
+        featLoad(L, fid);
+      }
+      /* Перечитать открытую карточку (например, после массового заполнения). */
+      window.__gisFeatCardRefresh = function () {
+        if (featCard.layer && featCard.fid != null) featLoad(featCard.layer, featCard.fid);
+      };
+      function featSave() {
+        var L = featCard.layer, fid = featCard.fid;
+        if (!L || fid == null) return;
+        var props = {};
+        Object.keys(featCard.inputs).forEach(function (db) {
+          props[db] = featCard.inputs[db].value;
+        });
+        if (!Object.keys(props).length) { featClose(); return; }
+        featSaveBtn.disabled = true;
+        fetch(API + L.id + '/features/' + fid + '/', {
+          method: 'PATCH', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ props: props }),
+        }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+          .then(function (o) {
+            featSaveBtn.disabled = false;
+            if (!o.ok || !o.j || !o.j.ok) {
+              toast((o.j && o.j.detail) || 'Не удалось сохранить атрибуты', true);
+              return;
+            }
+            toast('Атрибуты объекта сохранены');
+            featClose();
+            /* Тайлы держат значения атрибутов (раскраска/подписи) — сбрасываем. */
+            if (window.__gisUpRefreshTiles) window.__gisUpRefreshTiles(L.id);
+            if (window.__gisAttr && window.__gisAttr.reload) window.__gisAttr.reload();
+          })
+          .catch(function () {
+            featSaveBtn.disabled = false;
+            toast('Ошибка сети при сохранении атрибутов', true);
+          });
+      }
+      if (featModal) {
+        featModal.querySelectorAll('[data-feat-close]').forEach(function (el) {
+          el.addEventListener('click', featClose);
+        });
+        document.addEventListener('keydown', function (e) {
+          if (e.key === 'Escape' && !featModal.hidden) featClose();
+        });
+      }
+      if (featSaveBtn) featSaveBtn.addEventListener('click', featSave);
+      if (featZoomBtn) featZoomBtn.addEventListener('click', function () {
+        var L = featCard.layer, fid = featCard.fid;
+        if (!L || fid == null) return;
+        fetch(API + L.id + '/features/' + fid + '/', { credentials: 'same-origin' })
+          .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+          .then(function (j) { fitExtent(j.extent); })
+          .catch(function () { toast('Не удалось приблизить к объекту', true); });
+      });
+
       /* Построить MapLibre-выражение цвета из L.style. Единый цвет / нет
          стиля → просто L.color (строка). Категории → match по строковому
          значению поля; градиент → interpolate по числовому значению. */
@@ -8259,6 +8491,24 @@
                а строку в таблице — если таблица открыта на этом слое. */
             var fid = (ft.id != null) ? ft.id : (ft.properties && ft.properties.id);
             if (fid != null && window.__gisAttr && window.__gisAttr.mapClick) {
+              window.__gisAttr.mapClick('gisup:' + L.id, fid);
+            }
+          });
+          /* Правый клик по объекту → модальная карточка атрибутов с правкой.
+             Своё контекстное меню браузера подавляем (preventDefault делает
+             MapLibre сам для события contextmenu на слое). */
+          map.on('contextmenu', lid, function (e) {
+            if (L.style && L.style.locked) return;
+            var ft = e.features && e.features[0];
+            if (!ft) return;
+            if (e.originalEvent && e.originalEvent.preventDefault) {
+              e.originalEvent.preventDefault();
+            }
+            if (e.preventDefault) e.preventDefault();
+            var fid = (ft.id != null) ? ft.id : (ft.properties && ft.properties.id);
+            if (fid == null) return;
+            featOpen(L, fid);
+            if (window.__gisAttr && window.__gisAttr.mapClick) {
               window.__gisAttr.mapClick('gisup:' + L.id, fid);
             }
           });

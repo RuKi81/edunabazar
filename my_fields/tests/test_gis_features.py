@@ -561,6 +561,75 @@ class GisFeaturesTestCase(TestCase):
         self.assertEqual(r.status_code, 403)
 
 
+class FeatureSortNullsTests(TestCase):
+    """Порядок пустых значений при сортировке таблицы атрибутов.
+
+    По возрастанию незаполненные значения должны идти СВЕРХУ (NULLS FIRST) —
+    так пользователь сразу видит, что нужно дозаполнить; по убыванию —
+    зеркально, снизу.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.viewer = User.objects.create_user('sortviewer', password='x')
+        cls.viewer_lu = _mk_legacy('sortviewer')
+        ResourceGrant.objects.create(
+            legacy_user=cls.viewer_lu, resource_type=GL, resource_id=None,
+            level='view')
+        cls.layer = GisLayer.objects.create(
+            title='Сортировка', table_name='gis_up_sort',
+            original_filename='s.shp', geom_kind='polygon', feature_count=3,
+            color='#333333', sort_order=0,
+            attributes=[
+                {'name': 'Название', 'db': 'name', 'type': 'text'},
+                {'name': 'Кол-во', 'db': 'cnt', 'type': 'integer'},
+            ],
+        )
+        with connection.cursor() as cur:
+            cur.execute(
+                'CREATE TABLE gis_up_sort ('
+                'id serial PRIMARY KEY, geom geometry(Geometry, 4326), '
+                'name text, cnt integer)')
+            cur.execute(
+                "INSERT INTO gis_up_sort (id, name, cnt) VALUES "
+                "(1, 'Первое', 3), (2, 'Второе', 7), "
+                "(3, NULL, NULL)")
+        cls.null_id = 3
+
+    def setUp(self):
+        self.client.force_login(self.viewer)
+        session = self.client.session
+        session['legacy_user_id'] = self.viewer_lu.pk
+        session.save()
+
+    def _features_url(self):
+        return f'/me/gis/api/layers/{self.layer.pk}/features/'
+
+    def _ids(self, qs):
+        r = self.client.get(self._features_url() + qs)
+        self.assertEqual(r.status_code, 200, r.content)
+        return [row['id'] for row in r.json()['results']]
+
+    def test_asc_puts_nulls_first(self):
+        self.assertEqual(self._ids('?sort=cnt&dir=asc')[0], self.null_id)
+
+    def test_asc_puts_nulls_first_for_text(self):
+        self.assertEqual(self._ids('?sort=name&dir=asc')[0], self.null_id)
+
+    def test_desc_puts_nulls_last(self):
+        self.assertEqual(self._ids('?sort=cnt&dir=desc')[-1], self.null_id)
+
+    def test_rank_of_matches_null_first_order(self):
+        # Страница объекта в таблице считается тем же ORDER BY — иначе переход
+        # «показать объект» уводил бы на чужую страницу.
+        r = self.client.get(
+            self._features_url() + f'?rank_of={self.null_id}&sort=cnt&dir=asc')
+        self.assertEqual(r.json()['rank'], 0)
+
+    def test_unknown_sort_column_falls_back_to_id(self):
+        self.assertEqual(self._ids('?sort=nope&dir=asc'), [1, 2, self.null_id])
+
+
 class GisLayerCreateTestCase(TestCase):
     """Создание нового пустого слоя: тип геометрии + атрибуты (POST create/)."""
 

@@ -26,7 +26,7 @@ from django.contrib.gis.gdal import CoordTransform, DataSource, SpatialReference
 from django.contrib.gis.gdal.field import (
     OFTDate, OFTDateTime, OFTInteger, OFTInteger64, OFTReal, OFTTime,
 )
-from django.db import DataError, connection, transaction
+from django.db import DataError, ProgrammingError, connection, transaction
 from django.db.models import Max
 from psycopg import sql
 
@@ -653,6 +653,23 @@ def _json_safe(value):
     return value
 
 
+def _order_by_sql(sort: str, direction: str, types: dict):
+    """``ORDER BY`` таблицы атрибутов по колонке ``sort``.
+
+    Сортируем только по ``id`` или реальной колонке слоя (неизвестное имя →
+    ``id``). По возрастанию пустые значения идут СВЕРХУ (``NULLS FIRST``):
+    так пользователь сразу видит незаполненные объекты и может их дозаполнить
+    (пустая строка в текстовых колонках и так сортируется первой). По
+    убыванию — зеркально, ``NULLS LAST``. ``id`` — вторичный ключ для
+    стабильного порядка при равных значениях.
+    """
+    sort_col = sort if (sort == 'id' or sort in types) else 'id'
+    desc = str(direction).lower() == 'desc'
+    dir_sql = sql.SQL('DESC NULLS LAST') if desc else sql.SQL('ASC NULLS FIRST')
+    return sql.SQL('ORDER BY {c} {d}, {id} ASC').format(
+        c=sql.Identifier(sort_col), d=dir_sql, id=sql.Identifier('id'))
+
+
 def list_features(layer, limit: int = 1000, offset: int = 0,
                   sort: str = 'id', direction: str = 'asc',
                   query_text: str = '', filter_spec=None) -> dict:
@@ -683,12 +700,7 @@ def list_features(layer, limit: int = 1000, offset: int = 0,
     cols = list(types.keys())
     table = sql.Identifier(layer.table_name)
 
-    # Сортировка: разрешаем только id или реальную колонку слоя.
-    sort_col = sort if (sort == 'id' or sort in types) else 'id'
-    dir_sql = sql.SQL('DESC') if str(direction).lower() == 'desc' else sql.SQL('ASC')
-    # id — вторичный ключ для стабильного порядка при равных значениях.
-    order_by = sql.SQL('ORDER BY {c} {d} NULLS LAST, {id} ASC').format(
-        c=sql.Identifier(sort_col), d=dir_sql, id=sql.Identifier('id'))
+    order_by = _order_by_sql(sort, direction, types)
 
     # WHERE: структурный фильтр + подстрочный поиск (оба опциональны).
     where_sql, where_params = build_where(layer, cols, filter_spec, query_text)
@@ -758,10 +770,7 @@ def feature_rank(layer, fid: int, sort: str = 'id', direction: str = 'asc',
     cols = list(types.keys())
     table = sql.Identifier(layer.table_name)
 
-    sort_col = sort if (sort == 'id' or sort in types) else 'id'
-    dir_sql = sql.SQL('DESC') if str(direction).lower() == 'desc' else sql.SQL('ASC')
-    order_by = sql.SQL('ORDER BY {c} {d} NULLS LAST, {id} ASC').format(
-        c=sql.Identifier(sort_col), d=dir_sql, id=sql.Identifier('id'))
+    order_by = _order_by_sql(sort, direction, types)
 
     where_sql, where_params = build_where(layer, cols, filter_spec, query_text)
 
@@ -856,9 +865,28 @@ def _fill_scope_spec(db, pg_type, filter_spec, ids, only_empty):
     return {'match': 'all', 'rules': rules} if rules else None
 
 
+def _fill_set_sql(db: str, pg_type: str, value, expr, layer):
+    """Правая часть ``SET`` для :func:`fill_column` → ``(sql, params)``.
+
+    ``expr`` (SQL-формула из UI) имеет приоритет над ``value``; компилируется
+    безопасно (см. :mod:`my_fields.services.layer_expr`).
+    """
+    if expr is not None and str(expr).strip():
+        from .layer_expr import compile_expression
+
+        return sql.SQL('{} = {}::{}').format(
+            sql.Identifier(db), compile_expression(layer, str(expr)),
+            sql.SQL(pg_type)), []
+    is_blank = value is None or (isinstance(value, str) and value.strip() == '')
+    if is_blank:
+        return sql.SQL('{} = NULL').format(sql.Identifier(db)), []
+    return sql.SQL('{} = %s::{}').format(
+        sql.Identifier(db), sql.SQL(pg_type)), [value]
+
+
 def fill_column(layer, db: str, value, *, filter_spec=None, query_text='',
-                ids=None, only_empty=False) -> int:
-    """Массово заполнить атрибутивный столбец ОДНИМ значением.
+                ids=None, only_empty=False, expr=None) -> int:
+    """Массово заполнить атрибутивный столбец значением ИЛИ SQL-формулой.
 
     Область применения задаётся комбинацией (все условия через AND):
 
@@ -870,14 +898,18 @@ def fill_column(layer, db: str, value, *, filter_spec=None, query_text='',
       ещё и пустая строка).
 
     Пустое ``value`` (``None`` или строка из пробелов) очищает столбец в
-    ``NULL`` — так работает и «стереть значение у выборки».
+    ``NULL`` — так работает и «стереть значение у выборки». Непустой ``expr``
+    (формула вида ``ST_Area(geom::geography)/10000``) имеет приоритет над
+    ``value``: значение вычисляется для каждого объекта отдельно.
 
     Returns:
         Число обновлённых строк.
 
     Raises:
-        ShapefileImportError: столбца нет в meta слоя / слишком много id.
+        ShapefileImportError: столбца нет в meta слоя / слишком много id /
+            значение или результат формулы не лезет в тип столбца.
         layer_query.LayerQueryError: некорректный фильтр.
+        layer_expr.LayerExprError: некорректная формула.
     """
     from .layer_query import build_where
 
@@ -892,14 +924,7 @@ def fill_column(layer, db: str, value, *, filter_spec=None, query_text='',
 
     spec = _fill_scope_spec(db, pg_type, filter_spec, ids, only_empty)
     where_sql, params = build_where(layer, list(types.keys()), spec, query_text)
-
-    is_blank = value is None or (isinstance(value, str) and value.strip() == '')
-    if is_blank:
-        set_sql, set_params = sql.SQL('{} = NULL').format(sql.Identifier(db)), []
-    else:
-        set_sql = sql.SQL('{} = %s::{}').format(
-            sql.Identifier(db), sql.SQL(pg_type))
-        set_params = [value]
+    set_sql, set_params = _fill_set_sql(db, pg_type, value, expr, layer)
 
     query = sql.SQL('UPDATE {t} SET {s}{where}').format(
         t=sql.Identifier(layer.table_name), s=set_sql, where=where_sql)
@@ -913,6 +938,11 @@ def fill_column(layer, db: str, value, *, filter_spec=None, query_text='',
     except DataError as e:
         raise ShapefileImportError(
             f'Значение не подходит под тип столбца ({pg_type}).') from e
+    except ProgrammingError as e:
+        # Формула синтаксически разобрана нами, но Postgres может отвергнуть
+        # её по типам/аргументам функции — это ошибка пользователя, не 500.
+        raise ShapefileImportError(
+            f'Postgres отверг формулу: {e}') from e
 
 
 # ── Управление АТРИБУТИВНЫМИ СТОЛБЦАМИ слоя ─────────────────────────────
