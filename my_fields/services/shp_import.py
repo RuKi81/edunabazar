@@ -293,10 +293,83 @@ _KIND_TO_GEOM_TYPE = {
 # _ALLOWED_CAST_TYPES, чтобы правка атрибутов (update_feature) работала.
 NEW_LAYER_ATTR_TYPES = {
     'text': 'text',
+    'varchar': 'varchar',
     'integer': 'integer',
+    'bigint': 'bigint',
     'double precision': 'double precision',
+    'numeric': 'numeric',
     'date': 'date',
 }
+
+# Типы, у которых есть размерность: varchar(n) — максимум символов,
+# numeric(p, s) — всего значащих цифр и из них знаков после запятой.
+# Пределы — как в PostgreSQL (varchar до 10485760, numeric до 1000 цифр),
+# но длина строки урезана до разумного для атрибута максимума.
+SIZED_ATTR_TYPES = frozenset({'varchar', 'numeric'})
+MAX_VARCHAR_LEN = 10000
+MAX_NUMERIC_PRECISION = 1000
+_DEFAULT_VARCHAR_LEN = 255
+
+
+def _size_int(value, what: str):
+    """Целое из формы или ``None`` (пустое поле — «размер не задан»)."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        raise ShapefileImportError(f'{what}: нужно целое число.')
+
+
+def _varchar_type(length) -> str:
+    n = _size_int(length, 'Длина текстового поля')
+    if n is None:
+        n = _DEFAULT_VARCHAR_LEN
+    if not 1 <= n <= MAX_VARCHAR_LEN:
+        raise ShapefileImportError(
+            f'Длина текстового поля — от 1 до {MAX_VARCHAR_LEN} символов.')
+    return f'varchar({n})'
+
+
+def _numeric_type(precision, scale) -> str:
+    p = _size_int(precision, 'Всего цифр')
+    s = _size_int(scale, 'Знаков после запятой')
+    if p is None:
+        if s is not None:
+            raise ShapefileImportError(
+                'Для числа с запятой укажите общее число цифр.')
+        return 'numeric'  # без размерности — произвольная точность
+    if not 1 <= p <= MAX_NUMERIC_PRECISION:
+        raise ShapefileImportError(
+            f'Всего цифр — от 1 до {MAX_NUMERIC_PRECISION}.')
+    if s is None:
+        return f'numeric({p})'
+    if not 0 <= s <= p:
+        raise ShapefileImportError(
+            'Знаков после запятой — от 0 до общего числа цифр.')
+    return f'numeric({p},{s})'
+
+
+def resolve_attr_type(col_type, length=None, precision=None, scale=None) -> str:
+    """Выбор типа в UI → строка pg-типа (с размерностью, если есть).
+
+    Args:
+        col_type: ключ из :data:`NEW_LAYER_ATTR_TYPES`.
+        length: для ``varchar`` — максимум символов (по умолчанию 255).
+        precision: для ``numeric`` — всего значащих цифр.
+        scale: для ``numeric`` — знаков после запятой.
+
+    Raises:
+        ShapefileImportError: недопустимый тип или размерность вне пределов.
+    """
+    base = NEW_LAYER_ATTR_TYPES.get(col_type)
+    if base is None:
+        raise ShapefileImportError(f'Недопустимый тип атрибута: {col_type!r}.')
+    if base == 'varchar':
+        return _varchar_type(length)
+    if base == 'numeric':
+        return _numeric_type(precision, scale)
+    return base
 
 
 def _build_columns_typed(field_names, pg_types):
@@ -329,8 +402,9 @@ def create_empty_layer(title: str, geom_kind: str, attributes=None, owner=None):
     Args:
         title: название слоя (обязательное, непустое).
         geom_kind: ``point`` | ``line`` | ``polygon``.
-        attributes: ``[{'name': str, 'type': str}, ...]`` — отображаемое имя
-            и тип из :data:`NEW_LAYER_ATTR_TYPES`. Пустые имена пропускаются.
+        attributes: ``[{'name', 'type', 'length'|'precision'|'scale'}, ...]`` —
+            отображаемое имя, тип из :data:`NEW_LAYER_ATTR_TYPES` и (для
+            ``varchar``/``numeric``) размерность. Пустые имена пропускаются.
         owner: Django-пользователь (или None) — записывается в реестр.
 
     Returns:
@@ -355,10 +429,8 @@ def create_empty_layer(title: str, geom_kind: str, attributes=None, owner=None):
         name = str(a.get('name', '')).strip()
         if not name:
             continue  # безымянный атрибут — пропускаем
-        pg_type = NEW_LAYER_ATTR_TYPES.get(a.get('type'))
-        if pg_type is None:
-            raise ShapefileImportError(
-                f'Недопустимый тип атрибута: {a.get("type")!r}.')
+        pg_type = resolve_attr_type(
+            a.get('type'), a.get('length'), a.get('precision'), a.get('scale'))
         field_names.append(name)
         field_pg.append(pg_type)
 
@@ -628,8 +700,59 @@ def drop_layer(layer) -> None:
 # но список всё равно фиксируем, чтобы не собирать произвольный SQL-тип).
 _ALLOWED_CAST_TYPES = frozenset({
     'integer', 'bigint', 'double precision', 'date', 'timestamptz',
-    'time', 'text',
+    'time', 'text', 'numeric', 'varchar',
 })
+
+# Типы с размерностью в meta слоя записаны строкой вида ``varchar(255)`` /
+# ``numeric(10,2)`` — в CAST их пускаем только после сверки с шаблоном,
+# чтобы в SQL не просочилась произвольная строка из meta.
+_SIZED_TYPE_RE = re.compile(
+    r'^(varchar|numeric)\s*\(\s*\d+\s*(?:,\s*\d+\s*)?\)$')
+
+
+def safe_column_type(pg_type: str) -> str:
+    """Тип для объявления колонки: свой же тип (с размерностью) или ``text``.
+
+    Размерность сохраняется (``varchar(50)``, ``numeric(10,2)``), всё
+    неожиданное из meta схлопывается в ``text`` — произвольная строка в SQL
+    не попадает.
+    """
+    t = (pg_type or '').strip()
+    if t in _ALLOWED_CAST_TYPES:
+        return t
+    if _SIZED_TYPE_RE.match(t):
+        return t.replace(' ', '')
+    return 'text'
+
+
+def _safe_cast_type(pg_type: str) -> str:
+    """Тип для явного CAST в UPDATE/WHERE.
+
+    Отличие от :func:`safe_column_type`: у ``varchar(n)`` размерность
+    ОТБРАСЫВАЕТСЯ. Явный CAST в ``varchar(n)`` в PostgreSQL молча обрезает
+    строку по длине, из-за чего слишком длинное значение тихо портилось бы
+    вместо ошибки; с ``text`` длину проверяет уже присваивание в колонку и
+    БД выдаёт 22001 → понятный 400. У ``numeric(p,s)`` размерность нужна:
+    CAST честно падает на переполнении.
+    """
+    t = safe_column_type(pg_type)
+    if base_pg_type(t) in ('varchar', 'character varying'):
+        return 'text'
+    return t
+
+
+def base_pg_type(pg_type: str) -> str:
+    """Базовый тип без размерности: ``numeric(10,2)`` → ``numeric``.
+
+    Все проверки вида «числовая ли колонка» должны идти через него, иначе
+    столбец с размерностью выпадает из сравнений по строке.
+    """
+    return (pg_type or 'text').split('(')[0].strip().lower()
+
+
+def _is_text_type(pg_type: str) -> bool:
+    """Текстовая ли колонка (``text`` или ``varchar(n)``)."""
+    return base_pg_type(pg_type) in ('text', 'varchar', 'character varying')
 
 
 def _attr_db_types(layer) -> dict:
@@ -800,6 +923,10 @@ def update_feature(layer, fid: int, props: dict) -> int:
 
     Обновляются только колонки, присутствующие в meta слоя (остальные ключи
     игнорируются). Пустая строка/``None`` для не-текстовых типов → ``NULL``.
+
+    Raises:
+        ShapefileImportError: значение не лезет в тип/размерность столбца
+            (например, 20 символов в ``varchar(5)``) — сообщение для UI.
     """
     types = _attr_db_types(layer)
     set_parts = []
@@ -808,10 +935,9 @@ def update_feature(layer, fid: int, props: dict) -> int:
         pg_type = types.get(key)
         if pg_type is None:
             continue  # неизвестная/защищённая колонка — молча пропускаем
-        if pg_type not in _ALLOWED_CAST_TYPES:
-            pg_type = 'text'
+        pg_type = _safe_cast_type(pg_type)
         is_blank = val is None or (isinstance(val, str) and val.strip() == '')
-        if is_blank and pg_type != 'text':
+        if is_blank and not _is_text_type(pg_type):
             set_parts.append(sql.SQL('{} = NULL').format(sql.Identifier(key)))
         else:
             set_parts.append(sql.SQL('{} = %s::{}').format(
@@ -822,9 +948,16 @@ def update_feature(layer, fid: int, props: dict) -> int:
     params.append(fid)
     query = sql.SQL('UPDATE {} SET {} WHERE id = %s').format(
         sql.Identifier(layer.table_name), sql.SQL(', ').join(set_parts))
-    with connection.cursor() as cur:
-        cur.execute(query, params)
-        return cur.rowcount
+    # Savepoint: значение, не подходящее под тип или размерность колонки,
+    # обрывает транзакцию — нам нужен понятный 400, а не 500.
+    try:
+        with transaction.atomic():
+            with connection.cursor() as cur:
+                cur.execute(query, params)
+                return cur.rowcount
+    except DataError as e:
+        raise ShapefileImportError(
+            f'Значение не подходит под тип или размер столбца: {e}') from e
 
 
 # Предел на число id в точечном режиме массового заполнения: параметров в
@@ -856,7 +989,7 @@ def _fill_scope_spec(db, pg_type, filter_spec, ids, only_empty):
         rules.append({'field': 'id', 'op': 'in', 'value': id_list})
     if only_empty:
         empty = [{'field': db, 'op': 'is_null'}]
-        if pg_type == 'text':
+        if _is_text_type(pg_type):
             # Пустая строка — тоже «пусто». Оператор eq с пустым значением
             # компилятор отвергает (защита от случайного пустого условия в
             # UI), поэтому берём in со списком из одной пустой строки.
@@ -917,8 +1050,7 @@ def fill_column(layer, db: str, value, *, filter_spec=None, query_text='',
     pg_type = types.get(db)
     if pg_type is None:
         raise ShapefileImportError('Столбец не найден среди атрибутов слоя.')
-    if pg_type not in _ALLOWED_CAST_TYPES:
-        pg_type = 'text'
+    pg_type = _safe_cast_type(pg_type)
     if ids is not None and not list(ids):
         return 0
 
@@ -966,25 +1098,28 @@ def _unique_column_db(layer, name: str, exclude: str = None) -> str:
     return db
 
 
-def add_layer_column(layer, name: str, col_type: str) -> dict:
+def add_layer_column(layer, name: str, col_type: str, *, length=None,
+                     precision=None, scale=None) -> dict:
     """Добавить атрибутивный столбец слою: ``ALTER TABLE ADD COLUMN`` + meta.
 
     Args:
         name: отображаемое имя атрибута (непустое).
         col_type: тип из :data:`NEW_LAYER_ATTR_TYPES`.
+        length: размерность ``varchar`` — максимум символов.
+        precision: размерность ``numeric`` — всего цифр.
+        scale: размерность ``numeric`` — знаков после запятой.
 
     Returns:
-        Мета нового атрибута ``{'name', 'db', 'type'}``.
+        Мета нового атрибута ``{'name', 'db', 'type'}`` (``type`` с размерностью,
+        например ``varchar(50)``).
 
     Raises:
-        ShapefileImportError: пустое имя / недопустимый тип.
+        ShapefileImportError: пустое имя / недопустимый тип или размерность.
     """
     name = (name or '').strip()
     if not name:
         raise ShapefileImportError('Укажите имя столбца.')
-    pg_type = NEW_LAYER_ATTR_TYPES.get(col_type)
-    if pg_type is None:
-        raise ShapefileImportError(f'Недопустимый тип атрибута: {col_type!r}.')
+    pg_type = resolve_attr_type(col_type, length, precision, scale)
 
     db = _unique_column_db(layer, name)
     with connection.cursor() as cur:
@@ -1289,7 +1424,14 @@ def recompute_layer_meta(layer) -> None:
     layer.save(update_fields=['extent', 'feature_count'])
 
 
-_NUMERIC_PG_TYPES = frozenset({'integer', 'bigint', 'double precision'})
+_NUMERIC_PG_TYPES = frozenset({
+    'integer', 'bigint', 'smallint', 'double precision', 'real', 'numeric',
+})
+
+
+def is_numeric_type(pg_type: str) -> bool:
+    """Числовая ли колонка — по базовому типу (``numeric(10,2)`` — да)."""
+    return base_pg_type(pg_type) in _NUMERIC_PG_TYPES
 
 
 def field_stats(layer, field: str, distinct_limit: int = 60):
@@ -1318,7 +1460,7 @@ def field_stats(layer, field: str, distinct_limit: int = 60):
 
     table = sql.Identifier(layer.table_name)
     col = sql.Identifier(field)
-    numeric = pg_type in _NUMERIC_PG_TYPES
+    numeric = is_numeric_type(pg_type)
     limit = max(1, min(int(distinct_limit), 500))
 
     with connection.cursor() as cur:

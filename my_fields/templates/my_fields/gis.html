@@ -418,7 +418,16 @@
       border-radius: 5px; padding: 4px 10px; cursor: pointer; font-size: 12px; font-weight: 600; }
     .gis-newlayer-addattr:hover { background: #c8e6c9; }
     .gis-newlayer-attrs { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
-    .gis-newlayer-attr { display: grid; grid-template-columns: 1fr 150px 28px; align-items: center; gap: 8px; }
+    /* Строка атрибута: имя — тип — размерность — удалить. Колонка
+       размерности всегда занимает место — иначе при смене типа строки
+       «прыгали» по ширине. */
+    .gis-newlayer-attr {
+      display: grid; grid-template-columns: 1fr 150px 132px 28px;
+      align-items: center; gap: 8px;
+    }
+    .gis-newlayer-attr .gis-newlayer-size { display: flex; gap: 4px; }
+    .gis-newlayer-attr .gis-newlayer-size[hidden] { display: none; }
+    .gis-newlayer-attr .gis-newlayer-size input { text-align: right; }
     .gis-newlayer-attr input, .gis-newlayer-attr select {
       height: 32px; padding: 4px 8px; box-sizing: border-box; border: 1px solid #ccc;
       border-radius: 5px; font-size: 13px; background: #fff; width: 100%; }
@@ -1565,6 +1574,46 @@
         attribution: '© Google',
       },
     };
+
+    /* ─── Типы атрибутивных столбцов слоёв ───
+       Ключи синхронны с NEW_LAYER_ATTR_TYPES на бэкенде. У varchar и numeric
+       есть размерность, и в meta слоя тип хранится СТРОКОЙ С РАЗМЕРНОСТЬЮ
+       («varchar(50)», «numeric(10,2)»), поэтому любые проверки вида
+       «числовой ли столбец» идут через базовый тип, а не сравнением строк. */
+    var ATTR_TYPE_LIST = [
+      ['text', 'Текст (без ограничения)'],
+      ['varchar', 'Текст фикс. длины'],
+      ['integer', 'Целое число'],
+      ['bigint', 'Большое целое'],
+      ['double precision', 'Дробное число'],
+      ['numeric', 'Число с фикс. точностью'],
+      ['date', 'Дата'],
+    ];
+    var ATTR_TYPE_OPTIONS = ATTR_TYPE_LIST.map(function (t) {
+      return '<option value="' + t[0] + '">' + t[1] + '</option>';
+    }).join('');
+
+    function attrBaseType(t) {
+      return String(t || 'text').split('(')[0].trim().toLowerCase();
+    }
+    /* 'int' | 'num' | 'date' | 'str' — для выбора типа поля ввода,
+       выравнивания чисел в таблице и допустимости градиентной раскраски. */
+    function attrTypeKind(t) {
+      var b = attrBaseType(t);
+      if (b === 'integer' || b === 'bigint' || b === 'smallint') return 'int';
+      if (b === 'double precision' || b === 'numeric' || b === 'real' ||
+          b === 'float8') return 'num';
+      if (b === 'date') return 'date';
+      return 'str';
+    }
+    /* Человекочитаемая подпись типа с размерностью — для подсказок в UI. */
+    function attrTypeLabel(t) {
+      var b = attrBaseType(t), raw = String(t || 'text');
+      var found = ATTR_TYPE_LIST.filter(function (x) { return x[0] === b; })[0];
+      var label = found ? found[1] : b;
+      var size = raw.indexOf('(') >= 0 ? raw.slice(raw.indexOf('(')) : '';
+      return label + size;
+    }
 
     /* Должен совпадать с UserField.CropType.choices. */
     var CROP_TYPES = [
@@ -6196,7 +6245,10 @@
               kebab = '<span class="gis-th-kebab' + act + '" data-colkebab="' +
                 esc(c.key) + '" title="Фильтр по значениям столбца">⋮</span>';
             }
-            return '<th data-key="' + esc(c.key) + '"><span class="gis-th-label">' +
+            /* title столбца (если задан) — подсказка с типом и размерностью. */
+            var hint = c.title ? ' title="' + esc(c.title) + '"' : '';
+            return '<th data-key="' + esc(c.key) + '"' + hint +
+              '><span class="gis-th-label">' +
               esc(c.label) + ind + '</span>' + kebab + '</th>';
           }).join('') + '</tr></thead>';
 
@@ -7310,11 +7362,31 @@
             '<select class="browser-default" data-ac="type" ' +
               'style="width:100%;display:block;height:auto;padding:5px 8px;' +
               'border:1px solid #ccc;border-radius:6px;font-size:12px;">' +
-              '<option value="text">Текст</option>' +
-              '<option value="integer">Целое число</option>' +
-              '<option value="double precision">Дробное число</option>' +
-              '<option value="date">Дата</option>' +
+              ATTR_TYPE_OPTIONS +
             '</select></div>' +
+          /* Размерность — только у типов, которые её принимают
+             (varchar / numeric): лишние поля скрыты. */
+          '<div style="padding:0 8px 4px;" data-ac="size-len" hidden>' +
+            '<label class="gis-colmenu__filterhint" style="display:block">' +
+              'Длина, символов' +
+              '<input type="number" class="browser-default" data-ac="length" ' +
+                'min="1" max="10000" value="255" style="width:100%;padding:4px 8px;' +
+                'border:1px solid #ccc;border-radius:6px;font-size:12px;">' +
+            '</label></div>' +
+          '<div style="padding:0 8px 4px;display:flex;gap:6px;" data-ac="size-num" hidden>' +
+            '<label class="gis-colmenu__filterhint" style="flex:1 1 0">' +
+              'Всего цифр' +
+              '<input type="number" class="browser-default" data-ac="precision" ' +
+                'min="1" max="1000" value="12" style="width:100%;padding:4px 8px;' +
+                'border:1px solid #ccc;border-radius:6px;font-size:12px;">' +
+            '</label>' +
+            '<label class="gis-colmenu__filterhint" style="flex:1 1 0" ' +
+              'title="Сколько из них — после запятой">' +
+              'Из них дробных' +
+              '<input type="number" class="browser-default" data-ac="scale" ' +
+                'min="0" max="1000" value="2" style="width:100%;padding:4px 8px;' +
+                'border:1px solid #ccc;border-radius:6px;font-size:12px;">' +
+            '</label></div>' +
           '<div class="gis-colmenu__foot">' +
             '<button type="button" class="gis-fp__btn" data-ac="cancel">Отмена</button>' +
             '<span class="gis-fp__spacer"></span>' +
@@ -7331,12 +7403,29 @@
 
         var nameInp = menu.querySelector('[data-ac="name"]');
         var typeSel = menu.querySelector('[data-ac="type"]');
+        var lenWrap = menu.querySelector('[data-ac="size-len"]');
+        var numWrap = menu.querySelector('[data-ac="size-num"]');
+        function syncSize() {
+          var t = typeSel.value;
+          lenWrap.hidden = (t !== 'varchar');
+          numWrap.hidden = (t !== 'numeric');
+        }
+        typeSel.addEventListener('change', syncSize);
+        syncSize();
         function submit() {
           var name = (nameInp.value || '').trim();
           if (!name) { toast('Укажите имя столбца', true); nameInp.focus(); return; }
+          var t = typeSel.value;
+          var size = {};
+          if (t === 'varchar') {
+            size.length = menu.querySelector('[data-ac="length"]').value;
+          } else if (t === 'numeric') {
+            size.precision = menu.querySelector('[data-ac="precision"]').value;
+            size.scale = menu.querySelector('[data-ac="scale"]').value;
+          }
           closeAddColMenu();
           if (window.__gisUpColumns) {
-            window.__gisUpColumns.add(lid, name, typeSel.value);
+            window.__gisUpColumns.add(lid, name, t, size);
           }
         }
         menu.querySelector('[data-ac="create"]').addEventListener('click', submit);
@@ -8068,11 +8157,12 @@
       function attrColumnsFor(L) {
         var cols = [{ key: 'id', label: 'ID', num: true }];
         (L.attributes || []).forEach(function (a) {
-          var t = a.type || 'text', kind = 'str';
-          if (t === 'integer' || t === 'bigint') kind = 'int';
-          else if (t === 'double precision') kind = 'num';
+          /* kind по БАЗОВОМУ типу: numeric(10,2) — тоже число. */
+          var kind = attrTypeKind(a.type);
+          if (kind === 'date') kind = 'str';
           cols.push({
             key: a.db, label: a.name, num: (kind === 'int' || kind === 'num'),
+            title: a.name + ' — ' + attrTypeLabel(a.type),
             edit: { type: 'text', kind: kind },
           });
         });
@@ -8183,11 +8273,15 @@
       /* Мост для модуля таблицы: управление атрибутивными столбцами слоя
          (добавить / переименовать / удалить). id — числовой id слоя. cb(ok). */
       window.__gisUpColumns = {
-        add: function (id, name, type, cb) {
+        /* size (необязательно) — размерность типа: {length} для varchar,
+           {precision, scale} для numeric. Сервер валидирует пределы. */
+        add: function (id, name, type, size, cb) {
+          var body = { name: name, type: type };
+          Object.keys(size || {}).forEach(function (k) { body[k] = size[k]; });
           fetch(API + id + '/columns/', {
             method: 'POST', credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-            body: JSON.stringify({ name: name, type: type }),
+            body: JSON.stringify(body),
           }).then(function (r) {
             return r.json().then(function (j) { return { ok: r.ok, j: j }; });
           }).then(function (res) {
@@ -8316,9 +8410,10 @@
         featCard.layer = null; featCard.fid = null; featCard.inputs = {};
       }
       function featInputType(a) {
-        var t = a.type || 'text';
-        return (t === 'integer' || t === 'bigint' || t === 'double precision')
-          ? 'number' : 'text';
+        var kind = attrTypeKind(a.type);
+        if (kind === 'int' || kind === 'num') return 'number';
+        if (kind === 'date') return 'date';
+        return 'text';
       }
       function featRenderRows(L, props) {
         featCard.inputs = {};
@@ -10665,7 +10760,6 @@
         '#f032e6', '#bcbd22', '#008080', '#9a6324', '#800000', '#808000',
         '#000075', '#e67e22', '#1b9e77', '#7570b3', '#d95f02', '#66a61e',
       ];
-      var NUMERIC_TYPES = { 'integer': 1, 'bigint': 1, 'double precision': 1 };
       var styleModal = document.getElementById('gis-stylemodal');
       var styleModeSel = document.getElementById('gis-style-mode');
       var styleFieldWrap = document.getElementById('gis-style-field-wrap');
@@ -10694,7 +10788,12 @@
         return Math.max(0.1, Math.min(20, w));
       }
 
-      function isNumericType(t) { return !!NUMERIC_TYPES[t]; }
+      /* Числовой ли тип — по базовому типу, чтобы градиентная раскраска
+         работала и для numeric(10,2). */
+      function isNumericType(t) {
+        var kind = attrTypeKind(t);
+        return kind === 'int' || kind === 'num';
+      }
 
       function fillStyleFieldSelect(L, numericOnly, selected) {
         var opts = (L.attributes || []).filter(function (a) {
@@ -11028,15 +11127,6 @@
         var attrsBox = document.getElementById('gis-newlayer-attrs');
         var addAttrBtn = document.getElementById('gis-newlayer-addattr');
         var createBtn = document.getElementById('gis-newlayer-create');
-        /* Типы атрибутов: значение (pg-тип) → подпись. Должны совпадать с
-           NEW_LAYER_ATTR_TYPES на бэкенде. */
-        var ATTR_TYPES = [
-          ['text', 'Текст'],
-          ['integer', 'Целое'],
-          ['double precision', 'Дробное'],
-          ['date', 'Дата'],
-        ];
-
         function attrRow(name, type) {
           var row = document.createElement('div');
           row.className = 'gis-newlayer-attr';
@@ -11044,15 +11134,36 @@
           inp.type = 'text'; inp.maxLength = 200; inp.placeholder = 'имя атрибута';
           inp.value = name || '';
           var sel = document.createElement('select');
-          sel.innerHTML = ATTR_TYPES.map(function (t) {
-            return '<option value="' + t[0] + '">' + t[1] + '</option>';
-          }).join('');
+          sel.innerHTML = ATTR_TYPE_OPTIONS;
           sel.value = type || 'text';
+          /* Размерность: длина для varchar, всего/дробных цифр для numeric. */
+          var size = document.createElement('span');
+          size.className = 'gis-newlayer-size';
+          size.innerHTML =
+            '<input type="number" data-sz="length" min="1" max="10000" value="255" ' +
+              'title="Длина, символов" placeholder="длина">' +
+            '<input type="number" data-sz="precision" min="1" max="1000" value="12" ' +
+              'title="Всего цифр" placeholder="цифр">' +
+            '<input type="number" data-sz="scale" min="0" max="1000" value="2" ' +
+              'title="Из них после запятой" placeholder="дроб.">' +
+            '<span class="gis-modal__note" data-sz="none" ' +
+              'style="margin:0;font-size:11px;color:#aaa;">—</span>';
+          function syncSize() {
+            var t = sel.value;
+            size.querySelector('[data-sz="length"]').hidden = (t !== 'varchar');
+            size.querySelector('[data-sz="precision"]').hidden = (t !== 'numeric');
+            size.querySelector('[data-sz="scale"]').hidden = (t !== 'numeric');
+            size.querySelector('[data-sz="none"]').hidden =
+              (t === 'varchar' || t === 'numeric');
+          }
+          sel.addEventListener('change', syncSize);
+          syncSize();
           var del = document.createElement('button');
           del.type = 'button'; del.className = 'gis-newlayer-delattr';
           del.title = 'Удалить атрибут'; del.textContent = '✕';
           del.addEventListener('click', function () { row.remove(); });
-          row.appendChild(inp); row.appendChild(sel); row.appendChild(del);
+          row.appendChild(inp); row.appendChild(sel);
+          row.appendChild(size); row.appendChild(del);
           return row;
         }
 
@@ -11080,7 +11191,15 @@
           attrsBox.querySelectorAll('.gis-newlayer-attr').forEach(function (row) {
             var nm = row.querySelector('input').value.trim();
             if (!nm) return;  /* безымянный — пропускаем */
-            attrs.push({ name: nm, type: row.querySelector('select').value });
+            var t = row.querySelector('select').value;
+            var a = { name: nm, type: t };
+            if (t === 'varchar') {
+              a.length = row.querySelector('[data-sz="length"]').value;
+            } else if (t === 'numeric') {
+              a.precision = row.querySelector('[data-sz="precision"]').value;
+              a.scale = row.querySelector('[data-sz="scale"]').value;
+            }
+            attrs.push(a);
           });
           createBtn.disabled = true;
           fetch(API + 'create/', {

@@ -37,11 +37,9 @@ from __future__ import annotations
 from psycopg import sql
 
 from .shp_import import (
-    MAX_IDENT, _attr_db_types, create_layer_from_select, slugify_identifier,
+    MAX_IDENT, _attr_db_types, create_layer_from_select, is_numeric_type,
+    safe_column_type, slugify_identifier,
 )
-
-_NUMERIC_PG_TYPES = ('integer', 'bigint', 'smallint', 'double precision',
-                     'real', 'numeric')
 
 
 class OverlayError(Exception):
@@ -376,15 +374,16 @@ def _join_agg_expr(spec, b_types, used, index):
         default_name = spec.get('as') or f'{agg}_{field}'
         as_name = _safe_col(default_name, used, f'join_{index}')
         if agg in _NUMERIC_AGGS:
-            if b_types[field] not in _NUMERIC_PG_TYPES:
+            if not is_numeric_type(b_types[field]):
                 raise OverlayError(
                     f'Агрегат «{agg}» применим только к числовым полям.')
             expr = sql.SQL('{fn}({col})').format(fn=sql.SQL(agg), col=col)
             col_type = 'double precision'
         else:  # first — первое значение среди совпадений
             expr = sql.SQL('(array_agg({col}))[1]').format(col=col)
-            bt = b_types[field]
-            col_type = bt if bt in ('integer', 'double precision', 'date') else 'text'
+            # Тип сохраняем вместе с размерностью (varchar(50), numeric(10,2)),
+            # всё неожиданное — в text.
+            col_type = safe_column_type(b_types[field])
 
     label = spec.get('label') or as_name
     return (sql.SQL('{e} AS {n}').format(e=expr, n=sql.Identifier(as_name)),

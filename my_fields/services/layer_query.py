@@ -38,10 +38,14 @@ _CMP_SQL = {'gt': '>', 'gte': '>=', 'lt': '<', 'lte': '<='}
 
 def _column_types(layer) -> dict:
     """``{db_col: pg_type}`` для всех фильтруемых колонок (+ id)."""
-    from .shp_import import _ALLOWED_CAST_TYPES, _attr_db_types
+    from .shp_import import _attr_db_types, _safe_cast_type
+
     types = {'id': 'integer'}
     for db, pg_type in _attr_db_types(layer).items():
-        types[db] = pg_type if pg_type in _ALLOWED_CAST_TYPES else 'text'
+        # _safe_cast_type сохраняет размерность numeric(10,2), а varchar(n)
+        # приводит к text (CAST в varchar(n) обрезал бы значение сравнения)
+        # и отбрасывает всё неожиданное в text.
+        types[db] = _safe_cast_type(pg_type)
     return types
 
 

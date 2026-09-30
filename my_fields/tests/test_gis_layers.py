@@ -908,6 +908,31 @@ def _table_columns(name):
         return {row[0] for row in cur.fetchall()}
 
 
+def _first_feature_id(table):
+    """id первого объекта таблицы слоя (для PATCH-тестов)."""
+    with connection.cursor() as cur:
+        cur.execute(
+            sql.SQL('SELECT id FROM {} ORDER BY id LIMIT 1').format(
+                sql.Identifier(table)))
+        row = cur.fetchone()
+    return None if row is None else row[0]
+
+
+def _column_type(table, column):
+    """Фактическая размерность колонки в БД.
+
+    Возвращает ``(data_type, character_maximum_length, numeric_precision,
+    numeric_scale)`` — проверяем именно её, а не только meta слоя.
+    """
+    with connection.cursor() as cur:
+        cur.execute(
+            'SELECT data_type, character_maximum_length, numeric_precision, '
+            'numeric_scale FROM information_schema.columns '
+            'WHERE table_schema = %s AND table_name = %s AND column_name = %s',
+            ['public', table, column])
+        return cur.fetchone()
+
+
 class ColumnManagementTests(GisLayersTestCase):
     """Добавление / переименование / удаление атрибутивных столбцов слоя."""
 
@@ -963,6 +988,66 @@ class ColumnManagementTests(GisLayersTestCase):
 
     def test_add_column_invalid_type_400(self):
         self.assertEqual(self._add({'name': 'x', 'type': 'bogus'}).status_code, 400)
+
+    # ── Типы с размерностью (varchar(n) / numeric(p,s)) ──
+    def test_add_varchar_column_with_length(self):
+        resp = self._add({'name': 'Код', 'type': 'varchar', 'length': 50})
+        self.assertEqual(resp.status_code, 201, resp.content)
+        col = resp.json()['column']
+        self.assertEqual(col['type'], 'varchar(50)')
+        self.assertEqual(
+            _column_type(self.layer.table_name, col['db'])[:2],
+            ('character varying', 50))
+
+    def test_add_varchar_column_default_length(self):
+        # Длина не задана — берём разумное по умолчанию (255).
+        col = self._add({'name': 'Метка', 'type': 'varchar'}).json()['column']
+        self.assertEqual(col['type'], 'varchar(255)')
+
+    def test_add_numeric_column_with_precision_scale(self):
+        resp = self._add({'name': 'Площадь', 'type': 'numeric',
+                          'precision': 8, 'scale': 3})
+        self.assertEqual(resp.status_code, 201, resp.content)
+        col = resp.json()['column']
+        self.assertEqual(col['type'], 'numeric(8,3)')
+        self.assertEqual(
+            _column_type(self.layer.table_name, col['db']),
+            ('numeric', None, 8, 3))
+
+    def test_add_numeric_column_without_size(self):
+        col = self._add({'name': 'Вес', 'type': 'numeric'}).json()['column']
+        self.assertEqual(col['type'], 'numeric')
+
+    def test_add_column_bad_length_400(self):
+        for bad in (0, -5, 99999, 'abc'):
+            resp = self._add({'name': f'c{bad}', 'type': 'varchar',
+                              'length': bad})
+            self.assertEqual(resp.status_code, 400, (bad, resp.content))
+
+    def test_add_column_scale_gt_precision_400(self):
+        resp = self._add({'name': 'c', 'type': 'numeric',
+                          'precision': 4, 'scale': 6})
+        self.assertEqual(resp.status_code, 400, resp.content)
+
+    def test_add_column_scale_without_precision_400(self):
+        resp = self._add({'name': 'c', 'type': 'numeric', 'scale': 2})
+        self.assertEqual(resp.status_code, 400, resp.content)
+
+    def test_sized_column_is_editable_and_enforced(self):
+        # Правка атрибута работает (CAST с размерностью), а слишком
+        # длинное значение отвергается самой БД, а не обрезается молча.
+        db = self._add({'name': 'Шифр', 'type': 'varchar',
+                        'length': 5}).json()['column']['db']
+        fid = _first_feature_id(self.layer.table_name)
+        url = f'/me/gis/api/layers/{self.layer.pk}/features/{fid}/'
+        ok = self.client.patch(
+            url, data=json.dumps({'props': {db: 'ab12'}}),
+            content_type='application/json')
+        self.assertEqual(ok.status_code, 200, ok.content)
+        too_long = self.client.patch(
+            url, data=json.dumps({'props': {db: 'слишком длинное'}}),
+            content_type='application/json')
+        self.assertEqual(too_long.status_code, 400, too_long.content)
 
     # ── Переименование (имя + физическая колонка) ──
     def test_rename_column_renames_physical_column(self):

@@ -291,8 +291,8 @@ class LayerSummaryTwoLevelTests(_LayerFactoryMixin, GisLayersTestCase):
         s = summary_by_field(self.layer, 'soil', group2='zone',
                              group2_values=['A'])
         self.assertEqual(s['group2_values'], ['A'])
-        self.assertEqual(set(self._pairs(s)), {('Чернозём', 'A'),
-                                              ('Серая', 'A')})
+        self.assertEqual(set(self._pairs(s)),
+                         {('Чернозём', 'A'), ('Серая', 'A')})
         self.assertEqual(s['total']['count'], 2)
 
     def test_group2_values_ignored_without_group2(self):

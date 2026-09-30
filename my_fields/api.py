@@ -1085,7 +1085,8 @@ def gis_layers_collection(request: HttpRequest) -> JsonResponse:
 def gis_layer_create(request: HttpRequest) -> JsonResponse:
     """POST JSON — создать новый пустой слой с типом геометрии и атрибутами.
 
-    Body: ``{title, geom_kind: point|line|polygon, attributes: [{name, type}]}``.
+    Body: ``{title, geom_kind: point|line|polygon, attributes: [{name, type,
+    length?, precision?, scale?}]}`` — размерность для ``varchar``/``numeric``.
     Нужен whole-class ``manage`` (как загрузка SHP).
     """
     gate = _require_gis_access(request, level='manage')
@@ -1208,7 +1209,8 @@ def gis_layer_columns(request: HttpRequest, pk: int) -> JsonResponse:
     """POST — добавить атрибутивный столбец; DELETE — удалить сразу
     несколько столбцов (``ALTER TABLE``).
 
-    Body POST: ``{name, type}`` (type из NEW_LAYER_ATTR_TYPES).
+    Body POST: ``{name, type, length?, precision?, scale?}`` (type из
+    NEW_LAYER_ATTR_TYPES; размерность — для ``varchar`` / ``numeric``).
     Body DELETE: ``{dbs: [<db>, ...]}`` — одна транзакция на все столбцы,
     чтобы meta слоя и физическая схема не разъехались.
 
@@ -1234,7 +1236,10 @@ def gis_layer_columns(request: HttpRequest, pk: int) -> JsonResponse:
 
     from .services.shp_import import ShapefileImportError, add_layer_column
     try:
-        column = add_layer_column(layer, name, col_type)
+        column = add_layer_column(
+            layer, name, col_type,
+            length=data.get('length'), precision=data.get('precision'),
+            scale=data.get('scale'))
     except ShapefileImportError as e:
         return JsonResponse(
             {'ok': False, 'error': 'add_failed', 'detail': str(e)}, status=400)
@@ -2385,24 +2390,24 @@ def _gis_feature_patch(request: HttpRequest, layer: GisLayer,
             status=400,
         )
 
-    from .services.shp_import import update_feature, update_feature_geom
+    from .services.shp_import import update_feature
 
     geom_updated = None
     if isinstance(geometry, dict):
-        try:
-            geom_updated = update_feature_geom(layer, fid, geometry)
-        except ValueError as exc:
-            return JsonResponse(
-                {'ok': False, 'error': 'invalid_geometry', 'detail': str(exc)},
-                status=400,
-            )
-        if not geom_updated:
-            return JsonResponse(
-                {'ok': False, 'error': 'not_found', 'detail': 'Объект не найден.'},
-                status=404,
-            )
+        geom_updated, err = _gis_feature_patch_geom(layer, fid, geometry)
+        if err is not None:
+            return err
 
-    attr_updated = update_feature(layer, fid, props) if has_props else 0
+    from .services.shp_import import ShapefileImportError
+
+    try:
+        attr_updated = update_feature(layer, fid, props) if has_props else 0
+    except ShapefileImportError as exc:
+        # Значение не лезет в тип/размерность столбца (varchar(5) и т.п.).
+        return JsonResponse(
+            {'ok': False, 'error': 'invalid_value', 'detail': str(exc)},
+            status=400,
+        )
     if has_props and not attr_updated and geom_updated is None:
         return JsonResponse(
             {'ok': False, 'error': 'not_found_or_noop',
@@ -2415,6 +2420,25 @@ def _gis_feature_patch(request: HttpRequest, layer: GisLayer,
         'updated': attr_updated or 0,
         'geometry_updated': bool(geom_updated),
     })
+
+
+def _gis_feature_patch_geom(layer: GisLayer, fid: int, geometry: dict):
+    """Правка геометрии объекта: ``(updated, error_response|None)``."""
+    from .services.shp_import import update_feature_geom
+
+    try:
+        updated = update_feature_geom(layer, fid, geometry)
+    except ValueError as exc:
+        return None, JsonResponse(
+            {'ok': False, 'error': 'invalid_geometry', 'detail': str(exc)},
+            status=400,
+        )
+    if not updated:
+        return None, JsonResponse(
+            {'ok': False, 'error': 'not_found', 'detail': 'Объект не найден.'},
+            status=404,
+        )
+    return updated, None
 
 
 @csrf_exempt
