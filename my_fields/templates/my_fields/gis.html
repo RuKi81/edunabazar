@@ -7893,7 +7893,12 @@
         }
         panelsWasOpen = st;
         var anyOpen = st.filter || st.fill;
-        panelsBtn.hidden = !anyOpen;
+        /* Кнопка видна всегда, пока у слоя есть сами инструменты «⚟ Фильтр» /
+           «✎ Заполнить» (а не только когда панель уже открыта) — иначе её
+           невозможно найти заранее. */
+        var toolsAvail = anyOpen ||
+          !!(fpToggle && !fpToggle.hidden) || !!(fillToggle && !fillToggle.hidden);
+        panelsBtn.hidden = !toolsAvail;
         panelsWrap.classList.toggle('gis-attrtable__panels--collapsed',
                                     anyOpen && panelsCollapsed);
         panelsBtn.classList.toggle('active', anyOpen && panelsCollapsed);
@@ -7912,7 +7917,7 @@
          hidden. */
       if (window.MutationObserver && panelsWrap) {
         var panelsObs = new MutationObserver(panelsSync);
-        [fpPanel, fillPanel].forEach(function (p) {
+        [fpPanel, fillPanel, fpToggle, fillToggle].forEach(function (p) {
           if (p) panelsObs.observe(p, { attributes: true, attributeFilter: ['hidden'] });
         });
       }
