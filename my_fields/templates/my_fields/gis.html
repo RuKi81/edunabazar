@@ -778,8 +778,9 @@
     /* Кнопка шапки «Свернуть / Показать панели». */
     .gis-attrtable__panelstoggle { padding: 5px 8px; white-space: nowrap; }
     .gis-attrtable__panelstoggle.active { background: #c8e6c9; color: #2e7d32; border-color: #a5d6a7; }
-    .gis-attrtable__panels--collapsed .gis-attrtable__filterpanel { display: none; }
-    .gis-fp__head, .gis-fp__foot { display: flex; align-items: center; gap: 8px; }
+    .gis-fp__head, .gis-fp__foot {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
     .gis-fp__match { color: #555; display: inline-flex; align-items: center; gap: 6px; }
     .gis-fp__spacer { flex: 1; }
     .gis-fp__rules { display: flex; flex-direction: column; gap: 6px; }
@@ -1446,6 +1447,8 @@
            целиком кнопкой шапки «⌃ Свернуть панели» (настройки сохраняются). -->
       <div class="gis-attrtable__panels" id="gis-attrtable-panels">
       <div class="gis-attrtable__filterpanel" id="gis-attrtable-filterpanel" hidden>
+        <!-- Все действия конструктора — в ОДНОЙ строке с «Совпадение»:
+             слева режим и добавление условия, справа применение/сброс/сохранение. -->
         <div class="gis-fp__head">
           <span class="gis-fp__match">Совпадение:
             <select class="browser-default" id="gis-fp-match">
@@ -1453,11 +1456,6 @@
               <option value="any">любое условие (ИЛИ)</option>
             </select>
           </span>
-        </div>
-        <div class="gis-fp__rules" id="gis-fp-rules"></div>
-        <!-- Все действия конструктора — в ОДНОЙ нижней строке:
-             слева добавление условия, справа применение/сброс/сохранение. -->
-        <div class="gis-fp__foot">
           <button type="button" class="gis-fp__btn" id="gis-fp-add">+ условие</button>
           <span class="gis-fp__spacer"></span>
           <span class="gis-fp__actions" id="gis-fp-actions">
@@ -1466,6 +1464,7 @@
             <button type="button" class="gis-fp__btn" id="gis-fp-save">Сохранить как слой…</button>
           </span>
         </div>
+        <div class="gis-fp__rules" id="gis-fp-rules"></div>
       </div>
       <!-- Массовое заполнение атрибута: столбец + одно значение + область
            применения (весь слой / текущая выборка / выбранные объекты). -->
@@ -7899,9 +7898,14 @@
         var toolsAvail = anyOpen ||
           !!(fpToggle && !fpToggle.hidden) || !!(fillToggle && !fillToggle.hidden);
         panelsBtn.hidden = !toolsAvail;
-        panelsWrap.classList.toggle('gis-attrtable__panels--collapsed',
-                                    anyOpen && panelsCollapsed);
-        panelsBtn.classList.toggle('active', anyOpen && panelsCollapsed);
+        /* Прячем ИНЛАЙНОВЫМ style.display: класс на обёртке конкурировал с
+           display:flex самих панелей (и с Materialize), inline-стиль
+           надёжнее. Разворачивание — сброс свойства, панель возвращается
+           к своему display из CSS. */
+        [fpPanel, fillPanel].forEach(function (p) {
+          if (p) p.style.display = panelsCollapsed ? 'none' : '';
+        });
+        panelsBtn.classList.toggle('active', panelsCollapsed);
         panelsBtn.textContent = panelsCollapsed
           ? '⌄ Показать панели' : '⌃ Свернуть панели';
         panelsBtn.title = panelsCollapsed
