@@ -1601,6 +1601,28 @@ def gis_layer_field_values(request: HttpRequest, pk: int) -> JsonResponse:
     return JsonResponse({'ok': True, **info})
 
 
+def _summary_district_id(request: HttpRequest):
+    try:
+        return int(request.GET.get('district') or 0) or None
+    except (TypeError, ValueError):
+        return None
+
+
+def _summary_filter_spec(request: HttpRequest):
+    """``filter`` из query string → ``(spec, ошибка-JsonResponse|None)``."""
+    filter_str = request.GET.get('filter')
+    if not filter_str:
+        return None, None
+    try:
+        return json.loads(filter_str), None
+    except json.JSONDecodeError:
+        return None, JsonResponse(
+            {'ok': False, 'error': 'invalid_filter',
+             'detail': 'filter должен быть валидным JSON.'},
+            status=400,
+        )
+
+
 @require_http_methods(['GET'])
 def gis_layer_summary(request: HttpRequest, pk: int) -> JsonResponse:
     """GET — сводка слоя по атрибуту: объекты + итоговые площади (дашборды).
@@ -1634,23 +1656,10 @@ def gis_layer_summary(request: HttpRequest, pk: int) -> JsonResponse:
         )
     group2 = (request.GET.get('group2') or '').strip() or None
     split = (request.GET.get('split') or '').strip() or None
-    try:
-        district_id = int(request.GET.get('district') or 0) or None
-    except (TypeError, ValueError):
-        district_id = None
-
-    # Парсинг filter_spec из query string (JSON-строка)
-    filter_spec = None
-    filter_str = request.GET.get('filter')
-    if filter_str:
-        try:
-            filter_spec = json.loads(filter_str)
-        except json.JSONDecodeError:
-            return JsonResponse(
-                {'ok': False, 'error': 'invalid_filter',
-                 'detail': 'filter должен быть валидным JSON.'},
-                status=400,
-            )
+    district_id = _summary_district_id(request)
+    filter_spec, bad = _summary_filter_spec(request)
+    if bad:
+        return bad
     query_text = (request.GET.get('q') or '').strip()
 
     from .services.layer_summary import LayerSummaryError, summary_by_field

@@ -71,7 +71,7 @@ class NormalizeParamsTests(_DashboardTestCase):
             'region': 71, 'district': 5, 'group': 'soil',
             'group2': None, 'split': 'zone', 'bysplit': False,
             'group_values': None, 'group2_values': None,
-            'split_values': None,
+            'split_values': None, 'filter': None, 'q': '',
         })
 
     def test_keeps_value_filters(self):

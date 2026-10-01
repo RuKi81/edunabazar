@@ -138,25 +138,22 @@ def _site_url() -> str:
 def dashboard_url(layer, params: dict) -> str:
     """Абсолютная ссылка на дашборд с этим срезом (та же, что в адресной строке)."""
     query = {'layer': layer.pk}
-    if params.get('region'):
-        query['region'] = params['region']
-    if params.get('district'):
-        query['district'] = params['district']
+    for key in ('region', 'district'):
+        if params.get(key):
+            query[key] = params[key]
     query['group'] = params['group']
-    if params.get('group2'):
-        query['group2'] = params['group2']
-    if params.get('split'):
-        query['split'] = params['split']
+    for key in ('group2', 'split'):
+        if params.get(key):
+            query[key] = params[key]
     if not params.get('bysplit', True):
         query['bysplit'] = '0'
     # gv/g2v/sv — ПОВТОРЯЮЩИЕСЯ параметры (doseq): сами значения
     # атрибутов содержат запятые, склеить их в одну строку нельзя.
-    if params.get('group_values'):
-        query['gv'] = list(params['group_values'])
-    if params.get('group2') and params.get('group2_values'):
-        query['g2v'] = list(params['group2_values'])
-    if params.get('split') and params.get('split_values'):
-        query['sv'] = list(params['split_values'])
+    for field_key, values_key, qkey in (('group', 'group_values', 'gv'),
+                                        ('group2', 'group2_values', 'g2v'),
+                                        ('split', 'split_values', 'sv')):
+        if params.get(field_key) and params.get(values_key):
+            query[qkey] = list(params[values_key])
     # filter (структурный фильтр) — JSON-строка в query string
     if params.get('filter'):
         import json
