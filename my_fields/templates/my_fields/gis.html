@@ -1529,14 +1529,22 @@
           <span class="gis-fp__match">пресет:
             <select class="browser-default" id="gis-fill-preset">
               <option value="">— выберите —</option>
-              <!-- Пресеты загружаются динамически -->
+              <option value="area_m2">Площадь в м²</option>
+              <option value="from_attr">Значение из атрибута</option>
+              <!-- Полный список подгружается с сервера -->
             </select>
           </span>
           <span class="gis-fp__match" id="gis-fill-preset-args" hidden>атрибут:
             <select class="browser-default gis-fp__field" id="gis-fill-preset-col"></select>
-            <input class="browser-default gis-fp__val" type="number" id="gis-fill-preset-value"
-                   placeholder="коэффициент" step="0.1" style="width: 100px;">
-            <button type="button" class="gis-fp__btn" id="gis-fill-preset-apply">Применить</button>
+            <select class="browser-default" id="gis-fill-preset-op">
+              <option value="*">×</option>
+              <option value="/">÷</option>
+              <option value="+">+</option>
+              <option value="-">−</option>
+            </select>
+            <input class="browser-default gis-fp__val" type="number" id="gis-fill-preset-num"
+                   placeholder="число" step="any" style="width: 100px;">
+            <button type="button" class="gis-fp__btn" id="gis-fill-preset-use">Применить</button>
           </span>
         </div>
         <div class="gis-colmenu__filterhint" id="gis-fill-exprhint">
@@ -7799,8 +7807,9 @@
       var fillPresetSel  = document.getElementById('gis-fill-preset');
       var fillPresetArgs = document.getElementById('gis-fill-preset-args');
       var fillPresetCol  = document.getElementById('gis-fill-preset-col');
-      var fillPresetValue = document.getElementById('gis-fill-preset-value');
-      var fillPresetApply = document.getElementById('gis-fill-preset-apply');
+      var fillPresetValue = document.getElementById('gis-fill-preset-num');
+      var fillPresetOp = document.getElementById('gis-fill-preset-op');
+      var fillPresetApply = document.getElementById('gis-fill-preset-use');
 
       // Хранилище загруженных пресетов
       var formulaPresets = [];
@@ -7903,7 +7912,9 @@
         var hasField = preset.params.some(function (p) { return p.key === 'field'; });
         var hasValue = preset.params.some(function (p) { return p.key === 'value'; });
         if (fillPresetCol) fillPresetCol.hidden = !hasField;
-        if (fillPresetValue) fillPresetValue.hidden = !hasValue;
+        var isCopy = preset.id === 'from_attr';
+        if (fillPresetValue) fillPresetValue.hidden = !(hasValue || isCopy);
+        if (fillPresetOp) fillPresetOp.hidden = !isCopy;
         // Если есть параметр field, заполняем его списком атрибутов слоя
         if (hasField && fillPresetCol) {
           fillPresetSyncFields();
@@ -7940,6 +7951,13 @@
             params.value = fillPresetValue ? String(fillPresetValue.value).trim() : '';
           }
         });
+        if (preset.id === 'from_attr') {
+          var num = fillPresetValue ? String(fillPresetValue.value).trim() : '';
+          var opv = fillPresetOp ? fillPresetOp.value : '*';
+          if (num !== '' && isFinite(Number(num)) && ['*', '/', '+', '-'].indexOf(opv) >= 0) {
+            template = '({field})::numeric ' + opv + ' ' + Number(num);
+          }
+        }
         // Подстановка параметров в шаблон
         var expr = template;
         for (var key in params) {

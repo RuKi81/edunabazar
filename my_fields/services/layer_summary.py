@@ -40,7 +40,7 @@ from __future__ import annotations
 from django.db import connection
 from psycopg import sql
 
-from .layer_query import _search_sql, build_filter, build_where, LayerQueryError
+from .layer_query import _search_sql, build_filter
 from .shp_import import _attr_db_types
 
 

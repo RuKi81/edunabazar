@@ -86,7 +86,7 @@ class Command(BaseCommand):
             launch_args=args_src,
         )
         self._log(run_id,
-                  f'Overlay «{op}» completed → слой #{layer.pk} '
+                  f'Overlay "{op}" completed -> слой #{layer.pk} '
                   f'"{layer.title}" ({layer.feature_count} об.)')
 
     # ------------------------------------------------------------------
@@ -115,7 +115,7 @@ class Command(BaseCommand):
 
         b_repr = f' B=#{layer_b_id}' if layer_b_id else ''
         self.stdout.write(
-            f'[overlay] run: {op_label(op)}  A=#{layer_a_id}{b_repr} → "{title}"'
+            f'[overlay] run: {op_label(op)}  A=#{layer_a_id}{b_repr} -> "{title}"'
         )
         return run_from_params(op, layer_a=layer_a, layer_b=layer_b,
                                title=title, owner=owner, params=op_params)

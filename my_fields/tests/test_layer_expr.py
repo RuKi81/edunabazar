@@ -88,6 +88,16 @@ class CompileExpressionTests(LayerExprTestCase):
         self.assertIn('CASE', out)
         self.assertIn('END', out)
 
+    def test_preset_area_m2(self):
+        # Пресет «Площадь, м²» из панели заполнения.
+        self.assertIn('"geom"', self._sql('ST_Area(geom::geography)'))
+
+    def test_preset_from_other_attribute_with_arithmetic(self):
+        # Пресет «Значение из другого атрибута»: (col)::numeric <op> <число>.
+        out = self._sql('(num)::numeric / 10000')
+        self.assertIn('"num"', out)
+        self.assertIn('::numeric', out)
+
     def test_double_precision_cast(self):
         self.assertIn('double precision', self._sql('num::double precision'))
 

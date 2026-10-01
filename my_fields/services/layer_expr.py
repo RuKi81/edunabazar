@@ -30,6 +30,11 @@
     coalesce(code, '') || '-' || id
     CASE WHEN area > 100 THEN 'крупное' ELSE 'мелкое' END
 """
+from __future__ import annotations
+
+import re
+
+from psycopg import sql
 
 
 # Готовые пресеты формул для UI. Каждая формула — это словарь с ключами:
@@ -62,12 +67,16 @@ FORMULA_PRESETS = [
             {'key': 'value', 'label': 'Коэффициент', 'type': 'number', 'default': 1.0},
         ],
     },
+    {
+        'id': 'from_attr',
+        'name': 'Значение из атрибута',
+        'template': '{field}',
+        'description': 'Копирование значения из другого атрибута',
+        'params': [
+            {'key': 'field', 'label': 'Атрибут', 'type': 'field'},
+        ],
+    },
 ]
-from __future__ import annotations
-
-import re
-
-from psycopg import sql
 
 
 class LayerExprError(ValueError):

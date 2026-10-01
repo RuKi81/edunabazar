@@ -145,6 +145,13 @@ class GisPageMarkupTests(GisLayersTestCase):
         for node in ('gis-fill-expr', 'gis-fill-expr-apply'):
             self.assertIn(node, self.html)
 
+    def test_fill_expression_presets_present(self):
+        # Два пресета формулы: площадь в м² и значение из другого атрибута.
+        for node in ('gis-fill-preset', 'gis-fill-preset-col',
+                     'gis-fill-preset-op', 'gis-fill-preset-num',
+                     'gis-fill-preset-use', 'area_m2', 'from_attr'):
+            self.assertIn(node, self.html)
+
     def test_panels_collapse_button_present(self):
         # Кнопка шапки сворачивает зону панелей (фильтр + заполнение) целиком.
         for node in ('gis-attrtable-panels', 'gis-attrtable-panels-toggle'):

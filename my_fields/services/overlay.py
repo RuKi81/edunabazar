@@ -48,12 +48,12 @@ class OverlayError(Exception):
 
 # Двух-слойные операции. op → (метка, «сохраняются ли атрибуты слоя A»).
 OVERLAY_OPS = {
-    'intersection': ('Пересечение (A ∩ B)', True),
-    'difference': ('Разность (A − B)', True),
-    'erase': ('Стереть B из A (A − B)', True),
+    'intersection': ('Пересечение (A n B)', True),
+    'difference': ('Разность (A - B)', True),
+    'erase': ('Стереть B из A (A - B)', True),
     'clip': ('Обрезка A по B (clip)', True),
-    'union': ('Объединение (A ∪ B)', False),
-    'symmetric_difference': ('Симметрическая разность (A △ B)', False),
+    'union': ('Объединение (A U B)', False),
+    'symmetric_difference': ('Симметрическая разность (A ^ B)', False),
 }
 
 # Одно-слойные операции. op → (метка, тип геометрии результата |
