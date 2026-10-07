@@ -154,6 +154,21 @@ def download_composite(region_geom_extent, region_id, date_from, date_to,
         raise GEEError(f'MODIS download error: {e}')
 
 
+def period_has_images(date_from, date_to):
+    """
+    Cheap availability probe: does GEE hold ANY Terra/Aqua composite
+    for the period (no AOI filter, one ``size()`` call for the whole run)?
+
+    Lets a nightly batch skip all regions at once while GEE lags behind
+    NASA, instead of paying a per-region request just to learn "no data".
+    """
+    initialize()
+    start, end = date_from.isoformat(), date_to.isoformat()
+    terra = ee.ImageCollection('MODIS/061/MOD13Q1').filterDate(start, end)
+    aqua = ee.ImageCollection('MODIS/061/MYD13Q1').filterDate(start, end)
+    return terra.merge(aqua).size().getInfo() > 0
+
+
 def download_year(region_geom_extent, region_id, date_from, date_to,
                   overwrite=False):
     """

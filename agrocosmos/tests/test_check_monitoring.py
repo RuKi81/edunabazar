@@ -58,6 +58,12 @@ class CheckMonitoringTests(TestCase):
             region=cls.region, district=cls.district,
             area_ha=10, geom=_square(30, 50, 0.1))
 
+    def setUp(self):
+        patcher = mock.patch(f'{MOD}.Command._gee_has_period',
+                             return_value=True)
+        self.probe = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _task(self, **overrides):
         kwargs = dict(region=self.region, year=PAST_YEAR, status='active')
         kwargs.update(overrides)
@@ -230,6 +236,23 @@ class CheckMonitoringTests(TestCase):
         self.assertIn('DRY RUN', out)
         task.refresh_from_db()
         self.assertIsNone(task.last_date_to)   # превью не сохраняется
+
+    def test_empty_gee_period_skips_pipeline(self):
+        """Пока в GEE нет композитов, регионы не дёргаются поштучно."""
+        task = self._task()
+        self.probe.return_value = False
+        out, _, mock_cc = self._run(inner=_saved_inner())
+        mock_cc.assert_not_called()
+        self.assertIn('no MODIS composites in GEE yet', out)
+        task.refresh_from_db()
+        self.assertIsNone(task.last_date_to)
+
+    def test_force_ignores_gee_probe(self):
+        self._task()
+        self.probe.return_value = False
+        _, _, mock_cc = self._run(inner=_saved_inner(), force=True)
+        names = [c.args[0] for c in mock_cc.call_args_list]
+        self.assertIn('modis_ndvi', names)
 
     def test_force_overrides_availability_lag(self):
         # Период, покрывающий сегодня: данные ещё недоступны (lag 7 дней)

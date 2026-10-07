@@ -313,7 +313,30 @@ class Command(BaseCommand):
                 f'data available after {data_available_date}. Stop.'
             )
             return False
+
+        if not force and not self._gee_has_period(next_from, next_to):
+            self.stdout.write(
+                f'  [{region.name} {year}] Period {next_from}..{next_to}: '
+                f'no MODIS composites in GEE yet. Stop.'
+            )
+            return False
         return True
+
+    def _gee_has_period(self, date_from, date_to) -> bool:
+        """One GEE probe per period per run; any probe failure → True
+        (fall back to the regular per-region download path)."""
+        cache = self.__dict__.setdefault('_probe_cache', {})
+        key = (date_from, date_to)
+        if key not in cache:
+            try:
+                from agrocosmos.services.satellite_modis_raster import (
+                    period_has_images,
+                )
+                cache[key] = bool(period_has_images(date_from, date_to))
+            except Exception as exc:
+                logger.warning('GEE availability probe failed: %s', exc)
+                cache[key] = True
+        return cache[key]
 
     def _run_period(self, task, region, year, next_from, next_to):
         """Run the NDVI pipeline for one period.
