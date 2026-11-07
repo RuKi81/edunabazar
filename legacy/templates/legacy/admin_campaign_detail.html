@@ -104,11 +104,54 @@
         </div>
       </div>
 
+      {# Auto-send schedule #}
+      <div class="card" style="box-shadow:none; border:1px solid #e6e6e6;">
+        <div class="card-content" style="padding: 16px;">
+          <div style="font-weight:800; margin-bottom:10px;">⏰ Автоматическая рассылка групп</div>
+
+          {% if schedule_message %}
+            <div style="background:#e8f5e9; color:#2e7d32; padding:10px; border-radius:4px; margin-bottom:12px; font-size:13px;">{{ schedule_message }}</div>
+          {% endif %}
+          {% if schedule_error %}
+            <div style="background:#ffebee; color:#b00020; padding:10px; border-radius:4px; margin-bottom:12px; font-size:13px;">{{ schedule_error }}</div>
+          {% endif %}
+
+          <form method="post" action="{% url 'admin_campaign_schedule' campaign.pk %}">
+            {% csrf_token %}
+            <div style="display:flex; gap:16px; align-items:center; flex-wrap:wrap;">
+              <label style="display:flex; align-items:center; gap:8px; color:#333; font-size:13px;">
+                <span style="color:#777; font-weight:700; font-size:12px;">Время отправки (Москва)</span>
+                <input type="time" name="auto_send_time" value="{{ campaign.auto_send_time|time:'H:i' }}" required
+                       style="width:110px; margin:0; height:32px;">
+              </label>
+              <label style="display:flex; align-items:center; gap:8px; color:#333; font-size:13px; cursor:pointer;">
+                <input type="checkbox" name="auto_send_enabled" value="1" class="filled-in" {% if campaign.auto_send_enabled %}checked{% endif %}>
+                <span>Отправлять каждый день</span>
+              </label>
+              <button class="btn" type="submit" style="background:#7fb500; box-shadow:none; border-radius:0;">
+                Сохранить
+              </button>
+            </div>
+            <div style="color:#999; font-size:11px; margin-top:6px;">
+              При включённом чекбоксе каждый день в указанное время отправляется одна очередная группа из списка ниже (по порядку).
+              Когда групп для отправки не останется, чекбокс снимается автоматически.
+              {% if campaign.auto_send_last_date %}Последняя автоотправка: {{ campaign.auto_send_last_date|date:"d.m.Y" }}.{% endif %}
+            </div>
+          </form>
+        </div>
+      </div>
+
       {# Batches of 180 #}
       {% if batches %}
       <div class="card" style="box-shadow:none; border:1px solid #e6e6e6;">
         <div class="card-content" style="padding: 16px;">
-          <div style="font-weight:800; margin-bottom:10px;">📨 Группы рассылки (по 180 писем)</div>
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
+            <div style="font-weight:800;">📨 Группы рассылки (по {{ batch_size }} писем)</div>
+            <label style="display:flex; align-items:center; gap:8px; color:#333; font-size:13px; cursor:pointer;">
+              <input type="checkbox" id="hide-sent-batches" class="filled-in">
+              <span>Скрыть отправленные группы</span>
+            </label>
+          </div>
 
           <table style="font-size:13px; width:100%; border-collapse:collapse;">
             <thead>
@@ -125,7 +168,7 @@
             </thead>
             <tbody>
               {% for b in batches %}
-              <tr id="batch-row-{{ b.num }}" style="border-bottom:1px solid #eee;">
+              <tr id="batch-row-{{ b.num }}" class="batch-row{% if b.done %} batch-row--done{% endif %}" style="border-bottom:1px solid #eee;">
                 <td style="padding:8px; font-weight:700;">Группа {{ b.num }}</td>
                 <td style="padding:8px; text-align:center;">{{ b.total }}</td>
                 <td style="padding:8px; text-align:center; color:#4caf50; font-weight:700;" id="batch-sent-{{ b.num }}">{{ b.sent }}</td>
@@ -227,8 +270,24 @@
     </div>
   </div>
 
+  <style>
+    .hide-sent-batches .batch-row--done { display: none; }
+  </style>
   <script>
   var csrf = '{{ csrf_token }}';
+
+  (function () {
+    var cb = document.getElementById('hide-sent-batches');
+    if (!cb) return;
+    var key = 'campaignHideSentBatches';
+    function apply() {
+      document.body.classList.toggle('hide-sent-batches', cb.checked);
+      try { localStorage.setItem(key, cb.checked ? '1' : '0'); } catch (e) {}
+    }
+    try { cb.checked = localStorage.getItem(key) === '1'; } catch (e) {}
+    cb.addEventListener('change', apply);
+    apply();
+  })();
 
   function sendTest() {
     var email = document.getElementById('test_email').value.trim();
@@ -289,6 +348,8 @@
         }
         statusEl.innerHTML = '<span style="background:#4caf50; color:#fff; padding:2px 10px; border-radius:10px; font-size:11px; font-weight:700;">Готово</span>';
         btn.style.display = 'none';
+        var row = document.getElementById('batch-row-' + num);
+        if (row) row.classList.add('batch-row--done');
       } else {
         statusEl.innerHTML = '<span style="color:#b00020; font-weight:700;">Ошибка: ' + (data.error || '') + '</span>';
         btn.disabled = false;

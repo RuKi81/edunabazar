@@ -86,4 +86,5 @@ from .admin_views import (                                      # noqa: F401
     admin_campaigns, admin_campaign_create, admin_campaign_detail,
     admin_campaign_delete, admin_campaign_send_test,
     admin_campaign_upload_excel, admin_campaign_send_batch,
+    admin_campaign_schedule,
 )

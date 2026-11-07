@@ -1,3 +1,4 @@
+import datetime
 import io
 import re
 import time
@@ -25,6 +26,7 @@ from ..constants import (
 from .helpers import (
     _require_admin, _no_store, logger,
 )
+from ..campaign_batches import BATCH_SIZE, build_batches, next_pending_batch
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +340,8 @@ def admin_campaign_detail(request: HttpRequest, campaign_id: int) -> HttpRespons
 
     upload_message = request.session.pop('campaign_upload_message', '')
     upload_error = request.session.pop('campaign_upload_error', '')
+    schedule_message = request.session.pop('campaign_schedule_message', '')
+    schedule_error = request.session.pop('campaign_schedule_error', '')
 
     # Stats
     sent = EmailLog.objects.filter(campaign=campaign, status=EmailLog.STATUS_SENT).count()
@@ -357,34 +361,7 @@ def admin_campaign_detail(request: HttpRequest, campaign_id: int) -> HttpRespons
             qs = qs.exclude(status=USER_STATUS_ACTIVE)
         audience_count = qs.count()
 
-    # Build batches of 180
-    BATCH_SIZE = 180
-    all_logs = list(
-        EmailLog.objects.filter(campaign=campaign)
-        .order_by('id')
-        .values_list('id', 'status', 'sent_at', named=True)
-    )
-    batches = []
-    for i in range(0, len(all_logs), BATCH_SIZE):
-        chunk = all_logs[i:i + BATCH_SIZE]
-        b_sent = sum(1 for r in chunk if r.status == EmailLog.STATUS_SENT)
-        b_failed = sum(1 for r in chunk if r.status == EmailLog.STATUS_FAILED)
-        b_pending = sum(1 for r in chunk if r.status == EmailLog.STATUS_PENDING)
-        sent_ats = [r.sent_at for r in chunk if r.sent_at]
-        batch_num = (i // BATCH_SIZE) + 1
-        first_id = chunk[0].id
-        last_id = chunk[-1].id
-        batches.append({
-            'num': batch_num,
-            'total': len(chunk),
-            'sent': b_sent,
-            'failed': b_failed,
-            'pending': b_pending,
-            'sent_at': max(sent_ats) if sent_ats else None,
-            'first_id': first_id,
-            'last_id': last_id,
-            'done': b_pending == 0,
-        })
+    batches = build_batches(campaign)
 
     return _no_store(render(request, 'legacy/admin_campaign_detail.html', {
         'legacy_user': admin_user,
@@ -395,9 +372,53 @@ def admin_campaign_detail(request: HttpRequest, campaign_id: int) -> HttpRespons
         'recent_errors': recent_errors,
         'audience_count': audience_count,
         'batches': batches,
+        'batch_size': BATCH_SIZE,
         'upload_message': upload_message,
         'upload_error': upload_error,
+        'schedule_message': schedule_message,
+        'schedule_error': schedule_error,
     }))
+
+
+def _parse_send_time(raw: str):
+    try:
+        return datetime.datetime.strptime(raw.strip(), '%H:%M').time()
+    except ValueError:
+        return None
+
+
+def admin_campaign_schedule(request: HttpRequest, campaign_id: int) -> HttpResponse:
+    """Сохранить настройки ежедневной автоотправки групп (время + чекбокс)."""
+    admin_user, deny = _require_admin(request)
+    if deny:
+        return deny
+
+    campaign = get_object_or_404(EmailCampaign, pk=campaign_id)
+    back = redirect(f'/legacy-admin/campaigns/{campaign_id}/')
+    if request.method != 'POST':
+        return back
+
+    send_time = _parse_send_time(request.POST.get('auto_send_time') or '')
+    if send_time is None:
+        request.session['campaign_schedule_error'] = 'Укажите время в формате ЧЧ:ММ'
+        return back
+
+    enabled = bool(request.POST.get('auto_send_enabled'))
+    if enabled and next_pending_batch(campaign) is None:
+        enabled = False
+        request.session['campaign_schedule_error'] = (
+            'Нет групп для отправки — автоотправка не включена. Загрузите список адресов.'
+        )
+    else:
+        request.session['campaign_schedule_message'] = (
+            f'Автоотправка {"включена" if enabled else "выключена"}, '
+            f'время {send_time.strftime("%H:%M")} (Москва).'
+        )
+
+    campaign.auto_send_enabled = enabled
+    campaign.auto_send_time = send_time
+    campaign.save(update_fields=['auto_send_enabled', 'auto_send_time'])
+    return back
 
 
 def admin_campaign_delete(request: HttpRequest, campaign_id: int) -> HttpResponse:
@@ -611,6 +632,28 @@ def admin_campaign_send_batch(request: HttpRequest, campaign_id: int) -> JsonRes
     if not first_id or not last_id:
         return JsonResponse({'ok': False, 'error': 'Missing batch IDs'})
 
+    try:
+        sent, failed = send_batch_range(campaign, first_id, last_id)
+    except OSError as e:
+        return JsonResponse({'ok': False, 'error': f'SMTP connect error: {e}'})
+
+    if sent == 0 and failed == 0:
+        return JsonResponse({'ok': True, 'sent': 0, 'failed': 0, 'message': 'Нет писем для отправки'})
+
+    return JsonResponse({
+        'ok': True,
+        'sent': sent,
+        'failed': failed,
+        'message': f'Отправлено {sent}, ошибок {failed}',
+    })
+
+
+def send_batch_range(campaign, first_id: int, last_id: int) -> tuple[int, int]:
+    """Отправить все pending-письма группы [first_id, last_id]; вернуть (sent, failed).
+
+    Поднимает ``OSError``, если не удалось открыть SMTP-соединение
+    (письма при этом остаются pending).
+    """
     logs = list(
         EmailLog.objects.filter(
             campaign=campaign,
@@ -619,9 +662,8 @@ def admin_campaign_send_batch(request: HttpRequest, campaign_id: int) -> JsonRes
             status=EmailLog.STATUS_PENDING,
         ).order_by('id')
     )
-
     if not logs:
-        return JsonResponse({'ok': True, 'sent': 0, 'failed': 0, 'message': 'Нет писем для отправки'})
+        return 0, 0
 
     _mark_campaign_sending(campaign)
 
@@ -629,14 +671,8 @@ def admin_campaign_send_batch(request: HttpRequest, campaign_id: int) -> JsonRes
         connection = get_connection()
         connection.open()
     except Exception as e:
-        return JsonResponse({'ok': False, 'error': f'SMTP connect error: {e}'})
+        raise OSError(str(e)) from e
 
     sent, failed = _send_campaign_batch(campaign, logs, connection)
     _update_campaign_counters(campaign)
-
-    return JsonResponse({
-        'ok': True,
-        'sent': sent,
-        'failed': failed,
-        'message': f'Отправлено {sent}, ошибок {failed}',
-    })
+    return sent, failed

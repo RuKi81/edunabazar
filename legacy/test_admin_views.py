@@ -9,6 +9,7 @@ Excel (валидация файла, извлечение адресов, де�
 батчевая отправка кампании (права, статусы кампании/логов, счётчики,
 обработка SMTP-ошибок).
 """
+import datetime
 import io
 from unittest import mock
 
@@ -374,3 +375,71 @@ class CampaignSendBatchTests(TestCase):
         self.campaign.refresh_from_db()
         self.assertEqual(self.campaign.status, EmailCampaign.STATUS_SENDING)
         self.assertEqual(self.campaign.started_at, started)
+
+
+@override_settings(CACHES=_DUMMY_CACHE)
+class CampaignScheduleTests(TestCase):
+
+    def setUp(self):
+        self.client_ = _admin_client()
+        self.campaign = _make_campaign()
+        self.url = f'/legacy-admin/campaigns/{self.campaign.pk}/schedule/'
+        self.detail_url = f'/legacy-admin/campaigns/{self.campaign.pk}/'
+
+    def test_default_time_is_0930(self):
+        self.assertEqual(self.campaign.auto_send_time, datetime.time(9, 30))
+        self.assertFalse(self.campaign.auto_send_enabled)
+
+    def test_anonymous_redirected_to_login(self):
+        resp = Client().post(self.url, {'auto_send_time': '10:00'})
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(resp['Location'].startswith('/login/'))
+
+    def test_get_redirects_without_changes(self):
+        resp = self.client_.get(self.url)
+        self.assertEqual(resp['Location'], self.detail_url)
+
+    def test_enable_with_pending_batch(self):
+        _make_logs(self.campaign, ['a@test.com'])
+        resp = self.client_.post(self.url, {'auto_send_time': '11:15', 'auto_send_enabled': '1'})
+        self.assertEqual(resp['Location'], self.detail_url)
+        self.campaign.refresh_from_db()
+        self.assertTrue(self.campaign.auto_send_enabled)
+        self.assertEqual(self.campaign.auto_send_time, datetime.time(11, 15))
+
+    def test_enable_without_pending_batches_is_refused(self):
+        _make_logs(self.campaign, ['a@test.com'], status=EmailLog.STATUS_SENT)
+        self.client_.post(self.url, {'auto_send_time': '09:30', 'auto_send_enabled': '1'})
+        self.campaign.refresh_from_db()
+        self.assertFalse(self.campaign.auto_send_enabled)
+        resp = self.client_.get(self.detail_url)
+        self.assertContains(resp, 'Нет групп для отправки')
+
+    def test_disable_keeps_time(self):
+        self.campaign.auto_send_enabled = True
+        self.campaign.save(update_fields=['auto_send_enabled'])
+        self.client_.post(self.url, {'auto_send_time': '08:00'})
+        self.campaign.refresh_from_db()
+        self.assertFalse(self.campaign.auto_send_enabled)
+        self.assertEqual(self.campaign.auto_send_time, datetime.time(8, 0))
+
+    def test_invalid_time_rejected(self):
+        self.client_.post(self.url, {'auto_send_time': 'noon', 'auto_send_enabled': '1'})
+        self.campaign.refresh_from_db()
+        self.assertFalse(self.campaign.auto_send_enabled)
+        self.assertEqual(self.campaign.auto_send_time, datetime.time(9, 30))
+        resp = self.client_.get(self.detail_url)
+        self.assertContains(resp, 'формате ЧЧ:ММ')
+
+    def test_detail_page_renders_schedule_and_hide_checkbox(self):
+        _make_logs(self.campaign, ['a@test.com'])
+        resp = self.client_.get(self.detail_url)
+        self.assertContains(resp, 'name="auto_send_time" value="09:30"')
+        self.assertContains(resp, 'Отправлять каждый день')
+        self.assertContains(resp, 'id="hide-sent-batches"')
+        self.assertContains(resp, 'Скрыть отправленные группы')
+
+    def test_done_batch_row_marked(self):
+        _make_logs(self.campaign, ['a@test.com'], status=EmailLog.STATUS_SENT)
+        resp = self.client_.get(self.detail_url)
+        self.assertContains(resp, 'batch-row--done')

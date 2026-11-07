@@ -13,6 +13,8 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 0 8 * * * cd /opt/edunabazar && docker compose -f docker-compose.prod.yml exec -T web python manage.py detect_district_ndvi_alerts >> /var/log/detect_vegetation_alerts.log 2>&1
 # Daily NDVI update digest to AgroSubscription subscribers at 12:00 Moscow (09:00 UTC)
 0 9 * * * cd /opt/edunabazar && docker compose -f docker-compose.prod.yml exec -T web python manage.py send_agrocosmos_updates >> /var/log/send_agrocosmos_updates.log 2>&1
+# Daily email campaign auto-send: every 5 min check campaigns whose send time (Moscow) has come and push one batch
+*/5 * * * * cd /opt/edunabazar && docker compose -f docker-compose.prod.yml exec -T web python manage.py send_scheduled_campaigns >> /var/log/send_scheduled_campaigns.log 2>&1
 # Cleanup stale PipelineRuns every 10 min
 */10 * * * * cd /opt/edunabazar && docker compose -f docker-compose.prod.yml exec -T web python manage.py cleanup_stale_runs --timeout-min 15 >> /var/log/cleanup_stale_runs.log 2>&1
 # Annual rollover: enrol every Region into MODIS monitoring on Jan 1 at 03:00 Moscow (00:00 UTC)

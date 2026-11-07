@@ -710,6 +710,7 @@ Scope по умолчанию ограничен районами, на кото
 | `10:00 / 07:00` | `check_raster_monitoring` | S2 + L8 оперативный NDVI |
 | `11:00 / 08:00` | `detect_district_ndvi_alerts` | District-level MODIS-алерты по подписанным районам, email подписчикам |
 | `12:00 / 09:00` | `send_agrocosmos_updates` | Ежедневный дайджест свежих NDVI |
+| `*/5 min` | `send_scheduled_campaigns` | Ежедневная автоотправка очередной группы email-кампаний (`EmailCampaign.auto_send_*`) |
 | `*/10 min` | `cleanup_stale_runs --timeout-min 15` | Закрытие зависших `PipelineRun` |
 | `01 Jan 03:00 MSK` | `ensure_all_regions_monitored` | Годовой roll-over `MonitoringTask` |
 | `07 Jan` | `recompute_ndvi_baselines` | Пересчёт `NdviBaseline` с учётом прошлого года |

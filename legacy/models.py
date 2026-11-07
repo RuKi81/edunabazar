@@ -1,3 +1,5 @@
+import datetime
+
 from django.contrib.gis.db import models
 
 # Create your models here.
@@ -251,6 +253,9 @@ class EmailCampaign(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     started_at = models.DateTimeField('Начало отправки', blank=True, null=True)
     finished_at = models.DateTimeField('Завершение', blank=True, null=True)
+    auto_send_enabled = models.BooleanField('Отправлять каждый день', default=False)
+    auto_send_time = models.TimeField('Время отправки (Москва)', default=datetime.time(9, 30))
+    auto_send_last_date = models.DateField('Дата последней автоотправки', blank=True, null=True)
 
     def __str__(self):
         return f'{self.name} ({self.get_status_display()})'
