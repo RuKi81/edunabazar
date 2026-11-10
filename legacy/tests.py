@@ -912,6 +912,13 @@ class SmokeTests(TestCase):
 class SupportChatWidgetTests(TestCase):
     """Виджет обращений: re:plain при заданном id, иначе кнопка со ссылками."""
 
+    def test_replain_enabled_by_default(self):
+        resp = Client().get('/about/')
+        self.assertContains(resp, 'widget.replain.cc/dist/client.js')
+        self.assertContains(resp, 'c71ddac1\\u002Dbb17\\u002D4521\\u002D98d8\\u002D6deb13905e93')
+        self.assertNotContains(resp, 'id="support-chat"')
+        self.assertNotContains(resp, 't.me/R_K_Telegram')
+
     @override_settings(REPLAIN_WIDGET_ID='', SUPPORT_TELEGRAM_URL='https://t.me/R_K_Telegram',
                        SUPPORT_MAX_URL='')
     def test_fallback_links_widget(self):
