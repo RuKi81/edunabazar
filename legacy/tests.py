@@ -908,6 +908,40 @@ class SmokeTests(TestCase):
         self.assertEqual(data['app'], 'ok')
 
 
+@override_settings(CACHES={'default': {'BACKEND': 'django.core.cache.backends.dummy.DummyCache'}})
+class SupportChatWidgetTests(TestCase):
+    """Виджет обращений: re:plain при заданном id, иначе кнопка со ссылками."""
+
+    @override_settings(REPLAIN_WIDGET_ID='', SUPPORT_TELEGRAM_URL='https://t.me/R_K_Telegram',
+                       SUPPORT_MAX_URL='')
+    def test_fallback_links_widget(self):
+        resp = Client().get('/about/')
+        self.assertContains(resp, 'id="support-chat"')
+        self.assertContains(resp, 'href="https://t.me/R_K_Telegram"')
+        self.assertNotContains(resp, 'Написать в MAX')
+        self.assertNotContains(resp, 'widget.replain.cc')
+
+    @override_settings(REPLAIN_WIDGET_ID='', SUPPORT_TELEGRAM_URL='https://t.me/R_K_Telegram',
+                       SUPPORT_MAX_URL='https://max.ru/u/support')
+    def test_max_link_shown_when_configured(self):
+        resp = Client().get('/about/')
+        self.assertContains(resp, 'href="https://max.ru/u/support"')
+        self.assertContains(resp, 'Написать в MAX')
+
+    @override_settings(REPLAIN_WIDGET_ID='abc123')
+    def test_replain_embed_when_id_set(self):
+        resp = Client().get('/about/')
+        self.assertContains(resp, 'widget.replain.cc/dist/client.js')
+        self.assertContains(resp, "window.replainSettings = { id: 'abc123' }")
+        self.assertNotContains(resp, 'id="support-chat"')
+
+    @override_settings(REPLAIN_WIDGET_ID='', SUPPORT_TELEGRAM_URL='', SUPPORT_MAX_URL='')
+    def test_nothing_rendered_when_unconfigured(self):
+        resp = Client().get('/about/')
+        self.assertNotContains(resp, 'id="support-chat"')
+        self.assertNotContains(resp, 'widget.replain.cc')
+
+
 class HomeCacheTests(TestCase):
     """Главная кэшируется целиком, поэтому кэш обязан быть только для
     анонимов: иначе залогиненный получал анонимный хедер (и наоборот)."""

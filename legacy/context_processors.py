@@ -29,20 +29,29 @@ def _can_open_gis(user) -> bool:
         return _is_admin(user)
 
 
+def _support_chat() -> dict:
+    return {
+        'replain_widget_id': getattr(settings, 'REPLAIN_WIDGET_ID', ''),
+        'support_telegram_url': getattr(settings, 'SUPPORT_TELEGRAM_URL', ''),
+        'support_max_url': getattr(settings, 'SUPPORT_MAX_URL', ''),
+    }
+
+
+def _context(user) -> dict:
+    return {
+        'legacy_user': user, 'is_admin_user': _is_admin(user),
+        'can_open_gis': _can_open_gis(user), 'year': datetime.now().year,
+        **_support_chat(),
+    }
+
+
 def legacy_user(request):
     if getattr(request, _CACHE_LOADED, False):
-        user = getattr(request, _CACHE_ATTR, None)
-        return {
-            'legacy_user': user, 'is_admin_user': _is_admin(user),
-            'can_open_gis': _can_open_gis(user), 'year': datetime.now().year,
-        }
+        return _context(getattr(request, _CACHE_ATTR, None))
 
     legacy_user_id = request.session.get('legacy_user_id')
     user = LegacyUser.objects.filter(pk=legacy_user_id).first() if legacy_user_id else None
 
     setattr(request, _CACHE_ATTR, user)
     setattr(request, _CACHE_LOADED, True)
-    return {
-        'legacy_user': user, 'is_admin_user': _is_admin(user),
-        'can_open_gis': _can_open_gis(user), 'year': datetime.now().year,
-    }
+    return _context(user)

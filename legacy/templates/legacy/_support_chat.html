@@ -1,0 +1,73 @@
+{% if replain_widget_id %}
+  {# re:plain live chat — операторы отвечают из Telegram (@ReplainBot) #}
+  <script>
+    window.replainSettings = { id: '{{ replain_widget_id|escapejs }}' };
+    (function(u){var s=document.createElement('script');s.async=true;s.src=u;
+    var x=document.getElementsByTagName('script')[0];x.parentNode.insertBefore(s,x);
+    })('https://widget.replain.cc/dist/client.js');
+  </script>
+{% elif support_telegram_url or support_max_url %}
+  <style>
+    .support-chat { position: fixed; right: 20px; bottom: 20px; z-index: 1200; font-family: inherit; }
+    .support-chat__toggle {
+      width: 56px; height: 56px; border-radius: 50%; border: 0; cursor: pointer;
+      background: #7fb500; color: #fff; box-shadow: 0 4px 14px rgba(0,0,0,.25);
+      display: flex; align-items: center; justify-content: center; transition: transform .15s;
+    }
+    .support-chat__toggle:hover { transform: scale(1.06); }
+    .support-chat__toggle svg { width: 28px; height: 28px; fill: #fff; }
+    .support-chat__panel {
+      display: none; position: absolute; right: 0; bottom: 68px; width: 260px;
+      background: #fff; border-radius: 12px; box-shadow: 0 8px 28px rgba(0,0,0,.22); overflow: hidden;
+    }
+    .support-chat.is-open .support-chat__panel { display: block; }
+    .support-chat__head { background: #7fb500; color: #fff; padding: 12px 16px; font-weight: 700; font-size: 14px; }
+    .support-chat__head small { display: block; font-weight: 400; opacity: .9; font-size: 12px; margin-top: 2px; }
+    .support-chat__link {
+      display: flex; align-items: center; gap: 12px; padding: 12px 16px; color: #333 !important;
+      text-decoration: none; font-size: 14px; border-top: 1px solid #eee;
+    }
+    .support-chat__link:hover { background: #f6f9ef; }
+    .support-chat__link svg { width: 26px; height: 26px; flex: 0 0 26px; }
+    .support-chat__link--tg svg { fill: #29a9eb; }
+    .support-chat__link--max svg { fill: #6c3cff; }
+    @media (max-width: 600px) { .support-chat { right: 12px; bottom: 12px; } }
+  </style>
+  <div class="support-chat" id="support-chat">
+    <div class="support-chat__panel" role="dialog" aria-label="Написать нам">
+      <div class="support-chat__head">Нужна помощь?<small>Напишите нам в мессенджер</small></div>
+      {% if support_telegram_url %}
+      <a class="support-chat__link support-chat__link--tg" href="{{ support_telegram_url }}" target="_blank" rel="noopener nofollow">
+        <svg viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zm5.23 6.71l-1.67 7.89c-.13.59-.47.73-.95.45l-2.63-1.94-1.27 1.22c-.14.14-.26.26-.53.26l.19-2.67 4.87-4.4c.21-.19-.05-.3-.33-.12l-6.02 3.79-2.59-.81c-.56-.18-.57-.56.12-.83l10.12-3.9c.47-.17.88.11.69.82z"/></svg>
+        Написать в Telegram
+      </a>
+      {% endif %}
+      {% if support_max_url %}
+      <a class="support-chat__link support-chat__link--max" href="{{ support_max_url }}" target="_blank" rel="noopener nofollow">
+        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.03 2 11c0 2.6 1.2 4.94 3.13 6.58L4 22l4.63-2.1c1.05.3 2.18.46 3.37.46 5.52 0 10-4.03 10-9.36S17.52 2 12 2zm-4 10.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm4 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm4 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z"/></svg>
+        Написать в MAX
+      </a>
+      {% endif %}
+    </div>
+    <button type="button" class="support-chat__toggle" id="support-chat-toggle" aria-label="Написать нам" aria-expanded="false">
+      <svg viewBox="0 0 24 24"><path d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/></svg>
+    </button>
+  </div>
+  <script>
+    (function () {
+      var root = document.getElementById('support-chat');
+      var btn = document.getElementById('support-chat-toggle');
+      if (!root || !btn) return;
+      btn.addEventListener('click', function () {
+        var open = root.classList.toggle('is-open');
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+      document.addEventListener('click', function (e) {
+        if (!root.contains(e.target)) {
+          root.classList.remove('is-open');
+          btn.setAttribute('aria-expanded', 'false');
+        }
+      });
+    })();
+  </script>
+{% endif %}
