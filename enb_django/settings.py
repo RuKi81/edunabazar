@@ -327,7 +327,7 @@ SITE_URL = os.getenv('SITE_URL', 'https://edunabazar.ru')
 # REPLAIN_WIDGET_ID: id сайта из re:plain (@ReplainBot → «Код для вставки»).
 # Если задан — подключается живой чат re:plain (операторы отвечают из
 # Telegram). Иначе показывается плавающая кнопка со ссылками на чаты.
-REPLAIN_WIDGET_ID = os.getenv('REPLAIN_WIDGET_ID', 'c71ddac1-bb17-4521-98d8-6deb13905e93').strip()
+REPLAIN_WIDGET_ID = os.getenv('REPLAIN_WIDGET_ID', 'fdb4b79f-ccdb-4b86-bcbd-419dfb5adcb9').strip()
 SUPPORT_TELEGRAM_URL = os.getenv('SUPPORT_TELEGRAM_URL', '').strip()
 SUPPORT_MAX_URL = os.getenv('SUPPORT_MAX_URL', '').strip()
 

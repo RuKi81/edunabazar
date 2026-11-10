@@ -915,7 +915,7 @@ class SupportChatWidgetTests(TestCase):
     def test_replain_enabled_by_default(self):
         resp = Client().get('/about/')
         self.assertContains(resp, 'widget.replain.cc/dist/client.js')
-        self.assertContains(resp, 'c71ddac1\\u002Dbb17\\u002D4521\\u002D98d8\\u002D6deb13905e93')
+        self.assertContains(resp, 'fdb4b79f\\u002Dccdb\\u002D4b86\\u002Dbcbd\\u002D419dfb5adcb9')
         self.assertNotContains(resp, 'id="support-chat"')
         self.assertNotContains(resp, 't.me/R_K_Telegram')
 
