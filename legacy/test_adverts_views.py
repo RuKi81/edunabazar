@@ -259,12 +259,28 @@ class AdvertDetailViewCountTests(TestCase):
         )
         cls.advert = _make_advert(cls.user, category)
 
-    def test_view_counted_once_per_ip_per_day(self):
+    def test_every_visit_counted_even_same_client(self):
         client = Client()
         client.get(f'/adverts/{self.advert.pk}/')
         client.get(f'/adverts/{self.advert.pk}/')
+        resp = client.get(f'/adverts/{self.advert.pk}/')
         self.assertEqual(
-            AdvertView.objects.filter(advert_id=self.advert.pk).count(), 1,
+            AdvertView.objects.filter(advert_id=self.advert.pk).count(), 3,
+        )
+        self.assertEqual(resp.context['view_count'], 3)
+
+    def test_bonus_migration_adds_10_views_per_advert(self):
+        from importlib import import_module
+        from django.apps import apps
+        mig = import_module('legacy.migrations.0021_advert_views_bonus')
+        before = AdvertView.objects.filter(advert_id=self.advert.pk).count()
+        mig.add_bonus_views(apps, None)
+        self.assertEqual(
+            AdvertView.objects.filter(advert_id=self.advert.pk).count(), before + 10,
+        )
+        mig.remove_bonus_views(apps, None)
+        self.assertEqual(
+            AdvertView.objects.filter(advert_id=self.advert.pk).count(), before,
         )
 
     def test_404_for_missing_advert(self):
