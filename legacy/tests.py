@@ -910,43 +910,45 @@ class SmokeTests(TestCase):
 
 @override_settings(CACHES={'default': {'BACKEND': 'django.core.cache.backends.dummy.DummyCache'}})
 class SupportChatWidgetTests(TestCase):
-    """Виджет обращений: re:plain при заданном id, иначе кнопка со ссылками."""
+    """Виджет обращений: провайдер выбирается SUPPORT_CHAT_PROVIDER."""
 
-    def test_replain_enabled_by_default(self):
+    def test_own_telegram_chat_by_default(self):
         resp = Client().get('/about/')
-        self.assertContains(resp, 'widget.replain.cc/dist/client.js')
-        self.assertContains(resp, 'fdb4b79f\\u002Dccdb\\u002D4b86\\u002Dbcbd\\u002D419dfb5adcb9')
+        self.assertContains(resp, 'id="sc"')
+        self.assertContains(resp, 'data-send="/api/support/send/"')
+        self.assertContains(resp, 'data-poll="/api/support/messages/"')
+        self.assertNotContains(resp, 'replain')
         self.assertNotContains(resp, 'id="support-chat"')
-        self.assertNotContains(resp, 't.me/R_K_Telegram')
 
-    @override_settings(REPLAIN_WIDGET_ID='', SUPPORT_TELEGRAM_URL='https://t.me/R_K_Telegram',
+    @override_settings(SUPPORT_CHAT_PROVIDER='replain')
+    def test_removed_replain_provider_renders_nothing(self):
+        resp = Client().get('/about/')
+        self.assertNotContains(resp, 'replain')
+        self.assertNotContains(resp, 'id="sc"')
+        self.assertNotContains(resp, 'id="support-chat"')
+
+    @override_settings(SUPPORT_CHAT_PROVIDER='links', SUPPORT_TELEGRAM_URL='https://t.me/R_K_Telegram',
                        SUPPORT_MAX_URL='')
-    def test_fallback_links_widget(self):
+    def test_links_widget(self):
         resp = Client().get('/about/')
         self.assertContains(resp, 'id="support-chat"')
         self.assertContains(resp, 'href="https://t.me/R_K_Telegram"')
         self.assertNotContains(resp, 'Написать в MAX')
-        self.assertNotContains(resp, 'widget.replain.cc')
+        self.assertNotContains(resp, 'replain')
 
-    @override_settings(REPLAIN_WIDGET_ID='', SUPPORT_TELEGRAM_URL='https://t.me/R_K_Telegram',
+    @override_settings(SUPPORT_CHAT_PROVIDER='links', SUPPORT_TELEGRAM_URL='https://t.me/R_K_Telegram',
                        SUPPORT_MAX_URL='https://max.ru/u/support')
     def test_max_link_shown_when_configured(self):
         resp = Client().get('/about/')
         self.assertContains(resp, 'href="https://max.ru/u/support"')
         self.assertContains(resp, 'Написать в MAX')
 
-    @override_settings(REPLAIN_WIDGET_ID='abc123')
-    def test_replain_embed_when_id_set(self):
+    @override_settings(SUPPORT_CHAT_PROVIDER='off')
+    def test_nothing_rendered_when_off(self):
         resp = Client().get('/about/')
-        self.assertContains(resp, 'widget.replain.cc/dist/client.js')
-        self.assertContains(resp, "window.replainSettings = { id: 'abc123' }")
+        self.assertNotContains(resp, 'id="sc"')
         self.assertNotContains(resp, 'id="support-chat"')
-
-    @override_settings(REPLAIN_WIDGET_ID='', SUPPORT_TELEGRAM_URL='', SUPPORT_MAX_URL='')
-    def test_nothing_rendered_when_unconfigured(self):
-        resp = Client().get('/about/')
-        self.assertNotContains(resp, 'id="support-chat"')
-        self.assertNotContains(resp, 'widget.replain.cc')
+        self.assertNotContains(resp, 'replain')
 
 
 class HomeCacheTests(TestCase):

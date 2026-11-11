@@ -324,10 +324,17 @@ TEST_RUNNER = 'legacy.test_runner.UnmanagedModelTestRunner'
 SITE_URL = os.getenv('SITE_URL', 'https://edunabazar.ru')
 
 # ── Support chat widget (legacy/templates/legacy/_support_chat.html) ───────
-# REPLAIN_WIDGET_ID: id сайта из re:plain (@ReplainBot → «Код для вставки»).
-# Если задан — подключается живой чат re:plain (операторы отвечают из
-# Telegram). Иначе показывается плавающая кнопка со ссылками на чаты.
-REPLAIN_WIDGET_ID = os.getenv('REPLAIN_WIDGET_ID', 'fdb4b79f-ccdb-4b86-bcbd-419dfb5adcb9').strip()
+# SUPPORT_CHAT_PROVIDER:
+#   telegram — собственный чат (legacy/support_chat.py): виджет на сайте,
+#              сообщения уходят в Telegram-бота, ответы Reply'ем из Telegram
+#              возвращаются посетителю через webhook. Нужны TG_SUPPORT_*.
+#   links    — плавающая кнопка со ссылками SUPPORT_TELEGRAM_URL / SUPPORT_MAX_URL.
+#   off      — ничего не показывать.
+SUPPORT_CHAT_PROVIDER = os.getenv('SUPPORT_CHAT_PROVIDER', 'telegram').strip().lower()
+TG_SUPPORT_BOT_TOKEN = os.getenv('TG_SUPPORT_BOT_TOKEN', '').strip()
+TG_SUPPORT_CHAT_ID = os.getenv('TG_SUPPORT_CHAT_ID', '').strip()
+# Секрет в URL webhook'а; если пуст — выводится из SECRET_KEY (см. support_chat.webhook_secret).
+TG_SUPPORT_WEBHOOK_SECRET = os.getenv('TG_SUPPORT_WEBHOOK_SECRET', '').strip()
 SUPPORT_TELEGRAM_URL = os.getenv('SUPPORT_TELEGRAM_URL', '').strip()
 SUPPORT_MAX_URL = os.getenv('SUPPORT_MAX_URL', '').strip()
 

@@ -88,3 +88,9 @@ from .admin_views import (                                      # noqa: F401
     admin_campaign_upload_excel, admin_campaign_send_batch,
     admin_campaign_schedule,
 )
+
+# ── support chat ──────────────────────────────────────────────────────────
+from .support_chat import (                                     # noqa: F401
+    support_chat_send, support_chat_messages, support_chat_telegram_webhook,
+    admin_support_threads, admin_support_thread,
+)

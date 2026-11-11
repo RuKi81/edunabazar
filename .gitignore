@@ -42,6 +42,7 @@ scripts/*.json
 import_data/
 _tmp_*
 _shp_preview.txt
+_pdf_out/
 
 # Local-only data / one-off scripts (never commit personal data)
 *.xlsx

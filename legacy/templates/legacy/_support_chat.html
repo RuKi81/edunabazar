@@ -1,12 +1,170 @@
-{% if replain_widget_id %}
-  {# re:plain live chat — операторы отвечают из Telegram (@ReplainBot) #}
+{% if support_chat_provider == 'telegram' %}
+  {# Собственный чат: сообщения → /api/support/send/ → Telegram-бот; ответы polling'ом из /api/support/messages/ #}
+  <style>
+    .sc { position: fixed; right: 20px; bottom: 20px; z-index: 1200; font-family: inherit; }
+    .sc__toggle {
+      width: 56px; height: 56px; border-radius: 50%; border: 0; cursor: pointer; position: relative;
+      background: #7fb500; color: #fff; box-shadow: 0 4px 14px rgba(0,0,0,.25);
+      display: flex; align-items: center; justify-content: center; transition: transform .15s;
+    }
+    .sc__toggle:hover { transform: scale(1.06); }
+    .sc__toggle svg { width: 28px; height: 28px; fill: #fff; }
+    .sc__badge {
+      display: none; position: absolute; top: -2px; right: -2px; min-width: 20px; height: 20px; padding: 0 5px;
+      border-radius: 10px; background: #e53935; color: #fff; font-size: 11px; font-weight: 700; line-height: 20px; text-align: center;
+    }
+    .sc.has-unread .sc__badge { display: block; }
+    .sc__panel {
+      display: none; position: absolute; right: 0; bottom: 68px; width: 340px; max-width: calc(100vw - 24px);
+      background: #fff; border-radius: 12px; box-shadow: 0 8px 28px rgba(0,0,0,.22); overflow: hidden; flex-direction: column;
+    }
+    .sc.is-open .sc__panel { display: flex; }
+    .sc__head { background: #7fb500; color: #fff; padding: 12px 16px; font-weight: 700; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
+    .sc__head small { display: block; font-weight: 400; opacity: .9; font-size: 12px; margin-top: 2px; }
+    .sc__close { background: none; border: 0; color: #fff; font-size: 20px; cursor: pointer; line-height: 1; padding: 0 4px; }
+    .sc__log { height: 300px; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; background: #fafafa; }
+    .sc__hint { color: #888; font-size: 12px; text-align: center; margin: auto 0; }
+    .sc__msg { max-width: 82%; padding: 8px 12px; border-radius: 12px; font-size: 13px; line-height: 1.35; white-space: pre-wrap; word-break: break-word; }
+    .sc__msg--in { align-self: flex-end; background: #7fb500; color: #fff; border-bottom-right-radius: 4px; }
+    .sc__msg--out { align-self: flex-start; background: #fff; color: #333; border: 1px solid #e6e6e6; border-bottom-left-radius: 4px; }
+    .sc__msg time { display: block; font-size: 10px; opacity: .7; margin-top: 3px; text-align: right; }
+    .sc__form { display: flex; gap: 6px; padding: 10px; border-top: 1px solid #eee; background: #fff; }
+    .sc__form textarea {
+      flex: 1; resize: none; height: 40px; max-height: 120px; border: 1px solid #ccc; border-radius: 8px; padding: 8px 10px;
+      font-size: 13px; font-family: inherit; margin: 0; box-sizing: border-box;
+    }
+    .sc__form textarea:focus { outline: none; border-color: #7fb500; box-shadow: none; }
+    .sc__send { border: 0; background: #7fb500; color: #fff; border-radius: 8px; width: 44px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+    .sc__send:disabled { opacity: .5; cursor: default; }
+    .sc__send svg { width: 20px; height: 20px; fill: #fff; }
+    .sc__err { color: #b00020; font-size: 12px; padding: 0 12px 8px; display: none; background: #fff; }
+    @media (max-width: 600px) { .sc { right: 12px; bottom: 12px; } .sc__log { height: 50vh; } }
+  </style>
+  <div class="sc" id="sc" data-send="{% url 'support_chat_send' %}" data-poll="{% url 'support_chat_messages' %}">
+    <div class="sc__panel" role="dialog" aria-label="Чат с поддержкой">
+      <div class="sc__head">
+        <div>Поддержка «Еду на базар»<small>Ответим здесь — не закрывайте вкладку или загляните позже</small></div>
+        <button type="button" class="sc__close" id="sc-close" aria-label="Закрыть">×</button>
+      </div>
+      <div class="sc__log" id="sc-log"><div class="sc__hint" id="sc-hint">Напишите вопрос — мы ответим в этом окне.</div></div>
+      <div class="sc__err" id="sc-err"></div>
+      <form class="sc__form" id="sc-form">
+        <textarea id="sc-text" maxlength="2000" placeholder="Ваше сообщение…" aria-label="Сообщение"></textarea>
+        <button type="submit" class="sc__send" id="sc-send" aria-label="Отправить">
+          <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+        </button>
+      </form>
+    </div>
+    <button type="button" class="sc__toggle" id="sc-toggle" aria-label="Чат с поддержкой" aria-expanded="false">
+      <svg viewBox="0 0 24 24"><path d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/></svg>
+      <span class="sc__badge" id="sc-badge"></span>
+    </button>
+  </div>
   <script>
-    window.replainSettings = { id: '{{ replain_widget_id|escapejs }}' };
-    (function(u){var s=document.createElement('script');s.async=true;s.src=u;
-    var x=document.getElementsByTagName('script')[0];x.parentNode.insertBefore(s,x);
-    })('https://widget.replain.cc/dist/client.js');
+  (function () {
+    var root = document.getElementById('sc');
+    if (!root) return;
+    var sendUrl = root.getAttribute('data-send'), pollUrl = root.getAttribute('data-poll');
+    var toggle = document.getElementById('sc-toggle'), closeBtn = document.getElementById('sc-close');
+    var log = document.getElementById('sc-log'), hint = document.getElementById('sc-hint');
+    var form = document.getElementById('sc-form'), ta = document.getElementById('sc-text');
+    var sendBtn = document.getElementById('sc-send'), err = document.getElementById('sc-err'), badge = document.getElementById('sc-badge');
+    var lastId = 0, unread = 0, timer = null, started = false;
+    var seenKey = 'sc_seen_id';
+    var seenId = 0;
+    try { seenId = parseInt(localStorage.getItem(seenKey) || '0', 10) || 0; } catch (e) {}
+
+    function isOpen() { return root.classList.contains('is-open'); }
+    function setUnread(n) {
+      unread = n;
+      badge.textContent = n > 9 ? '9+' : String(n);
+      root.classList.toggle('has-unread', n > 0);
+    }
+    function markSeen() {
+      if (lastId > seenId) { seenId = lastId; try { localStorage.setItem(seenKey, String(seenId)); } catch (e) {} }
+      setUnread(0);
+    }
+    function render(m) {
+      if (hint) { hint.remove(); hint = null; }
+      var el = document.createElement('div');
+      el.className = 'sc__msg sc__msg--' + m.dir;
+      el.textContent = m.text;
+      var t = document.createElement('time');
+      t.textContent = m.at + (m.dir === 'out' ? ' · оператор' : '');
+      el.appendChild(t);
+      log.appendChild(el);
+      log.scrollTop = log.scrollHeight;
+    }
+    function apply(msgs) {
+      var fresh = 0;
+      msgs.forEach(function (m) {
+        if (m.id <= lastId) return;
+        render(m);
+        lastId = m.id;
+        if (m.dir === 'out' && m.id > seenId) fresh++;
+      });
+      if (isOpen()) markSeen(); else if (fresh) setUnread(unread + fresh);
+    }
+    function poll() {
+      fetch(pollUrl + '?after=' + lastId, { credentials: 'same-origin', cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) { if (d && d.messages) apply(d.messages); })
+        .catch(function () {});
+    }
+    function schedule() {
+      clearInterval(timer);
+      timer = setInterval(poll, isOpen() ? 4000 : 30000);
+    }
+    function open() {
+      root.classList.add('is-open');
+      toggle.setAttribute('aria-expanded', 'true');
+      markSeen();
+      poll();
+      schedule();
+      setTimeout(function () { ta.focus(); }, 50);
+    }
+    function close() {
+      root.classList.remove('is-open');
+      toggle.setAttribute('aria-expanded', 'false');
+      schedule();
+    }
+    function showErr(t) { err.textContent = t; err.style.display = t ? 'block' : 'none'; }
+    function send(e) {
+      e.preventDefault();
+      var text = ta.value.trim();
+      if (!text) return;
+      sendBtn.disabled = true;
+      showErr('');
+      fetch(sendUrl, {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: text, page: location.href })
+      })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        sendBtn.disabled = false;
+        if (res.ok && res.d.ok) { ta.value = ''; apply([res.d.message]); ta.focus(); return; }
+        var code = res.d && res.d.error;
+        showErr(code === 'rate_limited' ? 'Слишком много сообщений, подождите немного.'
+              : code === 'too_long' ? 'Сообщение слишком длинное.' : 'Не удалось отправить, попробуйте ещё раз.');
+      })
+      .catch(function () { sendBtn.disabled = false; showErr('Ошибка сети, попробуйте ещё раз.'); });
+    }
+
+    toggle.addEventListener('click', function () { isOpen() ? close() : open(); });
+    closeBtn.addEventListener('click', close);
+    form.addEventListener('submit', send);
+    ta.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.dispatchEvent(new Event('submit', { cancelable: true })); }
+    });
+    document.addEventListener('visibilitychange', function () { if (!document.hidden && started) poll(); });
+
+    started = true;
+    poll();
+    schedule();
+  })();
   </script>
-{% elif support_telegram_url or support_max_url %}
+{% elif support_chat_provider == 'links' and support_telegram_url or support_chat_provider == 'links' and support_max_url %}
   <style>
     .support-chat { position: fixed; right: 20px; bottom: 20px; z-index: 1200; font-family: inherit; }
     .support-chat__toggle {

@@ -1,0 +1,46 @@
+{% extends 'legacy/base.html' %}
+
+{% block title %}Админка — Обращение #{{ thread.pk }}{% endblock %}
+
+{% block content %}
+  <div class="row" style="margin-bottom:0;">
+    <div class="col s12 l8 offset-l2">
+      <div style="margin: 10px 0 6px 0;">
+        <a href="{% url 'admin_support_threads' %}" style="color:#0090b6;">← Все обращения</a>
+      </div>
+
+      <h5 style="margin: 6px 0 4px 0; color:#7fb500; font-weight: 800;">Обращение #{{ thread.pk }}</h5>
+      <div style="font-size:12px; color:#777; margin-bottom:14px;">
+        {{ thread.visitor_label }}
+        {% if thread.user %} · <a href="{% url 'admin_user_detail' thread.user.pk %}" style="color:#0090b6;">{{ thread.user.username }}</a> · {{ thread.user.email }}{% endif %}
+        {% if thread.page_url %} · <a href="{{ thread.page_url }}" target="_blank" rel="noopener" style="color:#0090b6;">страница</a>{% endif %}
+        {% if thread.ip_address %} · IP {{ thread.ip_address }}{% endif %}
+        · создано {{ thread.created_at|date:"d.m.Y H:i" }}
+      </div>
+
+      <div class="card" style="box-shadow:none; border:1px solid #e6e6e6;">
+        <div class="card-content" style="padding:16px; display:flex; flex-direction:column; gap:8px;">
+          {% for m in messages_list %}
+            <div style="display:flex; {% if m.direction == 'out' %}justify-content:flex-end;{% endif %}">
+              <div style="max-width:75%; padding:8px 12px; border-radius:12px; font-size:13px; white-space:pre-wrap; word-break:break-word;
+                          {% if m.direction == 'out' %}background:#7fb500; color:#fff;{% else %}background:#f1f1f1; color:#333;{% endif %}">
+                {{ m.text }}
+                <div style="font-size:10px; opacity:.7; margin-top:4px; text-align:right;">{{ m.created_at|date:"d.m.Y H:i" }}{% if m.direction == 'out' %} · оператор{% endif %}</div>
+              </div>
+            </div>
+          {% empty %}
+            <div style="color:#777;">Сообщений нет.</div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <form method="post" style="margin-top:12px;">
+        {% csrf_token %}
+        <textarea name="text" rows="3" required placeholder="Ответ посетителю…"
+                  style="width:100%; border:1px solid #ccc; border-radius:4px; padding:8px; font-size:14px; box-sizing:border-box;"></textarea>
+        <button class="btn" type="submit" style="background:#7fb500; box-shadow:none; border-radius:0; margin-top:8px;">Отправить ответ</button>
+        <span style="font-size:12px; color:#999; margin-left:10px;">Ответ появится у посетителя в окне чата на сайте.</span>
+      </form>
+    </div>
+  </div>
+{% endblock %}

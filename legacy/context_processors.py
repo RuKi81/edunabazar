@@ -31,7 +31,7 @@ def _can_open_gis(user) -> bool:
 
 def _support_chat() -> dict:
     return {
-        'replain_widget_id': getattr(settings, 'REPLAIN_WIDGET_ID', ''),
+        'support_chat_provider': getattr(settings, 'SUPPORT_CHAT_PROVIDER', 'telegram'),
         'support_telegram_url': getattr(settings, 'SUPPORT_TELEGRAM_URL', ''),
         'support_max_url': getattr(settings, 'SUPPORT_MAX_URL', ''),
     }

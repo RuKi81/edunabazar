@@ -338,6 +338,68 @@ class AdvertView(models.Model):
         ]
 
 
+class SupportThread(models.Model):
+    """Диалог посетителя с поддержкой (виджет на сайте ↔ Telegram-бот)."""
+
+    visitor_key = models.CharField(max_length=64, unique=True)
+    user = models.ForeignKey('LegacyUser', on_delete=models.SET_NULL, null=True, blank=True,
+                             related_name='support_threads')
+    page_url = models.CharField(max_length=500, blank=True, default='')
+    user_agent = models.CharField(max_length=300, blank=True, default='')
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    last_visitor_message_at = models.DateTimeField(null=True, blank=True)
+    last_operator_message_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'support_thread'
+        ordering = ['-updated_at']
+
+    def __str__(self):
+        return f'Обращение #{self.pk}'
+
+    @property
+    def visitor_label(self) -> str:
+        if self.user_id and self.user:
+            return self.user.name or self.user.username or f'user#{self.user_id}'
+        return f'Гость {self.visitor_key[:6]}'
+
+    @property
+    def awaiting_reply(self) -> bool:
+        if not self.last_visitor_message_at:
+            return False
+        if not self.last_operator_message_at:
+            return True
+        return self.last_visitor_message_at > self.last_operator_message_at
+
+
+class SupportMessage(models.Model):
+    DIRECTION_IN = 'in'
+    DIRECTION_OUT = 'out'
+    DIRECTION_CHOICES = [
+        (DIRECTION_IN, 'От посетителя'),
+        (DIRECTION_OUT, 'От оператора'),
+    ]
+
+    thread = models.ForeignKey(SupportThread, on_delete=models.CASCADE, related_name='messages')
+    direction = models.CharField(max_length=3, choices=DIRECTION_CHOICES)
+    text = models.TextField()
+    tg_message_id = models.BigIntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'support_message'
+        ordering = ['id']
+        indexes = [
+            models.Index(fields=['thread', 'id']),
+            models.Index(fields=['tg_message_id']),
+        ]
+
+    def __str__(self):
+        return f'#{self.thread_id} {self.direction}: {self.text[:40]}'
+
+
 class SocialAccount(models.Model):
     PROVIDER_VK = 'vkid'
     PROVIDER_CHOICES = [
