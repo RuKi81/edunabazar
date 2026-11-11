@@ -326,8 +326,9 @@ SITE_URL = os.getenv('SITE_URL', 'https://edunabazar.ru')
 # ── Support chat widget (legacy/templates/legacy/_support_chat.html) ───────
 # SUPPORT_CHAT_PROVIDER:
 #   telegram — собственный чат (legacy/support_chat.py): виджет на сайте,
-#              сообщения уходят в Telegram-бота, ответы Reply'ем из Telegram
-#              возвращаются посетителю через webhook. Нужны TG_SUPPORT_*.
+#              сообщения уходят операторам в мессенджер-бота (MAX и/или Telegram),
+#              ответы Reply'ем возвращаются посетителю через webhook.
+#              Нужны MAX_SUPPORT_* или TG_SUPPORT_* (api.telegram.org с VM1 недоступен).
 #   links    — плавающая кнопка со ссылками SUPPORT_TELEGRAM_URL / SUPPORT_MAX_URL.
 #   off      — ничего не показывать.
 SUPPORT_CHAT_PROVIDER = os.getenv('SUPPORT_CHAT_PROVIDER', 'telegram').strip().lower()
@@ -335,6 +336,11 @@ TG_SUPPORT_BOT_TOKEN = os.getenv('TG_SUPPORT_BOT_TOKEN', '').strip()
 TG_SUPPORT_CHAT_ID = os.getenv('TG_SUPPORT_CHAT_ID', '').strip()
 # Секрет в URL webhook'а; если пуст — выводится из SECRET_KEY (см. support_chat.webhook_secret).
 TG_SUPPORT_WEBHOOK_SECRET = os.getenv('TG_SUPPORT_WEBHOOK_SECRET', '').strip()
+# MAX (dev.max.ru): токен бота из business.max.ru → Чат-боты; chat_id группы/диалога операторов
+# (подсказывает manage.py max_support_setup). API за сертификатом Минцифры — см. deploy/certs.
+MAX_SUPPORT_BOT_TOKEN = os.getenv('MAX_SUPPORT_BOT_TOKEN', '').strip()
+MAX_SUPPORT_CHAT_ID = os.getenv('MAX_SUPPORT_CHAT_ID', '').strip()
+MAX_SUPPORT_WEBHOOK_SECRET = os.getenv('MAX_SUPPORT_WEBHOOK_SECRET', '').strip()
 SUPPORT_TELEGRAM_URL = os.getenv('SUPPORT_TELEGRAM_URL', '').strip()
 SUPPORT_MAX_URL = os.getenv('SUPPORT_MAX_URL', '').strip()
 

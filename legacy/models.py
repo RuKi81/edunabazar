@@ -339,7 +339,7 @@ class AdvertView(models.Model):
 
 
 class SupportThread(models.Model):
-    """Диалог посетителя с поддержкой (виджет на сайте ↔ Telegram-бот)."""
+    """Диалог посетителя с поддержкой (виджет на сайте ↔ бот в MAX/Telegram)."""
 
     visitor_key = models.CharField(max_length=64, unique=True)
     user = models.ForeignKey('LegacyUser', on_delete=models.SET_NULL, null=True, blank=True,
@@ -386,6 +386,7 @@ class SupportMessage(models.Model):
     direction = models.CharField(max_length=3, choices=DIRECTION_CHOICES)
     text = models.TextField()
     tg_message_id = models.BigIntegerField(null=True, blank=True)
+    max_message_id = models.CharField(max_length=64, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -394,6 +395,7 @@ class SupportMessage(models.Model):
         indexes = [
             models.Index(fields=['thread', 'id']),
             models.Index(fields=['tg_message_id']),
+            models.Index(fields=['max_message_id']),
         ]
 
     def __str__(self):

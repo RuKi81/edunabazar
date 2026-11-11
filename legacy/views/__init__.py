@@ -92,5 +92,5 @@ from .admin_views import (                                      # noqa: F401
 # ── support chat ──────────────────────────────────────────────────────────
 from .support_chat import (                                     # noqa: F401
     support_chat_send, support_chat_messages, support_chat_telegram_webhook,
-    admin_support_threads, admin_support_thread,
+    support_chat_max_webhook, admin_support_threads, admin_support_thread,
 )

@@ -11,9 +11,9 @@
 
       <h5 style="margin: 6px 0 14px 0; color:#7fb500; font-weight: 800;">Обращения в поддержку ({{ total_count }})</h5>
 
-      {% if not tg_configured %}
+      {% if not messenger_configured %}
         <div style="background:#fff3e0; color:#e65100; padding:10px 14px; border-radius:4px; margin-bottom:14px; font-size:13px;">
-          Telegram-бот не настроен (<code>TG_SUPPORT_BOT_TOKEN</code> / <code>TG_SUPPORT_CHAT_ID</code> в .env).
+          Бот для операторов не настроен (<code>MAX_SUPPORT_BOT_TOKEN</code> / <code>MAX_SUPPORT_CHAT_ID</code> или <code>TG_SUPPORT_*</code> в .env).
           Сообщения посетителей сохраняются здесь; отвечать можно из этой админки.
         </div>
       {% endif %}

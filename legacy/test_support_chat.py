@@ -1,4 +1,4 @@
-"""Тесты собственного чата поддержки (виджет ↔ Telegram-бот)."""
+"""Тесты собственного чата поддержки (виджет ↔ бот MAX / Telegram)."""
 import json
 from unittest import mock
 
@@ -14,6 +14,8 @@ _DUMMY_CACHE = {
     'default': {'BACKEND': 'django.core.cache.backends.dummy.DummyCache'},
 }
 TG = dict(TG_SUPPORT_BOT_TOKEN='123:ABC', TG_SUPPORT_CHAT_ID='-100500', SITE_URL='https://edunabazar.ru')
+MAX = dict(MAX_SUPPORT_BOT_TOKEN='max-token', MAX_SUPPORT_CHAT_ID='-7001', SITE_URL='https://edunabazar.ru',
+           TG_SUPPORT_BOT_TOKEN='', TG_SUPPORT_CHAT_ID='')
 
 
 def _make_user(username, **overrides):
@@ -249,6 +251,210 @@ class AdminSupportTests(TestCase):
     def test_admin_nav_has_support_link(self):
         resp = self.client_.get('/legacy-admin/')
         self.assertContains(resp, '/legacy-admin/support/')
+
+
+@override_settings(CACHES=_DUMMY_CACHE, **MAX)
+class MaxNotifyTests(TestCase):
+
+    def test_visitor_message_forwarded_to_max_and_mid_saved(self):
+        client = Client()
+        with mock.patch('legacy.support_chat.max_call',
+                        return_value={'message': {'body': {'mid': 'mid.123'}}}) as mx, \
+                mock.patch('legacy.support_chat.tg_call') as tg:
+            resp = _send(client, 'Здравствуйте!')
+        self.assertEqual(resp.status_code, 200)
+        tg.assert_not_called()
+        mx.assert_called_once()
+        args, kwargs = mx.call_args
+        self.assertEqual(args, ('POST', '/messages'))
+        self.assertEqual(kwargs['params'], {'chat_id': '-7001'})
+        thread = SupportThread.objects.get()
+        self.assertIn(f'Обращение #{thread.id}', kwargs['json']['text'])
+        self.assertIn('Здравствуйте!', kwargs['json']['text'])
+        msg = thread.messages.get()
+        self.assertEqual(msg.max_message_id, 'mid.123')
+        self.assertIsNone(msg.tg_message_id)
+
+    @override_settings(TG_SUPPORT_BOT_TOKEN='123:ABC', TG_SUPPORT_CHAT_ID='-100500')
+    def test_both_transports_notified(self):
+        with mock.patch('legacy.support_chat.max_call',
+                        return_value={'message': {'body': {'mid': 'm1'}}}) as mx, \
+                _tg_ok(555) as tg:
+            _send(Client(), 'оба')
+        mx.assert_called_once()
+        tg.assert_called_once()
+        msg = SupportMessage.objects.get()
+        self.assertEqual((msg.max_message_id, msg.tg_message_id), ('m1', 555))
+
+    def test_max_api_failure_keeps_message(self):
+        with mock.patch('legacy.support_chat.max_call', return_value=None):
+            resp = _send(Client(), 'без связи')
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNone(SupportMessage.objects.get().max_message_id)
+
+
+@override_settings(CACHES=_DUMMY_CACHE, **MAX)
+class MaxWebhookTests(TestCase):
+
+    def setUp(self):
+        self.thread = SupportThread.objects.create(visitor_key='k1')
+        self.incoming = SupportMessage.objects.create(
+            thread=self.thread, direction=SupportMessage.DIRECTION_IN, text='вопрос', max_message_id='mid.in',
+        )
+        self.url = svc.max_webhook_path()
+
+    def _update(self, text, reply_mid=None, reply_text='', chat_id='-7001', mid='mid.out',
+                update_type='message_created', is_bot=False):
+        message = {
+            'sender': {'user_id': 1, 'name': 'Оператор', 'is_bot': is_bot},
+            'recipient': {'chat_id': int(chat_id), 'chat_type': 'chat'},
+            'body': {'mid': mid, 'seq': 1, 'text': text},
+        }
+        if reply_mid is not None or reply_text:
+            message['link'] = {'type': 'reply', 'message': {'mid': reply_mid, 'text': reply_text}}
+        return {'update_type': update_type, 'timestamp': 0, 'message': message}
+
+    def _post(self, update, url=None, **extra):
+        return Client().post(url or self.url, data=json.dumps(update), content_type='application/json', **extra)
+
+    def test_reply_to_forwarded_message_creates_operator_message(self):
+        with mock.patch('legacy.support_chat.max_call') as mx:
+            resp = self._post(self._update('Ответ оператора', reply_mid='mid.in'))
+        self.assertEqual(resp.status_code, 200)
+        out = self.thread.messages.get(direction=SupportMessage.DIRECTION_OUT)
+        self.assertEqual(out.text, 'Ответ оператора')
+        self.assertEqual(out.max_message_id, 'mid.out')
+        self.thread.refresh_from_db()
+        self.assertFalse(self.thread.awaiting_reply)
+        mx.assert_not_called()
+
+    def test_reply_resolved_by_thread_number_in_quoted_text(self):
+        with mock.patch('legacy.support_chat.max_call'):
+            self._post(self._update('через номер', reply_mid='unknown',
+                                    reply_text=f'💬 Обращение #{self.thread.id} — Гость'))
+        self.assertTrue(self.thread.messages.filter(direction='out', text='через номер').exists())
+
+    def test_non_reply_message_gets_hint(self):
+        with mock.patch('legacy.support_chat.max_call') as mx:
+            self._post(self._update('просто текст'))
+        self.assertEqual(SupportMessage.objects.filter(direction='out').count(), 0)
+        mx.assert_called_once()
+        args, kwargs = mx.call_args
+        self.assertEqual(args, ('POST', '/messages'))
+        self.assertIn('Reply', kwargs['json']['text'])
+        self.assertEqual(kwargs['json']['link'], {'type': 'reply', 'mid': 'mid.out'})
+
+    def test_foreign_chat_ignored(self):
+        with mock.patch('legacy.support_chat.max_call') as mx:
+            self._post(self._update('чужой', reply_mid='mid.in', chat_id='42'))
+        self.assertEqual(SupportMessage.objects.filter(direction='out').count(), 0)
+        mx.assert_not_called()
+
+    def test_bot_messages_and_other_update_types_ignored(self):
+        with mock.patch('legacy.support_chat.max_call') as mx:
+            self._post(self._update('эхо', reply_mid='mid.in', is_bot=True))
+            self._post(self._update('старт', reply_mid='mid.in', update_type='bot_started'))
+        self.assertEqual(SupportMessage.objects.filter(direction='out').count(), 0)
+        mx.assert_not_called()
+
+    def test_duplicate_update_ignored(self):
+        upd = self._update('дубль', reply_mid='mid.in')
+        with mock.patch('legacy.support_chat.max_call'):
+            self._post(upd)
+            self._post(upd)
+        self.assertEqual(SupportMessage.objects.filter(direction='out').count(), 1)
+
+    def test_wrong_secret_404(self):
+        resp = self._post(self._update('x'), url='/api/support/max/wrong/')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_wrong_secret_header_404(self):
+        resp = self._post(self._update('x', reply_mid='mid.in'), HTTP_X_MAX_BOT_API_SECRET='bad')
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(SupportMessage.objects.filter(direction='out').count(), 0)
+
+    def test_correct_secret_header_accepted(self):
+        with mock.patch('legacy.support_chat.max_call'):
+            resp = self._post(self._update('x', reply_mid='mid.in'),
+                              HTTP_X_MAX_BOT_API_SECRET=svc.max_webhook_secret())
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(SupportMessage.objects.filter(direction='out').count(), 1)
+
+    def test_secret_derived_from_secret_key_when_not_set(self):
+        with override_settings(MAX_SUPPORT_WEBHOOK_SECRET=''):
+            derived = svc.max_webhook_secret()
+        with override_settings(MAX_SUPPORT_WEBHOOK_SECRET='explicit'):
+            self.assertEqual(svc.max_webhook_secret(), 'explicit')
+        self.assertEqual(len(derived), 40)
+        self.assertNotEqual(derived, svc.webhook_secret())
+
+
+@override_settings(**MAX)
+class MaxSetupCommandTests(TestCase):
+
+    def test_subscribes_webhook_with_site_url_and_secret(self):
+        calls = []
+
+        def fake(method, path, **kw):
+            calls.append((method, path, kw))
+            if path == '/me':
+                return {'username': 'enb_support_bot', 'name': 'Поддержка', 'user_id': 1}
+            if path == '/subscriptions' and method == 'GET':
+                return {'subscriptions': [{'url': 'x', 'update_types': ['message_created']}]}
+            return {'success': True}
+
+        with mock.patch('legacy.support_chat.max_call', side_effect=fake):
+            call_command('max_support_setup', verbosity=0)
+        post = [c for c in calls if c[0] == 'POST' and c[1] == '/subscriptions']
+        self.assertEqual(len(post), 1)
+        body = post[0][2]['json']
+        self.assertEqual(body['url'], 'https://edunabazar.ru' + svc.max_webhook_path())
+        self.assertEqual(body['secret'], svc.max_webhook_secret())
+        self.assertEqual(body['update_types'], ['message_created'])
+
+    @override_settings(MAX_SUPPORT_CHAT_ID='')
+    def test_lists_chats_when_chat_id_missing(self):
+        import io
+
+        def fake(method, path, **kw):
+            if path == '/me':
+                return {'username': 'bot', 'user_id': 1}
+            if path == '/updates':
+                return {'updates': [
+                    {'update_type': 'bot_added', 'chat_id': -42, 'user': {'name': 'Админ'}},
+                    {'update_type': 'message_created', 'message': {
+                        'sender': {'name': 'Иван'}, 'recipient': {'chat_id': 77, 'chat_type': 'dialog'},
+                        'body': {'text': 'hi'}}},
+                ]}
+            return {}
+
+        out = io.StringIO()
+        with mock.patch('legacy.support_chat.max_call', side_effect=fake) as mx:
+            call_command('max_support_setup', stdout=out)
+        self.assertIn('chat_id=-42', out.getvalue())
+        self.assertIn('chat_id=77', out.getvalue())
+        self.assertIn('Иван', out.getvalue())
+        self.assertFalse(any(c.args[0] == 'POST' for c in mx.call_args_list))
+
+    def test_delete_subscription(self):
+        with mock.patch('legacy.support_chat.max_call', return_value={'success': True}) as mx:
+            call_command('max_support_setup', '--delete', verbosity=0)
+        delete = [c for c in mx.call_args_list if c.args[0] == 'DELETE']
+        self.assertEqual(len(delete), 1)
+        self.assertEqual(delete[0].kwargs['params']['url'], 'https://edunabazar.ru' + svc.max_webhook_path())
+
+
+class CaBundleTests(TestCase):
+
+    def test_bundle_contains_certifi_and_ru_certs(self):
+        import certifi
+        svc._ca_bundle_path = None
+        path = svc.ca_bundle()
+        data = open(path, 'rb').read()
+        self.assertTrue(data.startswith(open(certifi.where(), 'rb').read()[:200]))
+        for pem in sorted(svc._RU_CERTS_DIR.glob('*.pem')):
+            self.assertIn(pem.read_bytes().strip(), data)
+        self.assertEqual(svc.ca_bundle(), path)
 
 
 @override_settings(**TG)

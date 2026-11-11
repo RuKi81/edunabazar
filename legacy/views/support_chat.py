@@ -101,6 +101,20 @@ def support_chat_telegram_webhook(request: HttpRequest, secret: str) -> HttpResp
     return HttpResponse('ok')
 
 
+@csrf_exempt
+@require_POST
+def support_chat_max_webhook(request: HttpRequest, secret: str) -> HttpResponse:
+    expected = svc.max_webhook_secret()
+    if secret != expected or request.META.get(svc.MAX_SECRET_HEADER, expected) != expected:
+        raise Http404
+    try:
+        update = json.loads(request.body.decode('utf-8') or '{}')
+    except ValueError:
+        return HttpResponse(status=400)
+    svc.handle_max_update(update)
+    return HttpResponse('ok')
+
+
 # ── админка ───────────────────────────────────────────────────────────────
 
 def admin_support_threads(request: HttpRequest) -> HttpResponse:
@@ -114,7 +128,7 @@ def admin_support_threads(request: HttpRequest) -> HttpResponse:
         'legacy_user': admin_user,
         'threads': page,
         'total_count': qs.count(),
-        'tg_configured': svc.is_configured(),
+        'messenger_configured': svc.is_configured(),
     }))
 
 

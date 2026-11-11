@@ -94,6 +94,7 @@ urlpatterns = [
     path('api/support/send/', views.support_chat_send, name='support_chat_send'),
     path('api/support/messages/', views.support_chat_messages, name='support_chat_messages'),
     path('api/support/tg/<str:secret>/', views.support_chat_telegram_webhook, name='support_chat_telegram_webhook'),
+    path('api/support/max/<str:secret>/', views.support_chat_max_webhook, name='support_chat_max_webhook'),
 
     path('unsubscribe/', views.email_unsubscribe, name='email_unsubscribe'),
 
