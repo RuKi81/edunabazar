@@ -955,6 +955,7 @@ def _gis_folder_to_dict(folder) -> dict:
         'sort_order': folder.sort_order,
         'collapsed': folder.collapsed,
         'visible': folder.visible,
+        'parent': folder.parent_id,
         'created_at': folder.created_at.isoformat(),
     }
 
@@ -2532,7 +2533,8 @@ def gis_folders_collection(request: HttpRequest) -> JsonResponse:
 @require_http_methods(['PATCH', 'DELETE'])
 def gis_folder_detail(request: HttpRequest, pk: int) -> JsonResponse:
     """PATCH — имя/свёрнутость/видимость папки; DELETE — удалить папку
-    (слои внутри переходят в корень через ``on_delete=SET_NULL``)."""
+    (слои внутри переходят в корень через ``on_delete=SET_NULL``, вложенные
+    папки поднимаются на уровень удаляемой)."""
     level = 'manage' if request.method == 'DELETE' else 'edit'
     gate = _require_gis_access(request, level=level)
     if gate:
@@ -2541,6 +2543,7 @@ def gis_folder_detail(request: HttpRequest, pk: int) -> JsonResponse:
     folder = get_object_or_404(GisFolder, pk=pk)
 
     if request.method == 'DELETE':
+        GisFolder.objects.filter(parent=folder).update(parent_id=folder.parent_id)
         folder.delete()
         return JsonResponse({'ok': True})
 
@@ -2591,10 +2594,39 @@ def _resolve_folder_id(raw, valid_folder_ids: set):
     return fid if fid in valid_folder_ids else None
 
 
+def _folder_parents_from_payload(folders, valid_folder_ids: set) -> dict:
+    """``{folder_id: (idx, parent_id)}`` из payload layout-сохранения.
+
+    Родитель берётся из ключа ``parent`` (невалидный → корень). Папка не
+    может быть вложена в саму себя или в своего потомка — такие связи
+    обрываются (parent → ``None``), чтобы в БД не возник цикл. Для папок,
+    отсутствующих в payload, родитель берётся из БД."""
+    parents = dict(
+        GisFolder.objects.values_list('pk', 'parent_id'))
+    result = {}
+    for idx, f in enumerate(folders):
+        fid = _coerce_int(f.get('id') if isinstance(f, dict) else None)
+        if fid is None or fid not in valid_folder_ids:
+            continue
+        parent = _resolve_folder_id(f.get('parent'), valid_folder_ids)
+        result[fid] = (idx, None if parent == fid else parent)
+        parents[fid] = result[fid][1]
+    for fid, (idx, parent) in list(result.items()):
+        seen, cur = {fid}, parent
+        while cur is not None and cur not in seen:
+            seen.add(cur)
+            cur = parents.get(cur)
+        if cur is not None:
+            result[fid] = (idx, None)
+            parents[fid] = None
+    return result
+
+
 def _gis_layout_save(request: HttpRequest, data: dict) -> JsonResponse:
-    """Сохранить состав/порядок дерева: папки (порядок) + слои + растры
-    (порядок + принадлежность папке). Вызывается из :func:`gis_layers_reorder`
-    при наличии ключей ``folders``/``layers``/``rasters``."""
+    """Сохранить состав/порядок дерева: папки (порядок + родитель) + слои +
+    растры (порядок + принадлежность папке). Вызывается из
+    :func:`gis_layers_reorder` при наличии ключей
+    ``folders``/``layers``/``rasters``."""
     from django.db import transaction
 
     folders = data.get('folders') or []
@@ -2603,10 +2635,10 @@ def _gis_layout_save(request: HttpRequest, data: dict) -> JsonResponse:
     valid_folder_ids = set(GisFolder.objects.values_list('pk', flat=True))
 
     with transaction.atomic():
-        for idx, f in enumerate(folders):
-            fid = _coerce_int(f.get('id') if isinstance(f, dict) else None)
-            if fid is not None:
-                GisFolder.objects.filter(pk=fid).update(sort_order=idx)
+        folder_parents = _folder_parents_from_payload(folders, valid_folder_ids)
+        for fid, (idx, parent_id) in folder_parents.items():
+            GisFolder.objects.filter(pk=fid).update(
+                sort_order=idx, parent_id=parent_id)
         for idx, item in enumerate(layers):
             if not isinstance(item, dict):
                 continue
@@ -2637,9 +2669,9 @@ def gis_layers_reorder(request: HttpRequest) -> JsonResponse:
     """Сохранить порядок слоёв. Тело: ``{"order": [id, id, ...]}`` —
     сверху вниз (первый = верхний в списке и на карте).
 
-    Расширенный формат (папки): ``{"folders": [{"id":..}, ...],
+    Расширенный формат (папки): ``{"folders": [{"id":.., "parent": fid|null}, ...],
     "layers": [{"id":.., "folder": fid|null}, ...]}`` — сохраняет порядок
-    папок и принадлежность/порядок слоёв."""
+    и вложенность папок, принадлежность/порядок слоёв."""
     # Изменение порядка затрагивает набор слоёв — нужен whole-class 'edit'.
     gate = _require_gis_access(request, level='edit')
     if gate:

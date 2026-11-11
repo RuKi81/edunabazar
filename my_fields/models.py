@@ -333,6 +333,11 @@ class GisFolder(models.Model):
         on_delete=models.SET_NULL, related_name='gis_folders',
         verbose_name='Создал',
     )
+    parent = models.ForeignKey(
+        'self', null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='children',
+        verbose_name='Родительская папка',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

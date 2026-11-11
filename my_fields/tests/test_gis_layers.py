@@ -675,6 +675,73 @@ class FolderTests(GisLayersTestCase):
         self.a.refresh_from_db()
         self.assertIsNone(self.a.folder_id)   # несуществующая папка → NULL
 
+    def _layout(self, folders):
+        return self.client.post(
+            '/me/gis/api/layers/reorder/',
+            data=json.dumps({'folders': folders, 'layers': []}),
+            content_type='application/json',
+        )
+
+    def test_folder_dict_exposes_parent(self):
+        p = GisFolder.objects.create(name='P')
+        c = GisFolder.objects.create(name='C', parent=p)
+        body = self.client.get('/me/gis/api/layers/').json()
+        by_id = {f['id']: f for f in body['folders']}
+        self.assertIsNone(by_id[p.pk]['parent'])
+        self.assertEqual(by_id[c.pk]['parent'], p.pk)
+
+    def test_layout_save_nests_folder(self):
+        p = GisFolder.objects.create(name='P')
+        c = GisFolder.objects.create(name='C')
+        resp = self._layout([{'id': p.pk, 'parent': None},
+                             {'id': c.pk, 'parent': p.pk}])
+        self.assertEqual(resp.status_code, 200, resp.content)
+        c.refresh_from_db()
+        p.refresh_from_db()
+        self.assertEqual(c.parent_id, p.pk)
+        self.assertIsNone(p.parent_id)
+        self.assertEqual(c.sort_order, 1)
+
+    def test_layout_save_moves_folder_back_to_root(self):
+        p = GisFolder.objects.create(name='P')
+        c = GisFolder.objects.create(name='C', parent=p)
+        resp = self._layout([{'id': c.pk, 'parent': None},
+                             {'id': p.pk, 'parent': None}])
+        self.assertEqual(resp.status_code, 200, resp.content)
+        c.refresh_from_db()
+        self.assertIsNone(c.parent_id)
+
+    def test_layout_save_rejects_self_parent(self):
+        f = GisFolder.objects.create(name='F')
+        self._layout([{'id': f.pk, 'parent': f.pk}])
+        f.refresh_from_db()
+        self.assertIsNone(f.parent_id)
+
+    def test_layout_save_breaks_cycle(self):
+        # A → B уже в БД; payload пытается сделать B → A (цикл).
+        a = GisFolder.objects.create(name='A')
+        b = GisFolder.objects.create(name='B', parent=a)
+        self._layout([{'id': a.pk, 'parent': b.pk}])
+        a.refresh_from_db()
+        b.refresh_from_db()
+        self.assertIsNone(a.parent_id)
+        self.assertEqual(b.parent_id, a.pk)
+
+    def test_layout_save_invalid_parent_is_root(self):
+        f = GisFolder.objects.create(name='F')
+        self._layout([{'id': f.pk, 'parent': 999999}])
+        f.refresh_from_db()
+        self.assertIsNone(f.parent_id)
+
+    def test_delete_folder_lifts_children_to_grandparent(self):
+        g = GisFolder.objects.create(name='G')
+        p = GisFolder.objects.create(name='P', parent=g)
+        c = GisFolder.objects.create(name='C', parent=p)
+        resp = self.client.delete(f'/me/gis/api/folders/{p.pk}/')
+        self.assertEqual(resp.status_code, 200)
+        c.refresh_from_db()
+        self.assertEqual(c.parent_id, g.pk)
+
     def test_folder_create_requires_admin(self):
         self.client.logout()
         self._login_plain()

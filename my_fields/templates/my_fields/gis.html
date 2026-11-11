@@ -650,8 +650,10 @@
     .gis-folder.collapsed > .gis-folder__body { display: none; }
     /* Слои внутри папки чуть отступают и без нижнего зазора «прилипают». */
     .gis-folder__body .gis-layer { margin-bottom: 6px; margin-left: 12px; }
+    /* Вложенные папки: отступ как у слоёв, чуть компактнее. */
+    .gis-folder__body > .gis-folder { margin: 4px 0 6px 12px; }
     .gis-folder__body:empty::after {
-      content: 'перетащите слои сюда'; display: block;
+      content: 'перетащите слои или папки сюда'; display: block;
       font-size: 11px; color: #bbb; text-align: center; padding: 6px 0; font-weight: 400;
     }
 
@@ -9365,8 +9367,12 @@
          т.к. на него завязаны вызовы из upload()/DnD. */
       function collectLayoutPayload() {
         var folderEls = listEl.querySelectorAll('.gis-folder[data-gisfolder]');
-        var folders = Array.prototype.map.call(folderEls, function (f) {
-          return { id: parseInt(f.getAttribute('data-gisfolder'), 10) };
+        var foldersArr = Array.prototype.map.call(folderEls, function (f) {
+          var pEl = f.parentNode ? f.parentNode.closest('.gis-folder[data-gisfolder]') : null;
+          var pid = pEl ? parseInt(pEl.getAttribute('data-gisfolder'), 10) : null;
+          var fid = parseInt(f.getAttribute('data-gisfolder'), 10);
+          if (folders[fid]) folders[fid].parent = pid;
+          return { id: fid, parent: pid };
         });
         var layerEls = listEl.querySelectorAll('.gis-layer[data-gisup]');
         var layers = Array.prototype.map.call(layerEls, function (r) {
@@ -9384,7 +9390,7 @@
           if (rr) rr.folder = fid;
           return { id: parseInt(r.getAttribute('data-gisraster'), 10), folder: fid };
         });
-        return { folders: folders, layers: layers, rasters: rastersArr };
+        return { folders: foldersArr, layers: layers, rasters: rastersArr };
       }
       function persistOrder() {
         fetch(API + 'reorder/', {
@@ -9420,10 +9426,11 @@
         });
         div.addEventListener('dragover', function (e) {
           if (!upDragSrc || upDragSrc === div) return;
-          /* Слой над слоем — вставка; папка над корневым слоем — вставка папки. */
-          var isRoot = div.parentNode === listEl;
-          if (upDragKind === 'folder' && !isRoot) return;
-          e.preventDefault();
+          /* Слой над слоем — вставка; папка над слоем — вставка папки рядом
+             (кроме слоёв внутри самой перетаскиваемой папки). */
+          if (upDragKind === 'folder' && upDragSrc.contains(div)) return;
+          e.preventDefault(); e.stopPropagation();
+          clearDragMarks();
           if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
           var rect = div.getBoundingClientRect();
           var before = (e.clientY - rect.top) < rect.height / 2;
@@ -9435,8 +9442,7 @@
         });
         div.addEventListener('drop', function (e) {
           if (!upDragSrc || upDragSrc === div) return;
-          var isRoot = div.parentNode === listEl;
-          if (upDragKind === 'folder' && !isRoot) return;
+          if (upDragKind === 'folder' && upDragSrc.contains(div)) return;
           e.preventDefault(); e.stopPropagation();
           var rect = div.getBoundingClientRect();
           var before = (e.clientY - rect.top) < rect.height / 2;
@@ -9467,7 +9473,16 @@
          reorder-эндпоинтом (см. collectLayoutPayload). ── */
       function folderBodyEl(fid) {
         var fEl = document.getElementById('gisfolder-' + fid);
-        return fEl ? fEl.querySelector('.gis-folder__body') : null;
+        return fEl ? fEl.querySelector(':scope > .gis-folder__body') : null;
+      }
+      /* Куда рисовать папку: в тело родительской (если задана и существует)
+         либо в корень списка. */
+      function folderContainer(f) {
+        if (f && f.parent != null && f.parent !== f.id) {
+          var body = folderBodyEl(f.parent);
+          if (body) return body;
+        }
+        return listEl;
       }
       /* Куда рисовать строку слоя: в тело папки (если задана и существует)
          либо в корень списка. */
@@ -9500,6 +9515,17 @@
         var rboxes = fEl.querySelectorAll('.gis-layer[data-gisraster]');
         Array.prototype.forEach.call(rboxes, function (row) {
           setRasterVisible(row.getAttribute('data-gisraster'), vis);
+        });
+        /* Вложенные папки наследуют видимость родителя. */
+        var subs = fEl.querySelectorAll('.gis-folder[data-gisfolder]');
+        Array.prototype.forEach.call(subs, function (sub) {
+          var cb = sub.querySelector(':scope > .gis-folder__head > .gis-folder__sel');
+          if (cb) cb.checked = vis;
+          var sf = folders[sub.getAttribute('data-gisfolder')];
+          if (sf && sf.visible !== vis) {
+            sf.visible = vis;
+            patchFolder(sf.id, { visible: vis }).catch(function () {});
+          }
         });
       }
 
@@ -9543,8 +9569,20 @@
         return span;
       }
 
-      /* DnD для папки: перетаскивание самой папки (reorder в корне) +
-         приём слоёв внутрь (drag-into). */
+      /* DnD для папки: перетаскивание самой папки (reorder / вложение в
+         другую папку) + приём слоёв и папок внутрь (drag-into). Для папки
+         над папкой: верхняя/нижняя четверть — вставка рядом, середина —
+         вложение. Папку нельзя бросить в саму себя или в своего потомка. */
+      function folderDropZone(fEl, e) {
+        var rect = fEl.getBoundingClientRect();
+        var head = fEl.querySelector(':scope > .gis-folder__head');
+        var hRect = head ? head.getBoundingClientRect() : rect;
+        var y = e.clientY;
+        if (y < hRect.top + hRect.height * 0.3) return 'before';
+        if (y > hRect.bottom - hRect.height * 0.3 && y > rect.bottom - 6) return 'after';
+        if (y > hRect.bottom && fEl.classList.contains('collapsed')) return 'after';
+        return 'into';
+      }
       function wireFolderDrag(fEl, body) {
         fEl.addEventListener('dragstart', function (e) {
           upDragSrc = fEl; upDragKind = 'folder'; fEl.classList.add('dragging');
@@ -9552,6 +9590,8 @@
             e.dataTransfer.effectAllowed = 'move';
             try { e.dataTransfer.setData('text/plain', fEl.id); } catch (_) {}
           }
+          /* Вложенная папка: не дать родительской перехватить dragstart. */
+          e.stopPropagation();
         });
         fEl.addEventListener('dragend', function () {
           fEl.classList.remove('dragging'); clearDragMarks();
@@ -9562,13 +9602,16 @@
           if (upDragKind === 'layer') {
             e.preventDefault(); e.stopPropagation();
             if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+            clearDragMarks();
             fEl.classList.add('drag-into');
-          } else if (upDragKind === 'folder' && upDragSrc !== fEl) {
-            e.preventDefault();
-            var rect = fEl.getBoundingClientRect();
-            var before = (e.clientY - rect.top) < rect.height / 2;
-            fEl.classList.toggle('drag-over-top', before);
-            fEl.classList.toggle('drag-over-bottom', !before);
+          } else if (upDragKind === 'folder' && !upDragSrc.contains(fEl)) {
+            e.preventDefault(); e.stopPropagation();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+            var zone = folderDropZone(fEl, e);
+            clearDragMarks();
+            fEl.classList.toggle('drag-over-top', zone === 'before');
+            fEl.classList.toggle('drag-over-bottom', zone === 'after');
+            fEl.classList.toggle('drag-into', zone === 'into');
           }
         });
         fEl.addEventListener('dragleave', function (e) {
@@ -9581,12 +9624,18 @@
           if (upDragKind === 'layer') {
             e.preventDefault(); e.stopPropagation();
             body.appendChild(upDragSrc);
-          } else if (upDragKind === 'folder' && upDragSrc !== fEl) {
+          } else if (upDragKind === 'folder' && !upDragSrc.contains(fEl)) {
             e.preventDefault(); e.stopPropagation();
-            var rect = fEl.getBoundingClientRect();
-            var before = (e.clientY - rect.top) < rect.height / 2;
-            if (before) listEl.insertBefore(upDragSrc, fEl);
-            else listEl.insertBefore(upDragSrc, fEl.nextSibling);
+            var zone = folderDropZone(fEl, e);
+            if (zone === 'before') fEl.parentNode.insertBefore(upDragSrc, fEl);
+            else if (zone === 'after') fEl.parentNode.insertBefore(upDragSrc, fEl.nextSibling);
+            else {
+              body.appendChild(upDragSrc);
+              if (fEl.classList.contains('collapsed')) {
+                var tg = fEl.querySelector(':scope > .gis-folder__head > .gis-folder__toggle');
+                if (tg) tg.click();
+              }
+            }
           } else { return; }
           fEl.classList.remove('drag-into', 'drag-over-top', 'drag-over-bottom');
           afterDrop();
@@ -9655,25 +9704,27 @@
           patchFolder(f.id, { visible: visBox.checked }).catch(function () {});
         });
         delBtn.addEventListener('click', function () {
-          if (!window.confirm('Удалить папку «' + f.name + '»? Слои внутри переедут в корень списка.')) return;
+          if (!window.confirm('Удалить папку «' + f.name + '»? Слои и вложенные папки поднимутся на уровень выше.')) return;
           fetch(FOLDERS_API + f.id + '/', {
             method: 'DELETE', credentials: 'same-origin',
             headers: { 'X-Requested-With': 'XMLHttpRequest' },
           }).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
             .then(function () {
-              /* Слои и растры из тела папки возвращаем в корень (перед папкой). */
-              Array.prototype.slice.call(body.querySelectorAll('.gis-layer[data-gisup]'))
-                .forEach(function (row) {
-                  var L = uploaded[row.getAttribute('data-gisup')];
-                  if (L) L.folder = null;
-                  listEl.insertBefore(row, fEl);
-                });
-              Array.prototype.slice.call(body.querySelectorAll('.gis-layer[data-gisraster]'))
-                .forEach(function (row) {
-                  var rr = rasters[row.getAttribute('data-gisraster')];
-                  if (rr) rr.folder = null;
-                  listEl.insertBefore(row, fEl);
-                });
+              /* Непосредственное содержимое папки (слои, растры, вложенные
+                 папки) поднимаем на уровень удаляемой (перед ней). */
+              var host = fEl.parentNode || listEl;
+              Array.prototype.slice.call(body.children).forEach(function (child) {
+                host.insertBefore(child, fEl);
+              });
+              Object.keys(uploaded).forEach(function (id) {
+                if (uploaded[id] && uploaded[id].folder === f.id) uploaded[id].folder = f.parent == null ? null : f.parent;
+              });
+              Object.keys(rasters).forEach(function (id) {
+                if (rasters[id] && rasters[id].folder === f.id) rasters[id].folder = f.parent == null ? null : f.parent;
+              });
+              Object.keys(folders).forEach(function (id) {
+                if (folders[id] && folders[id].parent === f.id) folders[id].parent = f.parent == null ? null : f.parent;
+              });
               delete folders[f.id];
               fEl.remove();
               toast('Папка удалена');
@@ -9683,9 +9734,31 @@
         });
 
         wireFolderDrag(fEl, body);
-        if (atTop) listEl.insertBefore(fEl, listEl.firstChild);
-        else listEl.appendChild(fEl);
+        var container = folderContainer(f);
+        if (atTop && container === listEl) listEl.insertBefore(fEl, listEl.firstChild);
+        else container.appendChild(fEl);
         return fEl;
+      }
+
+      /* Нарисовать папки в порядке дерева: сначала корневые, затем те, чьи
+         родители уже отрисованы. Папки с битым родителем (нет в списке /
+         цикл) падают в корень. */
+      function renderFolderTree(flds) {
+        var pending = flds.slice();
+        var drawn = {};
+        while (pending.length) {
+          var rest = [];
+          pending.forEach(function (f) {
+            if (f.parent == null || drawn[f.parent]) {
+              renderFolder(f, false); drawn[f.id] = true;
+            } else rest.push(f);
+          });
+          if (rest.length === pending.length) {
+            rest.forEach(function (f) { f.parent = null; renderFolder(f, false); drawn[f.id] = true; });
+            break;
+          }
+          pending = rest;
+        }
       }
 
       /* ── Название слоя: двойной клик → инлайн-редактор ── */
@@ -11226,7 +11299,7 @@
             var flds = (j.folders || []).slice().sort(function (a, b) {
               return (a.sort_order - b.sort_order) || (a.id - b.id);
             });
-            flds.forEach(function (f) { renderFolder(f, false); });
+            renderFolderTree(flds);
             var results = (j.results || []).slice().sort(function (a, b) {
               return (a.sort_order - b.sort_order) || (a.id - b.id);
             });
