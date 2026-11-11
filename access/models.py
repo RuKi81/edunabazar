@@ -21,8 +21,10 @@ class ResourceGrant(models.Model):
     class ResourceType(models.TextChoices):
         GIS_LAYER = 'gis_layer', 'ГИС-слой (SHP)'
         RASTER_LAYER = 'raster_layer', 'Растровый слой (GeoTIFF/COG)'
+        # Слой «Границы угодий» (agro_farmland) на дашборде Агрокосмоса.
+        # Гранты выдаются whole-class (resource_id = NULL): слой единый.
+        FARMLAND = 'farmland', 'Границы угодий (ЗСН, Агрокосмос)'
         # Зарезервировано под фазу 2 (см. предложение по доступу):
-        # FARMLAND = 'farmland', 'Слой ЗСН (farmland)'
         # FIELD = 'field', 'Поле пользователя'
 
     class Level(models.TextChoices):

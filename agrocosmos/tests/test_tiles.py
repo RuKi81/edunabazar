@@ -11,8 +11,11 @@ from types import SimpleNamespace
 
 from django.test import TestCase, override_settings
 from django.test.client import RequestFactory
+from django.utils import timezone
 
+from access.models import ResourceGrant
 from agrocosmos.views import tiles
+from legacy.models import LegacyUser
 
 _DUMMY_CACHE = {
     'default': {'BACKEND': 'django.core.cache.backends.dummy.DummyCache'},
@@ -58,3 +61,57 @@ class TileZoomFloorTests(TestCase):
         with self.assertNumQueries(0):
             resp = tiles.api_tile(req, 6, 41, 20)
         self.assertEqual(resp.status_code, 403)
+
+
+def _mk_legacy(username):
+    now = timezone.now()
+    return LegacyUser.objects.create(
+        type=0, username=username, auth_key='', password_hash='',
+        email=f'{username}@test.com', currency='RUB', name=username,
+        address='', phone='', inn='', status=10,
+        created_at=now, updated_at=now, contacts='',
+    )
+
+
+@override_settings(CACHES=_DUMMY_CACHE)
+class TileFarmlandGrantTests(TestCase):
+    """Слой «Границы угодий» открывается грантом ``farmland``, не только админу."""
+
+    def setUp(self):
+        self.rf = RequestFactory()
+        self.user = _mk_legacy('sorokina')
+
+    def _get(self):
+        req = self.rf.get('/agrocosmos/api/tiles/6/41/20.pbf')
+        req.legacy_user = self.user
+        return tiles.api_tile(req, 6, 41, 20)
+
+    def test_plain_user_gets_403(self):
+        self.assertEqual(self._get().status_code, 403)
+
+    def test_gis_layer_grant_does_not_open_farmlands(self):
+        ResourceGrant.objects.create(
+            legacy_user=self.user, level='manage',
+            resource_type=ResourceGrant.ResourceType.GIS_LAYER)
+        self.assertEqual(self._get().status_code, 403)
+
+    def test_farmland_grant_opens_tiles(self):
+        ResourceGrant.objects.create(
+            legacy_user=self.user, level='view',
+            resource_type=ResourceGrant.ResourceType.FARMLAND)
+        self.assertEqual(self._get().status_code, 200)
+
+    def test_dashboard_toggle_follows_grant(self):
+        from django.test import Client
+        c = Client()
+        s = c.session
+        s['legacy_user_id'] = self.user.id
+        s.save()
+        toggle = 'layers</i> Границы угодий'
+        html = c.get('/agrocosmos/').content.decode()
+        self.assertNotIn(toggle, html)
+        ResourceGrant.objects.create(
+            legacy_user=self.user, level='view',
+            resource_type=ResourceGrant.ResourceType.FARMLAND)
+        html = c.get('/agrocosmos/').content.decode()
+        self.assertIn(toggle, html)

@@ -122,6 +122,17 @@ def raster_view_allowed(user, resource_id) -> bool:
         pk=resource_id, is_public=True).exists()
 
 
+def can_view_farmlands(user) -> bool:
+    """True, если пользователю виден слой «Границы угодий» (agro_farmland).
+
+    Гейт для MVT-тайлов ``/agrocosmos/api/tiles/`` и переключателя слоя на
+    дашбордах Агрокосмоса. Админ — всегда; иначе нужен whole-class грант
+    ``farmland`` любого уровня (слой единый, ``resource_id`` не используется).
+    """
+    return has_resource_access(
+        user, ResourceGrant.ResourceType.FARMLAND, None, 'view')
+
+
 def can_open_gis_page(user) -> bool:
     """Пускать на /me/gis только админа ИЛИ владельца ГИС/растрового гранта.
 

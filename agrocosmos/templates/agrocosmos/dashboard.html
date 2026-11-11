@@ -393,7 +393,7 @@
           <span style="font-size:11px;"><i class="material-icons" style="font-size:14px; vertical-align:-2px; color:#1565C0;">border_style</i> Границы субъектов</span>
         </label>
       </div>
-      {% if is_admin_user %}
+      {% if can_view_farmlands %}
       <div class="agro-cb-row" style="margin-bottom:8px;">
         <label>
           <input type="checkbox" id="agro-toggle-farmlands" />
@@ -402,10 +402,10 @@
       </div>
       {% else %}
       {% comment %}
-        Farmland borders are admin-only. Keep a hidden stub so the JS that
-        reads/clears agro-toggle-farmlands.checked keeps working without
-        null-guards everywhere. The stub is never checked, so loadMVT()
-        is never called for non-admin users.
+        Farmland borders need admin or a ``farmland`` grant. Keep a hidden
+        stub so the JS that reads/clears agro-toggle-farmlands.checked keeps
+        working without null-guards everywhere. The stub is never checked,
+        so loadMVT() is never called for unauthorised users.
       {% endcomment %}
       <input type="checkbox" id="agro-toggle-farmlands" style="display:none" />
       {% endif %}

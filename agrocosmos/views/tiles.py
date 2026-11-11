@@ -36,6 +36,12 @@ def _is_admin_legacy(request: HttpRequest) -> bool:
     return username in {u.lower() for u in admin_usernames}
 
 
+def _can_view_farmlands(request: HttpRequest) -> bool:
+    """Админ ИЛИ грант ``farmland`` (см. ``access.services.can_view_farmlands``)."""
+    from access.services import can_view_farmlands
+    return can_view_farmlands(getattr(request, 'legacy_user', None))
+
+
 def _tile_bbox(z, x, y):
     """Convert tile coords to EPSG:3857 bounding box."""
     n = 2.0 ** z
@@ -59,13 +65,14 @@ def _tile_bbox(z, x, y):
 def api_tile(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
     """Mapbox Vector Tile (MVT) endpoint for farmland polygons.
 
-    Access restricted: admin-only (LegacyUser whose username is in
-    ``settings.ADMIN_USERNAMES`` or whose ``is_superuser`` flag is set).
-    The admin gate sits *outside* of ``cache_page`` so a non-admin's empty
+    Access restricted: admin (LegacyUser whose username is in
+    ``settings.ADMIN_USERNAMES`` or whose ``is_superuser`` flag is set) OR
+    a LegacyUser holding an ``access.ResourceGrant`` of type ``farmland``.
+    The gate sits *outside* of ``cache_page`` so an unauthorised empty
     403 never gets cached and shadow-banned for everyone else; the cached
-    body is keyed by URL only and shared across admin sessions.
+    body is keyed by URL only and shared across authorised sessions.
     """
-    if not _is_admin_legacy(request):
+    if not _can_view_farmlands(request):
         # Empty body keeps Leaflet's vectorGrid quiet; the tile pane
         # simply remains blank for unauthorised users.
         resp = HttpResponse(b'', content_type='application/x-protobuf', status=403)

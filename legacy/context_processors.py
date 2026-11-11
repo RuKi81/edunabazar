@@ -29,6 +29,14 @@ def _can_open_gis(user) -> bool:
         return _is_admin(user)
 
 
+def _can_view_farmlands(user) -> bool:
+    try:
+        from access.services import can_view_farmlands
+        return can_view_farmlands(user)
+    except Exception:
+        return _is_admin(user)
+
+
 def _support_chat() -> dict:
     return {
         'support_chat_provider': getattr(settings, 'SUPPORT_CHAT_PROVIDER', 'telegram'),
@@ -40,7 +48,9 @@ def _support_chat() -> dict:
 def _context(user) -> dict:
     return {
         'legacy_user': user, 'is_admin_user': _is_admin(user),
-        'can_open_gis': _can_open_gis(user), 'year': datetime.now().year,
+        'can_open_gis': _can_open_gis(user),
+        'can_view_farmlands': _can_view_farmlands(user),
+        'year': datetime.now().year,
         **_support_chat(),
     }
 
