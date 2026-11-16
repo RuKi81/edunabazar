@@ -9,6 +9,7 @@ RSS (тематика/возраст/сортировка), парсинг от�
 --dry, инвалидация кеша главной).
 """
 import io
+import json
 import types
 from datetime import datetime, timedelta
 from unittest import mock
@@ -129,7 +130,7 @@ class RewriteGigachatTests(TestCase):
 
 class ArticleTextTests(TestCase):
 
-    LONG = 'Урожай пшеницы в регионе вырос на двадцать процентов по сравнению с прошлым годом.'
+    LONG = ' '.join(['Урожай пшеницы в регионе вырос на двадцать процентов по сравнению с прошлым годом.'] * 4)
 
     def test_extracts_paragraphs_inside_article(self):
         page = (
@@ -138,6 +139,19 @@ class ArticleTextTests(TestCase):
             f'<script>var a="<p>{self.LONG}</p>";</script><p><b>{self.LONG}</b></p></article></html>'
         )
         self.assertEqual(fn._extract_article_text(page), f'{self.LONG}\n{self.LONG}')
+
+    def test_prefers_json_ld_article_body(self):
+        body = self.LONG * 3
+        page = (
+            '<script type="application/ld+json">'
+            + json.dumps({'@graph': [{'@type': 'NewsArticle', 'articleBody': body}]})
+            + f'</script><article><p>{self.LONG}</p></article>'
+        )
+        self.assertEqual(fn._extract_article_text(page), body)
+
+    def test_falls_back_to_page_when_article_empty(self):
+        page = f'<article><p>Коротко</p></article><div><p>{self.LONG}</p></div>'
+        self.assertEqual(fn._extract_article_text(page), self.LONG)
 
     def test_best_source_prefers_longer_article(self):
         with mock.patch(f'{_MOD}._fetch_article_text', return_value=self.LONG):

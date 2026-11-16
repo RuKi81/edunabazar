@@ -12,6 +12,7 @@ Cron (daily at 07:00 Moscow time):
 """
 
 import hashlib
+import json
 import logging
 import re
 import html as html_mod
@@ -66,19 +67,53 @@ def _clean_html(text: str) -> str:
 
 ARTICLE_MIN_PARAGRAPH = 60
 ARTICLE_MAX_CHARS = 6000
+ARTICLE_SHORT_CHARS = 500
+_LD_JSON_RE = re.compile(
+    r'<script[^>]+application/ld\+json[^>]*>(.*?)</script>', re.S | re.I)
 _ARTICLE_RE = re.compile(r'<article\b.*?</article>', re.S | re.I)
 _PARA_RE = re.compile(r'<p\b[^>]*>(.*?)</p>', re.S | re.I)
 _JUNK_RE = re.compile(r'<(script|style|noscript)\b.*?</\1>', re.S | re.I)
 
 
+def _paragraphs_text(scope: str) -> str:
+    paras = [' '.join(_clean_html(p).split()) for p in _PARA_RE.findall(scope)]
+    return '\n'.join(p for p in paras if len(p) >= ARTICLE_MIN_PARAGRAPH)
+
+
+def _ld_article_bodies(page: str) -> list[str]:
+    """articleBody из JSON-LD (schema.org NewsArticle) — у SPA-сайтов текст часто только там."""
+    bodies = []
+    for raw in _LD_JSON_RE.findall(page):
+        try:
+            data = json.loads(raw.strip())
+        except ValueError:
+            continue
+        stack = [data]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, list):
+                stack.extend(node)
+            elif isinstance(node, dict):
+                body = node.get('articleBody')
+                if isinstance(body, str):
+                    bodies.append(' '.join(_clean_html(body).split()))
+                stack.extend(v for v in node.values() if isinstance(v, (dict, list)))
+    return bodies
+
+
 def _extract_article_text(page: str) -> str:
-    """Текст статьи из HTML: абзацы <p> (внутри <article>, если есть), без коротких служебных."""
-    page = _JUNK_RE.sub('', page or '')
+    """Текст статьи из HTML: самый длинный из JSON-LD articleBody, абзацев <article>, абзацев страницы."""
+    page = page or ''
+    candidates = _ld_article_bodies(page)
+    page = _JUNK_RE.sub('', page)
     articles = _ARTICLE_RE.findall(page)
-    scope = max(articles, key=len) if articles else page
-    paras = [_clean_html(p) for p in _PARA_RE.findall(scope)]
-    paras = [' '.join(p.split()) for p in paras]
-    text = '\n'.join(p for p in paras if len(p) >= ARTICLE_MIN_PARAGRAPH)
+    if articles:
+        candidates.append(_paragraphs_text(max(articles, key=len)))
+    else:
+        candidates.append(_paragraphs_text(page))
+    text = max(candidates, key=len)
+    if len(text) < ARTICLE_SHORT_CHARS:
+        text = max(text, _paragraphs_text(page), key=len)
     return text[:ARTICLE_MAX_CHARS]
 
 
