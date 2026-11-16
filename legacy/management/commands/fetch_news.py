@@ -64,6 +64,47 @@ def _clean_html(text: str) -> str:
     return text.strip()
 
 
+ARTICLE_MIN_PARAGRAPH = 60
+ARTICLE_MAX_CHARS = 6000
+_ARTICLE_RE = re.compile(r'<article\b.*?</article>', re.S | re.I)
+_PARA_RE = re.compile(r'<p\b[^>]*>(.*?)</p>', re.S | re.I)
+_JUNK_RE = re.compile(r'<(script|style|noscript)\b.*?</\1>', re.S | re.I)
+
+
+def _extract_article_text(page: str) -> str:
+    """Текст статьи из HTML: абзацы <p> (внутри <article>, если есть), без коротких служебных."""
+    page = _JUNK_RE.sub('', page or '')
+    articles = _ARTICLE_RE.findall(page)
+    scope = max(articles, key=len) if articles else page
+    paras = [_clean_html(p) for p in _PARA_RE.findall(scope)]
+    paras = [' '.join(p.split()) for p in paras]
+    text = '\n'.join(p for p in paras if len(p) >= ARTICLE_MIN_PARAGRAPH)
+    return text[:ARTICLE_MAX_CHARS]
+
+
+def _fetch_article_text(url: str) -> str:
+    """Скачать страницу новости и вытащить текст; '' при любой ошибке."""
+    if not url:
+        return ''
+    try:
+        resp = requests.get(
+            url, timeout=20, verify=False,
+            headers={'User-Agent': 'Mozilla/5.0 (compatible; EdunaBazarBot/1.0)'},
+        )
+        resp.raise_for_status()
+        resp.encoding = resp.encoding or resp.apparent_encoding
+        return _extract_article_text(resp.text)
+    except Exception as exc:
+        logger.warning('Article fetch error for %s: %s', url, exc)
+        return ''
+
+
+def _best_source_text(url: str, fallback: str) -> str:
+    """Полный текст статьи, если он длиннее имеющегося (RSS-анонс / сохранённый текст)."""
+    article = _fetch_article_text(url)
+    return article if len(article) > len(fallback or '') else (fallback or '')
+
+
 def _url_hash(url: str) -> str:
     return hashlib.md5(url.encode()).hexdigest()
 
@@ -373,7 +414,8 @@ class Command(BaseCommand):
             entry = by_url.get(news.source_url)
             src_title = entry['title'] if entry else (news.source_title or news.title)
             src_text = entry['summary'] if entry else news.text
-            self.stdout.write(f'\n--- #{news.id}: {news.title} (RSS: {bool(entry)}) ---')
+            src_text = _best_source_text(news.source_url, src_text)
+            self.stdout.write(f'\n--- #{news.id}: {news.title} (RSS: {bool(entry)}, source {len(src_text)} chars) ---')
             rewritten = _rewrite_with_gigachat(src_title, src_text)
             if not rewritten:
                 self.stdout.write(self.style.WARNING('  SKIP: rewrite failed'))
@@ -486,6 +528,7 @@ class Command(BaseCommand):
 
     def _save_entry(self, entry, dry, today):
         """Rewrite via GigaChat and save a single news entry. Returns 1 on success, 0 on failure."""
+        entry['summary'] = _best_source_text(entry['url'], entry['summary'])
         rewritten = _rewrite_with_gigachat(entry['title'], entry['summary'])
 
         if rewritten:

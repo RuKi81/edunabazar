@@ -127,9 +127,35 @@ class RewriteGigachatTests(TestCase):
             self.assertIsNone(fn._rewrite_with_gigachat('t', 's'))
 
 
+class ArticleTextTests(TestCase):
+
+    LONG = 'Урожай пшеницы в регионе вырос на двадцать процентов по сравнению с прошлым годом.'
+
+    def test_extracts_paragraphs_inside_article(self):
+        page = (
+            '<html><p>Меню сайта и прочий мусор снаружи статьи, который не нужен вообще.</p>'
+            f'<article><p class="x">{self.LONG}</p><p>Коротко</p>'
+            f'<script>var a="<p>{self.LONG}</p>";</script><p><b>{self.LONG}</b></p></article></html>'
+        )
+        self.assertEqual(fn._extract_article_text(page), f'{self.LONG}\n{self.LONG}')
+
+    def test_best_source_prefers_longer_article(self):
+        with mock.patch(f'{_MOD}._fetch_article_text', return_value=self.LONG):
+            self.assertEqual(fn._best_source_text('https://ex.com/a', 'анонс'), self.LONG)
+        with mock.patch(f'{_MOD}._fetch_article_text', return_value=''):
+            self.assertEqual(fn._best_source_text('https://ex.com/a', 'анонс'), 'анонс')
+
+    def test_fetch_error_returns_empty(self):
+        with mock.patch(f'{_MOD}.requests.get', side_effect=OSError('down')):
+            self.assertEqual(fn._fetch_article_text('https://ex.com/a'), '')
+
+
 class DoFetchTests(TestCase):
 
     def setUp(self):
+        patcher = mock.patch(f'{_MOD}._fetch_article_text', return_value='')
+        patcher.start()
+        self.addCleanup(patcher.stop)
         NewsFeedSource.objects.all().delete()
         NewsFeedSource.objects.create(name='Тест', url='https://ex.com/rss', is_active=True)
 
