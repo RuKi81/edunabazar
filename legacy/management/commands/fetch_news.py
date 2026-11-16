@@ -123,6 +123,11 @@ def _entry_to_item(entry, source_name, cutoff, include_kw, exclude_kw) -> dict |
     """RSS-entry → словарь новости; None, если старая/неполная/не по теме."""
     title = _clean_html(getattr(entry, 'title', ''))
     summary = _clean_html(getattr(entry, 'summary', ''))
+    full_text = _clean_html(' '.join(
+        c.get('value', '') for c in (getattr(entry, 'content', None) or [])
+    ))
+    if len(full_text) > len(summary):
+        summary = full_text
     link = getattr(entry, 'link', '')
 
     if not title or not link:
@@ -143,7 +148,7 @@ def _entry_to_item(entry, source_name, cutoff, include_kw, exclude_kw) -> dict |
 
     return {
         'title': title,
-        'summary': summary[:1000],
+        'summary': summary[:4000],
         'url': link,
         'published': pub_dt,
         'source': source_name,
@@ -238,7 +243,7 @@ def _rewrite_with_gigachat(title: str, summary: str) -> dict | None:
         return None
 
     prompt = f"""Перепиши следующую новость своими словами на русском языке.
-Сделай уникальный заголовок (до 100 символов) и развёрнутый текст новости (5-7 предложений, 500-800 символов).
+Сделай уникальный заголовок (до 100 символов) и развёрнутый текст новости (10-15 предложений, 1500-2500 символов).
 Не копируй текст дословно. Сохрани все факты, цифры и смысл. Пиши в информационном стиле, как для новостного портала.
 
 Оригинальный заголовок: {title}
@@ -258,14 +263,14 @@ def _rewrite_with_gigachat(title: str, summary: str) -> dict | None:
             json={
                 'model': GIGACHAT_MODEL,
                 'messages': [
-                    {'role': 'system', 'content': 'Ты — копирайтер русскоязычного агро-портала. Пиши кратко и по делу.'},
+                    {'role': 'system', 'content': 'Ты — копирайтер русскоязычного агро-портала. Пиши подробно и по делу.'},
                     {'role': 'user', 'content': prompt},
                 ],
                 'temperature': 0.7,
-                'max_tokens': 1000,
+                'max_tokens': 2500,
             },
             verify=False,
-            timeout=30,
+            timeout=60,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -295,13 +300,13 @@ def _parse_rewrite_response(content: str) -> dict | None:
     new_text = ' '.join(text_lines).strip()
 
     if new_title and new_text:
-        return {'title': new_title[:500], 'text': new_text[:1000]}
+        return {'title': new_title[:500], 'text': new_text[:4000]}
 
     # Fallback: use full response as text
     logger.warning('Could not parse GigaChat response, using raw content')
     lines = [ln.strip() for ln in content.split('\n') if ln.strip()]
     if len(lines) >= 2:
-        return {'title': lines[0][:500], 'text': ' '.join(lines[1:])[:1000]}
+        return {'title': lines[0][:500], 'text': ' '.join(lines[1:])[:4000]}
 
     return None
 
@@ -356,11 +361,41 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument('--dry', action='store_true', help='Preview without saving')
         parser.add_argument('--count', type=int, default=1, help='Number of articles to fetch')
+        parser.add_argument('--regenerate', type=int, default=0, metavar='N',
+                            help='Regenerate text of the last N saved news and exit')
+
+    def _regenerate(self, n, dry):
+        """Перегенерировать текст последних N новостей (источник — RSS, иначе сохранённый текст)."""
+        items = list(News.objects.order_by('-published_at', '-id')[:n])
+        by_url = {e['url']: e for e in _fetch_rss_entries(max_age_days=60)}
+        done = 0
+        for news in items:
+            entry = by_url.get(news.source_url)
+            src_title = entry['title'] if entry else (news.source_title or news.title)
+            src_text = entry['summary'] if entry else news.text
+            self.stdout.write(f'\n--- #{news.id}: {news.title} (RSS: {bool(entry)}) ---')
+            rewritten = _rewrite_with_gigachat(src_title, src_text)
+            if not rewritten:
+                self.stdout.write(self.style.WARNING('  SKIP: rewrite failed'))
+                continue
+            self.stdout.write(f"  {len(news.text)} -> {len(rewritten['text'])} chars")
+            if not dry:
+                news.title = rewritten['title']
+                news.text = rewritten['text']
+                news.save(update_fields=['title', 'text'])
+            done += 1
+        if done and not dry:
+            invalidate_home_cache()
+        self.stdout.write(self.style.SUCCESS(f'[fetch_news] Regenerated {done}/{len(items)}'))
 
     def handle(self, *args, **options):
         dry = options['dry']
         count = options['count']
         today = date.today()
+
+        if options['regenerate'] > 0:
+            self._regenerate(options['regenerate'], dry)
+            return
 
         self.stdout.write(f'[fetch_news] Started at {timezone.now()}, today={today}, count={count}, dry={dry}')
 
@@ -459,7 +494,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS(f'Rewritten: {new_title}'))
         else:
             new_title = entry['title']
-            new_text = entry['summary'][:300] if entry['summary'] else ''
+            new_text = entry['summary'][:2000] if entry['summary'] else ''
             self.stdout.write(self.style.WARNING('Using original (no rewrite)'))
 
         if dry:
