@@ -181,7 +181,7 @@
     .home__news-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
     .home__news-card a.home__news-link { font-size: 13px; font-weight: 600; color: #0090b6; }
     .home__news-card a.home__news-link:hover { text-decoration: underline; }
-    .home__news-card .home__news-text { font-size: 13px; line-height: 1.45; color: #555; margin: 8px 0 0; flex: 1; }
+    .home__news-card .home__news-text { font-size: 12px; color: #555; margin: 8px 0 0; flex: 1; }
     .home__news-card .home__news-meta { color: #999; font-size: 11px; margin-top: 10px; }
     @media (max-width: 992px) {
       .home__panel { padding: 14px; }
@@ -300,7 +300,7 @@
             {% for news in news_page %}
               <div class="home__news-card">
                 <a class="home__news-link" href="{% url 'news_detail' news.id %}">{{ news.title }}</a>
-                {% if news.text %}<p class="home__news-text">{{ news.text|truncatechars:400 }}</p>{% endif %}
+                {% if news.text %}<p class="home__news-text">{{ news.text|truncatechars:120 }}</p>{% endif %}
                 <div class="home__news-meta">{{ news.published_at|date:"d.m.Y" }} · {{ news.source_name|default:"Еду На Базар" }}</div>
               </div>
             {% endfor %}
