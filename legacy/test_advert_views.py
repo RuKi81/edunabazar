@@ -337,3 +337,47 @@ class AdvertEditTests(TestCase):
             AdvertPhoto.objects.filter(advert=self.advert).values_list('id', flat=True),
         )
         self.assertEqual(ids, {keep.pk})
+
+
+@override_settings(CACHES=_DUMMY_CACHE, ADMIN_USERNAMES={'moderator'})
+class AdvertModerationPublishTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.author = _make_user('modauthor')
+        cls.admin = _make_user('moderator')
+        catalog = Catalog.objects.create(title='Тестмодерация', sort=0, active=1)
+        cls.category = Categories.objects.create(
+            catalog=catalog, title='Тестмодкатегория', active=1,
+        )
+
+    def setUp(self):
+        self.advert = _make_advert(
+            self.author, self.category, 'Новое', status=ADVERT_STATUS_MODERATION,
+        )
+        self.publish_url = f'/adverts/{self.advert.pk}/publish/'
+
+    def _detail(self, user):
+        client = Client()
+        _login(client, user)
+        return client, client.get(f'/adverts/{self.advert.pk}/')
+
+    def test_admin_sees_publish_button_on_moderation(self):
+        _, resp = self._detail(self.admin)
+        self.assertContains(resp, f'action="{self.publish_url}"')
+
+    def test_author_does_not_see_publish_button_on_moderation(self):
+        _, resp = self._detail(self.author)
+        self.assertNotContains(resp, f'action="{self.publish_url}"')
+
+    def test_admin_publishes_moderated_advert(self):
+        client, _ = self._detail(self.admin)
+        resp = client.post(self.publish_url)
+        self.assertEqual(resp.status_code, 302)
+        self.advert.refresh_from_db()
+        self.assertEqual(self.advert.status, ADVERT_STATUS_PUBLISHED)
+
+    def test_author_cannot_publish_moderated_advert(self):
+        client, _ = self._detail(self.author)
+        client.post(self.publish_url)
+        self.advert.refresh_from_db()
+        self.assertEqual(self.advert.status, ADVERT_STATUS_MODERATION)

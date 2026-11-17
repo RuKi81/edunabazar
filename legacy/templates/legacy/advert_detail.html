@@ -97,7 +97,7 @@
               {% csrf_token %}
               <button class="btn" type="submit">Скрыть</button>
             </form>
-          {% elif advert.status == 3 %}
+          {% elif advert.status == 3 or advert.status == 5 and is_admin_user %}
             <form method="post" action="{% url 'advert_publish' advert.id %}" style="display:inline-block; margin-left:8px;">
               {% csrf_token %}
               <button class="btn" type="submit">Опубликовать</button>
