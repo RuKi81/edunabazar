@@ -1,0 +1,25 @@
+  <div class="report-nav">
+    <a href="{% url 'agrocosmos:dashboard' %}"{% if active == 'map' %} class="active"{% endif %}>
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">timeline</i> Карта Агрокосмос
+    </a>
+    <a href="{% url 'agrocosmos:raster_dashboard' %}">
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">satellite</i> Sentinel / Landsat
+    </a>
+    <a href="{% url 'agrocosmos:report_region' %}"{% if active == 'simple' %} class="active"{% endif %}>
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">assessment</i> Отчёт упрощённый
+    </a>
+    <a href="{% url 'agrocosmos:report_region_detailed' %}"{% if active == 'detailed' %} class="active"{% endif %}>
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">summarize</i> Отчёт детальный
+    </a>
+    <a href="{% url 'agrocosmos:report_screening' %}"{% if active == 'screening' %} class="active"{% endif %}>
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">rule</i> Проблемные угодья
+    </a>
+    <a href="{% url 'agrocosmos:report_unused' %}"{% if active == 'unused' %} class="active"{% endif %}>
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">block</i> Неиспользуемые угодья
+    </a>
+    {% if show_label_link and is_admin_user %}
+    <a href="{% url 'agrocosmos:label_dashboard' %}">
+      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">school</i> Разметка выборки
+    </a>
+    {% endif %}
+  </div>

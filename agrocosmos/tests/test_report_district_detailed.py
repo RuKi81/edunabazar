@@ -217,4 +217,7 @@ class ReportDistrictDetailedPageTests(TestCase):
     def test_merged_page_renders(self):
         resp = self.client.get('/agrocosmos/report/region-detailed/')
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, 'Отчёт субъект/район')
+        for label in ('Карта Агрокосмос', 'Sentinel / Landsat', 'Отчёт упрощённый', 'Отчёт детальный',
+                      'Проблемные угодья', 'Неиспользуемые угодья'):
+            self.assertContains(resp, label)
+        self.assertNotContains(resp, '/agrocosmos/report/farmland/')

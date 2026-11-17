@@ -124,29 +124,7 @@
 
 {% block content %}
 <div class="report-wrap">
-  <div class="report-nav">
-    <a href="{% url 'agrocosmos:raster_dashboard' %}">
-      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">satellite</i> Sentinel / Landsat
-    </a>
-    <a href="{% url 'agrocosmos:report_region' %}">
-      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">assessment</i> Отчёт NDVI
-    </a>
-    <a href="{% url 'agrocosmos:report_region_detailed' %}">
-      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">map</i> Свод субъекта
-    </a>
-    <a href="{% url 'agrocosmos:report_district_detailed' %}" class="active">
-      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">summarize</i> Свод района
-    </a>
-    <a href="{% url 'agrocosmos:report_screening' %}">
-      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">rule</i> Проблемные поля
-    </a>
-    <a href="{% url 'agrocosmos:report_unused' %}">
-      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">block</i> Неиспользуемые
-    </a>
-    <a href="{% url 'agrocosmos:report_farmland' %}">
-      <i class="material-icons" style="font-size:14px; vertical-align:-2px;">description</i> Паспорт поля
-    </a>
-  </div>
+  {% include 'agrocosmos/_report_nav.html' with active='detailed' %}
 
   <div class="report-header">
     <h1><i class="material-icons" style="font-size:24px; vertical-align:-4px; color:#2e7d32;">summarize</i> <span id="rpt-title">Свод по району</span></h1>
