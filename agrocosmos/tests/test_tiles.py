@@ -7,13 +7,16 @@
 тайл БЕЗ обращения к БД. Фильтрованный запрос ограничен индексом FK и
 сохраняет низкий порог ``MIN_TILE_ZOOM_FILTERED``.
 """
+import math
 from types import SimpleNamespace
 
+from django.contrib.gis.geos import MultiPolygon, Polygon
 from django.test import TestCase, override_settings
 from django.test.client import RequestFactory
 from django.utils import timezone
 
 from access.models import ResourceGrant
+from agrocosmos.models import District, Farmland, FarmlandCropSeason, Region
 from agrocosmos.views import tiles
 from legacy.models import LegacyUser
 
@@ -61,6 +64,88 @@ class TileZoomFloorTests(TestCase):
         with self.assertNumQueries(0):
             resp = tiles.api_tile(req, 6, 41, 20)
         self.assertEqual(resp.status_code, 403)
+
+
+def _square(x, y, size):
+    return MultiPolygon(Polygon((
+        (x, y), (x + size, y), (x + size, y + size), (x, y + size), (x, y),
+    )))
+
+
+def _tile_xy(lon, lat, z):
+    n = 2 ** z
+    x = int((lon + 180.0) / 360.0 * n)
+    lat_r = math.radians(lat)
+    y = int((1.0 - math.asinh(math.tan(lat_r)) / math.pi) / 2.0 * n)
+    return x, y
+
+
+@override_settings(CACHES=_DUMMY_CACHE)
+class TileSeasonTests(TestCase):
+    """``season_year`` добавляет в тайл класс сезона и признак уборки."""
+
+    Z = 12
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.region = Region.objects.create(
+            name='Регион', code='r1', geom=_square(30, 50, 0.5),
+        )
+        cls.district = District.objects.create(
+            region=cls.region, name='Район', geom=_square(30, 50, 0.5),
+        )
+        cls.farmland = Farmland.objects.create(
+            region=cls.region, district=cls.district,
+            crop_type=Farmland.CropType.ARABLE, area_ha=100,
+            geom=_square(30.10, 50.10, 0.02),
+        )
+        # raster говорит «яровые», fused — «озимые, убрано»: побеждает fused.
+        FarmlandCropSeason.objects.create(
+            farmland=cls.farmland, year=2026, source='raster',
+            season_class='spring',
+        )
+        FarmlandCropSeason.objects.create(
+            farmland=cls.farmland, year=2026, source='fused',
+            season_class='winter', is_harvested=True,
+        )
+
+    def _get(self, query):
+        x, y = _tile_xy(30.11, 50.11, self.Z)
+        req = RequestFactory().get(
+            f'/agrocosmos/api/tiles/{self.Z}/{x}/{y}.pbf?region={self.region.id}'
+            + query)
+        req.legacy_user = SimpleNamespace(is_superuser=True, username='admin')
+        with self.assertNoLogs('agrocosmos', level='ERROR'):
+            return tiles.api_tile(req, self.Z, x, y)
+
+    def test_plain_tile_has_no_season_props(self):
+        body = self._get('').content
+        self.assertIn(b'crop_type', body)
+        self.assertNotIn(b'season_class', body)
+
+    def test_season_year_adds_class_preferring_fused(self):
+        body = self._get('&season_year=2026').content
+        self.assertIn(b'season_class', body)
+        self.assertIn(b'harvested', body)
+        self.assertIn(b'winter', body)
+        self.assertNotIn(b'spring', body)
+
+    def test_year_without_classification_keeps_farmland(self):
+        body = self._get('&season_year=2020').content
+        self.assertIn(b'crop_type', body)
+        self.assertNotIn(b'winter', body)
+
+    def test_invalid_season_year_is_ignored(self):
+        for raw in ('abc', '1', '2026;DROP'):
+            self.assertEqual(tiles._season_join(raw), ('', ''))
+        body = self._get('&season_year=abc').content
+        self.assertNotIn(b'season_class', body)
+
+    def test_dashboard_has_season_filters(self):
+        html = self.client.get('/agrocosmos/').content.decode()
+        for value in ('winter', 'spring', 'harvested', 'unused'):
+            self.assertIn(
+                f'class="agro-season-cb" value="{value}"', html)
 
 
 def _mk_legacy(username):

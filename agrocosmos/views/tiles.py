@@ -128,6 +128,39 @@ def _tile_filter(region_id, district_id):
     return where_sql, extra_ctes, params
 
 
+def _season_join(season_year):
+    """Extra SELECT columns + JOIN exposing the winter/spring class in tiles.
+
+    Returns ``(columns_sql, join_sql)``; both empty when ``season_year`` is
+    missing or invalid, so plain tiles keep their original cost and payload.
+    Per farmland the smoothed ``fused`` record wins over ``raster`` (same
+    priority as the farmland passport). MVT strips NULLs, hence the
+    ``''`` / ``0`` encoding for farmlands without a classification.
+    The year is inlined as a validated integer: the JOIN sits between the
+    CTE and WHERE placeholders, which are filled positionally.
+    """
+    try:
+        year = int(season_year)
+    except (TypeError, ValueError):
+        return "", ""
+    if not 2000 <= year <= 2100:
+        return "", ""
+    columns_sql = (
+        "COALESCE(cs.season_class, '') AS season_class,\n"
+        "                CASE WHEN cs.is_harvested THEN 1 ELSE 0 END AS harvested,"
+    )
+    join_sql = (
+        "LEFT JOIN LATERAL (\n"
+        "                SELECT s.season_class, s.is_harvested\n"
+        "                FROM agro_farmland_crop_season s\n"
+        f"                WHERE s.farmland_id = f.id AND s.year = {year}\n"
+        "                ORDER BY (s.source = 'fused') DESC\n"
+        "                LIMIT 1\n"
+        "            ) cs ON TRUE"
+    )
+    return columns_sql, join_sql
+
+
 @cache_page(60 * 10)  # 10 min in Redis; admin-only by the time we get here.
 def _api_tile_cached(request: HttpRequest, z: int, x: int, y: int) -> HttpResponse:
     """The actual MVT producer. Wrapped by ``api_tile`` for auth gating."""
@@ -149,6 +182,7 @@ def _api_tile_cached(request: HttpRequest, z: int, x: int, y: int) -> HttpRespon
         return empty
 
     where_sql, extra_ctes, params = _tile_filter(region_id, district_id)
+    season_cols, season_join = _season_join(request.GET.get('season_year'))
 
     xmin, ymin, xmax, ymax = _tile_bbox(z, x, y)
 
@@ -171,6 +205,7 @@ def _api_tile_cached(request: HttpRequest, z: int, x: int, y: int) -> HttpRespon
                      WHEN f.is_used IS FALSE THEN 0
                      ELSE -1 END AS is_used,
                 COALESCE(f.properties->>'Fact_isp', '') AS fact_isp,
+                {season_cols}
                 ST_AsMVTGeom(
                     ST_Transform(f.geom, 3857),
                     b.envelope,
@@ -182,6 +217,7 @@ def _api_tile_cached(request: HttpRequest, z: int, x: int, y: int) -> HttpRespon
             -- LEFT JOIN so newly imported farmlands (district_id = NULL,
             -- to be filled in by `assign_farmland_district`) still render.
             LEFT JOIN agro_district d ON d.id = f.district_id
+            {season_join}
             CROSS JOIN bounds b
             WHERE f.geom && ST_Transform(b.envelope, 4326)
             {where_sql}

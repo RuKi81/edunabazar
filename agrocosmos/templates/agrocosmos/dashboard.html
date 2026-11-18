@@ -483,6 +483,42 @@
                NULL Fact_isp; we treat such parcels as used by default. -->
         </div>
 
+        <!-- Season class (winter/spring classifier) filter -->
+        <div style="margin-top: 6px; border-top: 1px solid rgba(0,0,0,.06); padding-top: 6px;">
+          <div style="font-size:10px; font-weight:700; color:#555; margin-bottom:3px;">Сезон (по спутнику)</div>
+          <div class="agro-cb-row">
+            <label>
+              <input type="checkbox" class="agro-season-cb" value="winter" />
+              <span style="font-size:10px;"><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#1565C0;vertical-align:-1px;margin-right:2px;"></i>Озимые</span>
+            </label>
+          </div>
+          <div class="agro-cb-row">
+            <label>
+              <input type="checkbox" class="agro-season-cb" value="spring" />
+              <span style="font-size:10px;"><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#F57C00;vertical-align:-1px;margin-right:2px;"></i>Яровые</span>
+            </label>
+          </div>
+          <div class="agro-cb-row">
+            <label>
+              <input type="checkbox" class="agro-season-cb" value="harvested" />
+              <span style="font-size:10px;"><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#2E7D32;vertical-align:-1px;margin-right:2px;"></i>Убрано</span>
+            </label>
+          </div>
+          <div class="agro-cb-row">
+            <label>
+              <input type="checkbox" class="agro-season-cb" value="unused" />
+              <span style="font-size:10px;"><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#795548;vertical-align:-1px;margin-right:2px;"></i>Не обрабатывается</span>
+            </label>
+          </div>
+          <div style="font-size:9px; color:#888; line-height:1.3; margin-top:2px;">
+            Без отметок — все угодья. Классы складываются, «Убрано» сужает выборку.
+          </div>
+          <div id="agro-report-filter" style="display:none; font-size:9px; color:#555; line-height:1.3; margin-top:4px; padding:4px 6px; background:rgba(21,101,192,.07); border-radius:3px;">
+            <span id="agro-report-filter-text"></span>
+            <a href="#" id="agro-report-filter-reset" style="color:#1565C0; font-weight:600;">сбросить</a>
+          </div>
+        </div>
+
         <div class="agro-legend" style="margin-top:8px;">
           <span style="font-weight:700; color:#555;">Угодья</span>
           <span><i style="background:#4CAF50;"></i> Пашня</span>
@@ -1078,6 +1114,15 @@
                   opt.textContent = f.properties.name;
                   districtSelEl.appendChild(opt);
                 });
+              // Opened from a report card with a district scope: the region
+              // bootstrap above wiped the server-rendered selection, so put
+              // it back once and let the regular handler zoom + reload.
+              var focusDid = _pendingDistrictFocus;
+              _pendingDistrictFocus = null;
+              if (focusDid && districtSelEl.querySelector('option[value="' + focusDid + '"]')) {
+                districtSelEl.value = focusDid;
+                districtSelEl.dispatchEvent(new Event('change'));
+              }
             }
           }
 
@@ -1495,6 +1540,98 @@
 
     var usageColors = { used: '#4CAF50', unused: '#F44336', unknown: '#9E9E9E' };
 
+    /* ── Season class filter (winter/spring classifier) ──
+     * Checkboxes cover winter / spring / unused + the "harvested" flag.
+     * A report card may additionally pass classes without a checkbox
+     * (hayfield / unknown) and an exact declared-usage state through the
+     * URL (?season=...&declared=...); those are shown in the note below
+     * the checkboxes and can be reset there.
+     */
+    var seasonColors = {
+      winter: '#1565C0', spring: '#F57C00', hayfield: '#2E7D32',
+      unused: '#795548', unknown: '#9E9E9E'
+    };
+    var seasonLabels = {
+      winter: 'Озимые', spring: 'Яровые', hayfield: 'Сенокос',
+      unused: 'Не обрабатывается', unknown: 'Не определено'
+    };
+    var SEASON_CB_VALUES = ['winter', 'spring', 'harvested', 'unused'];
+    var _declaredCodes = { used: 1, unused: 0, unknown: -1 };
+    var _declaredLabels = {
+      used: 'заявлено используемым', unused: 'заявлено неиспользуемым',
+      unknown: 'статус ЗСН не указан'
+    };
+    var _seasonExtra = new Set();      // URL-only classes (no checkbox)
+    var _declaredKey = null;           // exact declared usage from a report
+    var _seasonYearHint = null;        // ?year= fallback for the tile query
+    var _hasReportFilter = false;
+    var _pendingDistrictFocus = null;
+
+    (function () {
+      var qs = new URLSearchParams(location.search);
+      (qs.get('season') || '').split(',').forEach(function (v) {
+        if (SEASON_CB_VALUES.indexOf(v) >= 0) {
+          var cb = document.querySelector('.agro-season-cb[value="' + v + '"]');
+          if (cb) cb.checked = true;
+          _hasReportFilter = true;
+        } else if (Object.prototype.hasOwnProperty.call(seasonLabels, v)) {
+          _seasonExtra.add(v);
+          _hasReportFilter = true;
+        }
+      });
+      var declared = qs.get('declared');
+      if (Object.prototype.hasOwnProperty.call(_declaredCodes, declared)) {
+        _declaredKey = declared;
+        _hasReportFilter = true;
+      }
+      var yr = parseInt((qs.get('year') || '').split(',')[0], 10);
+      if (yr) _seasonYearHint = yr;
+      if (_hasReportFilter) _pendingDistrictFocus = districtSel.value || null;
+    })();
+
+    function getSeasonFilter() {
+      var classes = new Set(_seasonExtra);
+      var harvested = false;
+      document.querySelectorAll('.agro-season-cb:checked').forEach(function (cb) {
+        if (cb.value === 'harvested') harvested = true;
+        else classes.add(cb.value);
+      });
+      return {
+        classes: classes,
+        harvested: harvested,
+        active: classes.size > 0 || harvested,
+        declared: _declaredKey === null ? null : _declaredCodes[_declaredKey]
+      };
+    }
+
+    function seasonMatches(props, sf) {
+      if (sf.declared !== null && props.is_used !== sf.declared) return false;
+      if (!sf.active) return true;
+      if (sf.classes.size && !sf.classes.has(props.season_class)) return false;
+      if (sf.harvested && props.harvested !== 1) return false;
+      return true;
+    }
+
+    // Query-string form of the current filter (shareable URL).
+    function seasonFilterParams() {
+      var sf = getSeasonFilter();
+      var parts = Array.from(sf.classes);
+      if (sf.harvested) parts.push('harvested');
+      return { season: parts.join(','), declared: _declaredKey };
+    }
+
+    function renderReportFilterNote() {
+      var box = document.getElementById('agro-report-filter');
+      if (!box) return;
+      var parts = [];
+      _seasonExtra.forEach(function (c) { parts.push(seasonLabels[c]); });
+      if (_declaredKey !== null) parts.push(_declaredLabels[_declaredKey]);
+      box.style.display = parts.length ? '' : 'none';
+      document.getElementById('agro-report-filter-text').textContent =
+        parts.length ? 'Из отчёта: ' + parts.join('; ') + '. ' : '';
+    }
+    renderReportFilterNote();
+
     function getSelectedCropTypes() {
       var cbs = document.querySelectorAll('.agro-crop-type-cb:checked');
       if (!cbs.length) return new Set(['arable','hayfield','pasture','perennial','other']);
@@ -1531,17 +1668,32 @@
       _farmlandLayersById = {};
       _activeCropTypes = getSelectedCropTypes();
       _activeUsage = getSelectedUsage();
+      var sf = getSeasonFilter();
 
       var filter = districtId ? 'district=' + districtId : 'region=' + regionId;
       var tileUrl = '/agrocosmos/api/tiles/{z}/{x}/{y}.pbf?' + filter;
+      // The season class costs an extra join per tile — request it only
+      // while the season filter is actually in use.
+      var seasonYear = getSelectedYears()[0] || _seasonYearHint;
+      if (sf.active && seasonYear) tileUrl += '&season_year=' + seasonYear;
 
       mvtLayer = L.vectorGrid.protobuf(tileUrl, {
         rendererFactory: L.canvas.tile,
         vectorTileLayerStyles: {
           farmlands: function (props) {
             var usageKey = factIspToKey(props.fact_isp, props.is_used);
-            if (!_activeCropTypes.has(props.crop_type) || !_activeUsage.has(usageKey)) {
+            if (!_activeCropTypes.has(props.crop_type) || !_activeUsage.has(usageKey)
+                || !seasonMatches(props, sf)) {
               return { fill: false, stroke: false, opacity: 0, fillOpacity: 0, weight: 0 };
+            }
+            if (sf.active) {
+              return {
+                fill: true,
+                fillColor: seasonColors[props.season_class] || '#9E9E9E',
+                fillOpacity: 0.65,
+                color: '#333',
+                weight: 0.8
+              };
             }
             var baseColor = cropColors[props.crop_type] || '#9E9E9E';
             var borderColor = usageKey === 'unused' ? '#D32F2F' : '#333';
@@ -1590,6 +1742,10 @@
           + 'Район: ' + esc(p.district || '') + '<br>'
           + 'Использование: ' + usageLabel;
         if (p.cadastral_number) popupHtml += '<br>Кадастр: ' + esc(p.cadastral_number);
+        if (p.season_class) {
+          popupHtml += '<br>Сезон: ' + esc(seasonLabels[p.season_class] || p.season_class)
+            + (p.harvested === 1 ? ' · убрано' : '');
+        }
         popupHtml += '<br><a href="#" class="ndvi-link" data-id="' + p.id + '" data-district="' + esc(p.district || '') + '" style="color:#2e7d32;">📈 График NDVI</a>';
         L.popup().setLatLng(e.latlng).setContent(popupHtml).openOn(map);
 
@@ -1783,6 +1939,35 @@
 
     document.querySelectorAll('.agro-usage-cb').forEach(function (cb) {
       cb.addEventListener('change', onUsageChange);
+    });
+
+    // Season filter only affects the map layer (sidebar stats and charts
+    // stay scoped by region/district/crop type/usage).
+    function reloadSeasonMVT() {
+      var regionId = regionSel.value;
+      if (document.getElementById('agro-toggle-farmlands').checked && regionId) {
+        loadMVT(regionId, districtSel.value || null);
+      }
+    }
+
+    function onSeasonChange() {
+      renderReportFilterNote();
+      reloadSeasonMVT();
+      if (window.syncNavState) window.syncNavState();
+    }
+
+    document.querySelectorAll('.agro-season-cb').forEach(function (cb) {
+      cb.addEventListener('change', onSeasonChange);
+    });
+    document.getElementById('agro-report-filter-reset').addEventListener('click', function (e) {
+      e.preventDefault();
+      _seasonExtra.clear();
+      _declaredKey = null;
+      onSeasonChange();
+    });
+    // The season class is per-year: refetch tiles when the year changes.
+    yearDropdown.addEventListener('change', function () {
+      if (getSeasonFilter().active) reloadSeasonMVT();
     });
 
     /* ── Per-crop NDVI breakdown ──────────────────
@@ -2414,6 +2599,11 @@
         if (yrs.length) p.set('year', yrs.join(','));
       }
       if (!omit.farmland && _activeFarmland) p.set('farmland', _activeFarmland);
+      if (!omit.filters) {
+        var fp = seasonFilterParams();
+        if (fp.season) p.set('season', fp.season);
+        if (fp.declared) p.set('declared', fp.declared);
+      }
       var s = p.toString();
       return s ? '?' + s : '';
     }
@@ -2423,7 +2613,7 @@
       history.replaceState(null, '', location.pathname + _buildAgroQS());
       // 2. Page-tab links — preserve selection but DROP farmland (its ID is
       //    meaningful only on the source dashboard, not in reports).
-      var navQs = _buildAgroQS({ farmland: true });
+      var navQs = _buildAgroQS({ farmland: true, filters: true });
       _tabLinks.forEach(function (a) {
         var base = a.getAttribute('href').split('?')[0];
         a.href = base + navQs;
@@ -2457,6 +2647,17 @@
     /* ── Auto-trigger if region pre-selected ─── */
     if (regionSel.value) {
       regionSel.dispatchEvent(new Event('change'));
+    }
+
+    /* ── Opened from a report card (?season= / ?declared=) ── */
+    // Turn the farmland layer on so the filtered parcels are visible right
+    // away. The hidden stub (no farmland access) is left untouched.
+    if (_hasReportFilter && regionSel.value && regionSel.value !== 'all') {
+      var _toggSeason = document.getElementById('agro-toggle-farmlands');
+      if (_toggSeason && _toggSeason.style.display !== 'none' && !_toggSeason.checked) {
+        _toggSeason.checked = true;
+        _toggSeason.dispatchEvent(new Event('change'));
+      }
     }
 
     /* ── Auto-open NDVI chart if ?farmland=X is in URL ── */

@@ -76,6 +76,8 @@
     }
     .summary-card .val { font-size: 17px; font-weight: 700; color: #1b5e20; }
     .summary-card .lbl { font-size: 11px; color: #888; margin-top: 3px; }
+    a.summary-card { display: block; text-decoration: none; cursor: pointer; transition: box-shadow .15s, border-color .15s; }
+    a.summary-card:hover { border-color: #81c784; box-shadow: 0 2px 8px rgba(0,0,0,.12); }
 
     .pp-section {
       background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px 18px;
@@ -362,6 +364,24 @@
   function ndvi(v) { return (v !== null && v !== undefined) ? v.toFixed(3) : '—'; }
 
   var navLinks = document.querySelectorAll('.report-nav a');
+
+  // Карточка-ссылка на карту с фильтром угодий (season/declared разбирает
+  // dashboard.html). Слой угодий на карте виден только с доступом к нему,
+  // без доступа карточка остаётся обычным блоком.
+  var CAN_OPEN_MAP = {% if can_view_farmlands %}true{% else %}false{% endif %};
+  var MAP_URL = '{% url "agrocosmos:dashboard" %}';
+  function mapCard(resp, filter, inner, extraCls) {
+    var cls = 'summary-card' + (extraCls ? ' ' + extraCls : '');
+    if (!CAN_OPEN_MAP) { return '<div class="' + cls + '">' + inner + '</div>'; }
+    var p = new URLSearchParams();
+    p.set('region', resp.region.id);
+    if (resp.district) { p.set('district', resp.district.id); }
+    p.set('year', resp.year);
+    p.set('season', filter.season);
+    if (filter.declared) { p.set('declared', filter.declared); }
+    return '<a class="' + cls + '" href="' + MAP_URL + '?' + p.toString() + '"'
+      + ' target="_blank" rel="noopener" title="Показать на карте">' + inner + '</a>';
+  }
 
   function updateUrl() {
     var params = new URLSearchParams();
@@ -666,9 +686,9 @@
       var c = classes[m.key] || { count: 0, area_ha: 0, avg_confidence: null };
       var conf = (c.avg_confidence !== null && c.avg_confidence !== undefined)
         ? ' · увер. ' + Math.round(c.avg_confidence * 100) + '%' : '';
-      return '<div class="summary-card">'
-        + '<div class="val" style="color:' + m.color + ';">' + area(c.area_ha) + ' га</div>'
-        + '<div class="lbl">' + m.label + '<br>' + num(c.count) + ' угодий' + conf + '</div></div>';
+      return mapCard(resp, { season: m.key },
+        '<div class="val" style="color:' + m.color + ';">' + area(c.area_ha) + ' га</div>'
+        + '<div class="lbl">' + m.label + '<br>' + num(c.count) + ' угодий' + conf + '</div>');
     });
     document.getElementById('crop-season-cards').innerHTML = cards.join('');
     var srcLabel = cs.source === 'fused' ? 'HLS (S2+L)' : 'Sentinel-2 / Landsat';
@@ -681,13 +701,13 @@
   // Класс unused (спутник) против заявленного использования (ЗСН).
   var USAGE_META = [
     { key: 'suspect', label: 'Заявлено используемым, но не обрабатывается',
-      color: '#D32F2F' },
+      color: '#D32F2F', map: { season: 'unused', declared: 'used' } },
     { key: 'confirmed', label: 'Не обрабатывается — совпало с ЗСН',
-      color: '#2e7d32' },
+      color: '#2e7d32', map: { season: 'unused', declared: 'unused' } },
     { key: 'unknown_declared', label: 'Не обрабатывается, статус ЗСН не указан',
-      color: '#9E9E9E' },
+      color: '#9E9E9E', map: { season: 'unused', declared: 'unknown' } },
     { key: 'reactivated', label: 'Заявлено неиспользуемым, но виден посев',
-      color: '#1565C0' }
+      color: '#1565C0', map: { season: 'winter,spring,hayfield', declared: 'unused' } }
   ];
 
   function renderDeclaredUsage(resp) {
@@ -697,9 +717,9 @@
     section.style.display = 'block';
     var cards = USAGE_META.map(function (m) {
       var c = du.cells[m.key] || { count: 0, area_ha: 0 };
-      return '<div class="summary-card">'
-        + '<div class="val" style="color:' + m.color + ';">' + area(c.area_ha) + ' га</div>'
-        + '<div class="lbl">' + m.label + '<br>' + num(c.count) + ' угодий</div></div>';
+      return mapCard(resp, m.map,
+        '<div class="val" style="color:' + m.color + ';">' + area(c.area_ha) + ' га</div>'
+        + '<div class="lbl">' + m.label + '<br>' + num(c.count) + ' угодий</div>');
     });
     var cs = resp.crop_season;
     var unusedArea = cs && cs.classes && cs.classes.unused
@@ -707,10 +727,10 @@
     var arable = du.arable_area_ha || 0;
     var share = arable ? (unusedArea / arable * 100) : null;
     if (share !== null) {
-      cards.push('<div class="summary-card">'
-        + '<div class="val" style="color:#795548;">' + share.toFixed(1) + '%</div>'
+      cards.push(mapCard(resp, { season: 'unused' },
+        '<div class="val" style="color:#795548;">' + share.toFixed(1) + '%</div>'
         + '<div class="lbl">Доля «не обрабатывается» от пашни<br>'
-        + area(unusedArea) + ' из ' + area(arable) + ' га</div></div>');
+        + area(unusedArea) + ' из ' + area(arable) + ' га</div>'));
     }
     document.getElementById('declared-usage-cards').innerHTML = cards.join('');
     document.getElementById('declared-usage-note').textContent =
@@ -743,15 +763,15 @@
         : '—';
     }
     var cards = [
-      { label: 'Озимых убрано', h: winterH, color: '#1565C0' },
-      { label: 'Яровых убрано', h: springH, color: '#F57C00' },
-      { label: 'Убрано всего', h: totalH, color: '#2E7D32' }
+      { label: 'Озимых убрано', h: winterH, color: '#1565C0', season: 'winter,harvested' },
+      { label: 'Яровых убрано', h: springH, color: '#F57C00', season: 'spring,harvested' },
+      { label: 'Убрано всего', h: totalH, color: '#2E7D32', season: 'harvested' }
     ];
     document.getElementById('harvest-cards').innerHTML = cards.map(function (c) {
-      return '<div class="summary-card harvest-card">'
-        + '<div class="val" style="color:' + c.color + ';">' + area(c.h.area_ha) + ' га '
+      return mapCard(resp, { season: c.season },
+        '<div class="val" style="color:' + c.color + ';">' + area(c.h.area_ha) + ' га '
         + '<small>(' + pct(c.h.area_ha) + ')</small></div>'
-        + '<div class="lbl">' + c.label + '<br>' + num(c.h.count) + ' угодий</div></div>';
+        + '<div class="lbl">' + c.label + '<br>' + num(c.h.count) + ' угодий</div>', 'harvest-card');
     }).join('');
     document.getElementById('harvest-note').textContent =
       'Убрано — угодья с уборочным спадом NDVI после пика (пашня/сенокос). '
