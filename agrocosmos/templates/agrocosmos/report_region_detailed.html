@@ -365,11 +365,12 @@
 
   var navLinks = document.querySelectorAll('.report-nav a');
 
-  // Карточка-ссылка на карту с фильтром угодий (season/declared разбирает
-  // dashboard.html). Слой угодий на карте виден только с доступом к нему,
-  // без доступа карточка остаётся обычным блоком.
+  // Карточка-ссылка на карту регионального мониторинга с фильтром угодий
+  // (season/declared разбирает raster_dashboard.html). Слой угодий на карте
+  // виден только с доступом к нему, без доступа карточка остаётся обычным
+  // блоком.
   var CAN_OPEN_MAP = {% if can_view_farmlands %}true{% else %}false{% endif %};
-  var MAP_URL = '{% url "agrocosmos:dashboard" %}';
+  var MAP_URL = '{% url "agrocosmos:raster_dashboard" %}';
   function mapCard(resp, filter, inner, extraCls) {
     var cls = 'summary-card' + (extraCls ? ' ' + extraCls : '');
     if (!CAN_OPEN_MAP) { return '<div class="' + cls + '">' + inner + '</div>'; }

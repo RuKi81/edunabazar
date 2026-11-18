@@ -200,3 +200,22 @@ class TileFarmlandGrantTests(TestCase):
             resource_type=ResourceGrant.ResourceType.FARMLAND)
         html = c.get('/agrocosmos/').content.decode()
         self.assertIn(toggle, html)
+
+    def test_raster_dashboard_has_season_filters(self):
+        from django.test import Client
+        ResourceGrant.objects.create(
+            legacy_user=self.user, level='view',
+            resource_type=ResourceGrant.ResourceType.FARMLAND)
+        c = Client()
+        s = c.session
+        s['legacy_user_id'] = self.user.id
+        s.save()
+        html = c.get('/agrocosmos/raster/').content.decode()
+        for value in ('winter', 'spring', 'harvested', 'unused'):
+            self.assertIn(
+                f'class="agro-season-cb" value="{value}"', html)
+
+    def test_report_cards_link_to_raster_dashboard(self):
+        html = self.client.get(
+            '/agrocosmos/report/region-detailed/').content.decode()
+        self.assertIn("var MAP_URL = '/agrocosmos/raster/';", html)
