@@ -304,10 +304,10 @@
 
       <div class="agro-page-tabs">
         <a href="{% url 'agrocosmos:dashboard' %}" class="{% if active_page == 'modis' %}active{% endif %}">
-          <i class="material-icons" style="font-size:14px; vertical-align:-2px;">timeline</i> Региональный мониторинг
+          <i class="material-icons" style="font-size:14px; vertical-align:-2px;">timeline</i> Глобальный мониторинг
         </a>
         <a href="{% url 'agrocosmos:raster_dashboard' %}" class="{% if active_page == 'raster' %}active{% endif %}">
-          <i class="material-icons" style="font-size:14px; vertical-align:-2px;">satellite</i> Детальный мониторинг
+          <i class="material-icons" style="font-size:14px; vertical-align:-2px;">satellite</i> Региональный мониторинг
         </a>
         <a href="{% url 'agrocosmos:report_region' %}" class="{% if active_page == 'report_region' %}active{% endif %}">
           <i class="material-icons" style="font-size:14px; vertical-align:-2px;">assessment</i> Отчёты
@@ -543,7 +543,7 @@
         <a id="ndvi-passport-link" href="#" target="_blank" style="display:none; font-size:11px; color:#1565C0; font-weight:600; margin-bottom:6px;"><i class="material-icons" style="font-size:13px; vertical-align:-2px;">description</i> Паспорт поля</a>
         <div id="ndvi-empty" style="display:none; padding:14px 12px; font-size:12px; color:#555; background:#fff8e1; border:1px solid #ffecb3; border-radius:4px; line-height:1.4;">
           Нет данных NDVI по этому угодью для выбранного источника и годов.
-          Попробуйте вкладку <a href="{% url 'agrocosmos:raster_dashboard' %}" style="color:#1565C0; font-weight:600;">Sentinel / Landsat</a>
+          Попробуйте вкладку <a href="{% url 'agrocosmos:raster_dashboard' %}" style="color:#1565C0; font-weight:600;">Региональный мониторинг</a>
           или выберите другой год.
         </div>
         <canvas id="ndvi-chart" style="max-height:200px;"></canvas>
