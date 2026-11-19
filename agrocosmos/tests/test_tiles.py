@@ -219,3 +219,11 @@ class TileFarmlandGrantTests(TestCase):
         html = self.client.get(
             '/agrocosmos/report/region-detailed/').content.decode()
         self.assertIn("var MAP_URL = '/agrocosmos/raster/';", html)
+
+    def test_map_reports_tab_matches_map_kind(self):
+        tab = '<a href="{}" class="">\n          <i class="material-icons"'
+        tab += ' style="font-size:14px; vertical-align:-2px;">assessment</i>'
+        html = self.client.get('/agrocosmos/').content.decode()
+        self.assertIn(tab.format('/agrocosmos/report/region/'), html)
+        html = self.client.get('/agrocosmos/raster/').content.decode()
+        self.assertIn(tab.format('/agrocosmos/report/region-detailed/'), html)
