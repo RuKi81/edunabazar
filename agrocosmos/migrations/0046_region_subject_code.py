@@ -64,6 +64,13 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.AlterField(
+            model_name='region',
+            name='code',
+            field=models.CharField(
+                max_length=100, unique=True, verbose_name='Ключ региона',
+            ),
+        ),
         migrations.AddField(
             model_name='region',
             name='subject_code',
