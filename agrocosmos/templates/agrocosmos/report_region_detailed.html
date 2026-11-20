@@ -3,7 +3,7 @@
 
 {% block title %}Отчёт субъект/район (озимые/яровые) — Агрокосмос{% endblock %}
 {% block meta_description %}Сводный отчёт по субъекту РФ на данных Sentinel-2/Landsat: озимые/яровые/сенокос/необрабатываемые угодья, темпы уборки, текущее состояние NDVI и разбивка по районам.{% endblock %}
-{% block og_title %}Свод по субъекту — Агрокосмос{% endblock %}
+{% block og_title %}Отчёт по субъекту — Агрокосмос{% endblock %}
 {% block og_description %}Сводный спутниковый отчёт по субъекту РФ: озимые/яровые, уборка, необрабатываемые угодья, текущее состояние NDVI по районам.{% endblock %}
 {% block og_image %}https://edunabazar.ru{% static 'legacy/images/og-agrocosmos.jpg' %}?v=2{% endblock %}
 {% block og_image_alt %}Агрокосмос — сводный отчёт по субъекту{% endblock %}
@@ -162,7 +162,7 @@
   {% include 'agrocosmos/_report_nav.html' with active='detailed' show_label_link=True %}
 
   <div class="report-header">
-    <h1><i class="material-icons" style="font-size:24px; vertical-align:-4px; color:#2e7d32;">map</i> <span id="rpt-title">Свод по субъекту</span></h1>
+    <h1><i class="material-icons" style="font-size:24px; vertical-align:-4px; color:#2e7d32;">map</i> <span id="rpt-title">Отчёт по субъекту</span></h1>
     <div class="subtitle" id="rpt-subtitle">Озимые / яровые / уборка / необрабатываемые — детальный мониторинг</div>
   </div>
 
@@ -973,11 +973,11 @@
   }
   document.getElementById('btn-csv').addEventListener('click', downloadCsv);
 
-  // Свод по субъекту (район не выбран).
+  // Отчёт по субъекту (район не выбран).
   function renderRegion(resp) {
     hideSections(DISTRICT_ONLY);
     btnCsv.style.display = '';
-    document.getElementById('rpt-title').textContent = 'Свод по субъекту — ' + resp.region.name;
+    document.getElementById('rpt-title').textContent = 'Отчёт по субъекту — ' + resp.region.name;
     document.getElementById('rpt-subtitle').textContent =
       resp.year + ' г. · озимые / яровые / уборка / необрабатываемые · детальный мониторинг';
     renderSummary(resp);
