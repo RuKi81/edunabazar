@@ -1302,99 +1302,8 @@ def _crop_season_summary_qs(cs_base):
             'count': r['count'],
             'area_ha': _safe_round(r['area_ha'] or 0, 1),
             'avg_confidence': _safe_round(r['avg_conf']),
-            'harvested': {'count': 0, 'area_ha': 0.0},
         }
-    # Признак «убрано»: доля угодий с уборочным спадом NDVI.
-    # Разрез по классам — сколько убрано озимых/яровых отдельно.
-    harv_rows = (
-        scoped.filter(is_harvested=True)
-        .values('season_class')
-        .annotate(count=Count('id'), area_ha=Sum('farmland__area_ha'))
-    )
-    harv_total_count = 0
-    harv_total_area = 0.0
-    for r in harv_rows:
-        cnt = r['count'] or 0
-        ar = float(r['area_ha'] or 0)
-        harv_total_count += cnt
-        harv_total_area += ar
-        cls = classes.get(r['season_class'])
-        if cls is not None:
-            cls['harvested'] = {'count': cnt, 'area_ha': _safe_round(ar, 1)}
-    return {
-        'source': source,
-        'classes': classes,
-        'harvested': {
-            'count': harv_total_count,
-            'area_ha': _safe_round(harv_total_area, 1),
-        },
-    }
-
-
-def _declared_usage_cross(cs_base, fl_filter):
-    """Кросс-таблица «класс сезона × заявленное использование (ЗСН)».
-
-    Спутниковый класс ``unused`` (нет покрова / нет уборочного спада) против
-    флага :attr:`Farmland.is_used` из слоя ЗСН даёт два рабочих списка:
-
-    * ``suspect`` — класс ``unused``, а угодье заявлено ИСПОЛЬЗУЕМЫМ:
-      кандидаты на проверку неиспользования;
-    * ``reactivated`` — заявлено неиспользуемым, а спутник видит культуру
-      (озимые/яровые): вероятно, вернули в оборот.
-
-    Остальные ячейки (``confirmed`` — unused и заявлено неиспользуемым,
-    ``unknown_declared`` — unused при пустом ``is_used``) нужны, чтобы
-    сумма сходилась и было видно качество самих данных ЗСН.
-    Класс ``unknown`` (не хватило данных) в кросс-таблицу не входит.
-
-    ``arable_area_ha`` — площадь пашни в scope: знаменатель для доли
-    «не обрабатывается» (сравнивать unused со ВСЕМИ угодьями некорректно,
-    пастбища и многолетние в классификацию не идут).
-    """
-    source = _crop_season_source(cs_base)
-    if source is None:
-        return None
-
-    cells = {
-        'suspect': {'count': 0, 'area_ha': 0.0},
-        'confirmed': {'count': 0, 'area_ha': 0.0},
-        'unknown_declared': {'count': 0, 'area_ha': 0.0},
-        'reactivated': {'count': 0, 'area_ha': 0.0},
-    }
-    rows = (
-        cs_base.filter(source=source, season_class__in=CROP_SEASON_CLASSES)
-        .exclude(season_class=FarmlandCropSeason.SeasonClass.UNKNOWN)
-        .values('season_class', 'farmland__is_used')
-        .annotate(count=Count('id'), area_ha=Sum('farmland__area_ha'))
-    )
-    for r in rows:
-        is_unused_class = (
-            r['season_class'] == FarmlandCropSeason.SeasonClass.UNUSED
-        )
-        declared = r['farmland__is_used']
-        if is_unused_class:
-            key = ('confirmed' if declared is False
-                   else 'suspect' if declared is True
-                   else 'unknown_declared')
-        elif declared is False:
-            key = 'reactivated'
-        else:
-            continue  # культура заявлена используемой — расхождения нет
-        cells[key]['count'] += r['count']
-        cells[key]['area_ha'] += float(r['area_ha'] or 0)
-    for cell in cells.values():
-        cell['area_ha'] = _safe_round(cell['area_ha'], 1)
-
-    arable_area = float(
-        Farmland.objects.filter(
-            crop_type=Farmland.CropType.ARABLE, **fl_filter,
-        ).aggregate(s=Sum('area_ha'))['s'] or 0.0
-    )
-    return {
-        'source': source,
-        'cells': cells,
-        'arable_area_ha': _safe_round(arable_area, 1),
-    }
+    return {'source': source, 'classes': classes}
 
 
 def _district_crop_season_summary(district_id, year):
@@ -1648,9 +1557,6 @@ def api_report_district_detailed(request: HttpRequest) -> JsonResponse:
         'crop_season_ndvi': _crop_season_ndvi_stats(
             cs_base, {'farmland__district_id': district.pk}, year,
         ),
-        'declared_usage': _declared_usage_cross(
-            cs_base, {'district_id': district.pk},
-        ),
         'alerts_summary': _district_alerts_summary(district.pk, year),
     })
 
@@ -1710,9 +1616,6 @@ def api_report_region_detailed(request: HttpRequest) -> JsonResponse:
         ),
         'crop_season': crop_season,
         'crop_season_ndvi': crop_season_ndvi,
-        'declared_usage': _declared_usage_cross(
-            cs_base, {'district__region_id': region.pk},
-        ),
         'districts': districts,
     })
 
