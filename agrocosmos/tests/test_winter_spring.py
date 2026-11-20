@@ -920,6 +920,8 @@ class ClassifyWinterSpringCommandTests(TestCase):
         # Строка класса hayfield от старого прогона не ломает отчёт и
         # не попадает в сводку.
         self._run(region_id=self.region.pk, year=YEAR, cover_gate=False)
+        winter_before = FarmlandCropSeason.objects.filter(
+            year=YEAR, season_class='winter').count()
         FarmlandCropSeason.objects.filter(
             farmland=self.winter[0], year=YEAR,
         ).update(season_class='hayfield')
@@ -929,5 +931,5 @@ class ClassifyWinterSpringCommandTests(TestCase):
         ).json()
         cs = resp['crop_season']
         self.assertNotIn('hayfield', cs['classes'])
-        self.assertEqual(cs['classes']['winter']['count'], 2)
+        self.assertEqual(cs['classes']['winter']['count'], winter_before - 1)
         self.assertGreaterEqual(cs['harvested']['count'], 1)
