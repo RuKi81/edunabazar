@@ -244,7 +244,7 @@ def dashboard(request: HttpRequest) -> HttpResponse:
     # Only ``id``/``name``/``code`` are used by the <select>; skip the heavy
     # ``geom`` MultiPolygon to avoid tens of MB of GeoDjango deserialization
     # on every dashboard render.
-    regions = Region.objects.only('id', 'name', 'code')
+    regions = Region.objects.only('id', 'name', 'code', 'subject_code')
     # ``region`` may legitimately be empty when the user explicitly
     # selects "— Регион —"; only fall back to 'all' when the parameter
     # is missing entirely from the query string.
@@ -284,7 +284,7 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 
 def raster_dashboard(request: HttpRequest) -> HttpResponse:
     """Detailed raster analysis page — Sentinel-2 / Landsat."""
-    regions = Region.objects.only('id', 'name', 'code')
+    regions = Region.objects.only('id', 'name', 'code', 'subject_code')
     region_id = request.GET.get('region')
     district_id = request.GET.get('district')
     selected_years = _parse_selected_years(request.GET.get('year'))
@@ -311,7 +311,7 @@ def raster_dashboard(request: HttpRequest) -> HttpResponse:
 
 def report_region(request: HttpRequest) -> HttpResponse:
     """Unified MODIS NDVI report page (region or district level)."""
-    regions = Region.objects.only('id', 'name', 'code')
+    regions = Region.objects.only('id', 'name', 'code', 'subject_code')
     region_id = request.GET.get('region')
     district_id = request.GET.get('district')
     year = request.GET.get('year')
@@ -362,7 +362,7 @@ def report_screening(request: HttpRequest) -> HttpResponse:
     (детальный мониторинг S2/L8/fused). Data comes from
     ``/agrocosmos/api/report/screening/``.
     """
-    regions = Region.objects.only('id', 'name', 'code')
+    regions = Region.objects.only('id', 'name', 'code', 'subject_code')
     region_id = request.GET.get('region')
     district_id = request.GET.get('district')
     year = request.GET.get('year')
@@ -407,7 +407,7 @@ def report_region_detailed(request: HttpRequest) -> HttpResponse:
     ``/agrocosmos/api/report/region-detailed/`` и
     ``/agrocosmos/api/report/district-detailed/``.
     """
-    regions = Region.objects.only('id', 'name', 'code')
+    regions = Region.objects.only('id', 'name', 'code', 'subject_code')
     region_id = request.GET.get('region')
     district_id = request.GET.get('district')
     year = request.GET.get('year')
@@ -435,7 +435,7 @@ def report_unused(request: HttpRequest) -> HttpResponse:
     Сверка заявленного факта использования (is_used) со спутниковыми
     сигналами сезона. Data comes from ``/agrocosmos/api/report/unused/``.
     """
-    regions = Region.objects.only('id', 'name', 'code')
+    regions = Region.objects.only('id', 'name', 'code', 'subject_code')
     region_id = request.GET.get('region')
     district_id = request.GET.get('district')
     year = request.GET.get('year')

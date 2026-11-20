@@ -27,6 +27,11 @@ from django.core.management import call_command
 from django.core.management.base import BaseCommand
 from django.db import connection
 
+from agrocosmos.models import Region
+from agrocosmos.services.regions import (
+    add_subject_code_argument, apply_subject_code,
+)
+
 RASTER_SATELLITES = ('sentinel2', 'landsat8', 'landsat9')
 FUSED_SATELLITES = ('hls_fused',)
 
@@ -37,7 +42,8 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--region-id', type=int, default=None,
-                            help='Ограничить одним регионом')
+                            help='Ограничить одним регионом (внутренний id)')
+        add_subject_code_argument(parser)
         parser.add_argument('--year', type=int, default=None,
                             help='Ограничить одним годом')
         parser.add_argument('--source', choices=['raster', 'fused'],
@@ -52,6 +58,7 @@ class Command(BaseCommand):
                             help='Только показать план (без классификации)')
 
     def handle(self, *args, **options):
+        apply_subject_code(options)
         combos = self._resolve_combos(options)
         if not combos:
             self.stdout.write(self.style.WARNING(
@@ -62,9 +69,17 @@ class Command(BaseCommand):
         self.stdout.write(
             f'Найдено комбинаций (регион x год x источник): {len(combos)}'
         )
+        # id записи — не код субъекта: печатаем название и код рядом.
+        titles = {
+            r.pk: f'{r.name}, код субъекта {r.subject_code or "—"}'
+            for r in Region.objects.filter(
+                pk__in={c[0] for c in combos},
+            ).only('id', 'name', 'subject_code')
+        }
         for region_id, year, source in combos:
-            self.stdout.write(f'  - регион={region_id}, год={year}, '
-                              f'источник={source}')
+            self.stdout.write(
+                f'  - регион id={region_id} ({titles.get(region_id, "?")}), '
+                f'год={year}, источник={source}')
         if options['dry_run']:
             self.stdout.write('[DRY RUN] классификация не запускалась.')
             return
@@ -73,7 +88,8 @@ class Command(BaseCommand):
         ok = 0
         for region_id, year, source in combos:
             self.stdout.write(
-                f'\n=== classify: регион={region_id}, год={year}, '
+                f'\n=== classify: регион id={region_id} '
+                f'({titles.get(region_id, "?")}), год={year}, '
                 f'источник={source} ==='
             )
             out = StringIO()

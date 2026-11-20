@@ -43,6 +43,9 @@ from agrocosmos.models import (
     District, Farmland, FarmlandCropSeason, FarmlandTrainingLabel,
     PipelineRun, Region, SeasonClassifierModel,
 )
+from agrocosmos.services.regions import (
+    add_subject_code_argument, apply_subject_code,
+)
 from agrocosmos.services.winter_spring import (
     BARE_BINS_COUNT, DEFAULT_EARLY_SPRING_THRESHOLD,
     EARLY_SPRING_DOY_END, EARLY_SPRING_DOY_START,
@@ -72,6 +75,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--region-id', type=int)
+        add_subject_code_argument(parser)
         parser.add_argument('--district-id', type=int)
         parser.add_argument('--year', type=int, required=True)
         parser.add_argument('--source', choices=['raster', 'fused'],
@@ -422,6 +426,7 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------ scope
 
     def _resolve_scope(self, options):
+        apply_subject_code(options)
         district_id = options.get('district_id')
         region_id = options.get('region_id')
         if district_id:

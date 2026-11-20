@@ -140,7 +140,7 @@
       <select id="lbl-region" class="lbl-field browser-default">
         <option value="">Субъект…</option>
         {% for r in regions %}
-          <option value="{{ r.id }}" {% if r.id|stringformat:'s' == region_id %}selected{% endif %}>{{ r.name }}</option>
+          <option value="{{ r.id }}" {% if r.id|stringformat:'s' == region_id %}selected{% endif %}>{{ r.name }}{% if r.subject_code %} ({{ r.subject_code }}){% endif %}</option>
         {% endfor %}
       </select>
     </div>

@@ -28,8 +28,9 @@ logger = logging.getLogger('agrocosmos')
 
 @admin.register(Region)
 class RegionAdmin(admin.ModelAdmin):
-    list_display = ('name', 'code', 'farmland_count', 'created_at')
-    search_fields = ('name', 'code')
+    list_display = ('name', 'subject_code', 'code', 'farmland_count',
+                    'created_at')
+    search_fields = ('name', 'code', 'subject_code')
 
     def get_queryset(self, request):
         # Annotate farmland count once via the direct ``Farmland.region`` FK

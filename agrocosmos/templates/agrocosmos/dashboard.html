@@ -318,7 +318,7 @@
         <option value="">— Регион —</option>
         <option value="all" {% if region_id == 'all' %}selected{% endif %}>— Все регионы (Оперативное состояние) —</option>
         {% for r in regions %}
-          <option value="{{ r.id }}" data-code="{{ r.code }}" {% if region_id|stringformat:'s' == r.id|stringformat:'s' %}selected{% endif %}>{{ r.name }}</option>
+          <option value="{{ r.id }}" data-code="{{ r.code }}" {% if region_id|stringformat:'s' == r.id|stringformat:'s' %}selected{% endif %}>{{ r.name }}{% if r.subject_code %} ({{ r.subject_code }}){% endif %}</option>
         {% endfor %}
       </select>
 

@@ -75,7 +75,7 @@ def label_dashboard(request: HttpRequest) -> HttpResponse:
             'regions': Region.objects.none(), 'active_page': 'label',
         }, status=403)
 
-    regions = Region.objects.only('id', 'name', 'code')
+    regions = Region.objects.only('id', 'name', 'code', 'subject_code')
     current_year = date.today().year
     return render(request, 'agrocosmos/label.html', {
         'forbidden': False,

@@ -39,6 +39,9 @@ import numpy as np
 from django.core.management.base import BaseCommand, CommandError
 
 from agrocosmos.models import District, Region
+from agrocosmos.services.regions import (
+    add_subject_code_argument, apply_subject_code,
+)
 from agrocosmos.services.season_dataset import (
     STAGE_COVER, STAGE_SEASON, build_dataset, rule_based_baseline,
 )
@@ -64,6 +67,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--region-id', type=int)
+        add_subject_code_argument(parser)
         parser.add_argument('--district-id', type=int)
         parser.add_argument('--year', type=int, required=True)
         parser.add_argument('--source', choices=['raster', 'fused'],
@@ -112,6 +116,7 @@ class Command(BaseCommand):
     # ----------------------------------------------------------------- scope
 
     def _resolve_scope(self, options):
+        apply_subject_code(options)
         district_id = options.get('district_id')
         region_id = options.get('region_id')
         if district_id:

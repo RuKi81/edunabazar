@@ -4,7 +4,15 @@ from django.contrib.gis.db import models
 class Region(models.Model):
     """Субъект РФ (например, Республика Крым)."""
     name = models.CharField(max_length=255, verbose_name='Название')
-    code = models.CharField(max_length=100, unique=True, verbose_name='Код субъекта')
+    # Текстовый ключ импорта (``tulskaya_obl``), НЕ официальный код субъекта.
+    code = models.CharField(max_length=100, unique=True, verbose_name='Ключ региона')
+    # Официальный двузначный код субъекта РФ. Внутренний ``id`` записи с ним
+    # не совпадает (id=45 — Московская область, а код 45 — Курганская).
+    subject_code = models.CharField(
+        max_length=2, unique=True, null=True, blank=True,
+        verbose_name='Код субъекта РФ',
+        help_text='Двузначный код субъекта РФ: 71 — Тульская область.',
+    )
     osm_id = models.BigIntegerField(
         null=True, blank=True, unique=True, db_index=True,
         verbose_name='OSM relation id',

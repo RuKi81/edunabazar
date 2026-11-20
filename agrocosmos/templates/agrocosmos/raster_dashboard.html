@@ -298,7 +298,7 @@
       <select id="agro-region" class="browser-default agro-ui__select">
         <option value="">— Регион —</option>
         {% for r in regions %}
-          <option value="{{ r.id }}" data-code="{{ r.code }}" {% if region_id|stringformat:'s' == r.id|stringformat:'s' %}selected{% endif %}>{{ r.name }}</option>
+          <option value="{{ r.id }}" data-code="{{ r.code }}" {% if region_id|stringformat:'s' == r.id|stringformat:'s' %}selected{% endif %}>{{ r.name }}{% if r.subject_code %} ({{ r.subject_code }}){% endif %}</option>
         {% endfor %}
       </select>
 
