@@ -320,7 +320,7 @@ def detect_harvest(
     return HarvestSignal(has, harvest_doy, float(drop_abs), float(drop_ratio))
 
 
-def season_coverage(doys: np.ndarray) -> float:
+def season_coverage(doys) -> float:
     """Доля дней сезона ``[SEASON_DOY_START..SEASON_DOY_END]``, покрытая
     спаном наблюдений (от первого до последнего внутри сезона).
 
@@ -329,6 +329,7 @@ def season_coverage(doys: np.ndarray) -> float:
     12 сцен, распределённых апрель–октябрь. Низкое покрытие → нельзя
     судить ни о покрове, ни о завершённости сезона.
     """
+    doys = np.asarray(doys, dtype=np.int32)
     season = doys[(doys >= SEASON_DOY_START) & (doys <= SEASON_DOY_END)]
     if len(season) == 0:
         return 0.0
@@ -357,6 +358,8 @@ def count_mowing_events(
 
     Возвращает ``(n_mowings, [doy впадины каждого спада])``.
     """
+    doys = np.asarray(doys, dtype=np.int32)
+    vals = np.asarray(vals, dtype=np.float64)
     season = (doys >= SEASON_DOY_START) & (doys <= SEASON_DOY_END)
     s_doys = doys[season]
     s_vals = vals[season]
