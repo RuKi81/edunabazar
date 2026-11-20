@@ -41,11 +41,14 @@ from django.utils import timezone
 
 from agrocosmos.models import (
     District, Farmland, FarmlandCropSeason, FarmlandTrainingLabel,
-    PipelineRun, Region,
+    PipelineRun, Region, SeasonClassifierModel,
 )
 from agrocosmos.services.winter_spring import (
-    DEFAULT_EARLY_SPRING_THRESHOLD, GREEN_FRACTION_MAX, GREEN_FRACTION_MIN,
+    BARE_BINS_COUNT, DEFAULT_EARLY_SPRING_THRESHOLD,
+    EARLY_SPRING_DOY_END, EARLY_SPRING_DOY_START,
+    GREEN_FRACTION_MAX, GREEN_FRACTION_MIN,
     HARVEST_MIN_DROP, HARVEST_MIN_DROP_RATIO, PEAK_DOY_THRESHOLD_DEFAULT,
+    WINTER_DOY_END,
     calibrate_cover_max_threshold, calibrate_cover_threshold,
     calibrate_peak_doy_threshold, calibrate_threshold_separating,
     classify_crop_value, classify_profile, evaluate_predictions,
@@ -141,6 +144,17 @@ class Command(BaseCommand):
                                  'признаков по эталонным классам '
                                  '(winter/spring/unused) и выйти без записи. '
                                  'Для подбора дискриминатора «не обрабатыв.».')
+        parser.add_argument('--use-model', action='store_true',
+                            help='Применить сохранённую модель '
+                                 '(SeasonClassifierModel, две ступени '
+                                 'cover+season) вместо правиловой '
+                                 'классификации. Нет модели/признаков — '
+                                 'fallback на правила.')
+        parser.add_argument('--no-history', action='store_true',
+                            help='Отключить многолетний гистерезис: без '
+                                 'него класс прошлого года (unused → '
+                                 'культура при слабых признаках) не '
+                                 'учитывается.')
 
     # ------------------------------------------------------------------ main
 
@@ -258,10 +272,26 @@ class Command(BaseCommand):
         # --- Гейты отсева необрабатываемых угодий ---
         gate = self._resolve_gates(options, series, ref_map)
 
+        # --- Сохранённая модель (выкатка season_model) ---
+        models = None
+        prev_ndvi = {}
+        if options['use_model']:
+            models = self._load_models(region, year, source)
+            if models and 'season' in models:
+                # Ступень озимые/яровые использует прошлогоднюю осень —
+                # грузим ряды year-1 тем же запросом и источником.
+                prev_ndvi = {
+                    fid: (d, v) for fid, (d, v, *_)
+                    in self._load_series(
+                        region, district, year - 1, satellites, crop_types,
+                    ).items()
+                }
+
         # --- Классификация + запись ---
         counts = self._classify_all(
             series, peak_threshold, es_threshold, year, source, ref_map,
-            gate, options['dry_run'],
+            gate, options['dry_run'], models=models, prev_ndvi=prev_ndvi,
+            use_history=not options['no_history'],
         )
         self._report(
             counts, series, ref_map, peak_threshold, es_threshold, gate,
@@ -443,7 +473,8 @@ class Command(BaseCommand):
         params.extend(satellites)
 
         sql = f"""
-            SELECT vi.farmland_id, vi.acquired_date, vi.mean, f.crop_type
+            SELECT vi.farmland_id, vi.acquired_date, vi.mean, f.crop_type,
+                   vi.histogram
             FROM agro_vegetation_index vi
             JOIN agro_farmland f ON f.id = vi.farmland_id
             JOIN agro_satellite_scene sc ON sc.id = vi.scene_id
@@ -459,8 +490,30 @@ class Command(BaseCommand):
             recs = list(group)
             doys = [r[1].timetuple().tm_yday for r in recs]
             vals = [float(r[2]) for r in recs]
-            out[fl_id] = (doys, vals, recs[0][3])
+            # Доля голых пикселей (NDVI < 0.4) по гистограммам в окне
+            # ранней весны: высокая ⇒ весенняя вспашка (пашня), низкая
+            # при зелёном ряду ⇒ травостой, который никто не пахал.
+            spring_bare = [
+                self._bare_fraction(r[4]) for r in recs
+                if EARLY_SPRING_DOY_START <= r[1].timetuple().tm_yday
+                <= EARLY_SPRING_DOY_END
+            ]
+            spring_bare = [b for b in spring_bare if b is not None]
+            bare = (float(sum(spring_bare) / len(spring_bare))
+                    if spring_bare else None)
+            out[fl_id] = (doys, vals, recs[0][3], bare)
         return out
+
+    @staticmethod
+    def _bare_fraction(histogram):
+        """Доля «голых» пикселей (первые ``BARE_BINS_COUNT`` бинов) в
+        гистограмме NDVI одной сцены или ``None``."""
+        if not histogram:
+            return None
+        total = sum(histogram)
+        if total <= 0:
+            return None
+        return float(sum(histogram[:BARE_BINS_COUNT]) / total)
 
     # -------------------------------------------------------- reference points
 
@@ -673,18 +726,121 @@ class Command(BaseCommand):
         )
         return peak_thr, es_thr
 
+    def _load_models(self, region, year, source):
+        """Загрузить сохранённые ступени модели для прогона.
+
+        Для каждой ступени (cover/season) берётся региональная модель,
+        иначе общая (``region=None``). Ни одной записи — ``None``, и
+        классификация остаётся правиловой (fallback).
+        """
+        qs = SeasonClassifierModel.objects.filter(year=year, source=source)
+        models = {}
+        for stage in ('cover', 'season'):
+            m = (qs.filter(stage=stage, region=region).first()
+                 or qs.filter(stage=stage, region__isnull=True).first())
+            if m:
+                models[stage] = m.state
+        if not models:
+            self.stdout.write(self.style.WARNING(
+                f'  Модель: записей SeasonClassifierModel за {year}/'
+                f'{source} нет — применяется правиловая классификация.'
+            ))
+            return None
+        self.stdout.write(
+            f'  Модель: ступени [{", ".join(sorted(models))}] '
+            f'(n_train={models[sorted(models)[0]].get("n_train", "?")})'
+        )
+        return models
+
+    @staticmethod
+    def _apply_model(doys, ndvi, prev_data, models):
+        """Двухступенчатое предсказание: ``(класс, уверенность) | None``.
+
+        ``None`` — признаки не считаются или ступени нет: вызывающий
+        оставляет результат правилового классификатора (fallback).
+        """
+        from agrocosmos.services.season_model import (
+            features_cover, features_season, predict_row,
+        )
+        cover_state = models.get('cover')
+        if cover_state is None:
+            return None
+        feats = features_cover(doys, ndvi)
+        if feats is None:
+            return None
+        prob, label = predict_row(feats, cover_state)
+        if label == 'unused':
+            return 'unused', 1.0 - prob
+
+        season_state = models.get('season')
+        if season_state is None:
+            return None
+        prev_doys = prev_ndvi = None
+        if prev_data:
+            prev_doys, prev_ndvi = prev_data
+        feats = features_season(doys, ndvi, prev_doys, prev_ndvi)
+        if feats is None:
+            return None
+        prob, label = predict_row(feats, season_state)
+        return label, (prob if label == 'winter' else 1.0 - prob)
+
+    @staticmethod
+    def _winter_baseline_fallback(series):
+        """Медиана зимнего baseline по угодьям, у которых зимние сцены есть.
+
+        Подмена ``winter_baseline``, когда в самом ряду зимних наблюдений
+        нет (``min`` ряда на коротком летнем спане завышает baseline и
+        искажает амплитуду и drop_ratio).
+        """
+        import numpy as np
+        bases = []
+        for doys, vals, *_ in series.values():
+            w = [v for d, v in zip(doys, vals) if d <= WINTER_DOY_END]
+            if w:
+                bases.append(float(np.mean(w)))
+        return float(np.median(bases)) if bases else None
+
     def _classify_all(self, series, peak_threshold, es_threshold, year,
-                      source, ref_map, gate, dry_run):
+                      source, ref_map, gate, dry_run, models=None,
+                      prev_ndvi=None, use_history=True):
         counts = {'winter': 0, 'spring': 0, 'hayfield': 0, 'unused': 0,
                   'unknown': 0}
+        self._stats = {'mismatch': 0, 'model_applied': 0}
+        prev_classes = {}
+        if use_history:
+            prev_classes = dict(
+                FarmlandCropSeason.objects.filter(
+                    farmland_id__in=list(series), year=year - 1,
+                    source=source,
+                ).values_list('farmland_id', 'season_class')
+            )
+        baseline_fallback = self._winter_baseline_fallback(series)
+        prev_ndvi = prev_ndvi or {}
         batch = []
-        for fl_id, (doys, ndvi, crop_type) in series.items():
+        for fl_id, (doys, ndvi, crop_type, bare) in series.items():
             prof = classify_profile(
                 doys, ndvi, peak_doy_threshold=peak_threshold,
                 early_spring_threshold=es_threshold,
-                hayfield=(crop_type == 'hayfield'), **gate,
+                hayfield=(crop_type == 'hayfield'),
+                baseline_fallback=baseline_fallback,
+                prev_class=prev_classes.get(fl_id),
+                bare_spring_fraction=bare,
+                **gate,
             )
+            # Сохранённая модель перекрывает правиловый класс: сенокос
+            # (кадастровый и фенологический) моделью не трогаем — у неё
+            # нет ступени травостоя.
+            if (models and prof.season_class != 'hayfield'
+                    and crop_type != 'hayfield'):
+                model_out = self._apply_model(
+                    doys, ndvi, prev_ndvi.get(fl_id), models)
+                if model_out is not None:
+                    cls, conf = model_out
+                    prof.season_class = cls
+                    prof.confidence = float(min(max(conf, 0.5), 0.99))
+                    self._stats['model_applied'] += 1
             counts[prof.season_class] += 1
+            self._stats['mismatch'] += prof.crop_type_mismatch
             if dry_run:
                 continue
             ref = ref_map.get(fl_id)
@@ -697,6 +853,11 @@ class Command(BaseCommand):
                 peak_ndvi=prof.peak_ndvi,
                 harvest_doy=prof.harvest_doy, harvest_drop=prof.harvest_drop,
                 is_harvested=prof.is_harvested,
+                n_mowings=prof.n_mowings,
+                season_coverage=prof.season_coverage,
+                green_fraction=prof.green_fraction,
+                bare_spring_fraction=prof.bare_spring_fraction,
+                crop_type_mismatch=prof.crop_type_mismatch,
                 is_reference=ref is not None,
                 reference_crop=(ref['value'] if ref else ''),
                 threshold=es_threshold,
@@ -719,6 +880,8 @@ class Command(BaseCommand):
                 'season_class', 'confidence', 'early_spring_ndvi',
                 'winter_baseline', 'sos_doy', 'peak_doy', 'peak_ndvi',
                 'harvest_doy', 'harvest_drop', 'is_harvested',
+                'n_mowings', 'season_coverage', 'green_fraction',
+                'bare_spring_fraction', 'crop_type_mismatch',
                 'is_reference', 'reference_crop', 'threshold',
                 'peak_doy_threshold',
             ],
@@ -736,6 +899,8 @@ class Command(BaseCommand):
         ('summer', 'лето'),
         ('autumn', 'осень'),
         ('winter_baseline', 'зимний baseline'),
+        ('season_coverage', 'покрытие сезона'),
+        ('n_mowings', 'число укосов'),
     ]
 
     def _reference_features_report(self, series, ref_map):
@@ -789,6 +954,17 @@ class Command(BaseCommand):
             f'не обрабатывается={counts["unused"]}, '
             f'не определено={counts["unknown"]}'
         )
+        stats = getattr(self, '_stats', None) or {}
+        if stats.get('mismatch'):
+            self.stdout.write(
+                f'  Расхождений вида угодья с кадастром (аудит): '
+                f'{stats["mismatch"]}'
+            )
+        if stats.get('model_applied'):
+            self.stdout.write(
+                f'  Класс присвоен моделью: {stats["model_applied"]} '
+                f'(остальные — правила/fallback)'
+            )
         if not ref_map:
             return
 

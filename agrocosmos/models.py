@@ -320,6 +320,38 @@ class FarmlandCropSeason(models.Model):
         help_text='Есть уборочный спад NDVI после пика (пашня/сенокос).',
     )
 
+    # ── Фенологическая диагностика сезона ──
+    # Число укосов (циклов «спад NDVI → отрастание»): ≥2 — типичная
+    # подпись кошеного травостоя, у зерновых уборка одна и терминальная.
+    n_mowings = models.PositiveSmallIntegerField(
+        default=0, verbose_name='Число укосов',
+        help_text='Циклы спад→отрастание NDVI за сезон (≥2 ⇒ сенокос).',
+    )
+    # Доля дней сезона [DOY 60..300], покрытая спаном наблюдений.
+    # Признак полноты ряда: гейты «не обрабатывается» применимы только
+    # при достаточном покрытии, иначе короткий ряд даёт ложный вывод.
+    season_coverage = models.FloatField(
+        null=True, blank=True, verbose_name='Покрытие сезона (0..1)',
+    )
+    # Доля «зелёных» наблюдений (NDVI ≥ 0.4) — признак покрова для
+    # калибровки гейтов cover_min/cover_max и аудита.
+    green_fraction = models.FloatField(
+        null=True, blank=True, verbose_name='Доля зелёных наблюдений',
+    )
+    # Доля голых пикселей (NDVI < 0.4) в ранневесенних сценах по
+    # ``VegetationIndex.histogram``: высокая ⇒ весеннюю вспашку (пашня),
+    # низкая при зелёном профиле ⇒ травостой/залежь.
+    bare_spring_fraction = models.FloatField(
+        null=True, blank=True,
+        verbose_name='Доля голых пикселей весной',
+    )
+    # Аудит: фенология противоречит ``Farmland.crop_type`` (кадастровый
+    # сенокос выглядит пашней или пашня косится как сенокос).
+    crop_type_mismatch = models.BooleanField(
+        default=False, verbose_name='Расхождение вида угодья',
+        help_text='Фенологический класс конфликтует с crop_type кадастра.',
+    )
+
     # ``is_reference`` — угодье попало под опорную точку известной культуры
     # (обучающая/валидационная разметка), ``reference_crop`` — её значение.
     is_reference = models.BooleanField(
@@ -359,6 +391,62 @@ class FarmlandCropSeason(models.Model):
             f'CropSeason {self.farmland_id} {self.year} '
             f'{self.season_class} ({self.confidence:.2f})'
         )
+
+
+class SeasonClassifierModel(models.Model):
+    """Обученная модель классификации сезона (выкатка ``season_model``).
+
+    Состояние логистической регрессии (коэффициенты, скейлер, импьютер,
+    порог) хранится JSON — модель полностью самодостаточна, без pickle
+    на диске. Каждая запись — одна СТУПЕНЬ двухступенчатого классификатора:
+    ``cover`` решает «культура vs не обрабатывается», ``season`` —
+    «озимые vs яровые» внутри культур.
+
+    Выкатывается только если CV-модель обгоняет правиловый baseline на
+    +0.02 balanced (см. ``train_season_model``); в ``metrics`` лежит
+    снапшот CV-отчёта, по которому принималось решение.
+    """
+
+    class Stage(models.TextChoices):
+        COVER = 'cover', 'Культура vs не обрабатывается'
+        SEASON = 'season', 'Озимые vs яровые'
+
+    region = models.ForeignKey(
+        Region, null=True, blank=True, on_delete=models.CASCADE,
+        related_name='season_models',
+        verbose_name='Регион (None — все регионы)',
+    )
+    year = models.IntegerField(verbose_name='Год обучающей выборки')
+    source = models.CharField(
+        max_length=10, choices=FarmlandCropSeason.Source.choices,
+        default=FarmlandCropSeason.Source.RASTER,
+        verbose_name='Источник рядов',
+    )
+    stage = models.CharField(
+        max_length=10, choices=Stage.choices, verbose_name='Ступень',
+    )
+    # model_state из services.season_model.train: beta/scaler/impute/
+    # threshold/labels/feature_set/feature_names — всё для predict_row.
+    state = models.JSONField(verbose_name='Состояние модели (JSON)')
+    # Снапшот CV-отчёта: balanced/accuracy модели и правилового baseline.
+    metrics = models.JSONField(
+        default=dict, verbose_name='Метрики CV на момент сохранения',
+    )
+    n_train = models.PositiveIntegerField(
+        default=0, verbose_name='Размер обучающей выборки',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'agro_season_classifier_model'
+        verbose_name = 'Модель классификации сезона'
+        verbose_name_plural = 'Модели классификации сезона'
+        unique_together = [('region', 'year', 'source', 'stage')]
+        ordering = ['-year']
+
+    def __str__(self):
+        region = self.region.name if self.region else 'все регионы'
+        return f'SeasonModel {self.stage} {region} {self.year}/{self.source}'
 
 
 class MonitoringTask(models.Model):

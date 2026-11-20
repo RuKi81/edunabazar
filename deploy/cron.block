@@ -21,4 +21,6 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 0 0 1 1 * cd /opt/edunabazar && docker compose -f docker-compose.prod.yml exec -T web python manage.py ensure_all_regions_monitored >> /var/log/ensure_all_regions_monitored.log 2>&1
 # Annual baseline rebuild on Jan 7 at 04:00 Moscow (01:00 UTC), once the prior year MODIS tail has arrived; then refresh status cache and prewarm choropleth GeoJSON.
 0 1 7 1 * cd /opt/edunabazar && docker compose -f docker-compose.prod.yml exec -T web sh -c 'python manage.py calc_ndvi_baseline && python manage.py recompute_district_ndvi_status && python manage.py prewarm_agro_caches' >> /var/log/calc_ndvi_baseline.log 2>&1
+# End-of-season crop classification pass with the harvest gate on Nov 5 at 05:00 Moscow (02:00 UTC): fields without a harvest NDVI drop become «не обрабатывается». Mid-season runs keep the gate off.
+0 2 5 11 * cd /opt/edunabazar && docker compose -f docker-compose.prod.yml exec -T web sh -c 'python manage.py backfill_crop_season --year $(date +\%Y) --harvest-gate' >> /var/log/backfill_crop_season.log 2>&1
 # >>> EDUNABAZAR-CRON END <<<

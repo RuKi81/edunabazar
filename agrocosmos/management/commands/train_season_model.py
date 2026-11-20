@@ -18,8 +18,10 @@
 сказать, даёт ли модель выигрыш, или красивая цифра — просто следствие
 дисбаланса классов.
 
-Команда НИЧЕГО НЕ ПИШЕТ в БД: пока это инструмент решения, стоит ли
-переводить прод на модель. Сохранение появится отдельным шагом.
+По умолчанию команда НИЧЕГО НЕ ПИШЕТ в БД. С ``--save`` обученные
+ступени сохраняются в ``SeasonClassifierModel`` и применяются прогоном
+``classify_winter_spring --use-model``; выкатывайте только когда
+CV-модель обгоняет пороговый baseline на +0.02 balanced.
 
 Примеры:
     # Регион целиком, метки за 2026 год
@@ -74,6 +76,13 @@ class Command(BaseCommand):
                                  '(признак «всходы озимых» будет пропущен).')
         parser.add_argument('--top-features', type=int, default=10,
                             help='Сколько весов печатать (по умолч. 10).')
+        parser.add_argument('--save', action='store_true',
+                            help='Сохранить обученные ступени в '
+                                 'SeasonClassifierModel (region/year/source/'
+                                 'stage) для выкатки через '
+                                 'classify_winter_spring --use-model. '
+                                 'Применяйте только когда CV-модель обгоняет '
+                                 'пороговый baseline на +0.02 balanced.')
 
     def handle(self, *args, **options):
         region, district = self._resolve_scope(options)
@@ -97,7 +106,8 @@ class Command(BaseCommand):
         stages = [options['stage']] if options['stage'] else [STAGE_COVER,
                                                               STAGE_SEASON]
         for stage in stages:
-            self._run_stage(data, stage, options['top_features'])
+            self._run_stage(data, stage, options['top_features'],
+                            region=region, options=options)
 
     # ----------------------------------------------------------------- scope
 
@@ -136,7 +146,7 @@ class Command(BaseCommand):
             f'Группы валидации: {scheme}'
         )
 
-    def _run_stage(self, data, stage, top):
+    def _run_stage(self, data, stage, top, region=None, options=None):
         stage_data = data[stage]
         self.stdout.write('')
         self.stdout.write(self.style.MIGRATE_HEADING(
@@ -162,8 +172,11 @@ class Command(BaseCommand):
             stage_data['positive_label'], stage_data['negative_label'],
         )
         self._report_l2(scores, state['l2'])
-        self._report_quality(stage, stage_data, data['series'], state, cv)
+        metrics = self._report_quality(
+            stage, stage_data, data['series'], state, cv)
         self._report_weights(state, top)
+        if options and options.get('save'):
+            self._save_model(region, options, stage, state, metrics)
 
     def _report_autumn_prev(self, stage_data):
         """Заполненность главного признака озимых — до, а не после весов.
@@ -226,7 +239,7 @@ class Command(BaseCommand):
                 f'{m["recall_neg"]:>9.3f}{m["accuracy"]:>10.3f}'
             )
         if cv is None:
-            return
+            return {'baseline': base, 'cv': None}
 
         gain = cv['balanced'] - base['balanced']
         if gain > 0.02:
@@ -245,6 +258,46 @@ class Command(BaseCommand):
                 'нужна дополнительная разметка.'
             )
         self._report_per_group(cv)
+        return {'baseline': base, 'cv': cv}
+
+    def _save_model(self, region, options, stage, state, metrics):
+        """Записать обученную ступень в ``SeasonClassifierModel``.
+
+        Снапшот CV-отчёта и baseline кладётся рядом с весами: по нему
+        видно, на каких данных принималось решение о выкатке (критерий
+        +0.02 balanced к правиловому классификатору).
+        """
+        from agrocosmos.models import SeasonClassifierModel
+        model, created = SeasonClassifierModel.objects.update_or_create(
+            region=region, year=options['year'],
+            source=options['source'], stage=stage,
+            defaults={
+                'state': state,
+                'metrics': {
+                    'baseline': metrics['baseline'],
+                    'cv': metrics['cv'],
+                    'in_sample': state['in_sample'],
+                },
+                'n_train': state['n_train'],
+            },
+        )
+        action = 'создана' if created else 'обновлена'
+        cv_bal = (metrics['cv']['balanced'] if metrics.get('cv')
+                  else None)
+        base_bal = metrics['baseline'].get('balanced')
+        gain = (cv_bal - base_bal
+                if cv_bal is not None and base_bal is not None else None)
+        suffix = (f' (CV balanced {cv_bal:.3f} vs baseline {base_bal:.3f}, '
+                  f'Δ {gain:+.3f})') if gain is not None else ' (CV нет)'
+        self.stdout.write(self.style.SUCCESS(
+            f'  Ступень "{stage}" {action} в SeasonClassifierModel '
+            f'(id={model.pk}){suffix}'
+        ))
+        if gain is None or gain < 0.02:
+            self.stdout.write(self.style.WARNING(
+                '  ВНИМАНИЕ: критерий выкатки (+0.02 balanced к baseline) '
+                'не подтверждён — применять --use-model на проде рано.'
+            ))
 
     def _report_per_group(self, cv):
         """Худшие группы: где модель проваливается, там и искать причину.

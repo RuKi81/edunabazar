@@ -43,6 +43,11 @@ class Command(BaseCommand):
         parser.add_argument('--source', choices=['raster', 'fused'],
                             default=None,
                             help='Ограничить одним источником (по умолч. оба)')
+        parser.add_argument('--harvest-gate', action='store_true',
+                            help='Включить гейт уборки в классификации. '
+                                 'Итоговый прогон завершённого сезона '
+                                 '(см. cron 1 ноября): поля без уборочного '
+                                 'спада NDVI уходят в «не обрабатывается».')
         parser.add_argument('--dry-run', action='store_true',
                             help='Только показать план (без классификации)')
 
@@ -76,6 +81,7 @@ class Command(BaseCommand):
                 call_command(
                     'classify_winter_spring',
                     region_id=region_id, year=year, source=source,
+                    harvest_gate=options['harvest_gate'],
                     stdout=out, stderr=out,
                 )
                 ok += 1

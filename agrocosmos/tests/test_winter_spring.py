@@ -28,7 +28,8 @@ from agrocosmos.services.winter_spring import (
     calibrate_cover_max_threshold, calibrate_cover_threshold,
     calibrate_peak_doy_threshold, calibrate_threshold,
     calibrate_threshold_separating, classify_crop_value, classify_profile,
-    detect_harvest, evaluate_predictions, profile_features,
+    count_mowing_events, detect_harvest, evaluate_predictions,
+    profile_features, season_coverage,
 )
 
 YEAR = 2026
@@ -71,6 +72,21 @@ def _grassland_ndvi(doy):
     if doy < 300:
         return 0.80 - (doy - 170) / 130 * 0.18  # медленный спад до ~0.62
     return 0.62
+
+
+def _two_mow_hayfield_ndvi(doy):
+    """Кошеный сенокос: два укоса с отрастанием («зубья» профиля)."""
+    if doy < 60:
+        return 0.30
+    if doy < 150:
+        return 0.30 + (doy - 60) / 90 * 0.55   # рост к 0.85 (1-й укосный пик)
+    if doy < 190:
+        return 0.85 - (doy - 150) / 40 * 0.55  # 1-й укос → 0.30
+    if doy < 235:
+        return 0.30 + (doy - 190) / 45 * 0.50  # отрастание к 0.80
+    if doy < 275:
+        return 0.80 - (doy - 235) / 40 * 0.55  # 2-й укос → 0.25
+    return 0.25
 
 
 def _unused_cover_ndvi(doy):
@@ -237,6 +253,97 @@ class WinterSpringServiceTests(SimpleTestCase):
         prof = classify_profile(doys, vals, hayfield=True, require_cover=True)
         self.assertEqual(prof.season_class, 'hayfield')
         self.assertLess(prof.green_fraction, 0.33)
+
+    # -- покрытие сезона (season_coverage) и гейт по данным --
+    def test_season_coverage_full_vs_partial(self):
+        doys, _, _ = _profile(_winter_ndvi)
+        self.assertGreaterEqual(season_coverage(doys), 0.9)
+        # Только летние наблюдения: ряд «видит» треть сезона.
+        summer = list(range(196, 250, 8))
+        self.assertLess(season_coverage(summer), 0.35)
+
+    def test_cover_gate_needs_coverage(self):
+        # Короткий ряд с реальным вегетационным всплеском (середина
+        # весны): зелени за ряд мало → без проверки покрытия гейт отнёс
+        # бы к unused, но «не зелёный кусок сезона» ≠ «не обрабатывается».
+        doys = list(range(100, 184, 8))
+        vals = [0.20] * len(doys)
+        for i, d in enumerate(doys):
+            if 136 <= d <= 160:
+                vals[i] = 0.55
+        prof = classify_profile(doys, vals, require_cover=True)
+        self.assertLess(prof.season_coverage, 0.45)
+        self.assertNotEqual(prof.season_class, 'unused')
+
+    # -- районная медиана baseline при отсутствии зимних снимков --
+    def test_baseline_fallback_used(self):
+        doys = list(range(100, 300, 8))
+        vals = [_spring_ndvi(d) for d in doys]
+        prof = classify_profile(doys, vals, baseline_fallback=0.22)
+        self.assertAlmostEqual(prof.winter_baseline, 0.22)
+        prof2 = classify_profile(doys, vals)
+        # Без fallback — min ряда (весенний минимум ~0.16).
+        self.assertLess(prof2.winter_baseline, 0.22)
+
+    # -- укосы и сенокос по фенологии --
+    def test_count_mowing_events_two_mows(self):
+        import numpy as np
+        doys, vals, _ = _profile(_two_mow_hayfield_ndvi)
+        n, events = count_mowing_events(
+            np.asarray(doys), np.asarray(vals), baseline=0.30)
+        self.assertGreaterEqual(n, 2)
+
+    def test_count_mowing_events_single_harvest(self):
+        # У зерновой уборка одна (терминальный спад) — укосов не больше 1.
+        import numpy as np
+        doys, vals, _ = _profile(_winter_ndvi)
+        n, _ = count_mowing_events(
+            np.asarray(doys), np.asarray(vals), baseline=0.30)
+        self.assertLessEqual(n, 1)
+
+    def test_phenology_hayfield(self):
+        # Два цикла «спад → отрастание» → класс hayfield БЕЗ кадастровой
+        # подсказки, плюс флаг расхождения с видом угодья (пашня).
+        doys, vals, _ = _profile(_two_mow_hayfield_ndvi)
+        prof = classify_profile(doys, vals)
+        self.assertEqual(prof.season_class, 'hayfield')
+        self.assertGreaterEqual(prof.n_mowings, 2)
+        self.assertTrue(prof.crop_type_mismatch)
+        self.assertTrue(prof.is_harvested)
+
+    def test_phenology_hayfield_suppressed_by_ploughing(self):
+        # Тот же «зубчатый» профиль, но весной поле пахали (голые
+        # пиксели) → это пашня с пересевом, а не сенокос.
+        doys, vals, _ = _profile(_two_mow_hayfield_ndvi)
+        prof = classify_profile(doys, vals, bare_spring_fraction=0.55)
+        self.assertNotEqual(prof.season_class, 'hayfield')
+
+    def test_cadastre_hayfield_mismatch_on_ploughed_spring(self):
+        # Кадастр «сенокос», но весной вспашка → класс сохраняется,
+        # флаг аудита поднят.
+        doys, vals, _ = _profile(_spring_ndvi)
+        prof = classify_profile(
+            doys, vals, hayfield=True, bare_spring_fraction=0.6)
+        self.assertEqual(prof.season_class, 'hayfield')
+        self.assertTrue(prof.crop_type_mismatch)
+
+    # -- многолетний гистерезис (prev_class) --
+    def test_history_hysteresis_keeps_unused(self):
+        # Прошлый год — залежь; профиль без уборки и уверенность ниже
+        # порога переворота → остаётся unused, а не «озимые».
+        doys, vals, _ = _profile(_grassland_ndvi)
+        without = classify_profile(doys, vals)
+        self.assertIn(without.season_class, ('winter', 'spring'))
+        prof = classify_profile(doys, vals, prev_class='unused')
+        self.assertEqual(prof.season_class, 'unused')
+
+    def test_history_flip_on_strong_harvest(self):
+        # Прошлый год — залежь, но в этом году явный уборочный спад →
+        # переход к культуре разрешён (поле вернули в оборот).
+        doys, vals, _ = _profile(_winter_ndvi)
+        prof = classify_profile(doys, vals, prev_class='unused')
+        self.assertEqual(prof.season_class, 'winter')
+        self.assertTrue(prof.is_harvested)
 
     # -- диагностические признаки (profile_features) --
     def test_profile_features_grass_vs_spring(self):
