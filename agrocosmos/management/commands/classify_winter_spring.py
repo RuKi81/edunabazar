@@ -48,7 +48,6 @@ from agrocosmos.services.winter_spring import (
     EARLY_SPRING_DOY_END, EARLY_SPRING_DOY_START,
     GREEN_FRACTION_MAX, GREEN_FRACTION_MIN,
     HARVEST_MIN_DROP, HARVEST_MIN_DROP_RATIO, PEAK_DOY_THRESHOLD_DEFAULT,
-    WINTER_DOY_END,
     calibrate_cover_max_threshold, calibrate_cover_threshold,
     calibrate_peak_doy_threshold, calibrate_threshold_separating,
     classify_crop_value, classify_profile, evaluate_predictions,
@@ -58,8 +57,10 @@ from agrocosmos.services.winter_spring import (
 RASTER_SATELLITES = ('sentinel2', 'landsat8', 'landsat9')
 FUSED_SATELLITES = ('hls_fused',)
 
-# По умолчанию классифицируем ПАШНЮ и СЕНОКОС: озимые/яровые — это пашня;
-# сенокос получает класс 'hayfield' и признак «убрано» (укос). Пастбища/
+# По умолчанию классифицируем ПАШНЮ и СЕНОКОС. Пашня — три класса:
+# озимые / яровые / не обрабатывается; сенокос — только озимые / яровые
+# (гейты «не обрабатывается» к нему не применяются). Служебный класс
+# «не определено» — при нехватке данных. Отдельного класса «сенокос» нет. Пастбища/
 # многолетние/сады зеленеют рано и раздувают «озимые», поэтому исключены.
 DEFAULT_CROP_TYPES = ('arable', 'hayfield')
 
@@ -85,7 +86,8 @@ class Command(BaseCommand):
         parser.add_argument('--crop-types', type=str, default='arable,hayfield',
                             help='Виды угодий через запятую (по умолч. '
                                  'arable,hayfield). "all"/пусто — без фильтра '
-                                 '(все угодья). Сенокос → класс hayfield.')
+                                 '(все угодья). Сенокос получает только '
+                                 'озимые/яровые (без «не обрабатывается»).')
         parser.add_argument('--harvest-gate', action='store_true',
                             help='Включить гейт уборки (отсев '
                                  'необрабатываемых угодий в класс unused). '
@@ -150,11 +152,6 @@ class Command(BaseCommand):
                                  'cover+season) вместо правиловой '
                                  'классификации. Нет модели/признаков — '
                                  'fallback на правила.')
-        parser.add_argument('--no-history', action='store_true',
-                            help='Отключить многолетний гистерезис: без '
-                                 'него класс прошлого года (unused → '
-                                 'культура при слабых признаках) не '
-                                 'учитывается.')
 
     # ------------------------------------------------------------------ main
 
@@ -291,7 +288,6 @@ class Command(BaseCommand):
         counts = self._classify_all(
             series, peak_threshold, es_threshold, year, source, ref_map,
             gate, options['dry_run'], models=models, prev_ndvi=prev_ndvi,
-            use_history=not options['no_history'],
         )
         self._report(
             counts, series, ref_map, peak_threshold, es_threshold, gate,
@@ -784,54 +780,29 @@ class Command(BaseCommand):
         prob, label = predict_row(feats, season_state)
         return label, (prob if label == 'winter' else 1.0 - prob)
 
-    @staticmethod
-    def _winter_baseline_fallback(series):
-        """Медиана зимнего baseline по угодьям, у которых зимние сцены есть.
-
-        Подмена ``winter_baseline``, когда в самом ряду зимних наблюдений
-        нет (``min`` ряда на коротком летнем спане завышает baseline и
-        искажает амплитуду и drop_ratio).
-        """
-        import numpy as np
-        bases = []
-        for doys, vals, *_ in series.values():
-            w = [v for d, v in zip(doys, vals) if d <= WINTER_DOY_END]
-            if w:
-                bases.append(float(np.mean(w)))
-        return float(np.median(bases)) if bases else None
-
     def _classify_all(self, series, peak_threshold, es_threshold, year,
                       source, ref_map, gate, dry_run, models=None,
-                      prev_ndvi=None, use_history=True):
-        counts = {'winter': 0, 'spring': 0, 'hayfield': 0, 'unused': 0,
-                  'unknown': 0}
-        self._stats = {'mismatch': 0, 'model_applied': 0}
-        prev_classes = {}
-        if use_history:
-            prev_classes = dict(
-                FarmlandCropSeason.objects.filter(
-                    farmland_id__in=list(series), year=year - 1,
-                    source=source,
-                ).values_list('farmland_id', 'season_class')
-            )
-        baseline_fallback = self._winter_baseline_fallback(series)
+                      prev_ndvi=None):
+        counts = {'winter': 0, 'spring': 0, 'unused': 0, 'unknown': 0}
+        self._stats = {'model_applied': 0}
         prev_ndvi = prev_ndvi or {}
         batch = []
+        # Сенокос — используемое угодье: гейты «не обрабатывается» к нему
+        # не применяются, класс только озимые/яровые (по дню пика).
+        hay_gate = {**gate, 'require_cover': False, 'cover_max': None,
+                    'require_harvest': False}
         for fl_id, (doys, ndvi, crop_type, bare) in series.items():
+            is_hayfield = crop_type == 'hayfield'
             prof = classify_profile(
                 doys, ndvi, peak_doy_threshold=peak_threshold,
                 early_spring_threshold=es_threshold,
-                hayfield=(crop_type == 'hayfield'),
-                baseline_fallback=baseline_fallback,
-                prev_class=prev_classes.get(fl_id),
                 bare_spring_fraction=bare,
-                **gate,
+                **(hay_gate if is_hayfield else gate),
             )
-            # Сохранённая модель перекрывает правиловый класс: сенокос
-            # (кадастровый и фенологический) моделью не трогаем — у неё
-            # нет ступени травостоя.
-            if (models and prof.season_class != 'hayfield'
-                    and crop_type != 'hayfield'):
+            # Сохранённая модель перекрывает правиловый класс. Сенокос
+            # моделью не трогаем: её первая ступень умеет отправлять
+            # угодье в «не обрабатывается».
+            if models and not is_hayfield:
                 model_out = self._apply_model(
                     doys, ndvi, prev_ndvi.get(fl_id), models)
                 if model_out is not None:
@@ -840,7 +811,6 @@ class Command(BaseCommand):
                     prof.confidence = float(min(max(conf, 0.5), 0.99))
                     self._stats['model_applied'] += 1
             counts[prof.season_class] += 1
-            self._stats['mismatch'] += prof.crop_type_mismatch
             if dry_run:
                 continue
             ref = ref_map.get(fl_id)
@@ -950,16 +920,10 @@ class Command(BaseCommand):
         self.stdout.write(
             f'\n{"[DRY RUN] " if dry_run else ""}Классифицировано {total}: '
             f'озимые={counts["winter"]}, яровые={counts["spring"]}, '
-            f'сенокос={counts["hayfield"]}, '
             f'не обрабатывается={counts["unused"]}, '
             f'не определено={counts["unknown"]}'
         )
         stats = getattr(self, '_stats', None) or {}
-        if stats.get('mismatch'):
-            self.stdout.write(
-                f'  Расхождений вида угодья с кадастром (аудит): '
-                f'{stats["mismatch"]}'
-            )
         if stats.get('model_applied'):
             self.stdout.write(
                 f'  Класс присвоен моделью: {stats["model_applied"]} '

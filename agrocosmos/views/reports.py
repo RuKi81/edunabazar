@@ -1189,7 +1189,10 @@ def _district_alerts_summary(district_id, year):
     return {'active_total': sum(t['count'] for t in by_type), 'by_type': by_type}
 
 
-CROP_SEASON_CLASSES = ('winter', 'spring', 'hayfield', 'unused', 'unknown')
+# Три рабочих класса + служебный «не определено». Отдельного класса
+# «сенокос» больше нет; строки ``hayfield`` от старых прогонов в отчёты
+# не попадают, пока scope не пересчитан ``classify_winter_spring``.
+CROP_SEASON_CLASSES = ('winter', 'spring', 'unused', 'unknown')
 
 # Порядок видов угодий (``Farmland.crop_type``) для сводных разбивок.
 # Пашня → Сенокос → Пастбище → Многолетние насаждения → Залежь.
@@ -1283,7 +1286,8 @@ def _crop_season_summary_qs(cs_base):
         c: {'count': 0, 'area_ha': 0.0, 'avg_confidence': None}
         for c in CROP_SEASON_CLASSES
     }
-    scoped = cs_base.filter(source=source)
+    scoped = cs_base.filter(
+        source=source, season_class__in=CROP_SEASON_CLASSES)
     rows = (
         scoped
         .values('season_class')
@@ -1300,8 +1304,8 @@ def _crop_season_summary_qs(cs_base):
             'avg_confidence': _safe_round(r['avg_conf']),
             'harvested': {'count': 0, 'area_ha': 0.0},
         }
-    # Признак «убрано» (пашня/сенокос): доля угодий с уборочным спадом NDVI.
-    # Разрез по классам — сколько убрано озимых/яровых/сенокоса отдельно.
+    # Признак «убрано»: доля угодий с уборочным спадом NDVI.
+    # Разрез по классам — сколько убрано озимых/яровых отдельно.
     harv_rows = (
         scoped.filter(is_harvested=True)
         .values('season_class')
@@ -1336,7 +1340,7 @@ def _declared_usage_cross(cs_base, fl_filter):
     * ``suspect`` — класс ``unused``, а угодье заявлено ИСПОЛЬЗУЕМЫМ:
       кандидаты на проверку неиспользования;
     * ``reactivated`` — заявлено неиспользуемым, а спутник видит культуру
-      (озимые/яровые/сенокос): вероятно, вернули в оборот.
+      (озимые/яровые): вероятно, вернули в оборот.
 
     Остальные ячейки (``confirmed`` — unused и заявлено неиспользуемым,
     ``unknown_declared`` — unused при пустом ``is_used``) нужны, чтобы
@@ -1358,7 +1362,7 @@ def _declared_usage_cross(cs_base, fl_filter):
         'reactivated': {'count': 0, 'area_ha': 0.0},
     }
     rows = (
-        cs_base.filter(source=source)
+        cs_base.filter(source=source, season_class__in=CROP_SEASON_CLASSES)
         .exclude(season_class=FarmlandCropSeason.SeasonClass.UNKNOWN)
         .values('season_class', 'farmland__is_used')
         .annotate(count=Count('id'), area_ha=Sum('farmland__area_ha'))
@@ -1440,7 +1444,8 @@ def _crop_season_ndvi_stats(cs_base, fl_filter, year):
     if source is None:
         return None
     cls_by_fl = dict(
-        cs_base.filter(source=source).values_list('farmland_id', 'season_class')
+        cs_base.filter(source=source, season_class__in=CROP_SEASON_CLASSES)
+        .values_list('farmland_id', 'season_class')
     )
     acc = {
         c: {'count': 0, 'sum_ndvi_area': 0.0, 'sum_area': 0.0,
@@ -1479,6 +1484,7 @@ def _region_district_crop_breakdown(region_id, year, source):
     rows = (
         FarmlandCropSeason.objects.filter(
             farmland__district__region_id=region_id, year=year, source=source,
+            season_class__in=CROP_SEASON_CLASSES,
         )
         .values('farmland__district_id', 'farmland__district__name', 'season_class')
         .annotate(count=Count('id'), area_ha=Sum('farmland__area_ha'))
@@ -1486,7 +1492,7 @@ def _region_district_crop_breakdown(region_id, year, source):
     harvested_rows = (
         FarmlandCropSeason.objects.filter(
             farmland__district__region_id=region_id, year=year, source=source,
-            is_harvested=True,
+            is_harvested=True, season_class__in=CROP_SEASON_CLASSES,
         )
         .values('farmland__district_id')
         .annotate(count=Count('id'), area_ha=Sum('farmland__area_ha'))
@@ -1655,7 +1661,7 @@ def api_report_region_detailed(request: HttpRequest) -> JsonResponse:
     """Subject-level (region) detailed crop-season report.
 
     Свод по субъекту на данных детального мониторинга (S2/L8/fused):
-    всего угодий, распределение озимые/яровые/сенокос/необрабатываемые,
+    всего угодий, распределение озимые/яровые/необрабатываемые,
     сколько убрано, статистика ТЕКУЩЕГО состояния NDVI (последние значения
     в БД) по озимым и яровым, а также разбивка crop-season по районам.
 

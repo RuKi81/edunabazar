@@ -40,7 +40,7 @@ _MAX_CANDIDATES = 600
 # Классы предсказания, доступные как пул кандидатов. ``unknown`` не входит:
 # там не хватило наблюдений, проверять нечего. По умолчанию — озимые/яровые:
 # именно этих эталонов мало для калибровки.
-_CANDIDATE_CLASSES = ('winter', 'spring', 'hayfield', 'unused')
+_CANDIDATE_CLASSES = ('winter', 'spring', 'unused')
 _DEFAULT_CANDIDATE_CLASSES = ('winter', 'spring')
 
 # Порядок выдачи кандидатов:

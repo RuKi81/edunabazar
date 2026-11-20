@@ -226,7 +226,7 @@ class WinterSpringServiceTests(SimpleTestCase):
         self.assertFalse(sig.has_harvest)
         self.assertIsNone(sig.drop_ratio)
 
-    # -- признак «убрано» (is_harvested) + сенокос (hayfield) --
+    # -- признак «убрано» (is_harvested) --
     def test_is_harvested_true_for_winter(self):
         # Пашня с уборочным обвалом NDVI → «убрано».
         doys, vals, _ = _profile(_winter_ndvi)
@@ -239,20 +239,6 @@ class WinterSpringServiceTests(SimpleTestCase):
         doys, vals, _ = _profile(_grassland_ndvi)
         prof = classify_profile(doys, vals)
         self.assertFalse(prof.is_harvested)
-
-    def test_hayfield_classified_hayfield_with_harvest(self):
-        # Сенокос с укосом (обвал NDVI) → класс hayfield, убрано=True.
-        doys, vals, _ = _profile(_winter_ndvi)
-        prof = classify_profile(doys, vals, hayfield=True)
-        self.assertEqual(prof.season_class, 'hayfield')
-        self.assertTrue(prof.is_harvested)
-
-    def test_hayfield_skips_cover_gate(self):
-        # Сенокос НЕ уходит в unused даже при низкой доле зелёных.
-        doys, vals, _ = _profile(_unused_cover_ndvi)
-        prof = classify_profile(doys, vals, hayfield=True, require_cover=True)
-        self.assertEqual(prof.season_class, 'hayfield')
-        self.assertLess(prof.green_fraction, 0.33)
 
     # -- покрытие сезона (season_coverage) и гейт по данным --
     def test_season_coverage_full_vs_partial(self):
@@ -285,7 +271,7 @@ class WinterSpringServiceTests(SimpleTestCase):
         # Без fallback — min ряда (весенний минимум ~0.16).
         self.assertLess(prof2.winter_baseline, 0.22)
 
-    # -- укосы и сенокос по фенологии --
+    # -- счётчик спадов (диагностика, на класс не влияет) --
     def test_count_mowing_events_two_mows(self):
         import numpy as np
         doys, vals, _ = _profile(_two_mow_hayfield_ndvi)
@@ -301,49 +287,24 @@ class WinterSpringServiceTests(SimpleTestCase):
             np.asarray(doys), np.asarray(vals), baseline=0.30)
         self.assertLessEqual(n, 1)
 
-    def test_phenology_hayfield(self):
-        # Два цикла «спад → отрастание» → класс hayfield БЕЗ кадастровой
-        # подсказки, плюс флаг расхождения с видом угодья (пашня).
+    def test_two_mow_profile_stays_in_three_classes(self):
+        # «Зубчатый» профиль кошеного травостоя: отдельного класса
+        # «сенокос» нет — только озимые/яровые/не обрабатывается, а
+        # число спадов остаётся диагностикой.
         doys, vals, _ = _profile(_two_mow_hayfield_ndvi)
-        prof = classify_profile(doys, vals)
-        self.assertEqual(prof.season_class, 'hayfield')
+        prof = classify_profile(doys, vals, bare_spring_fraction=0.05)
+        self.assertIn(prof.season_class, ('winter', 'spring', 'unused'))
         self.assertGreaterEqual(prof.n_mowings, 2)
-        self.assertTrue(prof.crop_type_mismatch)
-        self.assertTrue(prof.is_harvested)
+        self.assertFalse(prof.crop_type_mismatch)
 
-    def test_phenology_hayfield_suppressed_by_ploughing(self):
-        # Тот же «зубчатый» профиль, но весной поле пахали (голые
-        # пиксели) → это пашня с пересевом, а не сенокос.
-        doys, vals, _ = _profile(_two_mow_hayfield_ndvi)
-        prof = classify_profile(doys, vals, bare_spring_fraction=0.55)
-        self.assertNotEqual(prof.season_class, 'hayfield')
-
-    def test_cadastre_hayfield_mismatch_on_ploughed_spring(self):
-        # Кадастр «сенокос», но весной вспашка → класс сохраняется,
-        # флаг аудита поднят.
-        doys, vals, _ = _profile(_spring_ndvi)
-        prof = classify_profile(
-            doys, vals, hayfield=True, bare_spring_fraction=0.6)
-        self.assertEqual(prof.season_class, 'hayfield')
-        self.assertTrue(prof.crop_type_mismatch)
-
-    # -- многолетний гистерезис (prev_class) --
-    def test_history_hysteresis_keeps_unused(self):
-        # Прошлый год — залежь; профиль без уборки и уверенность ниже
-        # порога переворота → остаётся unused, а не «озимые».
+    def test_bare_spring_fraction_is_diagnostic_only(self):
+        # Доля голых пикселей сохраняется в профиле, но класс не меняет.
         doys, vals, _ = _profile(_grassland_ndvi)
-        without = classify_profile(doys, vals)
-        self.assertIn(without.season_class, ('winter', 'spring'))
-        prof = classify_profile(doys, vals, prev_class='unused')
-        self.assertEqual(prof.season_class, 'unused')
-
-    def test_history_flip_on_strong_harvest(self):
-        # Прошлый год — залежь, но в этом году явный уборочный спад →
-        # переход к культуре разрешён (поле вернули в оборот).
-        doys, vals, _ = _profile(_winter_ndvi)
-        prof = classify_profile(doys, vals, prev_class='unused')
-        self.assertEqual(prof.season_class, 'winter')
-        self.assertTrue(prof.is_harvested)
+        kwargs = {'require_cover': True, 'cover_max': 0.79}
+        low = classify_profile(doys, vals, bare_spring_fraction=0.02, **kwargs)
+        high = classify_profile(doys, vals, bare_spring_fraction=0.9, **kwargs)
+        self.assertEqual(low.season_class, high.season_class)
+        self.assertEqual(low.bare_spring_fraction, 0.02)
 
     # -- диагностические признаки (profile_features) --
     def test_profile_features_grass_vs_spring(self):
@@ -916,23 +877,57 @@ class ClassifyWinterSpringCommandTests(TestCase):
         self.assertEqual(resp['crop_season']['season_class'], 'winter')
         self.assertTrue(resp['crop_season']['is_harvested'])
 
-    def test_hayfield_classified_and_harvested(self):
-        # Сенокосное угодье → класс hayfield + признак «убрано».
+    def test_hayfield_land_classified_winter_or_spring(self):
+        # Сенокосное угодье получает озимые/яровые по дню пика:
+        # отдельного класса «сенокос» в отчётах нет.
         hay = Farmland.objects.create(
             region=self.region, district=self.district,
             crop_type=Farmland.CropType.HAYFIELD, area_ha=50,
             geom=_square(33.1, 50.2),
         )
-        self._series(hay, _winter_ndvi)  # укос = уборочный спад
+        self._series(hay, _winter_ndvi)
         self._run(region_id=self.region.pk, year=YEAR, cover_gate=False)
         rec = FarmlandCropSeason.objects.get(farmland=hay, year=YEAR)
-        self.assertEqual(rec.season_class, 'hayfield')
+        self.assertEqual(rec.season_class, 'winter')
         self.assertTrue(rec.is_harvested)
+
+    def test_hayfield_land_never_unused(self):
+        # Некошеный травостой на пашне уходит в «не обрабатывается»
+        # (все гейты включены), а на сенокосе — остаётся озимые/яровые.
+        hay = Farmland.objects.create(
+            region=self.region, district=self.district,
+            crop_type=Farmland.CropType.HAYFIELD, area_ha=50,
+            geom=_square(33.3, 50.2),
+        )
+        self._series(hay, _grassland_ndvi)
+        self._run(region_id=self.region.pk, year=YEAR, harvest_gate=True)
+        rec = FarmlandCropSeason.objects.get(farmland=hay, year=YEAR)
+        self.assertIn(rec.season_class, ('winter', 'spring'))
+        arable = FarmlandCropSeason.objects.get(
+            farmland=self.unused, year=YEAR)
+        self.assertEqual(arable.season_class, 'unused')
 
         resp = self.client.get(
             '/agrocosmos/api/report/district-detailed/',
             {'district': self.district.pk, 'year': YEAR},
         ).json()
         cs = resp['crop_season']
-        self.assertEqual(cs['classes']['hayfield']['count'], 1)
+        self.assertNotIn('hayfield', cs['classes'])
+        self.assertEqual(
+            set(cs['classes']), {'winter', 'spring', 'unused', 'unknown'})
+
+    def test_legacy_hayfield_rows_hidden_from_reports(self):
+        # Строка класса hayfield от старого прогона не ломает отчёт и
+        # не попадает в сводку.
+        self._run(region_id=self.region.pk, year=YEAR, cover_gate=False)
+        FarmlandCropSeason.objects.filter(
+            farmland=self.winter[0], year=YEAR,
+        ).update(season_class='hayfield')
+        resp = self.client.get(
+            '/agrocosmos/api/report/district-detailed/',
+            {'district': self.district.pk, 'year': YEAR},
+        ).json()
+        cs = resp['crop_season']
+        self.assertNotIn('hayfield', cs['classes'])
+        self.assertEqual(cs['classes']['winter']['count'], 2)
         self.assertGreaterEqual(cs['harvested']['count'], 1)

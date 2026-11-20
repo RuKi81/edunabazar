@@ -312,7 +312,6 @@
               <th class="sortable" data-key="total">Всего</th>
               <th class="sortable" data-key="winter">Озимые</th>
               <th class="sortable" data-key="spring">Яровые</th>
-              <th class="sortable" data-key="hayfield">Сенокос</th>
               <th class="sortable" data-key="unused">Не обраб.</th>
               <th class="sortable" data-key="harvested">Убрано</th>
               <th class="sortable" data-key="area_ha">Площадь, га</th>
@@ -445,7 +444,6 @@
   var SEASON_META = [
     { key: 'winter', label: 'Озимые', color: '#1565C0' },
     { key: 'spring', label: 'Яровые', color: '#F57C00' },
-    { key: 'hayfield', label: 'Сенокос', color: '#2E7D32' },
     { key: 'unused', label: 'Не обрабатывается', color: '#795548' },
     { key: 'unknown', label: 'Не определено', color: '#9E9E9E' }
   ];
@@ -490,7 +488,6 @@
     { key: 'total', get: function (d) { return d.total; } },
     { key: 'winter', get: function (d) { return clsCount(d, 'winter'); } },
     { key: 'spring', get: function (d) { return clsCount(d, 'spring'); } },
-    { key: 'hayfield', get: function (d) { return clsCount(d, 'hayfield'); } },
     { key: 'unused', get: function (d) { return clsCount(d, 'unused'); } },
     { key: 'harvested', get: function (d) { return (d.harvested || {}).count || 0; } },
     { key: 'area_ha', get: function (d) { return d.area_ha; } }
@@ -708,7 +705,7 @@
     { key: 'unknown_declared', label: 'Не обрабатывается, статус ЗСН не указан',
       color: '#9E9E9E', map: { season: 'unused', declared: 'unknown' } },
     { key: 'reactivated', label: 'Заявлено неиспользуемым, но виден посев',
-      color: '#1565C0', map: { season: 'winter,spring,hayfield', declared: 'unused' } }
+      color: '#1565C0', map: { season: 'winter,spring', declared: 'unused' } }
   ];
 
   function renderDeclaredUsage(resp) {
@@ -862,7 +859,6 @@
         + '<td>' + num(d.total) + '</td>'
         + '<td style="color:#1565C0;">' + num(c('winter')) + '</td>'
         + '<td style="color:#F57C00;">' + num(c('spring')) + '</td>'
-        + '<td style="color:#2E7D32;">' + num(c('hayfield')) + '</td>'
         + '<td style="color:#795548;">' + num(c('unused')) + '</td>'
         + '<td>' + num((d.harvested || {}).count) + '</td>'
         + '<td>' + area(d.area_ha) + '</td>'
@@ -940,12 +936,12 @@
     }
     // Таблица озимые/яровые по районам.
     rows.push(['Озимые/яровые по районам (по пашне)']);
-    rows.push(['Район', 'Всего', 'Озимые', 'Яровые', 'Сенокос',
+    rows.push(['Район', 'Всего', 'Озимые', 'Яровые',
       'Не обрабатывается', 'Не определено', 'Убрано', 'Площадь, га']);
     sortedDistricts().forEach(function (d) {
       function c(k) { return (d.classes[k] || {}).count || 0; }
       rows.push([d.district_name, d.total, c('winter'), c('spring'),
-        c('hayfield'), c('unused'), c('unknown'),
+        c('unused'), c('unknown'),
         (d.harvested || {}).count || 0, d.area_ha]);
     });
     return rows.map(function (r) {

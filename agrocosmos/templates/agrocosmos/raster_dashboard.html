@@ -547,16 +547,16 @@
     /* ── Season class filter (winter/spring classifier) ──
      * Checkboxes cover winter / spring / unused + the "harvested" flag.
      * A report card may additionally pass classes without a checkbox
-     * (hayfield / unknown) and an exact declared-usage state through the
+     * (unknown) and an exact declared-usage state through the
      * URL (?season=...&declared=...); those are shown in the note below
      * the checkboxes and can be reset there.
      */
     var seasonColors = {
-      winter: '#1565C0', spring: '#F57C00', hayfield: '#2E7D32',
+      winter: '#1565C0', spring: '#F57C00',
       unused: '#795548', unknown: '#9E9E9E'
     };
     var seasonLabels = {
-      winter: 'Озимые', spring: 'Яровые', hayfield: 'Сенокос',
+      winter: 'Озимые', spring: 'Яровые',
       unused: 'Не обрабатывается', unknown: 'Не определено'
     };
     var SEASON_CB_VALUES = ['winter', 'spring', 'harvested', 'unused'];

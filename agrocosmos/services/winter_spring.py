@@ -137,32 +137,19 @@ MAX_COVER_MAX_THRESHOLD = 0.95
 # ``unused`` применяются только при достаточном покрытии сезонных дней.
 MIN_GATE_COVERAGE = 0.45     # доля дней сезона [60..300] внутри спана ряда
 
-# ── УКОСЫ: детект событий drop→regrowth (сенокос) ───────────────────
-# Сенокос отличается от пашни НЕ одним, а НЕСКОЛЬКИМИ уборочными спадами
-# (первый/второй укос) с отрастанием между ними — «зубья» профиля.
-# Событие = значимый спад от локального максимума (см. detect_harvest),
-# после которого ряд снова набирает высоту (иначе это терминальная уборка
-# культуры). Два и более событий за сезон — почти наверняка травостой,
-# а не зерновая (у зерновых уборка одна, отрастать нечему).
-MOWING_MIN_DROP = 0.15       # абсолютный спад NDVI для укоса
+# ── УКОСЫ: счётчик событий drop→regrowth (ДИАГНОСТИКА) ───────────────
+# Число значимых спадов NDVI за сезон (см. :func:`count_mowing_events`).
+# Пишется в ``FarmlandCropSeason.n_mowings`` только для аудита и НА КЛАСС
+# НЕ ВЛИЯЕТ: попытка выводить по нему отдельный класс «сенокос» на
+# реальных рядах S2/L8 дала шум (облачные провалы выглядят как укосы).
+MOWING_MIN_DROP = 0.15       # абсолютный спад NDVI для события
 MOWING_MIN_REGROWTH = 0.10   # отрастание после спада, засчитываем цикл
-MOWING_PHENOLOGY_COUNT = 2   # ≥ стольких циклов → фенологический сенокос
 
-# ── Гетерогенность поля: доля «голых» пикселей из гистограммы NDVI ──
+# ── Доля «голых» пикселей из гистограммы NDVI (ДИАГНОСТИКА) ──────────
 # ``VegetationIndex.histogram`` — 5 бинов [0-0.2 … 0.8-1.0]. Доля пикселей
-# с NDVI < 0.4 в ранневесеннем окне — признак ВСПАШКИ: пашня в апреле
-# вспахана и голая внутри контура, залежь/травостой — уже зелёная.
-# Именно этот признак различает «заросшее» и «частично обработанное» поле.
+# с NDVI < 0.4 в ранневесеннем окне сохраняется для аудита; в решении
+# классификатора НЕ участвует.
 BARE_BINS_COUNT = 2          # бины гистограммы, считающиеся «голой почвой»
-BARE_SPRING_ARABLE_MIN = 0.40  # ≥ → явная вспашка (противоречит сенокосу)
-BARE_SPRING_UNUSED_MAX = 0.15  # ≤ → поле не пахали (поддерживает unused)
-
-# ── Многолетняя персистентность (гистерезис класса) ──────────────────
-# Залежь физически персистентна: заросшее поле не превращается в пашню
-# за один сезон. Если прошлый год — ``unused``, переход к культуре
-# разрешаем только при СИЛЬНОМ контр-признаке (уборочный спад) или
-# высокой уверенности нового класса — иначе класс дрожит год от года.
-HISTORY_FLIP_CONFIDENCE = 0.75
 
 
 @dataclass
@@ -177,7 +164,9 @@ class HarvestSignal:
 @dataclass
 class SeasonProfile:
     """Результат :func:`classify_profile` — класс + фичи + диагностика."""
-    season_class: str            # 'winter' | 'spring' | 'unused' | 'unknown'
+    # Три рабочих класса + служебный: 'winter' | 'spring' | 'unused' и
+    # 'unknown' (данных недостаточно). Отдельного класса «сенокос» нет.
+    season_class: str
     confidence: float            # 0..1
     early_spring_ndvi: Optional[float]
     winter_baseline: Optional[float]
@@ -189,16 +178,14 @@ class SeasonProfile:
     harvest_drop: Optional[float] = None   # доля спада (drop_ratio)
     is_harvested: bool = False   # «угодье убрано» — есть уборочный спад
     green_fraction: Optional[float] = None  # доля зелёных наблюдений (покров)
-    # Число укосов (циклов спад→отрастание): 0 у пашни после одной уборки,
-    # ≥2 у сенокоса/кормовых трав.
+    # Число значимых спадов NDVI за сезон — диагностика, на класс не влияет.
     n_mowings: int = 0
     # Доля дней сезона [60..300], покрытая спаном наблюдений.
     season_coverage: Optional[float] = None
-    # Доля голых пикселей (NDVI < 0.4) в ранневесенних сценах: высокая —
-    # признак вспашки; ``None``, если гистограмм нет.
+    # Доля голых пикселей (NDVI < 0.4) в ранневесенних сценах — диагностика;
+    # ``None``, если гистограмм нет.
     bare_spring_fraction: Optional[float] = None
-    # Флаг аудита: фенологический вывод конфликтует с ``Farmland.crop_type``
-    # (например, кадастр «сенокос», а профиль — паханая пашня).
+    # Не используется (всегда False): оставлено под колонку БД.
     crop_type_mismatch: bool = False
 
     def as_dict(self) -> dict:
@@ -398,22 +385,20 @@ def count_mowing_events(
 
 def _gated_profile(
     early_spring, winter_baseline, sos_doy, peak_doy, peak_ndvi,
-    n_obs, green_fraction, coverage, harvest, n_mowings, hayfield,
-    ploughed_spring, never_ploughed, require_cover, cover_min, cover_max,
-    require_harvest, harvest_min_drop_ratio, profile_extra,
+    n_obs, green_fraction, coverage, harvest, require_cover, cover_min,
+    cover_max, require_harvest, harvest_min_drop_ratio, profile_extra,
 ) -> Optional[SeasonProfile]:
-    """Гейты, решающие раньше бинарного сплита: ``SeasonProfile`` или ``None``.
+    """Гейты «не обрабатывается»: ``SeasonProfile('unused')`` или ``None``.
 
-    Порядок: покров → сенокос (кадастр и фенология) → зарастание →
-    уборка. ``None`` — ни один гейт не сработал, продолжаем к сплиту
-    озимые/яровые по дню пика.
+    Порядок: покров → зарастание → уборка. ``None`` — ни один гейт не
+    сработал, продолжаем к сплиту озимые/яровые по дню пика.
     """
     # Гейт покрова: мало «зелёных» наблюдений за сезон → большую часть года
     # поле без растительности (залежь, неудобья) → не обрабатывается. Работает
     # и в середине сезона (не требует состоявшейся уборки). Требует
     # достаточного покрытия сезона: короткий ряд (например, только
     # весенние сцены) тривиально «голый», это не признак залежи.
-    if (require_cover and not hayfield and green_fraction < cover_min
+    if (require_cover and green_fraction < cover_min
             and coverage >= MIN_GATE_COVERAGE):
         return SeasonProfile(
             'unused', _unused_confidence(green_fraction, cover_min),
@@ -421,48 +406,15 @@ def _gated_profile(
             green_fraction=green_fraction, **profile_extra,
         )
 
-    # Сенокос по кадастру: винтер/яровые неприменимы. Класс фиксируем как
-    # 'hayfield', а из ряда берём признак «убрано» (укос = уборочный спад
-    # NDVI). Гейты покрова/уборки не переводят сенокос в 'unused', НО
-    # если профиль явно паханой пашни (голая весна) — поднимаем флаг
-    # аудита ``crop_type_mismatch``: кадастровый land-use не подтверждается.
-    if hayfield:
-        return SeasonProfile(
-            'hayfield', 0.9, early_spring, winter_baseline,
-            sos_doy, peak_doy, peak_ndvi, n_obs,
-            harvest_doy=harvest.harvest_doy, harvest_drop=harvest.drop_ratio,
-            is_harvested=harvest.has_harvest, green_fraction=green_fraction,
-            crop_type_mismatch=ploughed_spring,
-            **profile_extra,
-        )
-
-    # Сенокос по ФЕНОЛОГИИ: ≥2 цикла «спад → отрастание» за сезон
-    # (двукратная косьба). У зерновых уборка одна и терминальная.
-    # Засчитываем только если поле не пахали весной — иначе второй
-    # спад может быть парой «уборка + подсев сидерата».
-    if n_mowings >= MOWING_PHENOLOGY_COUNT and not ploughed_spring:
-        return SeasonProfile(
-            'hayfield', 0.75, early_spring, winter_baseline,
-            sos_doy, peak_doy, peak_ndvi, n_obs,
-            harvest_doy=harvest.harvest_doy, harvest_drop=harvest.drop_ratio,
-            is_harvested=True, green_fraction=green_fraction,
-            # Кадастр говорил «пашня», а профиль — кошеный травостой.
-            crop_type_mismatch=True,
-            **profile_extra,
-        )
-
     # Гейт зарастания: зелено почти весь ряд И никакой уборки → залежь
     # под многолетним травостоем (у культуры есть либо голая почва
     # после сева, либо уборочный спад — чаще и то, и другое). Покрытие
     # сезона обязательно: «зелёное лето» без весны и осени — это ещё не
-    # «зеленело весь сезон». При наличии гистограммы «поле не пахали»
-    # (never_ploughed) ослабляет требования к доле зелени: травостой
-    # держит высокий NDVI, даже если ряд обрывается.
+    # «зеленело весь сезон».
     overgrown = (
         require_cover and cover_max is not None
         and coverage >= MIN_GATE_COVERAGE
-        and not harvest.has_harvest
-        and (green_fraction >= cover_max or never_ploughed)
+        and green_fraction >= cover_max and not harvest.has_harvest
     )
     if overgrown:
         return SeasonProfile(
@@ -540,9 +492,7 @@ def classify_profile(
     require_cover: bool = False,
     cover_min: float = GREEN_FRACTION_MIN,
     cover_max: Optional[float] = None,
-    hayfield: bool = False,
     baseline_fallback: Optional[float] = None,
-    prev_class: Optional[str] = None,
     bare_spring_fraction: Optional[float] = None,
 ) -> SeasonProfile:
     """Классифицировать один сезонный NDVI-ряд угодья.
@@ -587,9 +537,9 @@ def classify_profile(
         baseline_fallback: подменный зимний baseline (например, районная
             медиана), когда зимних наблюдений в ряду нет — иначе берётся
             ``min`` ряда, что на коротких летних рядах искажает амплитуду.
-        prev_class: класс того же угодья за прошлый год (гистерезис).
         bare_spring_fraction: доля голых пикселей (NDVI < 0.4) в
-            ранневесенних сценах по ``VegetationIndex.histogram``.
+            ранневесенних сценах по ``VegetationIndex.histogram`` —
+            только сохраняется в профиле (диагностика), на класс не влияет.
 
     Возвращает :class:`SeasonProfile`. ``season_class='unknown'`` — данных
     недостаточно (мало точек, нет вег. цикла, слабая амплитуда); ``unused``
@@ -651,25 +601,13 @@ def classify_profile(
         doys, smoothed, peak_doy, peak_ndvi, winter_baseline,
         min_drop=harvest_min_drop, min_drop_ratio=harvest_min_drop_ratio,
     )
-    n_mowings, _mow_doys = count_mowing_events(doys, smoothed, winter_baseline)
-    profile_extra['n_mowings'] = n_mowings
-
-    # Плужное происхождение весны: много голых пикселей в апрельских
-    # сценах ⇒ поле пахали ⇒ это пашня, а не травостой.
-    ploughed_spring = (
-        bare_spring_fraction is not None
-        and bare_spring_fraction >= BARE_SPRING_ARABLE_MIN
-    )
-    never_ploughed = (
-        bare_spring_fraction is not None
-        and bare_spring_fraction <= BARE_SPRING_UNUSED_MAX
-    )
+    profile_extra['n_mowings'], _ = count_mowing_events(
+        doys, smoothed, winter_baseline)
 
     gated = _gated_profile(
         early_spring, winter_baseline, sos_doy, peak_doy, peak_ndvi,
-        n_obs, green_fraction, coverage, harvest, n_mowings, hayfield,
-        ploughed_spring, never_ploughed, require_cover, cover_min, cover_max,
-        require_harvest, harvest_min_drop_ratio, profile_extra,
+        n_obs, green_fraction, coverage, harvest, require_cover, cover_min,
+        cover_max, require_harvest, harvest_min_drop_ratio, profile_extra,
     )
     if gated is not None:
         return gated
@@ -679,15 +617,6 @@ def classify_profile(
         peak_doy, peak_doy_threshold, early_spring, early_spring_threshold,
         sos_doy, season_class,
     )
-
-    # Гистерезис: прошлогодняя залежь → культура только при сильном
-    # контр-признаке (уборка) или высокой уверенности. Иначе оставляем
-    # 'unused': заросшее поле не становится пашней за сезон, а
-    # пограничные профили дают ложные переходы год от года.
-    if (prev_class == 'unused' and not harvest.has_harvest
-            and confidence < HISTORY_FLIP_CONFIDENCE):
-        season_class = 'unused'
-        confidence = 0.6
 
     return SeasonProfile(
         season_class, confidence, early_spring, winter_baseline,

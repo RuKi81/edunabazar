@@ -686,10 +686,9 @@
     var usedStr = f.is_used === true ? 'Используется' : f.is_used === false ? 'Не используется' : '—';
     var cs = resp.crop_season;
     var seasonCard = '';
-    if (cs && cs.season_class && cs.season_class !== 'unknown') {
+    if (cs && (cs.season_class === 'winter' || cs.season_class === 'spring' || cs.season_class === 'unused')) {
       var seasonColor = cs.season_class === 'winter' ? '#1565C0'
-        : cs.season_class === 'unused' ? '#795548'
-        : cs.season_class === 'hayfield' ? '#2E7D32' : '#F57C00';
+        : cs.season_class === 'unused' ? '#795548' : '#F57C00';
       var confStr = (cs.confidence !== null && cs.confidence !== undefined)
         ? ' · ' + Math.round(cs.confidence * 100) + '%' : '';
       seasonCard =
@@ -697,7 +696,7 @@
         + esc(cs.season_label) + '</div><div class="lbl">Озимая/яровая (NDVI)' + confStr + '</div></div>';
     }
     var harvestCard = '';
-    if (cs && (cs.season_class === 'winter' || cs.season_class === 'spring' || cs.season_class === 'hayfield')) {
+    if (cs && (cs.season_class === 'winter' || cs.season_class === 'spring')) {
       var harvested = cs.is_harvested === true;
       harvestCard =
         '<div class="summary-card"><div class="val" style="font-size:15px; color:' + (harvested ? '#2E7D32' : '#9E9E9E') + ';">'
