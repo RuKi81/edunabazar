@@ -325,6 +325,66 @@ def _country_baseline_series(country_bl, year):
     return country_baseline
 
 
+_COUNTRY_SHARES_CACHE_KEY = 'agro:country_farmland_shares:v1'
+_COUNTRY_SHARES_CACHE_TTL = 60 * 60  # 1 час
+
+
+def _country_farmland_shares(region_names):
+    """Площадь угодий (га) по субъектам и видам — данные для пайчартов.
+
+    Виды — ``FARMLAND_TYPE_ORDER`` (без «иных» и «прочих»), субъект — по
+    району угодья, как в отчёте по субъекту. ``GROUP BY`` по всей таблице
+    угодий тяжёлый (миллионы строк) и не зависит от года, поэтому строки
+    агрегата кэшируются на час отдельно от ``cache_page`` отчёта.
+    """
+    rows = cache.get(_COUNTRY_SHARES_CACHE_KEY)
+    if rows is None:
+        rows = list(
+            Farmland.objects.filter(
+                crop_type__in=FARMLAND_TYPE_ORDER, district__isnull=False,
+            )
+            .values_list('district__region_id', 'crop_type')
+            .annotate(s_area=Sum('area_ha'))
+            .order_by()
+        )
+        cache.set(_COUNTRY_SHARES_CACHE_KEY, rows, _COUNTRY_SHARES_CACHE_TTL)
+
+    per_region = defaultdict(dict)
+    per_type = defaultdict(float)
+    for rid, crop_type, s_area in rows:
+        area = float(s_area or 0)
+        if area <= 0:
+            continue
+        per_region[rid][crop_type] = area
+        per_type[crop_type] += area
+
+    regions = [
+        {
+            'region_id': rid,
+            'region_name': region_names.get(rid, ''),
+            'area_ha': _safe_round(sum(by_type.values()), 1),
+            'by_type': {
+                c: _safe_round(by_type[c], 1)
+                for c in FARMLAND_TYPE_ORDER if c in by_type
+            },
+        }
+        for rid, by_type in per_region.items()
+    ]
+    regions.sort(key=lambda r: (-r['area_ha'], r['region_name']))
+    return {
+        'total_area_ha': _safe_round(sum(per_type.values()), 1),
+        'types': [
+            {
+                'crop_type': c,
+                'label': Farmland.CropType(c).label,
+                'area_ha': _safe_round(per_type[c], 1),
+            }
+            for c in FARMLAND_TYPE_ORDER if c in per_type
+        ],
+        'regions': regions,
+    }
+
+
 @rate_limit('30/m')
 @cache_page(60 * 15)
 def api_report_country(request: HttpRequest) -> JsonResponse:
@@ -333,6 +393,8 @@ def api_report_country(request: HttpRequest) -> JsonResponse:
     Reads the DistrictNdviSeries pre-aggregate summed up to
     (region, date) level — ≈2 000 points/year for the whole country —
     plus per-region baselines (district baselines averaged per DOY).
+    ``farmland_shares`` — площади угодий по субъектам и видам (от года
+    не зависят).
 
     Query params:
         year (required): year
@@ -381,6 +443,7 @@ def api_report_country(request: HttpRequest) -> JsonResponse:
         'country_overall_series': country_overall,
         'country_baseline': country_baseline,
         'last_period_end': last_period_end,
+        'farmland_shares': _country_farmland_shares(region_names),
     })
 
 

@@ -183,6 +183,35 @@
     .country-card .cc-meta b { color: #333; }
     .country-card svg { display: block; width: 100%; height: 48px; }
 
+    /* ── Country-mode (farmland-share pies per subject) ── */
+    #rpt-shares:not(:empty) { margin-bottom: 20px; }
+    .shares-title { font-size: 15px; font-weight: 700; margin: 0 0 10px 0; }
+    .shares-title i { font-size: 18px; vertical-align: -3px; color: #6A1B9A; }
+    .shares-grid {
+      display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px;
+    }
+    @media (max-width: 900px) {
+      .shares-grid { grid-template-columns: 1fr; }
+    }
+    .share-card {
+      background: #fff; border: 1px solid #e0e0e0; border-radius: 8px;
+      padding: 14px 16px; page-break-inside: avoid;
+    }
+    .share-card h3 { font-size: 14px; font-weight: 700; color: #1b5e20; margin: 0 0 2px 0; }
+    .share-card .share-total { font-size: 12px; color: #666; margin-bottom: 10px; }
+    .share-body { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+    .share-pie { flex: 0 0 170px; height: 170px; position: relative; margin: 0 auto; }
+    .share-legend { flex: 1 1 220px; min-width: 0; font-size: 12px; }
+    .share-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
+    .share-dot { flex: 0 0 10px; height: 10px; border-radius: 2px; }
+    .share-name {
+      flex: 1; min-width: 0; color: #333; text-decoration: none;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    a.share-name:hover { color: #2e7d32; text-decoration: underline; }
+    .share-area { color: #666; white-space: nowrap; }
+    .share-pct { flex: 0 0 44px; text-align: right; font-weight: 700; color: #333; }
+
     .report-loader {
       text-align: center; padding: 40px; font-size: 15px; color: #777;
     }
@@ -208,6 +237,7 @@
       #rpt-districts .district-section { break-inside: avoid; }
       .report-wrap { max-width: 100%; margin: 0; padding: 0 10px; }
       .district-section { break-inside: avoid; }
+      .share-card { break-inside: avoid; }
     }
   </style>
 {% endblock %}
@@ -271,6 +301,8 @@
       <h2 style="font-size:15px; font-weight:700; margin:0 0 10px 0;"><i class="material-icons" style="font-size:18px; vertical-align:-3px; color:#6A1B9A;">public</i> <span id="region-chart-title">Общий индекс NDVI по региону</span></h2>
       <div style="height:220px; position:relative;"><canvas id="chart-region-overall"></canvas></div>
     </div>
+    <!-- Country-mode only: subjects' shares of farmland area (pie charts). -->
+    <div id="rpt-shares"></div>
     <!-- District-mode only: overall NDVI for the selected district + per-crop split. -->
     <div class="overall-chart-section" id="overall-section" style="display:none;">
       <h2 style="font-size:16px; font-weight:700; color:#1b5e20; margin:0 0 12px 0;"><i class="material-icons" style="font-size:18px; vertical-align:-3px; color:#2e7d32;">show_chart</i> Динамика NDVI по району</h2>
@@ -300,6 +332,7 @@
   var summaryEl = document.getElementById('rpt-summary');
   var districtsEl = document.getElementById('rpt-districts');
   var cropsEl = document.getElementById('rpt-crops');
+  var sharesEl = document.getElementById('rpt-shares');
 
   // Charts created by either renderer; cleaned out before each generate().
   var districtCharts = [];
@@ -424,6 +457,7 @@
     // Reset both render targets so a previous run doesn't leak content.
     districtsEl.innerHTML = '';
     cropsEl.innerHTML = '';
+    sharesEl.innerHTML = '';
     document.getElementById('overall-section').style.display = 'none';
 
     var url;
@@ -551,6 +585,8 @@
       regionSection.style.display = 'none';
     }
 
+    renderFarmlandShares(resp.farmland_shares, year);
+
     // Per-category sections with sparkline cards (worst z-score first)
     var html = '';
     countryCategories.forEach(function (cat) {
@@ -588,6 +624,131 @@
       html = '<div style="color:#999; font-size:14px; padding:24px; text-align:center;">Нет данных NDVI за выбранный год</div>';
     }
     districtsEl.innerHTML = html;
+  }
+
+  /* ── Country-mode: farmland-share pies ──
+     Each subject's share of the RF farmland area: one pie for all
+     farmland plus one per farmland type (пашня, сенокос, …). Top
+     subjects are shown individually, the tail is folded into
+     «Остальные». A subject keeps its colour across all pies. */
+  var SHARE_TOP_N = 10;
+  var shareColors = [
+    '#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd','#8c564b',
+    '#e377c2','#bcbd22','#17becf','#393b79','#aec7e8','#ffbb78',
+    '#98df8a','#ff9896','#c5b0d5','#c49c94','#f7b6d2','#dbdb8d',
+    '#9edae5','#637939','#8c6d31','#843c39','#7b4173'
+  ];
+
+  function fmtAreaHa(ha) {
+    if (ha >= 1e6) return (ha / 1e6).toLocaleString('ru', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' млн га';
+    if (ha >= 1e3) return (ha / 1e3).toLocaleString('ru', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' тыс. га';
+    return ha.toLocaleString('ru', { maximumFractionDigits: 1 }) + ' га';
+  }
+  function fmtPct(part, total) {
+    return (total ? part / total * 100 : 0).toLocaleString('ru', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + '%';
+  }
+
+  function shareSlices(regions, cropType) {
+    var items = regions.map(function (r) {
+      return {
+        id: r.region_id, name: r.region_name,
+        area: cropType ? ((r.by_type || {})[cropType] || 0) : (r.area_ha || 0)
+      };
+    }).filter(function (s) { return s.area > 0; })
+      .sort(function (a, b) { return b.area - a.area; });
+    if (items.length > SHARE_TOP_N + 1) {
+      var rest = items.slice(SHARE_TOP_N);
+      items = items.slice(0, SHARE_TOP_N);
+      items.push({
+        id: null, name: 'Остальные (' + rest.length + ')',
+        area: rest.reduce(function (a, s) { return a + s.area; }, 0)
+      });
+    }
+    return items;
+  }
+
+  function renderFarmlandShares(shares, year) {
+    var regions = (shares && shares.regions) || [];
+    if (!regions.length) return;
+    var totalAll = shares.total_area_ha || 0;
+
+    var colorById = {}, colorCount = 0;
+    function sliceColor(s) {
+      if (s.id === null) return '#BDBDBD';
+      if (!colorById[s.id]) {
+        colorById[s.id] = colorCount < shareColors.length
+          ? shareColors[colorCount]
+          : 'hsl(' + Math.round(colorCount * 137.508 % 360) + ',55%,52%)';
+        colorCount++;
+      }
+      return colorById[s.id];
+    }
+
+    var pies = [{
+      title: 'Все сельхозугодья', total: totalAll,
+      meta: fmtAreaHa(totalAll) + ' · субъектов: ' + regions.length,
+      slices: shareSlices(regions, '')
+    }];
+    (shares.types || []).forEach(function (t) {
+      pies.push({
+        title: t.label, total: t.area_ha || 0,
+        meta: fmtAreaHa(t.area_ha || 0) + ' · ' + fmtPct(t.area_ha || 0, totalAll) + ' всех угодий',
+        slices: shareSlices(regions, t.crop_type)
+      });
+    });
+
+    var html = '<h2 class="shares-title"><i class="material-icons">pie_chart</i> Доли субъектов в площади сельхозугодий Российской Федерации</h2>'
+      + '<div class="shares-grid">';
+    pies.forEach(function (p, idx) {
+      html += '<div class="share-card">'
+        + '<h3>' + esc(p.title) + '</h3>'
+        + '<div class="share-total">' + p.meta + '</div>'
+        + '<div class="share-body">'
+        + '<div class="share-pie"><canvas id="chart-share-' + idx + '"></canvas></div>'
+        + '<div class="share-legend">';
+      p.slices.forEach(function (s) {
+        s.color = sliceColor(s);
+        var name = s.id === null
+          ? '<span class="share-name">' + esc(s.name) + '</span>'
+          : '<a class="share-name" href="' + location.pathname + '?region=' + s.id + '&year=' + year + '" title="' + esc(s.name) + '">' + esc(s.name) + '</a>';
+        html += '<div class="share-row">'
+          + '<span class="share-dot" style="background:' + s.color + ';"></span>'
+          + name
+          + '<span class="share-area">' + fmtAreaHa(s.area) + '</span>'
+          + '<span class="share-pct">' + fmtPct(s.area, p.total) + '</span>'
+          + '</div>';
+      });
+      html += '</div></div></div>';
+    });
+    sharesEl.innerHTML = html + '</div>';
+
+    pies.forEach(function (p, idx) {
+      var chart = new Chart(document.getElementById('chart-share-' + idx), {
+        type: 'pie',
+        data: {
+          labels: p.slices.map(function (s) { return s.name; }),
+          datasets: [{
+            data: p.slices.map(function (s) { return s.area; }),
+            backgroundColor: p.slices.map(function (s) { return s.color; }),
+            borderColor: '#fff', borderWidth: 1
+          }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: function (ctx) {
+                  return ' ' + fmtAreaHa(ctx.parsed) + ' (' + fmtPct(ctx.parsed, p.total) + ')';
+                }
+              }
+            }
+          }
+        }
+      });
+      districtCharts.push(chart);
+    });
   }
 
   function renderRegionReport(resp) {

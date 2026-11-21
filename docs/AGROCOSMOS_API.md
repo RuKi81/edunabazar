@@ -216,6 +216,9 @@ NDVI time series одного поля.
 
 - `regions[]` — для каждого региона: series, latest_ndvi, z-score, baseline, assessment
 - `country_overall_series`, `country_baseline`, `last_period_end`
+- `farmland_shares` — площади угодий по субъектам и видам для пайчартов
+  (`total_area_ha`, `types[]`, `regions[]` с `area_ha` и `by_type`); от года
+  не зависит, агрегат кэшируется на 1 час
 
 **Лимит:** 30 req/min / IP. **Cache:** 15 мин Redis.
 

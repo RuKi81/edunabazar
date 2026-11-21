@@ -11,7 +11,7 @@ from django.contrib.gis.geos import MultiPolygon, Polygon
 from django.test import TestCase, override_settings
 
 from agrocosmos.models import (
-    District, DistrictNdviSeries, NdviBaseline, Region,
+    District, DistrictNdviSeries, Farmland, NdviBaseline, Region,
 )
 from agrocosmos.views.reports import _country_category
 
@@ -136,6 +136,94 @@ class ReportCountryApiTests(TestCase):
     def test_last_period_end(self):
         resp = self._get(year=YEAR).json()
         self.assertEqual(resp['last_period_end'], '2025-07-04')  # D2 + 8 дней
+
+
+@override_settings(CACHES={
+    'default': {'BACKEND': 'django.core.cache.backends.dummy.DummyCache'},
+})
+class ReportCountryFarmlandSharesTests(TestCase):
+    """``farmland_shares`` — площади угодий по субъектам и видам (пайчарты)."""
+    URL = '/agrocosmos/api/report/country/'
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.region_a = Region.objects.create(
+            name='Регион А', code='r-a', geom=_square(30, 50),
+        )
+        cls.region_b = Region.objects.create(
+            name='Регион Б', code='r-b', geom=_square(40, 50),
+        )
+        Region.objects.create(
+            name='Регион Без угодий', code='r-none', geom=_square(50, 50),
+        )
+        cls.d_a1 = District.objects.create(
+            region=cls.region_a, name='Район А1', geom=_square(30, 50),
+        )
+        cls.d_a2 = District.objects.create(
+            region=cls.region_a, name='Район А2', geom=_square(30.5, 50),
+        )
+        cls.d_b = District.objects.create(
+            region=cls.region_b, name='Район Б', geom=_square(40, 50),
+        )
+
+        def farmland(district, crop, area):
+            return Farmland.objects.create(
+                region=district.region if district else None,
+                district=district, crop_type=crop, area_ha=area,
+                geom=_square(30.1, 50.1, 0.05),
+            )
+
+        # Регион А: пашня 100 + 50 (два района), сенокос 50 → 200 га.
+        farmland(cls.d_a1, Farmland.CropType.ARABLE, 100)
+        farmland(cls.d_a2, Farmland.CropType.ARABLE, 50)
+        farmland(cls.d_a1, Farmland.CropType.HAYFIELD, 50)
+        # Регион Б: пашня 450, пастбище 150 → 600 га.
+        farmland(cls.d_b, Farmland.CropType.ARABLE, 450)
+        farmland(cls.d_b, Farmland.CropType.PASTURE, 150)
+        # «Прочее» и угодья без района в долях не участвуют.
+        farmland(cls.d_b, Farmland.CropType.OTHER, 1000)
+        farmland(cls.d_b, Farmland.CropType.OTHER_AGRI, 1000)
+        farmland(None, Farmland.CropType.ARABLE, 1000)
+
+    def _shares(self):
+        resp = self.client.get(self.URL, {'year': YEAR}).json()
+        self.assertTrue(resp['ok'])
+        return resp['farmland_shares']
+
+    def test_regions_sorted_by_area_desc(self):
+        shares = self._shares()
+        self.assertEqual(
+            [(r['region_name'], r['area_ha']) for r in shares['regions']],
+            [('Регион Б', 600.0), ('Регион А', 200.0)],
+        )
+        self.assertEqual(shares['regions'][0]['region_id'], self.region_b.pk)
+        self.assertEqual(shares['total_area_ha'], 800.0)
+
+    def test_area_by_type_per_region(self):
+        by_name = {r['region_name']: r for r in self._shares()['regions']}
+        self.assertEqual(
+            by_name['Регион А']['by_type'], {'arable': 150.0, 'hayfield': 50.0},
+        )
+        self.assertEqual(
+            by_name['Регион Б']['by_type'], {'arable': 450.0, 'pasture': 150.0},
+        )
+
+    def test_types_in_report_order_without_empty(self):
+        types = self._shares()['types']
+        self.assertEqual(
+            [(t['crop_type'], t['label'], t['area_ha']) for t in types],
+            [
+                ('arable', 'Пашня', 600.0),
+                ('hayfield', 'Сенокос', 50.0),
+                ('pasture', 'Пастбище', 150.0),
+            ],
+        )
+
+    def test_independent_of_ndvi_year(self):
+        """Доли угодий отдаются и для года без NDVI-данных."""
+        resp = self.client.get(self.URL, {'year': YEAR - 1}).json()
+        self.assertEqual(resp['regions'], [])
+        self.assertEqual(len(resp['farmland_shares']['regions']), 2)
 
 
 class CountryCategoryTests(TestCase):
