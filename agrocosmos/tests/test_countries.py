@@ -304,3 +304,70 @@ class CountryMonitoringTests(_CountriesData):
         self.assertEqual(
             Command._resolve_regions(self.ind.pk), [(self.ind.pk, 'Штат')],
         )
+
+
+@override_settings(CACHES=_LOCMEM_CACHE)
+class ImportInvalidatesBoundaryCachesTests(_CountriesData):
+    """Кэш границ живёт неделю: список, запрошенный до импорта, не должен
+    пережить импорт (так пустой список областей Казахстана завис на проде)."""
+
+    REGIONS_MOD = 'agrocosmos.management.commands.import_russia_regions'
+    DISTRICTS_MOD = 'agrocosmos.management.commands.import_russia_districts'
+    POLY = {'type': 'Polygon', 'coordinates': [[
+        [71, 50], [71.4, 50], [71.4, 50.4], [71, 50.4], [71, 50],
+    ]]}
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+
+    def _names(self, url, **params):
+        return sorted(
+            f['properties']['name']
+            for f in self.client.get(url, params).json()['features']
+        )
+
+    def test_region_import_refreshes_regions_list(self):
+        url = '/agrocosmos/api/regions/'
+        self.assertEqual(self._names(url, country='KZ'), ['Область КЗ'])
+        self.assertEqual(self._names(url), ['Регион РФ'])
+        rels = [{'osm_id': 215743, 'name': 'Акмолинская область',
+                 'tags': {'ISO3166-2': 'KZ-11'}}]
+        with mock.patch(f'{self.REGIONS_MOD}.fetch_country_admin_relations',
+                        return_value=rels), \
+             mock.patch(f'{self.REGIONS_MOD}.fetch_polygon_geojson',
+                        return_value=self.POLY), \
+             mock.patch(f'{self.REGIONS_MOD}.time.sleep'):
+            call_command('import_russia_regions', '--country', 'KZ',
+                         stdout=io.StringIO())
+        self.assertEqual(
+            self._names(url, country='KZ'),
+            ['Акмолинская область', 'Область КЗ'],
+        )
+
+    def test_district_import_refreshes_districts_and_choropleth(self):
+        Region.objects.filter(pk=self.kz.pk).update(osm_id=215743)
+        districts_url = '/agrocosmos/api/districts/'
+        status_url = '/agrocosmos/api/districts/status/'
+        self.assertEqual(
+            self._names(districts_url, region=self.kz.pk), ['Район КЗ'])
+        self.assertEqual(self._names(status_url, country='KZ'), ['Район КЗ'])
+
+        poly = {'type': 'Polygon', 'coordinates': [[
+            [70.1, 50.1], [70.2, 50.1], [70.2, 50.2], [70.1, 50.2], [70.1, 50.1],
+        ]]}
+        rels = [{'osm_id': 301, 'name': 'Новый район', 'tags': {}}]
+        with mock.patch(f'{self.DISTRICTS_MOD}.fetch_admin_relations_in',
+                        return_value=rels), \
+             mock.patch(f'{self.DISTRICTS_MOD}.fetch_polygon_geojson',
+                        return_value=poly), \
+             mock.patch(f'{self.DISTRICTS_MOD}.time.sleep'):
+            call_command('import_russia_districts', '--country', 'KZ',
+                         stdout=io.StringIO(), stderr=io.StringIO())
+
+        expected = ['Новый район', 'Район КЗ']
+        self.assertEqual(
+            self._names(districts_url, region=self.kz.pk), expected)
+        self.assertEqual(self._names(status_url, country='KZ'), expected)
+        # Россию импорт Казахстана не трогает.
+        self.assertEqual(self._names(status_url), ['Район РФ'])

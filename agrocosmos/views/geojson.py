@@ -40,6 +40,33 @@ def _regions_cache_key(country: str) -> str:
     return f'{_REGIONS_CACHE_KEY}:{country}'
 
 
+def invalidate_regions_cache(country: str) -> None:
+    """Drop the cached region outlines of a country.
+
+    The payload is cached for a week on the assumption that boundaries
+    never change. An import breaks it: a request made before or during
+    the import caches an empty or partial list. Called by the region
+    importer when it finishes.
+    """
+    cache.delete(_regions_cache_key(country))
+
+
+def invalidate_districts_cache(country: str) -> None:
+    """Drop the cached district outlines of a country and rebuild its
+    districts choropleth — the district-import counterpart of
+    :func:`invalidate_regions_cache`.
+
+    The choropleth is rebuilt in place rather than dropped: it has no
+    expiry, and a cold rebuild inside a web request takes ~20 s for Russia.
+    """
+    cache.delete_many([
+        _DISTRICTS_CACHE_KEY.format(region_id=pk)
+        for pk in Region.objects.filter(country=country)
+        .values_list('pk', flat=True)
+    ])
+    districts_status_geojson.refresh_cache(country)
+
+
 def _region_country(region_id: int, fallback: str) -> str:
     """Country of a region id (a foreign region may be requested by id
     alone, without ``?country=``); unknown id → ``fallback``."""

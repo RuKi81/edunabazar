@@ -144,6 +144,13 @@ class Command(BaseCommand):
             total_skipped += s
             total_failed += f
 
+        # The map caches district outlines for a week and the choropleth
+        # without expiry — a list fetched before or during this import
+        # would stay empty or partial.
+        from agrocosmos.views.geojson import invalidate_districts_cache
+        for country in sorted({r.country for r in regions}):
+            invalidate_districts_cache(country)
+
         self.stdout.write(self.style.SUCCESS(
             f'Done across {len(regions)} region(s): '
             f'{total_created} created, {total_updated} updated, '

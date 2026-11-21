@@ -121,10 +121,18 @@ class Command(BaseCommand):
             status = self._import_relation(rel, i, total, opts)
             counts[status] += 1
 
+        self._invalidate_cache(country)
         self.stdout.write(self.style.SUCCESS(
             f'Done: {counts["created"]} created, {counts["updated"]} updated, '
             f'{counts["skipped"]} skipped, {counts["failed"]} failed'
         ))
+
+    @staticmethod
+    def _invalidate_cache(country: str) -> None:
+        """The map caches region outlines for a week — a list fetched
+        before or during this import would stay empty or partial."""
+        from agrocosmos.views.geojson import invalidate_regions_cache
+        invalidate_regions_cache(country)
 
     def _import_relation(self, rel, i, total, opts) -> str:
         """Fetch + upsert one relation. Returns a counter key."""
@@ -200,6 +208,7 @@ class Command(BaseCommand):
                     'geom': geom, 'osm_id': osm_id,
                 },
             )
+        self._invalidate_cache(opts['country'])
         tag = 'created' if is_new else 'updated'
         self.stdout.write(self.style.SUCCESS(
             f'{tag}: {obj.name} (code={obj.code}, pk={obj.pk}, osm_id={osm_id})'
