@@ -56,7 +56,13 @@ class FarmlandRasterFramesApiTests(TestCase):
         )
 
     def _get(self, **params):
-        return self.client.get(self.URL, params)
+        # Композиты здесь — пустые файлы-заглушки (растр не читается),
+        # поэтому покрытие поля подменяем полным: проверяется выбор
+        # скоупа/сенсора/лимита. Фильтр по покрытию — в тестах ниже
+        # (FarmlandZonesApiTests) на настоящих GeoTIFF.
+        with mock.patch('agrocosmos.views.ndvi._composite_coverage',
+                        return_value=1.0):
+            return self.client.get(self.URL, params)
 
     def test_requires_farmland(self):
         self.assertEqual(self._get().status_code, 400)
@@ -268,9 +274,10 @@ class FarmlandZonesApiTests(TestCase):
         self.assertTrue(data['ok'])
         self.assertIsNone(data['zones'])
 
-    def _write_tif(self, path, fill=0.8, right_half=None):
+    def _write_tif(self, path, fill=0.8, right_half=None, nodata_from=None):
         """GeoTIFF 64×64 на bbox (30..30.3, 50..50.3); NDVI=fill,
-        правая половина — right_half (если задана). Skip без rasterio/proj."""
+        правая половина — right_half (если задана); колонки начиная с
+        nodata_from — без данных (облако). Skip без rasterio/proj."""
         try:
             import numpy as np
             import rasterio
@@ -288,6 +295,8 @@ class FarmlandZonesApiTests(TestCase):
         data = np.full((64, 64), fill, dtype='float32')
         if right_half is not None:
             data[:, 27:] = right_half
+        if nodata_from is not None:
+            data[:, nodata_from:] = -9999.0
         transform = tf_from_bounds(30.0, 50.0, 30.3, 50.3, 64, 64)
         try:
             with mock.patch.dict(os.environ, proj_env), rasterio.Env():
@@ -365,6 +374,86 @@ class FarmlandZonesApiTests(TestCase):
         total = (stats['degraded_pct'] + stats['improved_pct']
                  + stats['stable_pct'])
         self.assertAlmostEqual(total, 100.0, delta=1.0)
+
+    # -- покрытие поля ≥ 90% («Снимки NDVI» и «Зоны неоднородности») --
+    # Поле занимает колонки растра ~21..32; nodata с колонки 24 оставляет
+    # покрытыми около четверти поля.
+    FRAMES_URL = '/agrocosmos/api/farmland/raster-frames/'
+
+    def _frames(self, tmp):
+        with mock.patch.dict(os.environ, {'S2_RASTER_DIR': tmp,
+                                          'LANDSAT_RASTER_DIR': tmp}):
+            return self.client.get(self.FRAMES_URL, {
+                'farmland': self.farmland.pk, 'year': YEAR,
+            }).json()
+
+    def test_frames_skip_low_coverage_composite(self):
+        scope = f'd{self.district.pk}'
+        with tempfile.TemporaryDirectory() as tmp:
+            d = os.path.join(tmp, scope, YEAR)
+            os.makedirs(d)
+            self._write_tif(
+                os.path.join(d, f's2_ndvi_{scope}_2025-06-01_2025-06-05.tif'))
+            # Июль — свежее, но поле на три четверти под облаком.
+            self._write_tif(
+                os.path.join(d, f's2_ndvi_{scope}_2025-07-01_2025-07-05.tif'),
+                nodata_from=24,
+            )
+            data = self._frames(tmp)
+        self.assertEqual(data['min_coverage_pct'], 90)
+        self.assertEqual([f['date_from'] for f in data['frames']],
+                         ['2025-06-01'])
+        self.assertGreaterEqual(data['frames'][0]['coverage_pct'], 90)
+
+    def test_frames_cloudy_s2_replaced_by_l8_same_period(self):
+        scope = f'd{self.district.pk}'
+        with tempfile.TemporaryDirectory() as tmp:
+            d = os.path.join(tmp, scope, YEAR)
+            os.makedirs(d)
+            self._write_tif(
+                os.path.join(d, f's2_ndvi_{scope}_2025-06-01_2025-06-05.tif'),
+                nodata_from=24,
+            )
+            self._write_tif(os.path.join(
+                d, f'landsat_ndvi_{scope}_2025-06-01_2025-06-05.tif'))
+            data = self._frames(tmp)
+        self.assertEqual(len(data['frames']), 1)
+        self.assertEqual(data['frames'][0]['sensor'], 'l8')
+
+    def test_frames_empty_when_nothing_covers_field(self):
+        scope = f'd{self.district.pk}'
+        with tempfile.TemporaryDirectory() as tmp:
+            d = os.path.join(tmp, scope, YEAR)
+            os.makedirs(d)
+            self._write_tif(
+                os.path.join(d, f's2_ndvi_{scope}_2025-06-01_2025-06-05.tif'),
+                nodata_from=24,
+            )
+            data = self._frames(tmp)
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['frames'], [])
+
+    def test_zones_skip_low_coverage_latest(self):
+        scope = f'd{self.district.pk}'
+        with tempfile.TemporaryDirectory() as tmp:
+            d = os.path.join(tmp, scope, YEAR)
+            os.makedirs(d)
+            self._write_tif(
+                os.path.join(d, f's2_ndvi_{scope}_2025-06-01_2025-06-05.tif'),
+                fill=0.8, right_half=0.3,
+            )
+            self._write_tif(
+                os.path.join(d, f's2_ndvi_{scope}_2025-07-01_2025-07-05.tif'),
+                nodata_from=24,
+            )
+            with mock.patch.dict(os.environ, {'S2_RASTER_DIR': tmp,
+                                              'LANDSAT_RASTER_DIR': tmp}):
+                resp = self._get(farmland=self.farmland.pk, year=YEAR)
+        zones = resp.json()['zones']
+        self.assertIsNotNone(zones)
+        # Июльский композит не покрывает поле — зоны по июньскому.
+        self.assertEqual(zones['date_from'], '2025-06-01')
+        self.assertIsNone(zones['dynamics'])
 
     KML_URL = '/agrocosmos/api/farmland/zones/kml/'
 

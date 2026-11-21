@@ -681,11 +681,19 @@ def api_raster_composites(request: HttpRequest) -> JsonResponse:
     return JsonResponse({'ok': True, 'composites': composites})
 
 
+# Минимальная доля контура поля, покрытая валидными пикселями композита,
+# чтобы показывать его в паспорте («Снимки NDVI» и «Зоны неоднородности»).
+MIN_FIELD_COVERAGE = 0.9
+
+
 def _resolve_composites(farmland, year):
     """Композиты, покрывающие угодье: скоуп район → регион.
 
-    S2 и L8 объединяются в один ряд: если за период есть оба —
-    предпочитается Sentinel-2, пропуски закрываются Landsat.
+    Возвращаются ВСЕ композиты обоих сенсоров по возрастанию периода;
+    внутри одного периода L8 идёт раньше S2, поэтому обход с конца даёт
+    «свежие первыми, Sentinel-2 предпочтительнее». Какой сенсор взять за
+    период, решает покрытие поля (:func:`_composite_coverage`): если S2
+    закрыт облаками, период закрывается Landsat.
     Каждый элемент несёт свой ``sensor``.
 
     Returns ``(composites, scope)``; пустой список — данных нет.
@@ -702,14 +710,39 @@ def _resolve_composites(farmland, year):
         scopes.append(str(region_id))
 
     for scope in scopes:
-        merged = {}
-        # S2 последним — перекрывает L8 при совпадении периода.
-        for sensor in ('l8', 's2'):
-            for c in list_available_composites(sensor, scope, year):
-                merged[(c['date_from'], c['date_to'])] = dict(c, sensor=sensor)
-        if merged:
-            return [merged[k] for k in sorted(merged)], scope
+        items = [
+            dict(c, sensor=sensor)
+            for sensor in ('l8', 's2')
+            for c in list_available_composites(sensor, scope, year)
+        ]
+        if items:
+            items.sort(key=lambda c: (c['date_from'], c['date_to'],
+                                      c['sensor']))
+            return items, scope
     return [], None
+
+
+def _field_bbox(farmland) -> tuple:
+    """bbox поля с полями 15% — общий для превью, зон и покрытия."""
+    xmin, ymin, xmax, ymax = farmland.geom.extent
+    pad_x = max((xmax - xmin) * 0.15, 1e-4)
+    pad_y = max((ymax - ymin) * 0.15, 1e-4)
+    return (xmin - pad_x, ymin - pad_y, xmax + pad_x, ymax + pad_y)
+
+
+def _composite_coverage(comp: dict, scope: str, bbox: tuple,
+                        outline: list) -> float | None:
+    """Доля поля, покрытая валидными пикселями композита (0..1) или None."""
+    from ..services.raster_tiles import field_coverage, find_raster_path
+
+    tif_path = find_raster_path(
+        comp['sensor'], scope, comp['date_from'] + '_' + comp['date_to'])
+    return field_coverage(tif_path, bbox, outline)
+
+
+def _is_covered(comp: dict, scope: str, bbox: tuple, outline: list) -> bool:
+    cov = _composite_coverage(comp, scope, bbox, outline)
+    return cov is not None and cov >= MIN_FIELD_COVERAGE
 
 
 @rate_limit('30/m')
@@ -741,15 +774,20 @@ def api_farmland_zones(request: HttpRequest) -> JsonResponse:
     composites, scope = ctx['composites'], ctx['scope']
     bbox, outline = ctx['bbox'], ctx['outline']
 
-    # Идём от свежих композитов к старым — первый с данными по полю.
+    # Идём от свежих композитов к старым — первый, покрывающий поле.
     for i, comp in enumerate(reversed(composites)):
         rng = comp['date_from'] + '_' + comp['date_to']
         tif_path = find_raster_path(comp['sensor'], scope, rng)
-        if not tif_path:
+        if not tif_path or not _is_covered(comp, scope, bbox, outline):
             continue
         png_bytes, stats = render_zones(tif_path, bbox, outline)
         if png_bytes:
-            older = composites[:len(composites) - 1 - i]
+            # Динамика — к более раннему ПЕРИОДУ, не к другому сенсору
+            # того же периода.
+            older = [
+                c for c in composites[:len(composites) - 1 - i]
+                if c['date_from'] < comp['date_from']
+            ]
             return JsonResponse({
                 'ok': True,
                 'zones': {
@@ -812,16 +850,11 @@ def _zones_request_context(request) -> tuple[dict | None, JsonResponse | None]:
         if not composites or composites[-1]['date_from'] != target_from:
             return None, no_data
 
-    xmin, ymin, xmax, ymax = farmland.geom.extent
-    pad_x = max((xmax - xmin) * 0.15, 1e-4)
-    pad_y = max((ymax - ymin) * 0.15, 1e-4)
-    bbox = (xmin - pad_x, ymin - pad_y, xmax + pad_x, ymax + pad_y)
-
     return {
         'farmland': farmland,
         'composites': composites,
         'scope': scope,
-        'bbox': bbox,
+        'bbox': _field_bbox(farmland),
         'outline': _farmland_outline(farmland),
     }, None
 
@@ -911,7 +944,8 @@ def _zones_features_for_request(request):
     for comp in reversed(ctx['composites']):
         rng = comp['date_from'] + '_' + comp['date_to']
         tif_path = find_raster_path(comp['sensor'], ctx['scope'], rng)
-        if not tif_path:
+        if not tif_path or not _is_covered(
+                comp, ctx['scope'], ctx['bbox'], ctx['outline']):
             continue
         feats = zones_to_features(tif_path, ctx['bbox'], ctx['outline'])
         if feats:
@@ -927,7 +961,7 @@ def _zones_dynamics(tif_now: str, older: list, scope: str,
     for comp in reversed(older):
         rng = comp['date_from'] + '_' + comp['date_to']
         tif_prev = find_raster_path(comp['sensor'], scope, rng)
-        if not tif_prev:
+        if not tif_prev or not _is_covered(comp, scope, bbox, outline):
             continue
         png_bytes, stats = render_zone_dynamics(tif_now, tif_prev, bbox, outline)
         if png_bytes:
@@ -951,17 +985,22 @@ def api_farmland_raster_frames(request: HttpRequest) -> JsonResponse:
         limit: max frames, 1..12 (default 5)
 
     Scope resolution: district composites first ('d<id>'), then region
-    ('<id>'). S2 and L8 are merged per period (S2 preferred, L8 fills
-    gaps); each frame carries its own 'sensor'. Frames are returned
-    latest-first with ready-made preview query params.
+    ('<id>'). Only composites whose valid pixels cover at least
+    ``MIN_FIELD_COVERAGE`` of the field are returned (``coverage_pct``).
+    S2 and L8 are merged per period: S2 preferred, L8 used when S2 is
+    missing or too cloudy over the field; each frame carries its own
+    'sensor'. Frames are returned latest-first with ready-made preview
+    query params.
     """
+    from .tiles import _farmland_outline
+
     fid = request.GET.get('farmland', '')
     if not fid.isdigit():
         return JsonResponse({'ok': False, 'error': 'farmland required'}, status=400)
 
     farmland = (
         Farmland.objects.filter(pk=int(fid))
-        .only('id', 'district', 'region').first()
+        .only('id', 'geom', 'district', 'region').first()
     )
     if farmland is None:
         return JsonResponse({'ok': False, 'error': 'farmland not found'}, status=404)
@@ -974,15 +1013,28 @@ def api_farmland_raster_frames(request: HttpRequest) -> JsonResponse:
 
     composites, scope_used = _resolve_composites(farmland, year)
 
-    frames = [
-        {
-            'date_from': c['date_from'],
-            'date_to': c['date_to'],
-            'date': c['date_from'] + '_' + c['date_to'],
-            'sensor': c['sensor'],
-        }
-        for c in reversed(composites[-limit:])  # latest first
-    ]
+    frames = []
+    if composites and farmland.geom is not None:
+        bbox = _field_bbox(farmland)
+        outline = _farmland_outline(farmland)
+        seen = set()
+        for c in reversed(composites):  # latest first, S2 раньше L8
+            period = (c['date_from'], c['date_to'])
+            if period in seen:
+                continue
+            cov = _composite_coverage(c, scope_used, bbox, outline)
+            if cov is None or cov < MIN_FIELD_COVERAGE:
+                continue
+            seen.add(period)
+            frames.append({
+                'date_from': c['date_from'],
+                'date_to': c['date_to'],
+                'date': c['date_from'] + '_' + c['date_to'],
+                'sensor': c['sensor'],
+                'coverage_pct': round(cov * 100),
+            })
+            if len(frames) >= limit:
+                break
     sensors = sorted({f['sensor'] for f in frames})
     return JsonResponse({
         'ok': True,
@@ -993,5 +1045,6 @@ def api_farmland_raster_frames(request: HttpRequest) -> JsonResponse:
         'sensor': ('s2' if 's2' in sensors else (sensors[0] if sensors else None)),
         'sensors': sensors,
         'scope': scope_used,
+        'min_coverage_pct': round(MIN_FIELD_COVERAGE * 100),
         'frames': frames,
     })

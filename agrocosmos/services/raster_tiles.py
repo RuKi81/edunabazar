@@ -303,8 +303,13 @@ def _polygon_mask(outline: list, bbox: tuple, out_w: int, out_h: int):
     return np.asarray(mask_img) > 0
 
 
-def _read_field_ndvi(tif_path: str, bbox: tuple, out_w: int, out_h: int):
-    """Read an NDVI window resampled to (out_h, out_w); (data, valid) or None."""
+def _read_field_ndvi(tif_path: str, bbox: tuple, out_w: int, out_h: int,
+                     nearest: bool = False):
+    """Read an NDVI window resampled to (out_h, out_w); (data, valid) or None.
+
+    ``nearest`` — без интерполяции: для подсчёта покрытия, где смешивание
+    соседних пикселей размывало бы границу «есть данные / нет данных».
+    """
     import rasterio
     from rasterio.windows import from_bounds
 
@@ -319,7 +324,8 @@ def _read_field_ndvi(tif_path: str, bbox: tuple, out_w: int, out_h: int):
             data = ds.read(
                 1, window=window,
                 out_shape=(out_h, out_w),
-                resampling=rasterio.enums.Resampling.bilinear,
+                resampling=(rasterio.enums.Resampling.nearest if nearest
+                            else rasterio.enums.Resampling.bilinear),
                 boundless=True,
             )
             nodata = ds.nodata
@@ -332,6 +338,37 @@ def _read_field_ndvi(tif_path: str, bbox: tuple, out_w: int, out_h: int):
     else:
         valid = ~np.isnan(data)
     return data, valid
+
+
+def field_coverage(tif_path: str, bbox: tuple, outline: list,
+                   max_size: int = 96) -> float | None:
+    """Доля контура поля, покрытая валидными пикселями композита (0..1).
+
+    Пиксели без данных — облака/тени, вырезанные маской, и край снимка.
+    Композит, закрывающий поле лишь частично, даёт обрезанную картинку и
+    зоны неоднородности по куску поля, поэтому паспорт показывает только
+    композиты с достаточным покрытием.
+
+    ``None`` — оценить нельзя: файла нет, растр не читается, поле вне
+    растра или контур вырожден.
+    """
+    if not tif_path or not os.path.exists(tif_path) or not outline:
+        return None
+    xmin, ymin, xmax, ymax = bbox
+    if xmax <= xmin or ymax <= ymin:
+        return None
+
+    out_w, out_h = _preview_dims(bbox, max_size)
+    read = _read_field_ndvi(tif_path, bbox, out_w, out_h, nearest=True)
+    if read is None:
+        return None
+    _, valid = read
+
+    mask = _polygon_mask(outline, bbox, out_w, out_h)
+    n_mask = int(mask.sum())
+    if not n_mask:
+        return None
+    return float(int((valid & mask).sum()) / n_mask)
 
 
 def _save_png(img: Image.Image) -> bytes:
