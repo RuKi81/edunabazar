@@ -3,7 +3,7 @@ OSM bulk boundary fetcher for Region / District import.
 
 Uses two services, both free & public:
   * Overpass API (https://overpass-api.de/api/interpreter) to list all
-    OSM relation ids with a given admin_level inside Russia.
+    OSM relation ids with a given admin_level inside a country.
   * https://polygons.openstreetmap.fr/get_geojson.py — returns a ready
     multipolygon GeoJSON for any single OSM relation id, which avoids
     reimplementing OSM's multipolygon-assembly rules from ways+nodes.
@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 
 import requests
@@ -135,10 +136,11 @@ def fetch_admin_relations_in(parent_osm_id: int, admin_level: int) -> list[dict]
     return out
 
 
-def fetch_russia_admin_relations(admin_level: int) -> list[dict]:
+def fetch_country_admin_relations(country_code: str, admin_level: int) -> list[dict]:
     """
-    Return a list of OSM relations with a given admin_level inside Russia.
+    Return a list of OSM relations with a given admin_level inside a country.
 
+    ``country_code`` is the ISO 3166-1 alpha-2 code (``RU``, ``KZ``, …).
     Each element is ``{"osm_id": int, "name": str, "tags": dict}``.
 
     Only tags are returned — geometry is fetched per-relation via
@@ -151,20 +153,23 @@ def fetch_russia_admin_relations(admin_level: int) -> list[dict]:
     timing out on the public servers. Tag-filtering is O(index) and
     completes in <2 s on mirrors like overpass.kumi.systems.
 
-    For admin_level=4 (federal subjects) every RU subject carries an
-    ISO3166-2 tag, so this is complete. For other levels (where the tag
-    doesn't exist), prefer :func:`fetch_admin_relations_in` with a
-    parent relation id.
+    For admin_level=4 (first-level subjects) every subject of the
+    supported countries carries an ISO3166-2 tag, so this is complete.
+    For other levels (where the tag doesn't exist), prefer
+    :func:`fetch_admin_relations_in` with a parent relation id.
     """
+    if not re.fullmatch(r'[A-Z]{2}', country_code or ''):
+        raise ValueError(f'bad country code: {country_code!r}')
     query = f"""
     [out:json][timeout:{OVERPASS_QL_TIMEOUT}];
     relation
       ["boundary"="administrative"]
       ["admin_level"="{admin_level}"]
-      ["ISO3166-2"~"^RU-"];
+      ["ISO3166-2"~"^{country_code}-"];
     out tags;
     """
-    logger.info('Overpass: fetching admin_level=%d relations…', admin_level)
+    logger.info('Overpass: fetching %s admin_level=%d relations…',
+                country_code, admin_level)
     data = _overpass_post(query)
 
     out: list[dict] = []

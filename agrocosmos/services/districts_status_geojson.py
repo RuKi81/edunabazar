@@ -1,4 +1,5 @@
-"""Cached GeoJSON for the all-Russia districts NDVI choropleth.
+"""Cached GeoJSON for the country-wide districts NDVI choropleth
+(all-Russia by default, one cached payload per country).
 
 This is the heavy part of ``api_districts_status`` — building a 4-7 MB
 FeatureCollection out of ~2300 districts, each with a topology-preserved
@@ -30,6 +31,7 @@ from django.core.cache import cache
 from django.db.models import F, Func, Value
 
 from ..models import District
+from .countries import DEFAULT_COUNTRY
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,13 @@ CACHE_KEY = 'agro:districts_status:geojson:v4'
 CACHE_KEY_FAST = 'agro:districts_status:geojson:v4:fast'
 
 
+def _cache_keys(country: str) -> tuple[str, str]:
+    """(dict key, fast-blob key) of a country; Russia keeps the bare keys."""
+    if country == DEFAULT_COUNTRY:
+        return CACHE_KEY, CACHE_KEY_FAST
+    return f'{CACHE_KEY}:{country}', f'{CACHE_KEY_FAST}:{country}'
+
+
 class _SimplifyPreserveTopology(Func):
     """PostGIS ``ST_SimplifyPreserveTopology(geom, tolerance)``.
 
@@ -66,8 +75,9 @@ class _SimplifyPreserveTopology(Func):
         )
 
 
-def build_geojson_payload() -> dict:
-    """Run the heavy query and return a FeatureCollection dict.
+def build_geojson_payload(country: str = DEFAULT_COUNTRY) -> dict:
+    """Run the heavy query and return a FeatureCollection dict for the
+    districts of one country.
 
     ~20 seconds on a cold PostgreSQL cache. Always reads from
     ``agro_district_ndvi_status`` (populated by the recompute command),
@@ -75,7 +85,7 @@ def build_geojson_payload() -> dict:
     """
     overall_t = time.time()
     rows = (
-        District.objects
+        District.objects.filter(region__country=country)
         # Tolerance 0.003° ≈ 300 m — fine enough that district outlines
         # look smooth even on a desktop overview of European Russia (one
         # screen pixel ≈ 5-10 km at zoom 5). The previous 0.01° (~1 km)
@@ -137,13 +147,15 @@ def build_geojson_payload() -> dict:
         })
 
     logger.info(
-        'districts_status_geojson.build: districts=%d with_data=%d in %.2fs',
-        len(features), with_data, time.time() - overall_t,
+        'districts_status_geojson.build: country=%s districts=%d '
+        'with_data=%d in %.2fs',
+        country, len(features), with_data, time.time() - overall_t,
     )
     return {'type': 'FeatureCollection', 'features': features}
 
 
-def _build_fast_blob(payload: dict) -> tuple[str, bytes]:
+def _build_fast_blob(payload: dict,
+                     country: str = DEFAULT_COUNTRY) -> tuple[str, bytes]:
     """Pre-encode JSON body + matching ETag for the unfiltered fast path.
 
     Done once per refresh so that on each request the view can stream the
@@ -161,15 +173,29 @@ def _build_fast_blob(payload: dict) -> tuple[str, bytes]:
             latest = d
     # Same fingerprint formula the view's slow path uses, so a client
     # that warmed the cache on the slow path keeps a valid ETag here.
-    etag = 'W/"agro-ds-{date}-{n}-all"'.format(
+    etag = 'W/"agro-ds-{date}-{n}-{scope}"'.format(
         date=latest or 'none',
         n=len(features),
+        scope='all' if country == DEFAULT_COUNTRY else f'all-{country}',
     )
     return etag, body
 
 
-def refresh_cache() -> dict:
+def _refresh_country(country: str) -> dict:
+    dict_key, fast_key = _cache_keys(country)
+    payload = build_geojson_payload(country)
+    # ``timeout=None`` → no expiry; only the recompute command rotates it.
+    cache.set(dict_key, payload, timeout=None)
+    cache.set(fast_key, _build_fast_blob(payload, country), timeout=None)
+    return payload
+
+
+def refresh_cache(country: str | None = None) -> dict:
     """Rebuild the GeoJSON and atomically replace the cached copy.
+
+    ``country=None`` rebuilds Russia plus every other country that has
+    districts and returns the Russian payload; a country code rebuilds
+    and returns just that country.
 
     Called by ``recompute_district_ndvi_status`` after the SQL upsert,
     and by the ``prewarm_agro_caches`` management command on deploy.
@@ -180,44 +206,49 @@ def refresh_cache() -> dict:
     * ``CACHE_KEY_FAST`` — pre-encoded ``(etag, bytes)`` for the
       no-filter fast path that bypasses pickle + json round-tripping.
     """
-    payload = build_geojson_payload()
-    # ``timeout=None`` → no expiry; only the recompute command rotates it.
-    cache.set(CACHE_KEY, payload, timeout=None)
-    cache.set(CACHE_KEY_FAST, _build_fast_blob(payload), timeout=None)
-    return payload
+    if country is not None:
+        return _refresh_country(country)
+    others = (
+        District.objects.exclude(region__country=DEFAULT_COUNTRY)
+        .order_by().values_list('region__country', flat=True).distinct()
+    )
+    for code in others:
+        _refresh_country(code)
+    return _refresh_country(DEFAULT_COUNTRY)
 
 
-def get_or_build() -> dict:
+def get_or_build(country: str = DEFAULT_COUNTRY) -> dict:
     """Read the cached payload; lazily rebuild on a miss.
 
     A cache miss is rare (Redis restart / FLUSHDB) but should not 500
     the page — we transparently rebuild and warm the cache.
     """
-    payload = cache.get(CACHE_KEY)
+    payload = cache.get(_cache_keys(country)[0])
     if payload is not None:
         return payload
     logger.warning('districts_status_geojson cache miss — rebuilding inline')
-    return refresh_cache()
+    return refresh_cache(country)
 
 
-def get_fast_blob() -> tuple[str, bytes]:
+def get_fast_blob(country: str = DEFAULT_COUNTRY) -> tuple[str, bytes]:
     """Pre-encoded ``(etag, json_bytes)`` for the unfiltered choropleth.
 
     Used by the view's fast path. Lazily rebuilds on a cache miss; the
     caller can rely on always getting a ready-to-stream tuple.
     """
-    blob = cache.get(CACHE_KEY_FAST)
+    fast_key = _cache_keys(country)[1]
+    blob = cache.get(fast_key)
     if blob is not None:
         return blob
     logger.warning('districts_status_geojson fast-blob cache miss — rebuilding inline')
-    refresh_cache()
-    blob = cache.get(CACHE_KEY_FAST)
+    refresh_cache(country)
+    blob = cache.get(fast_key)
     if blob is None:
         # Defensive: refresh_cache wrote both keys, but in case of a
         # truly broken cache backend (e.g. write succeeds, read returns
         # None) build the blob inline from the just-built dict instead
         # of crashing the request.
-        return _build_fast_blob(get_or_build())
+        return _build_fast_blob(get_or_build(country), country)
     return blob
 
 

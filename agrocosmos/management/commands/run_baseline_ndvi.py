@@ -25,6 +25,10 @@ Usage:
         --year-from 2020 --year-to 2025 --concurrency 4
     python manage.py run_baseline_ndvi --regions 12,33,45 --dry-run
     python manage.py run_baseline_ndvi --regions all --no-monitor
+
+    # a newly added country: this year's archive only, no baseline yet
+    python manage.py run_baseline_ndvi --country KZ --year-from 2026 \\
+        --year-to 2026 --skip-baseline --no-monitor
 """
 from __future__ import annotations
 
@@ -37,6 +41,9 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from agrocosmos.models import PipelineRun, Region
+from agrocosmos.services.countries import (
+    MONITORED_COUNTRIES, normalize_country,
+)
 
 
 REFRESH_SEC_DEFAULT = 30
@@ -53,7 +60,13 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument(
             '--regions', type=str, default='all',
-            help='"all" or comma-separated Region IDs (e.g. "12,33,45").',
+            help='"all" (every region of the monitored countries) or '
+                 'comma-separated Region IDs (e.g. "12,33,45").',
+        )
+        parser.add_argument(
+            '--country', type=str, default='',
+            help='Every region of this country (ISO 3166-1 alpha-2 code) '
+                 'instead of --regions.',
         )
         parser.add_argument(
             '--year-from', type=int, default=2020,
@@ -101,7 +114,10 @@ class Command(BaseCommand):
 
     def _resolve_regions(self, spec: str) -> list[Region]:
         if spec.strip().lower() == 'all':
-            return list(Region.objects.defer('geom').order_by('name'))
+            return list(
+                Region.objects.filter(country__in=MONITORED_COUNTRIES)
+                .defer('geom').order_by('name')
+            )
         ids: list[int] = []
         for tok in spec.split(','):
             tok = tok.strip()
@@ -241,7 +257,14 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------ main
 
     def handle(self, *args, **options):
-        regions = self._resolve_regions(options['regions'])
+        if options['country']:
+            country = normalize_country(options['country'])
+            regions = list(
+                Region.objects.filter(country=country)
+                .defer('geom').order_by('name')
+            ) if country else []
+        else:
+            regions = self._resolve_regions(options['regions'])
         if not regions:
             self.stderr.write('No regions resolved — abort.')
             return

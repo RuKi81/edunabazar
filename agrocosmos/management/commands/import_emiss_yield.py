@@ -36,6 +36,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from agrocosmos.models import CropYieldStat, Region, YieldCrop
+from agrocosmos.services.countries import DEFAULT_COUNTRY
 
 
 # Строки, которые точно НЕ субъекты (агрегаты или служебные).
@@ -229,7 +230,8 @@ class Command(BaseCommand):
     def _build_region_index() -> tuple[dict[str, Region], dict[str, Region]]:
         """Предзагрузить регионы для матчинга."""
         regions_by_name: dict[str, Region] = {
-            r.name.strip(): r for r in Region.objects.all().only('id', 'name')
+            r.name.strip(): r
+            for r in Region.objects.filter(country=DEFAULT_COUNTRY).only('id', 'name')
         }
         regions_by_norm: dict[str, Region] = {
             _normalize_region_name(r.name).lower(): r

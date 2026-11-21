@@ -1,4 +1,5 @@
-"""Idempotently put every Region on operational MODIS monitoring.
+"""Idempotently put every Region of the monitored countries on
+operational MODIS monitoring.
 
 The daily ``check_monitoring`` cron only walks ``MonitoringTask`` rows
 with ``status='active'``. Historically those were created one-by-one
@@ -7,8 +8,11 @@ fresh year for an existing one) silently skipped operational coverage
 until somebody clicked through the UI.
 
 This command makes the desired state explicit: for the target year,
-every ``Region`` that has a farmland vector gets an ``active``
-region-level MODIS ``MonitoringTask``. Farmland-less subjects (Москва,
+every ``Region`` of a monitored country (``Country.monitored`` in
+``services/countries.py``) that has a farmland vector gets an ``active``
+region-level MODIS ``MonitoringTask``. Countries loaded for reference
+only (boundaries + farmlands, no monitoring) are never enrolled.
+Farmland-less subjects (Москва,
 Санкт-Петербург, Севастополь) are deliberately skipped — the pipeline
 would only burn GEE requests and write nothing.
 It is safe to re-run — existing rows are left in place unless they
@@ -37,6 +41,7 @@ from django.db import transaction
 from django.db.models import Exists, OuterRef
 
 from agrocosmos.models import Farmland, MonitoringTask, Region
+from agrocosmos.services.countries import MONITORED_COUNTRIES
 
 
 class Command(BaseCommand):
@@ -66,12 +71,13 @@ class Command(BaseCommand):
         # Севастополь — no agricultural land in the ЗСН layer) spent a
         # GEE request every night and then wrote 0 rows forever. The
         # predicate mirrors ``modis_ndvi._load_farmlands``.
-        eligible = Region.objects.filter(
+        monitored = Region.objects.filter(country__in=MONITORED_COUNTRIES)
+        eligible = monitored.filter(
             Exists(Farmland.objects.filter(district__region=OuterRef('pk')))
         )
         regions = list(eligible.only('id', 'name'))
         total = len(regions)
-        skipped_empty = Region.objects.count() - total
+        skipped_empty = monitored.count() - total
         if not total:
             self.stdout.write(self.style.WARNING(
                 'No regions with farmlands in DB — nothing to do.'))

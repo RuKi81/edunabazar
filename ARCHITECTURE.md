@@ -188,7 +188,7 @@ edunabazar/
 
 | Модель | Таблица | Описание |
 |--------|---------|----------|
-| `Region` | `agro_region` | Субъект РФ (MultiPolygon) |
+| `Region` | `agro_region` | Субъект страны — первый административный уровень (MultiPolygon); страна в `Region.country`, по умолчанию `RU` (см. «Страны» ниже) |
 | `District` | `agro_district` | Муниципальный район (MultiPolygon) |
 | `Farmland` | `agro_farmland` | Полигон сельхоз. угодья (пашня, пастбище, сенокос, многолетние насаждения, залежь) |
 | `SatelliteScene` | `agro_satellite_scene` | Метаданные спутникового снимка (Sentinel-2, Landsat, MODIS) |
@@ -202,6 +202,45 @@ edunabazar/
 | `GeeApiMetric` | `agro_gee_api_metric` | Дневной счётчик вызовов Google Earth Engine (`computePixels`) + трафик |
 | `AgroSubscription` | `agro_subscription` | Подписка `LegacyUser` на email-уведомления по региону/району (см. §15) |
 | `VegetationAlert` | `agro_vegetation_alert` | Биологическая аномалия на угодье **или** районе/культуре (baseline deviation / rapid drop) (см. §15) |
+
+#### Страны
+
+Реестр стран — `agrocosmos/services/countries.py` (`COUNTRIES`): Россия,
+Казахстан, Белоруссия, Индия, Китай, Бразилия. Для каждой заданы уровень
+районов в OSM и флаг `monitored`. Всё, что не получает страну явно
+(селекты регионов, хороплет, страновой отчёт, кэши), работает по России.
+
+| Страна | Субъекты | Районы | Угодья | MODIS-мониторинг |
+|---|---|---|---|---|
+| RU | OSM / ЗСН | да | Росреестр ЗСН (+ WorldCover) | да |
+| KZ, BY | OSM | да (`admin_level=6`) | ESA WorldCover, нарезка по районам | да |
+| IN, CN, BR | OSM | нет | ESA WorldCover, по субъекту | нет |
+
+`ensure_all_regions_monitored` (каждый деплой) и
+`recompute_district_ndvi_status` работают только по странам с
+`monitored=True`. Селект «Страна» есть на карте MODIS (`/agrocosmos/`) и
+в отчёте MODIS (`/agrocosmos/report/region/`); в нём показываются только
+страны, у которых уже загружены субъекты.
+
+Загрузка новой страны (VM1, `DC="docker compose -f docker-compose.prod.yml"`,
+команды идемпотентны — при обрыве перезапускаются как есть):
+
+```bash
+# 1. Субъекты (OSM, admin_level=4, русские названия)
+$DC exec -T web python manage.py import_russia_regions --country KZ --skip-existing
+# 2. Районы — только для стран под мониторингом. --region-fallback: субъект
+#    без своих районов (город) получает один район, равный субъекту
+$DC exec -T web python manage.py import_russia_districts --country KZ --region-fallback --skip-existing
+# 3. Угодья: маска пашни ESA WorldCover из GEE, 100 м. --by-district режет
+#    маску по районам и сразу проставляет district_id
+$DC exec -T worker python manage.py import_gee_croplands --country KZ --by-district --skip-existing
+# 4. Мониторинг: задачи текущего года + архив года в очередь воркера
+$DC exec -T web python manage.py ensure_all_regions_monitored
+$DC exec -T web python manage.py run_baseline_ndvi --country KZ \
+    --year-from 2026 --year-to 2026 --skip-baseline --no-monitor
+```
+
+Для стран без районов шаги 2 и 4 пропускаются, шаг 3 — без `--by-district`.
 
 ### 5.3 `my_fields` — Личные угодья пользователя («Мои поля»)
 

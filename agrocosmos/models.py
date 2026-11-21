@@ -1,9 +1,17 @@
 from django.contrib.gis.db import models
 
+from .services.countries import COUNTRY_CHOICES, DEFAULT_COUNTRY
+
 
 class Region(models.Model):
-    """Субъект РФ (например, Республика Крым)."""
+    """Субъект страны — первый административный уровень (Республика Крым)."""
     name = models.CharField(max_length=255, verbose_name='Название')
+    # Страна субъекта (ISO 3166-1 alpha-2). Всё, что не задаёт страну явно,
+    # работает по России — см. ``services/countries.py``.
+    country = models.CharField(
+        max_length=2, choices=COUNTRY_CHOICES, default=DEFAULT_COUNTRY,
+        db_index=True, verbose_name='Страна',
+    )
     # Текстовый ключ импорта (``tulskaya_obl``), НЕ официальный код субъекта.
     code = models.CharField(max_length=100, unique=True, verbose_name='Ключ региона')
     # Официальный двузначный код субъекта РФ. Внутренний ``id`` записи с ним

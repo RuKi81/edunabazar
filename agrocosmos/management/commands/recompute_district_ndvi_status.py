@@ -175,15 +175,20 @@ class Command(BaseCommand):
         """Regions to process as [(id, name)].
 
         We restrict to regions that actually have farmlands attached —
-        empty regions would just do a no-op join and waste a round-trip.
+        empty regions would just do a no-op join and waste a round-trip —
+        and to monitored countries: a country loaded for reference only
+        has farmlands but never gets MODIS rows.
         """
         from agrocosmos.models import Region
+        from agrocosmos.services.countries import MONITORED_COUNTRIES
 
         regions_qs = Region.objects.all()
         if only_region:
             regions_qs = regions_qs.filter(pk=only_region)
         else:
-            regions_qs = regions_qs.filter(farmlands__isnull=False).distinct()
+            regions_qs = regions_qs.filter(
+                country__in=MONITORED_COUNTRIES, farmlands__isnull=False,
+            ).distinct()
         return list(regions_qs.order_by('name').values_list('id', 'name'))
 
     def _upsert_regions(self, regions, timeout_ms):

@@ -17,6 +17,7 @@ from ..models import (
 # ``ndvi_assessment`` реэкспортируется под историческим именем: хелпер
 # вынесен в сервис-слой, но импортируется извне через agrocosmos.views
 # (см. views/__init__.py и tests/test_ndvi_assessment.py).
+from ..services.countries import DEFAULT_COUNTRY, get_country
 from ..services.ndvi_stats import (
     compute_z_score, doy_to_date, modis_last_period_end,
     ndvi_assessment as _ndvi_assessment, weighted_mean,
@@ -256,13 +257,14 @@ def _country_category(z_score):
     return 'normal'
 
 
-def _country_series_accumulators(year):
+def _country_series_accumulators(year, country=DEFAULT_COUNTRY):
     """(region, date) aggregation done DB-side: ~73 regions × ~25 dates."""
     series_rows = (
         DistrictNdviSeries.objects.filter(
             source=DistrictNdviSeries.Source.MODIS,
             acquired_date__year=year,
             sum_area__gt=0,
+            district__region__country=country,
         )
         .values('district__region_id', 'acquired_date')
         .annotate(s_ndvi_area=Sum('sum_ndvi_area'), s_area=Sum('sum_area'))
@@ -286,13 +288,15 @@ def _country_series_accumulators(year):
     return per_region_date, per_country_date
 
 
-def _region_baseline_lookups():
+def _region_baseline_lookups(country=DEFAULT_COUNTRY):
     """Region baseline lookup: region_id → {doy: (avg_mean, avg_std)}
     (district baselines averaged per DOY, same trick as api_report_region),
     plus country-wide accumulator per DOY.
     """
     region_bl_qs = (
-        NdviBaseline.objects.filter(crop_type='')
+        NdviBaseline.objects.filter(
+            crop_type='', district__region__country=country,
+        )
         .values('district__region_id', 'day_of_year')
         .annotate(avg_mean=Avg('mean_ndvi'), avg_std=Avg('std_ndvi'))
     )
@@ -329,25 +333,32 @@ _COUNTRY_SHARES_CACHE_KEY = 'agro:country_farmland_shares:v1'
 _COUNTRY_SHARES_CACHE_TTL = 60 * 60  # 1 час
 
 
-def _country_farmland_shares(region_names):
+def _country_farmland_shares(region_names, country):
     """Площадь угодий (га) по субъектам и видам — данные для пайчартов.
 
     Виды — ``FARMLAND_TYPE_ORDER`` (без «иных» и «прочих»), субъект — по
-    району угодья, как в отчёте по субъекту. ``GROUP BY`` по всей таблице
+    району угодья, как в отчёте по субъекту. В странах без районов
+    (``district_admin_level is None``) угодья привязаны только к субъекту —
+    там группируем по ``Farmland.region``. ``GROUP BY`` по всей таблице
     угодий тяжёлый (миллионы строк) и не зависит от года, поэтому строки
     агрегата кэшируются на час отдельно от ``cache_page`` отчёта.
     """
-    rows = cache.get(_COUNTRY_SHARES_CACHE_KEY)
+    region_fk = (
+        'district__region' if country.district_admin_level else 'region'
+    )
+    cache_key = f'{_COUNTRY_SHARES_CACHE_KEY}:{country.code}'
+    rows = cache.get(cache_key)
     if rows is None:
         rows = list(
-            Farmland.objects.filter(
-                crop_type__in=FARMLAND_TYPE_ORDER, district__isnull=False,
-            )
-            .values_list('district__region_id', 'crop_type')
+            Farmland.objects.filter(**{
+                'crop_type__in': FARMLAND_TYPE_ORDER,
+                f'{region_fk}__country': country.code,
+            })
+            .values_list(f'{region_fk}_id', 'crop_type')
             .annotate(s_area=Sum('area_ha'))
             .order_by()
         )
-        cache.set(_COUNTRY_SHARES_CACHE_KEY, rows, _COUNTRY_SHARES_CACHE_TTL)
+        cache.set(cache_key, rows, _COUNTRY_SHARES_CACHE_TTL)
 
     per_region = defaultdict(dict)
     per_type = defaultdict(float)
@@ -398,6 +409,7 @@ def api_report_country(request: HttpRequest) -> JsonResponse:
 
     Query params:
         year (required): year
+        country: ISO 3166-1 alpha-2 code (default — Russia)
     """
     year = request.GET.get('year')
     if not year:
@@ -406,13 +418,19 @@ def api_report_country(request: HttpRequest) -> JsonResponse:
         year = int(year)
     except (TypeError, ValueError):
         return JsonResponse({'ok': False, 'error': 'invalid params'}, status=400)
+    country = get_country(request.GET.get('country'))
 
-    regions = Region.objects.only('id', 'name').order_by('name')
+    regions = (
+        Region.objects.filter(country=country.code)
+        .only('id', 'name').order_by('name')
+    )
     region_names = {r.pk: r.name for r in regions}
 
-    per_region_date, per_country_date = _country_series_accumulators(year)
+    per_region_date, per_country_date = _country_series_accumulators(
+        year, country.code,
+    )
 
-    bl_lookup, country_bl = _region_baseline_lookups()
+    bl_lookup, country_bl = _region_baseline_lookups(country.code)
 
     # Build per-region data, sorted chronologically
     region_data = _build_entity_rows(
@@ -439,11 +457,17 @@ def api_report_country(request: HttpRequest) -> JsonResponse:
     return JsonResponse({
         'ok': True,
         'year': year,
+        'country': {
+            'code': country.code,
+            'name': country.name,
+            'name_full': country.name_full,
+            'name_gen': country.name_gen,
+        },
         'regions': result,
         'country_overall_series': country_overall,
         'country_baseline': country_baseline,
         'last_period_end': last_period_end,
-        'farmland_shares': _country_farmland_shares(region_names),
+        'farmland_shares': _country_farmland_shares(region_names, country),
     })
 
 
@@ -1281,7 +1305,11 @@ def _rf_total_farmland_area_ha():
     val = cache.get(_RF_AREA_CACHE_KEY)
     if val is None:
         val = float(
-            Farmland.objects.filter(crop_type__in=FARMLAND_TYPE_ORDER)
+            Farmland.objects.filter(
+                # Угодья без региона исторически входят в итог по РФ.
+                Q(region__isnull=True) | Q(region__country=DEFAULT_COUNTRY),
+                crop_type__in=FARMLAND_TYPE_ORDER,
+            )
             .aggregate(s=Sum('area_ha'))['s'] or 0.0
         )
         cache.set(_RF_AREA_CACHE_KEY, val, _RF_AREA_CACHE_TTL)

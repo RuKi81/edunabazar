@@ -23,7 +23,7 @@ from ..models import (
     Region, VegetationIndex,
 )
 from ._helpers import rate_limit
-from .pages import _get_legacy_user
+from .pages import _get_legacy_user, _regions_for_select
 from .reports import _unused_signals
 from .tiles import _is_admin_legacy
 
@@ -75,7 +75,7 @@ def label_dashboard(request: HttpRequest) -> HttpResponse:
             'regions': Region.objects.none(), 'active_page': 'label',
         }, status=403)
 
-    regions = Region.objects.only('id', 'name', 'code', 'subject_code')
+    regions = _regions_for_select()
     current_year = date.today().year
     return render(request, 'agrocosmos/label.html', {
         'forbidden': False,

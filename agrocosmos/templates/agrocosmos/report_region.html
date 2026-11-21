@@ -252,10 +252,16 @@
   </div>
 
   <div class="report-controls">
+    <label>Страна:</label>
+    <select id="rpt-country" class="browser-default">
+      {% for c in countries %}
+        <option value="{{ c.code }}" {% if c.code == country.code %}selected{% endif %}>{{ c.name }}</option>
+      {% endfor %}
+    </select>
     <label>Регион:</label>
     <select id="rpt-region" class="browser-default">
       <option value="">— Выберите регион —</option>
-      <option value="country" {% if region_id == 'country' %}selected{% endif %}>— По Российской Федерации —</option>
+      <option value="country" {% if region_id == 'country' %}selected{% endif %}>— {{ country.name_full }} (свод по субъектам) —</option>
       {% for r in regions %}
         <option value="{{ r.id }}" {% if region_id|stringformat:'s' == r.id|stringformat:'s' %}selected{% endif %}>{{ r.name }}{% if r.subject_code %} ({{ r.subject_code }}){% endif %}</option>
       {% endfor %}
@@ -334,6 +340,23 @@
   var cropsEl = document.getElementById('rpt-crops');
   var sharesEl = document.getElementById('rpt-shares');
 
+  // Country picked in the «Страна» select (server-rendered; switching the
+  // country reloads the page with its own list of regions).
+  var COUNTRY = '{{ country.code }}';
+  // Pages that have the «Страна» select; every other page is Russia-only.
+  var MULTI_COUNTRY_PAGES = [
+    '{% url "agrocosmos:dashboard" %}', '{% url "agrocosmos:report_region" %}'
+  ];
+  var COUNTRY_NAME = '{{ country.name_full|escapejs }}';
+  var COUNTRY_NAME_GEN = '{{ country.name_gen|escapejs }}';
+  document.getElementById('rpt-country').addEventListener('change', function () {
+    var p = new URLSearchParams();
+    if (this.value !== 'RU') p.set('country', this.value);
+    p.set('region', 'country');
+    if (yearSel.value) p.set('year', yearSel.value);
+    location.href = location.pathname + '?' + p.toString();
+  });
+
   // Charts created by either renderer; cleaned out before each generate().
   var districtCharts = [];
 
@@ -342,6 +365,7 @@
 
   function updateUrl() {
     var params = new URLSearchParams();
+    if (COUNTRY !== 'RU') params.set('country', COUNTRY);
     if (regionSel.value) params.set('region', regionSel.value);
     if (districtSel.value) params.set('district', districtSel.value);
     if (yearSel.value) params.set('year', yearSel.value);
@@ -352,7 +376,10 @@
     var tabQs = qs ? '?' + qs : '';
     _tabLinks.forEach(function (a) {
       var base = a.getAttribute('href').split('?')[0];
-      a.href = base + tabQs;
+      // Pages without the «Страна» select are Russia-only: a foreign
+      // region/district id means nothing there.
+      var foreign = COUNTRY !== 'RU' && MULTI_COUNTRY_PAGES.indexOf(base) < 0;
+      a.href = base + (foreign ? '' : tabQs);
     });
   }
   regionSel.addEventListener('change', updateUrl);
@@ -362,7 +389,7 @@
   function getShareUrl() { return location.href; }
   function getShareText() {
     if (regionSel.value === 'country') {
-      return 'Отчёт NDVI: Российская Федерация, ' + yearSel.value + ' г.';
+      return 'Отчёт NDVI: ' + COUNTRY_NAME + ', ' + yearSel.value + ' г.';
     }
     var rOpt = regionSel.options[regionSel.selectedIndex];
     var dOpt = districtSel.options[districtSel.selectedIndex];
@@ -462,7 +489,8 @@
 
     var url;
     if (regionId === 'country') {
-      url = '/agrocosmos/api/report/country/?year=' + year;
+      url = '/agrocosmos/api/report/country/?year=' + year
+        + (COUNTRY !== 'RU' ? '&country=' + COUNTRY : '');
     } else if (districtId) {
       url = '/agrocosmos/api/report/district/?district=' + districtId + '&year=' + year;
     } else {
@@ -535,7 +563,7 @@
 
     // Summary cards
     summaryEl.innerHTML =
-      '<div class="summary-card"><div class="val">Российская Федерация</div><div class="lbl">Свод по субъектам</div></div>' +
+      '<div class="summary-card"><div class="val">' + esc(COUNTRY_NAME) + '</div><div class="lbl">Свод по субъектам</div></div>' +
       '<div class="summary-card"><div class="val">' + year + '</div><div class="lbl">Год</div></div>' +
       '<div class="summary-card"><div class="val">' + regions.length + '</div><div class="lbl">Субъектов с данными</div></div>' +
       '<div class="summary-card"><div class="val" style="color:#D32F2F;">' + byCat.anomaly.length + '</div><div class="lbl">Аномалии</div></div>' +
@@ -546,7 +574,7 @@
     var regionSection = document.getElementById('region-overall-section');
     if (countryOverall.length) {
       regionSection.style.display = 'block';
-      document.getElementById('region-chart-title').textContent = 'Среднее многолетнее и текущее значение NDVI: Российская Федерация';
+      document.getElementById('region-chart-title').textContent = 'Среднее многолетнее и текущее значение NDVI: ' + COUNTRY_NAME;
       var cDatesSet = new Set();
       countryOverall.forEach(function (s) { cDatesSet.add(s.date.substring(5)); });
       countryBaseline.forEach(function (b) { cDatesSet.add(b.date.substring(5)); });
@@ -556,7 +584,7 @@
       var cLookup = {};
       countryOverall.forEach(function (s) { cLookup[s.date.substring(5)] = s.mean_ndvi; });
       datasets.push({
-        label: 'Российская Федерация (' + year + ')',
+        label: COUNTRY_NAME + ' (' + year + ')',
         data: cLabels.map(function (d) { return cLookup[d] !== undefined ? cLookup[d] : null; }),
         borderColor: '#6A1B9A', backgroundColor: 'transparent',
         borderWidth: 2.5, fill: false, pointRadius: 3, tension: 0.3, spanGaps: true
@@ -697,7 +725,7 @@
       });
     });
 
-    var html = '<h2 class="shares-title"><i class="material-icons">pie_chart</i> Доли субъектов в площади сельхозугодий Российской Федерации</h2>'
+    var html = '<h2 class="shares-title"><i class="material-icons">pie_chart</i> Доли субъектов в площади сельхозугодий ' + esc(COUNTRY_NAME_GEN) + '</h2>'
       + '<div class="shares-grid">';
     pies.forEach(function (p, idx) {
       html += '<div class="share-card">'

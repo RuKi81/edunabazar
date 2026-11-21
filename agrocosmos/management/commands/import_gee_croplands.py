@@ -17,12 +17,21 @@ Pipeline:
            * ``crop_type='arable'`` (WorldCover does not split arable /
              pasture / hayfield — it has only one ``Cropland`` class).
 
+A vectorised mask is not a field: one polygon may cover a whole
+cropland belt and span many districts. ``--by-district`` therefore
+clips the mask to each district of the region and writes
+``district_id`` right away (``assign_farmland_district`` would put
+such a polygon into the single district holding its inner point).
+
 Usage::
 
     python manage.py import_gee_croplands \\
         --regions 19,23,34,41,43,64,70,71,77,17
 
     python manage.py import_gee_croplands --regions 19 --dry-run
+
+    # every region of a country, split by districts where they exist:
+    python manage.py import_gee_croplands --country KZ --by-district --skip-existing
 """
 from __future__ import annotations
 
@@ -38,7 +47,8 @@ import ee
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
 
-from agrocosmos.models import Farmland, Region
+from agrocosmos.models import District, Farmland, Region
+from agrocosmos.services.countries import COUNTRIES, normalize_country
 from agrocosmos.services.farmland_importer import (
     _pg_connection_string,
     build_count_staging_sql,
@@ -54,6 +64,13 @@ WORLDCOVER_ASSET = 'ESA/WorldCover/v200/2021'
 CROPLAND_CLASS = 40
 DEFAULT_SOURCE_ID = 'gee_esa_worldcover_2021'
 
+# The mask is vectorised block by block: a province-sized raster read in
+# one piece needs gigabytes of RAM, and an unbroken cropland belt would
+# become a single polygon with millions of vertices. A polygon crossing
+# a block edge is simply split in two. 512 px ≈ 51 km at the default
+# 100 m scale.
+VECTORISE_BLOCK_PX = 512
+
 
 class Command(BaseCommand):
     help = (
@@ -64,8 +81,19 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument(
-            '--regions', required=True,
+            '--regions', default='',
             help='Comma-separated Region IDs (e.g. "19,23,34").',
+        )
+        parser.add_argument(
+            '--country', default='',
+            help='Process every region of this country instead of --regions: '
+                 + ', '.join(c.code for c in COUNTRIES) + '.',
+        )
+        parser.add_argument(
+            '--by-district', action='store_true',
+            help='Clip the mask to each district of the region and set '
+                 'district_id on insert. Regions without districts are '
+                 'clipped to the region outline as usual.',
         )
         parser.add_argument(
             '--scale', type=int, default=100,
@@ -106,9 +134,7 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------
 
     def handle(self, *args, **options):
-        region_ids = self._parse_ids(options['regions'])
-        if not region_ids:
-            raise CommandError('--regions parsed to empty list.')
+        region_ids = self._resolve_region_ids(options)
 
         if not options['dry_run'] and not shutil.which(options['ogr2ogr']):
             raise CommandError(
@@ -226,6 +252,11 @@ class Command(BaseCommand):
         self.stdout.write(f'  Raw polygons: {n_raw:,}')
 
         # 4–5. Load GeoJSON → staging → INSERT … SELECT into agro_farmland
+        options = dict(options)
+        options['clip_by_district'] = (
+            options['by_district']
+            and District.objects.filter(region=region).exists()
+        )
         inserted, error = self._stage_and_promote(
             region, geojson_path, staging, options,
         )
@@ -264,7 +295,10 @@ class Command(BaseCommand):
             # INSERT … SELECT with clip to region.geom and area filter
             min_area_m2 = options['min_area_ha'] * 10000
             source_id = options['source_id'][:40]
-            sql = self._build_insert_sql(staging, region.pk, source_id, min_area_m2)
+            sql = self._build_insert_sql(
+                staging, region.pk, source_id, min_area_m2,
+                by_district=options['clip_by_district'],
+            )
             with transaction.atomic():
                 cur.execute(sql)
                 inserted = cur.rowcount
@@ -302,47 +336,55 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _vectorise_to_geojson(tif_path: Path, out_path: Path) -> int:
+    def _vectorise_to_geojson(tif_path: Path, out_path: Path,
+                              block_px: int = VECTORISE_BLOCK_PX) -> int:
         """Vectorise a single-band raster's valid pixels into GeoJSON
         polygons. Returns the number of raw polygons written.
 
         WorldCover was downloaded cropland-only (non-cropland masked out),
         so every non-nodata pixel is by definition cropland → we vectorise
-        the mask directly."""
+        the mask directly, one ``block_px`` window at a time (see
+        ``VECTORISE_BLOCK_PX``)."""
         import numpy as np
         import rasterio
         from rasterio.features import shapes as rio_shapes
+        from rasterio.windows import Window
 
-        with rasterio.open(tif_path) as src:
-            arr = src.read(1)
+        count = 0
+        with rasterio.open(tif_path) as src, \
+                open(out_path, 'w', encoding='utf-8') as f:
             nodata = src.nodata
-            transform = src.transform
-            # Build boolean mask of valid pixels
-            if nodata is None or (isinstance(nodata, float) and np.isnan(nodata)):
-                mask = ~np.isnan(arr)
-            else:
-                mask = arr != nodata
-            mask = mask & (arr > 0)
-
-            with open(out_path, 'w', encoding='utf-8') as f:
-                f.write('{"type":"FeatureCollection","features":[\n')
-                first = True
-                count = 0
-                for geom, _val in rio_shapes(
-                    arr.astype('uint8'), mask=mask, transform=transform,
-                ):
-                    if not first:
-                        f.write(',\n')
+            f.write('{"type":"FeatureCollection","features":[\n')
+            for row in range(0, src.height, block_px):
+                for col in range(0, src.width, block_px):
+                    window = Window(
+                        col, row,
+                        min(block_px, src.width - col),
+                        min(block_px, src.height - row),
+                    )
+                    arr = src.read(1, window=window)
+                    # Build boolean mask of valid pixels
+                    if nodata is None or (isinstance(nodata, float) and np.isnan(nodata)):
+                        mask = ~np.isnan(arr)
                     else:
-                        first = False
-                    feat = {
-                        'type': 'Feature',
-                        'properties': {},
-                        'geometry': geom,
-                    }
-                    f.write(json.dumps(feat))
-                    count += 1
-                f.write('\n]}\n')
+                        mask = arr != nodata
+                    mask = mask & (arr > 0)
+                    if not mask.any():
+                        continue
+                    for geom, _val in rio_shapes(
+                        mask.astype('uint8'), mask=mask,
+                        transform=src.window_transform(window),
+                    ):
+                        if count:
+                            f.write(',\n')
+                        feat = {
+                            'type': 'Feature',
+                            'properties': {},
+                            'geometry': geom,
+                        }
+                        f.write(json.dumps(feat))
+                        count += 1
+            f.write('\n]}\n')
         return count
 
     # ------------------------------------------------------------------
@@ -382,9 +424,36 @@ class Command(BaseCommand):
 
     @staticmethod
     def _build_insert_sql(staging: str, region_id: int,
-                          source_id: str, min_area_m2: float) -> str:
+                          source_id: str, min_area_m2: float,
+                          by_district: bool = False) -> str:
+        """INSERT … SELECT из staging с обрезкой маски.
+
+        ``by_district=False`` — обрезка по контуру региона, ``district_id``
+        остаётся NULL. ``by_district=True`` — обрезка по каждому району
+        региона: полигон маски, лежащий в нескольких районах, даёт по
+        угодью на район, ``district_id`` проставляется сразу.
+        """
         st = '"' + staging.replace('"', '""') + '"'
         src_q = "'" + source_id.replace("'", "''") + "'"
+        if by_district:
+            clip_from = f"""
+    SELECT
+        d.id AS district_id,
+        ST_Intersection(ST_MakeValid(s.wkb_geometry), d.geom) AS clipped
+    FROM {st} s
+    JOIN (
+        SELECT id, ST_MakeValid(geom) AS geom
+        FROM agro_district WHERE region_id = {int(region_id)}
+    ) d ON ST_Intersects(s.wkb_geometry, d.geom)"""
+        else:
+            clip_from = f"""
+    SELECT
+        NULL::int AS district_id,
+        ST_Intersection(
+            ST_MakeValid(s.wkb_geometry),
+            (SELECT ST_MakeValid(geom) FROM agro_region WHERE id = {int(region_id)})
+        ) AS clipped
+    FROM {st} s"""
         return f"""
 INSERT INTO agro_farmland (
     region_id, district_id, crop_type, is_used, cadastral_number,
@@ -392,7 +461,7 @@ INSERT INTO agro_farmland (
 )
 SELECT
     {int(region_id)}::int,
-    NULL::int,
+    c.district_id,
     'arable',
     NULL::boolean,
     '',
@@ -408,13 +477,7 @@ SELECT
     ),
     {src_q},
     NOW()
-FROM (
-    SELECT
-        ST_Intersection(
-            ST_MakeValid(s.wkb_geometry),
-            (SELECT ST_MakeValid(geom) FROM agro_region WHERE id = {int(region_id)})
-        ) AS clipped
-    FROM {st} s
+FROM ({clip_from}
 ) AS c
 WHERE NOT ST_IsEmpty(c.clipped)
   AND ST_Area(c.clipped::geography) >= {float(min_area_m2)}
@@ -426,6 +489,26 @@ WHERE NOT ST_IsEmpty(c.clipped)
     # ------------------------------------------------------------------
     # Utils
     # ------------------------------------------------------------------
+
+    def _resolve_region_ids(self, options: dict) -> list[int]:
+        """``--regions`` ids or every region of ``--country``."""
+        if options['country']:
+            if options['regions']:
+                raise CommandError('Pass either --regions or --country.')
+            country = normalize_country(options['country'])
+            if country is None:
+                raise CommandError(f'Unknown country: {options["country"]!r}')
+            region_ids = list(
+                Region.objects.filter(country=country)
+                .values_list('pk', flat=True)
+            )
+            if not region_ids:
+                raise CommandError(f'No regions imported for {country}.')
+            return region_ids
+        region_ids = self._parse_ids(options['regions'])
+        if not region_ids:
+            raise CommandError('--regions parsed to empty list.')
+        return region_ids
 
     @staticmethod
     def _parse_ids(spec: str) -> list[int]:

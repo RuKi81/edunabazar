@@ -64,7 +64,7 @@ class HelperTests(TestCase):
 class ImportRussiaRegionsTests(TestCase):
     def _run(self, *args, relations=None, polygon=POLY_GEOJSON):
         out, err = io.StringIO(), io.StringIO()
-        with patch(f'{REGIONS_MOD}.fetch_russia_admin_relations',
+        with patch(f'{REGIONS_MOD}.fetch_country_admin_relations',
                    return_value=relations or []) as mock_rel, \
              patch(f'{REGIONS_MOD}.fetch_polygon_geojson',
                    return_value=polygon) as mock_poly, \
@@ -194,3 +194,120 @@ class ImportRussiaDistrictsTests(TestCase):
         out, err, mock_rel = self._run()
         self.assertIn('No Region rows with osm_id', err)
         mock_rel.assert_not_called()
+
+
+class ImportOtherCountryTests(TestCase):
+    """``--country``: субъекты и районы других стран реестра."""
+
+    def test_regions_of_another_country(self):
+        rels = [_rel(215743, 'Акмолинская область', **{'ISO3166-2': 'KZ-11'})]
+        out = io.StringIO()
+        with patch(f'{REGIONS_MOD}.fetch_country_admin_relations',
+                   return_value=rels) as mock_rel, \
+             patch(f'{REGIONS_MOD}.fetch_polygon_geojson',
+                   return_value=POLY_GEOJSON), \
+             patch(f'{REGIONS_MOD}.time.sleep'):
+            call_command('import_russia_regions', '--country', 'kz', stdout=out)
+        mock_rel.assert_called_once_with('KZ', 4)
+        region = Region.objects.get(code='KZ-11')
+        self.assertEqual(region.country, 'KZ')
+        self.assertEqual(region.osm_id, 215743)
+
+    def test_default_country_is_russia(self):
+        rels = [_rel(101, 'Регион А', **{'ISO3166-2': 'RU-AAA'})]
+        with patch(f'{REGIONS_MOD}.fetch_country_admin_relations',
+                   return_value=rels) as mock_rel, \
+             patch(f'{REGIONS_MOD}.fetch_polygon_geojson',
+                   return_value=POLY_GEOJSON), \
+             patch(f'{REGIONS_MOD}.time.sleep'):
+            call_command('import_russia_regions', stdout=io.StringIO())
+        mock_rel.assert_called_once_with('RU', 4)
+        self.assertEqual(Region.objects.get(code='RU-AAA').country, 'RU')
+
+    def test_unknown_country_rejected(self):
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            call_command('import_russia_regions', '--country', 'XX',
+                         stdout=io.StringIO())
+
+    def _run_districts(self, *args, relations=None, polygon=POLY_GEOJSON):
+        out, err = io.StringIO(), io.StringIO()
+        with patch(f'{DISTRICTS_MOD}.fetch_admin_relations_in',
+                   return_value=relations or []) as mock_rel, \
+             patch(f'{DISTRICTS_MOD}.fetch_polygon_geojson',
+                   return_value=polygon), \
+             patch(f'{DISTRICTS_MOD}.time.sleep'):
+            call_command('import_russia_districts', *args,
+                         stdout=out, stderr=err)
+        return out.getvalue(), err.getvalue(), mock_rel
+
+    def test_districts_scoped_to_country(self):
+        Region.objects.create(
+            name='Регион РФ', code='ru', geom=_mpoly(), osm_id=101)
+        kz = Region.objects.create(
+            name='Область', code='KZ-11', country='KZ', geom=_mpoly(),
+            osm_id=215743)
+        # По умолчанию — только Россия …
+        _, _, mock_rel = self._run_districts(relations=[_rel(201, 'Район РФ')])
+        mock_rel.assert_called_once_with(101, 6)
+        # … а --country берёт регионы и уровень районов этой страны.
+        _, _, mock_rel = self._run_districts(
+            '--country', 'KZ', relations=[_rel(301, 'Район КЗ')])
+        mock_rel.assert_called_once_with(215743, 6)
+        self.assertEqual(District.objects.get(osm_id=301).region_id, kz.pk)
+
+    def test_country_without_district_level(self):
+        Region.objects.create(
+            name='Штат', code='IN-MH', country='IN', geom=_mpoly(),
+            osm_id=1950884)
+        _, err, mock_rel = self._run_districts('--country', 'IN')
+        mock_rel.assert_not_called()
+        self.assertIn('no district level configured for IN', err)
+        # Явный уровень снимает ограничение.
+        _, _, mock_rel = self._run_districts(
+            '--country', 'IN', '--admin-level', '5')
+        mock_rel.assert_called_once_with(1950884, 5)
+
+    def test_border_neighbour_is_not_reparented(self):
+        """Район соседнего региона, пришедший из Overpass по общей
+        границе, не импортируется и не переезжает в чужой регион."""
+        home = Region.objects.create(
+            name='Сосед', code='home', geom=_mpoly(), osm_id=900)
+        far = MultiPolygon(Polygon((
+            (60, 60), (61, 60), (61, 61), (60, 61), (60, 60),
+        )))
+        city = Region.objects.create(
+            name='Город', code='city', country='BY', geom=far, osm_id=59195)
+        neighbour = District.objects.create(
+            region=home, name='Минский район', code='d', geom=_mpoly(),
+            osm_id=59190)
+
+        out, _, _ = self._run_districts(
+            '--region-code', 'city', relations=[_rel(59190, 'Минский район')])
+        neighbour.refresh_from_db()
+        self.assertEqual(neighbour.region_id, home.pk)
+        self.assertFalse(District.objects.filter(region=city).exists())
+        self.assertIn('outside Город', out)
+        self.assertIn('1 skipped', out)
+
+    def test_region_fallback_district(self):
+        city = Region.objects.create(
+            name='Астана', code='KZ-71', country='KZ', geom=_mpoly(),
+            osm_id=3087155)
+        out, _, _ = self._run_districts('--country', 'KZ', '--region-fallback')
+        d = District.objects.get(region=city)
+        self.assertEqual((d.name, d.code, d.osm_id), ('Астана', 'region:KZ-71', None))
+        self.assertTrue(d.geom.equals(city.geom))
+        self.assertIn('1 created', out)
+        # Повторный запуск второй район не создаёт.
+        self._run_districts('--country', 'KZ', '--region-fallback')
+        self.assertEqual(District.objects.filter(region=city).count(), 1)
+
+    def test_no_fallback_when_region_has_districts(self):
+        Region.objects.create(
+            name='Область', code='KZ-11', country='KZ', geom=_mpoly(),
+            osm_id=215743)
+        self._run_districts('--country', 'KZ', '--region-fallback',
+                            relations=[_rel(301, 'Район')])
+        self.assertEqual(
+            list(District.objects.values_list('name', flat=True)), ['Район'])

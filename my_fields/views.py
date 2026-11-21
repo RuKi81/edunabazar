@@ -145,7 +145,9 @@ def gis_dashboards_page(request: HttpRequest) -> HttpResponse:
     if not can_open_gis_page(getattr(request, 'legacy_user', None)):
         raise Http404
     from agrocosmos.models import Region
+    from agrocosmos.services.countries import DEFAULT_COUNTRY
     return render(request, 'my_fields/dashboards.html', {
         'active_section': 'gis',
-        'regions': Region.objects.only('id', 'name').order_by('name'),
+        'regions': (Region.objects.filter(country=DEFAULT_COUNTRY)
+                    .only('id', 'name').order_by('name')),
     })

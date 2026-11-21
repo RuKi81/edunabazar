@@ -1,13 +1,16 @@
 """
-Bulk-import all Russian federal subjects (admin_level=4) from OSM.
+Bulk-import first-level subjects (admin_level=4) of a country from OSM.
 
-Fetches the full list of admin_level=4 relations inside Russia via
-Overpass, then grabs each multipolygon from polygons.openstreetmap.fr
+Russia by default; ``--country`` switches to any country of the
+registry in ``services/countries.py`` (the command keeps its historical
+name). Fetches the full list of admin_level=4 relations of the country
+via Overpass, then grabs each multipolygon from polygons.openstreetmap.fr
 and upserts a ``Region`` row keyed by ISO-3166-2 code (e.g. ``RU-KDA``).
 
 Usage::
 
     python manage.py import_russia_regions
+    python manage.py import_russia_regions --country KZ
     python manage.py import_russia_regions --limit 5 --sleep 1
     python manage.py import_russia_regions --skip-existing
 
@@ -24,20 +27,32 @@ import re
 import time
 
 from django.contrib.gis.geos import GEOSGeometry, MultiPolygon
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from agrocosmos.models import Region
+from agrocosmos.services.countries import (
+    COUNTRIES, DEFAULT_COUNTRY, normalize_country,
+)
 from agrocosmos.services.osm_overpass import (
+    fetch_country_admin_relations,
     fetch_polygon_geojson,
-    fetch_russia_admin_relations,
 )
 
 
 class Command(BaseCommand):
-    help = 'Bulk-import all Russian federal subjects (admin_level=4) from OSM.'
+    help = (
+        'Bulk-import first-level subjects (admin_level=4) of a country '
+        'from OSM. Russia by default.'
+    )
 
     def add_arguments(self, parser):
+        parser.add_argument(
+            '--country', default=DEFAULT_COUNTRY,
+            help='ISO 3166-1 alpha-2 country code: '
+                 + ', '.join(c.code for c in COUNTRIES)
+                 + f' (default {DEFAULT_COUNTRY}).',
+        )
         parser.add_argument(
             '--limit', type=int, default=None,
             help='Stop after N relations (for testing).',
@@ -76,6 +91,11 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **opts):
+        country = normalize_country(opts.get('country') or DEFAULT_COUNTRY)
+        if country is None:
+            raise CommandError(f'Unknown country: {opts["country"]!r}')
+        opts['country'] = country
+
         if opts['osm_id']:
             self._handle_single(opts)
             return
@@ -83,9 +103,10 @@ class Command(BaseCommand):
             self._handle_refresh_ids()
             return
 
-        self.stdout.write('Fetching admin_level=4 relations from Overpass…')
+        self.stdout.write(
+            f'Fetching {country} admin_level=4 relations from Overpass…')
         try:
-            relations = fetch_russia_admin_relations(4)
+            relations = fetch_country_admin_relations(country, 4)
         except Exception as exc:
             self.stderr.write(f'Overpass error: {exc}')
             return
@@ -142,6 +163,7 @@ class Command(BaseCommand):
                 code=code,
                 defaults={
                     'name': name,
+                    'country': opts['country'],
                     'geom': geom,
                     'osm_id': rel['osm_id'],
                 },
@@ -173,7 +195,10 @@ class Command(BaseCommand):
         with transaction.atomic():
             obj, is_new = Region.objects.update_or_create(
                 code=code,
-                defaults={'name': name, 'geom': geom, 'osm_id': osm_id},
+                defaults={
+                    'name': name, 'country': opts['country'],
+                    'geom': geom, 'osm_id': osm_id,
+                },
             )
         tag = 'created' if is_new else 'updated'
         self.stdout.write(self.style.SUCCESS(
@@ -184,7 +209,7 @@ class Command(BaseCommand):
         """Populate Region.osm_id from OSM admin_level=4 relations by name match."""
         self.stdout.write('Fetching admin_level=4 relations from Overpass…')
         try:
-            relations = fetch_russia_admin_relations(4)
+            relations = fetch_country_admin_relations(DEFAULT_COUNTRY, 4)
         except Exception as exc:
             self.stderr.write(f'Overpass error: {exc}')
             return
@@ -192,7 +217,7 @@ class Command(BaseCommand):
         by_name = self._build_name_index(relations)
 
         matched = unmatched = already = 0
-        for r in Region.objects.all():
+        for r in Region.objects.filter(country=DEFAULT_COUNTRY):
             osm_id = self._match_osm_id(r.name, by_name)
             if osm_id is None:
                 self.stderr.write(f'  ! no OSM match for {r.name!r} (code={r.code!r})')

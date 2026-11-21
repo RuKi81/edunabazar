@@ -83,6 +83,27 @@ class RunBaselineNdviTests(TestCase):
         self.assertIn('To enqueue      : 3', out)
         self.assertIn('+ queued', out)
 
+    def test_country_filter(self):
+        kz = Region.objects.create(
+            name='Область', code='KZ-1', country='KZ', geom=_square(70, 50))
+        self._run(country='kz', no_monitor=True)
+        self.assertEqual(
+            list(PipelineRun.objects.values_list('region_id', flat=True)),
+            [kz.pk],
+        )
+        _, err = self._run(country='XX', no_monitor=True)
+        self.assertIn('No regions resolved', err)
+
+    def test_all_skips_unmonitored_countries(self):
+        Region.objects.create(
+            name='Штат', code='IN-1', country='IN', geom=_square(78, 20))
+        self._run(regions='all', no_monitor=True)
+        self.assertEqual(
+            set(PipelineRun.objects.values_list('region__country', flat=True)),
+            {'RU'},
+        )
+        self.assertEqual(PipelineRun.objects.count(), len(self.regions))
+
     def test_region_id_filter(self):
         self._run(regions=str(self.regions[0].pk), no_monitor=True)
         self.assertEqual(PipelineRun.objects.count(), 1)

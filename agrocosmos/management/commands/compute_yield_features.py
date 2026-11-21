@@ -33,6 +33,7 @@ from django.db.models import Min, Max
 from agrocosmos.models import (
     CropYieldStat, DistrictNdviSeries, Region, YieldCrop, YieldFeatures,
 )
+from agrocosmos.services.countries import DEFAULT_COUNTRY
 from agrocosmos.services.yield_features import (
     compute_region_features, is_season_complete,
 )
@@ -201,7 +202,7 @@ class Command(BaseCommand):
 
     # ── Хелперы выбора входных данных ────────────────────────────────
     def _select_regions(self, region_arg: str | None) -> list[Region]:
-        qs = Region.objects.all().order_by('name')
+        qs = Region.objects.filter(country=DEFAULT_COUNTRY).order_by('name')
         if region_arg:
             # Ищем по точному имени или по коду.
             r = qs.filter(name=region_arg).first() or qs.filter(code=region_arg).first()

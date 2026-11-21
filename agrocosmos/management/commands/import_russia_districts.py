@@ -1,6 +1,8 @@
 """
-Bulk-import all Russian municipal districts / urban okrugs
-(admin_level=6) from OSM.
+Bulk-import second-level districts of a country from OSM — Russian
+municipal districts / urban okrugs (admin_level=6) by default;
+``--country`` switches to another country of the registry in
+``services/countries.py`` (the command keeps its historical name).
 
 Strategy: iterate over stored :class:`Region` rows that have an
 ``osm_id`` set, and for each one run a per-region Overpass query
@@ -11,6 +13,12 @@ per-region decomposition finishes one subject in a few seconds.
 Each district is upserted by its OSM relation id (``District.osm_id``),
 which makes the import idempotent even when the same district name
 repeats across subjects.
+
+Overpass's area filter also returns relations that merely share a border
+way with the parent (Минский район for the city of Minsk, districts of
+the neighbouring subject or country). A relation is therefore imported
+only when a point on its surface lies inside the region; otherwise an
+existing district of another region would be silently re-parented.
 
 Usage::
 
@@ -26,6 +34,11 @@ Usage::
 
 Prerequisite: populate ``Region.osm_id`` first via
 ``import_russia_regions --refresh-osm-ids`` (fast, one Overpass call).
+
+Another country — subjects without districts of their own (cities of
+republican significance) get one district equal to the subject::
+
+    python manage.py import_russia_districts --country KZ --region-fallback
 """
 from __future__ import annotations
 
@@ -38,6 +51,9 @@ from agrocosmos.management.commands.import_russia_regions import (
     _coerce_multipolygon,
 )
 from agrocosmos.models import District, Region
+from agrocosmos.services.countries import (
+    COUNTRIES, DEFAULT_COUNTRY, get_country, normalize_country,
+)
 from agrocosmos.services.osm_overpass import (
     fetch_admin_relations_in,
     fetch_polygon_geojson,
@@ -46,11 +62,23 @@ from agrocosmos.services.osm_overpass import (
 
 class Command(BaseCommand):
     help = (
-        'Bulk-import all Russian municipal districts (admin_level=6) from OSM '
-        'and attach each to its parent Region via spatial-join.'
+        'Bulk-import second-level districts of a country from OSM (Russian '
+        'municipal districts by default) into their parent Region.'
     )
 
     def add_arguments(self, parser):
+        parser.add_argument(
+            '--country', default=DEFAULT_COUNTRY,
+            help='ISO 3166-1 alpha-2 country code: '
+                 + ', '.join(c.code for c in COUNTRIES)
+                 + f' (default {DEFAULT_COUNTRY}). Ignored with --region-code.',
+        )
+        parser.add_argument(
+            '--region-fallback', action='store_true',
+            help='For a region left without any district (no relations of '
+                 'the district level inside it) create one district equal '
+                 'to the region itself, so its farmlands can be monitored.',
+        )
         parser.add_argument(
             '--limit', type=int, default=None,
             help='Stop after N relations (for testing).',
@@ -77,8 +105,9 @@ class Command(BaseCommand):
             ),
         )
         parser.add_argument(
-            '--admin-level', type=int, default=6,
-            help='OSM admin_level to fetch (default 6 = mun. districts).',
+            '--admin-level', type=int, default=None,
+            help='OSM admin_level to fetch (default: district level of the '
+                 'region country, 6 for Russia = mun. districts).',
         )
 
     def handle(self, *args, **opts):
@@ -108,6 +137,8 @@ class Command(BaseCommand):
             c, u, s, f = self._process_region(
                 region, relations, opts['skip_existing'], opts['sleep'],
             )
+            if opts['region_fallback']:
+                c += self._ensure_fallback_district(region)
             total_created += c
             total_updated += u
             total_skipped += s
@@ -130,7 +161,14 @@ class Command(BaseCommand):
                 self.stderr.write(f'Region code {opts["region_code"]!r} not found.')
                 return None
 
-        regions = list(Region.objects.exclude(osm_id__isnull=True).order_by('name'))
+        country = normalize_country(opts.get('country') or DEFAULT_COUNTRY)
+        if country is None:
+            self.stderr.write(f'Unknown country: {opts["country"]!r}')
+            return None
+        regions = list(
+            Region.objects.filter(country=country)
+            .exclude(osm_id__isnull=True).order_by('name')
+        )
         if not regions:
             self.stderr.write(
                 'No Region rows with osm_id set. Run '
@@ -151,7 +189,16 @@ class Command(BaseCommand):
             )
             return None
 
-        admin_level = opts['admin_level']
+        admin_level = (
+            opts['admin_level']
+            or get_country(region.country).district_admin_level
+        )
+        if not admin_level:
+            self.stderr.write(
+                f'[region {ri}/{n_regions}] {region.name}: no district level '
+                f'configured for {region.country} — pass --admin-level.'
+            )
+            return None
         self.stdout.write(self.style.HTTP_INFO(
             f'[region {ri}/{n_regions}] {region.name} '
             f'(code={region.code}, scope=osm:{scope_osm_id}) — '
@@ -168,9 +215,35 @@ class Command(BaseCommand):
         self.stdout.write(f'  {len(relations)} districts in {region.name}')
         return relations
 
+    @staticmethod
+    def _inside_region(region_geom, geom) -> bool:
+        """Does the candidate district lie inside the region?
+
+        A broken topology must not block the import — treat a failed
+        check as "inside" (the pre-check behaviour).
+        """
+        try:
+            return region_geom.contains(geom.point_on_surface)
+        except Exception:
+            return True
+
+    def _ensure_fallback_district(self, region) -> int:
+        """Region without districts → one district equal to the region."""
+        if District.objects.filter(region=region).exists():
+            return 0
+        District.objects.create(
+            region=region, name=region.name,
+            code=f'region:{region.code}'[:150], geom=region.geom,
+        )
+        self.stdout.write(
+            f'    no districts in {region.name} — created one equal to the region'
+        )
+        return 1
+
     def _process_region(self, region, relations, skip_existing, sleep_s):
         created = updated = skipped = failed = 0
         total = len(relations)
+        region_geom = region.geom.prepared
         for i, rel in enumerate(relations, 1):
             name = rel['name']
             tags = rel['tags']
@@ -204,6 +277,14 @@ class Command(BaseCommand):
             except Exception as exc:
                 self.stderr.write(f'      ! geometry decode failed: {exc}')
                 failed += 1
+                time.sleep(sleep_s)
+                continue
+
+            if not self._inside_region(region_geom, geom):
+                self.stdout.write(
+                    f'      outside {region.name} (border neighbour) — skipped'
+                )
+                skipped += 1
                 time.sleep(sleep_s)
                 continue
 

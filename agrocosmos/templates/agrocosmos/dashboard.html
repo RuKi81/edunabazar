@@ -314,6 +314,12 @@
         </a>
       </div>
 
+      <select id="agro-country" class="browser-default agro-ui__select" title="Страна">
+        {% for c in countries %}
+          <option value="{{ c.code }}" {% if c.code == country.code %}selected{% endif %}>{{ c.name }}</option>
+        {% endfor %}
+      </select>
+
       <select id="agro-region" class="browser-default agro-ui__select">
         <option value="">— Регион —</option>
         <option value="all" {% if region_id == 'all' %}selected{% endif %}>— Все регионы (Оперативное состояние) —</option>
@@ -332,7 +338,7 @@
       <!-- Loader shown while the all-regions choropleth is being fetched -->
       <div id="agro-region-loader" style="display:none; margin: 4px 0 8px; padding:6px 8px; background:#fff3e0; border:1px solid #ffcc80; border-radius:4px; font-size:11px; color:#6d4c41;">
         <i class="material-icons" style="font-size:14px; vertical-align:-2px;">hourglass_empty</i>
-        Загрузка районов РФ…
+        Загрузка районов…
       </div>
 
       <!-- Legend for "All regions" mode (NDVI vs multi-year mean) -->
@@ -410,8 +416,8 @@
       <input type="checkbox" id="agro-toggle-farmlands" style="display:none" />
       {% endif %}
 
-      <!-- Yield forecast layer toggle (V1.5) -->
-      <div class="agro-cb-row" style="margin-bottom:2px;">
+      <!-- Yield forecast layer toggle (V1.5) — Rosstat data, Russia only -->
+      <div class="agro-cb-row" style="margin-bottom:2px;{% if country.code != 'RU' %} display:none;{% endif %}">
         <label>
           <input type="checkbox" id="agro-toggle-yield" />
           <span style="font-size:11px;"><i class="material-icons" style="font-size:14px; vertical-align:-2px; color:#558B2F;">grain</i> Прогноз урожайности</span>
@@ -623,11 +629,20 @@
       preferCanvas: true,
     });
     var RUSSIA_BOUNDS = L.latLngBounds([[41.0, 19.0], [82.0, 180.0]]);
-    // The all-Russia choropleth concentrates data density in European Russia
-    // (agriculture is sparse east of the Urals), so the default view zooms
-    // there. Users can pan/zoom to Siberia & Far East as needed.
-    var EUROPEAN_RUSSIA_BOUNDS = L.latLngBounds([[43.0, 19.0], [68.0, 65.0]]);
-    map.fitBounds(EUROPEAN_RUSSIA_BOUNDS, { padding: [10, 10] });
+    // Country picked in the «Страна» select (server-rendered; switching
+    // the country reloads the page with its own list of regions).
+    var COUNTRY = '{{ country.code }}';
+    var COUNTRY_QS = COUNTRY === 'RU' ? '' : 'country=' + COUNTRY;
+    // Pages that have the «Страна» select; every other page is Russia-only.
+    var MULTI_COUNTRY_PAGES = [
+      '{% url "agrocosmos:dashboard" %}', '{% url "agrocosmos:report_region" %}'
+    ];
+    // Default view of the country. For Russia it is the European part:
+    // the all-Russia choropleth concentrates data density there
+    // (agriculture is sparse east of the Urals). Users can pan/zoom to
+    // Siberia & Far East as needed.
+    var COUNTRY_BOUNDS = L.latLngBounds({{ country_bounds }});
+    map.fitBounds(COUNTRY_BOUNDS, { padding: [10, 10] });
 
     // Custom pane for basemap tiles — always below vectors
     map.createPane('basemapPane');
@@ -1008,12 +1023,16 @@
       var loader = document.getElementById('agro-region-loader');
       if (loader) loader.style.display = '';
       var url = '/agrocosmos/api/districts/status/'
-        + (regionId ? ('?region=' + encodeURIComponent(regionId)) : '');
+        + (regionId ? ('?region=' + encodeURIComponent(regionId))
+                    : (COUNTRY_QS ? '?' + COUNTRY_QS : ''));
       fetch(url)
         .then(function (r) { return r.json(); })
         .then(function (data) {
           if (loader) loader.style.display = 'none';
-          if (!data.features || !data.features.length) return;
+          if (!data.features || !data.features.length) {
+            showSubjectsOnly(regionId);
+            return;
+          }
 
           // "Ситуация на" — pick the most recent ``current_date`` across
           // all districts (it can vary by a day or two near the country
@@ -1094,7 +1113,7 @@
           if (regionId && districtLayer.getBounds().isValid()) {
             map.fitBounds(districtLayer.getBounds(), { padding: [20, 20] });
           } else {
-            map.fitBounds(EUROPEAN_RUSSIA_BOUNDS, { padding: [10, 10] });
+            map.fitBounds(COUNTRY_BOUNDS, { padding: [10, 10] });
           }
 
           // Populate the district <select> from the same payload so we don't
@@ -1144,6 +1163,38 @@
         });
     }
 
+    // Scope without districts (a country loaded with subject borders and
+    // farmlands only): there is no choropleth to draw, so show the subject
+    // outlines instead and zoom to them.
+    function showSubjectsOnly(regionId) {
+      setAllRegionsLegendVisible(false);
+      var bordersCb = document.getElementById('agro-toggle-borders');
+      bordersCb.checked = true;
+      bordersCb.dispatchEvent(new Event('change'));
+      if (!regionId) {
+        map.fitBounds(COUNTRY_BOUNDS, { padding: [10, 10] });
+        return;
+      }
+      fetch('/agrocosmos/api/regions/?id=' + encodeURIComponent(regionId))
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (!data.features || !data.features.length) return;
+          var b = L.geoJSON(data).getBounds();
+          if (b.isValid()) map.fitBounds(b, { padding: [20, 20] });
+        });
+    }
+
+    // Switching the country reloads the page: the region list, default
+    // extent and the choropleth are all per-country.
+    document.getElementById('agro-country').addEventListener('change', function () {
+      var p = new URLSearchParams();
+      if (this.value !== 'RU') p.set('country', this.value);
+      p.set('region', 'all');
+      var yrs = (typeof getSelectedYears === 'function') ? getSelectedYears() : [];
+      if (yrs.length) p.set('year', yrs.join(','));
+      location.href = location.pathname + '?' + p.toString();
+    });
+
     // When region changes — update district dropdown + auto-show borders & zoom.
     // Special case: regionId === 'all' renders an all-Russia districts choropleth
     // coloured by current NDVI vs baseline (% of normal).
@@ -1181,7 +1232,7 @@
         bordersCb.dispatchEvent(new Event('change'));
         // Reset the map back to the European Russia overview, matching the
         // initial viewport.
-        map.fitBounds(EUROPEAN_RUSSIA_BOUNDS, { padding: [10, 10] });
+        map.fitBounds(COUNTRY_BOUNDS, { padding: [10, 10] });
         return;
       }
 
@@ -1342,7 +1393,8 @@
       var regionId = regionSel.value;
       // 'all' or empty → fetch every region; specific id → only that one.
       var url = '/agrocosmos/api/regions/'
-        + (regionId && regionId !== 'all' ? '?id=' + regionId : '');
+        + (regionId && regionId !== 'all' ? '?id=' + regionId
+                                          : (COUNTRY_QS ? '?' + COUNTRY_QS : ''));
 
       fetch(url)
         .then(function (r) { return r.json(); })
@@ -2592,6 +2644,7 @@
     function _buildAgroQS(omit) {
       omit = omit || {};
       var p = new URLSearchParams();
+      if (COUNTRY !== 'RU') p.set('country', COUNTRY);
       if (!omit.region && regionSel.value) p.set('region', regionSel.value);
       if (!omit.district && districtSel.value) p.set('district', districtSel.value);
       if (!omit.year) {
@@ -2616,22 +2669,30 @@
       var navQs = _buildAgroQS({ farmland: true, filters: true });
       _tabLinks.forEach(function (a) {
         var base = a.getAttribute('href').split('?')[0];
-        a.href = base + navQs;
+        // Pages without the «Страна» select are Russia-only: a foreign
+        // region/district id means nothing there.
+        var foreign = COUNTRY !== 'RU' && MULTI_COUNTRY_PAGES.indexOf(base) < 0;
+        a.href = base + (foreign ? '' : navQs);
       });
       // 3. Report-open buttons (single year only — reports accept scalar year).
       var rid = regionSel.value;
       var did = districtSel.value;
       var yr = getSelectedYears()[0] || '';
+      // Keep the report on the same country when no specific region is
+      // picked (a region id alone already implies its country).
+      var cq = COUNTRY_QS ? COUNTRY_QS + '&' : '';
       if (_btnReportRegion) {
         _btnReportRegion.href = '{% url "agrocosmos:report_region" %}'
-          + (rid ? '?region=' + rid + '&year=' + yr : '');
+          + (rid ? '?' + cq + 'region=' + rid + '&year=' + yr
+                 : (COUNTRY_QS ? '?' + COUNTRY_QS : ''));
       }
       if (_btnReportDistrict) {
         // The standalone "Отчёт по району" page has been merged into the
         // unified report_region page (district view = same URL with a
         // ``district`` query param).
         _btnReportDistrict.href = '{% url "agrocosmos:report_region" %}'
-          + (rid ? '?region=' + rid + (did ? '&district=' + did : '') + '&year=' + yr : '');
+          + (rid ? '?' + cq + 'region=' + rid + (did ? '&district=' + did : '') + '&year=' + yr
+                 : (COUNTRY_QS ? '?' + COUNTRY_QS : ''));
       }
     }
     window.syncNavState = syncNavState;  // exposed for click handler below

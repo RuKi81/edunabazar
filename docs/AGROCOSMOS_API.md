@@ -45,9 +45,22 @@ Redis на 5 минут (`cache_page`).
 
 ### `GET /api/regions/`
 
-Все регионы с геометрией (MultiPolygon).
+Все регионы страны с геометрией (MultiPolygon).
+
+**Параметры:** `country` — код страны ISO 3166-1 alpha-2 (`RU`, `KZ`, `BY`,
+`IN`, `CN`, `BR`; по умолчанию `RU`); `id` — один регион (страна берётся
+из самого региона).
 
 **Ответ:** `{"type": "FeatureCollection", "features": [...]}`
+
+### Страны
+
+Регион (`Region`) принадлежит одной из стран реестра
+`agrocosmos/services/countries.py` (`Region.country`). Эндпоинты и страницы,
+которым страна не передана, работают по России. Параметр `country`
+принимают: `/` и `/report/region/` (HTML, селект «Страна»),
+`/api/regions/`, `/api/districts/status/`, `/api/report/country/`.
+Остальные страницы и отчёты — только РФ.
 
 ### `GET /api/districts/?region=<id>`
 
@@ -209,11 +222,13 @@ NDVI time series одного поля.
 страновой/региональный MODIS-отчёт → свод района (S2/L8) →
 проблемные поля → неиспользуемые земли → паспорт поля.
 
-### `GET /api/report/country/?year=<y>`
+### `GET /api/report/country/?year=<y>[&country=<code>]`
 
 Данные для странового отчёта (читает пре-агрегат `DistrictNdviSeries`,
-просуммированный до `(region, date)`):
+просуммированный до `(region, date)`); `country` — код страны, по
+умолчанию `RU`:
 
+- `country` — `code`, `name`, `name_full`, `name_gen` выбранной страны
 - `regions[]` — для каждого региона: series, latest_ndvi, z-score, baseline, assessment
 - `country_overall_series`, `country_baseline`, `last_period_end`
 - `farmland_shares` — площади угодий по субъектам и видам для пайчартов

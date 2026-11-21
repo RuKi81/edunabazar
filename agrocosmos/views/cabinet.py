@@ -20,6 +20,7 @@ from legacy.models import Message
 from legacy.views.helpers import _get_current_legacy_user
 
 from ..models import AgroSubscription, District, Region
+from ..services.countries import DEFAULT_COUNTRY
 
 
 def _handle_delete(request: HttpRequest, user) -> None:
@@ -138,13 +139,13 @@ def me_agrocosmos(request: HttpRequest) -> HttpResponse:
         .select_related('region', 'district', 'district__region')
         .order_by('region__name', 'district__name')
     )
-    regions = Region.objects.order_by('name')
+    regions = Region.objects.filter(country=DEFAULT_COUNTRY).order_by('name')
 
     # For client-side district filtering by region.  District is
     # rendered with a ``data-region`` attribute so the JS on the page
     # can filter without an extra API call.
     districts = (
-        District.objects
+        District.objects.filter(region__country=DEFAULT_COUNTRY)
         .select_related('region')
         .order_by('region__name', 'name')
         .values('id', 'name', 'region_id', 'region__name')

@@ -1,4 +1,5 @@
 """HTML page views: dashboards and report pages."""
+import json
 import time
 from datetime import date
 
@@ -9,6 +10,9 @@ from django.shortcuts import redirect, render
 from django.urls import reverse
 
 from ..models import Region, District, Farmland, VegetationIndex, SatelliteScene
+from ..services.countries import (
+    COUNTRIES, DEFAULT_COUNTRY, Country, get_country, normalize_country,
+)
 from ._helpers import MODIS_SATELLITES, RASTER_SATELLITES
 
 
@@ -151,6 +155,48 @@ def _to_int_or_none(raw) -> int | None:
         return None
 
 
+def _regions_for_select(country: str = DEFAULT_COUNTRY):
+    """Regions of one country for the <select> (Russia unless told otherwise).
+
+    Only ``id``/``name``/``code``/``subject_code`` are used by the
+    <select>; skip the heavy ``geom`` MultiPolygon to avoid tens of MB of
+    GeoDjango deserialization on every page render.
+    """
+    return (Region.objects.filter(country=country)
+            .only('id', 'name', 'code', 'subject_code'))
+
+
+def _resolve_country(request: HttpRequest, region_id) -> Country:
+    """Country of the page: explicit ``?country=``, else the country of the
+    selected region (links carry only ``?region=<id>``), else Russia."""
+    code = normalize_country(request.GET.get('country'))
+    if code is None:
+        r_id = _to_int_or_none(region_id)
+        if r_id is not None:
+            code = (Region.objects.filter(pk=r_id)
+                    .values_list('country', flat=True).first())
+    return get_country(code)
+
+
+def _country_context(country: Country) -> dict:
+    """Template context of the «Страна» select.
+
+    Only countries whose subjects are already imported are offered (plus
+    Russia and the one being viewed): a registry entry without data would
+    open an empty map.
+    """
+    loaded = set(
+        Region.objects.order_by().values_list('country', flat=True).distinct()
+    )
+    loaded.update((DEFAULT_COUNTRY, country.code))
+    return {
+        'countries': [c for c in COUNTRIES if c.code in loaded],
+        'country': country,
+        # JSON, not a template float: l10n would print «43,0».
+        'country_bounds': json.dumps(country.bounds),
+    }
+
+
 def _farmland_scope(region_id, district_id):
     """Resolve dashboard scope → (farmland_qs, cache_key | None).
 
@@ -241,10 +287,6 @@ def dashboard(request: HttpRequest) -> HttpResponse:
     ``'all'`` is the same one the region <select> uses, and the
     front-end JS auto-fires its ``change`` handler to load the layer.
     """
-    # Only ``id``/``name``/``code`` are used by the <select>; skip the heavy
-    # ``geom`` MultiPolygon to avoid tens of MB of GeoDjango deserialization
-    # on every dashboard render.
-    regions = Region.objects.only('id', 'name', 'code', 'subject_code')
     # ``region`` may legitimately be empty when the user explicitly
     # selects "— Регион —"; only fall back to 'all' when the parameter
     # is missing entirely from the query string.
@@ -252,6 +294,8 @@ def dashboard(request: HttpRequest) -> HttpResponse:
         region_id = request.GET.get('region')
     else:
         region_id = 'all'
+    country = _resolve_country(request, region_id)
+    regions = _regions_for_select(country.code)
     district_id = request.GET.get('district')
     selected_years = _parse_selected_years(request.GET.get('year'))
     farmland_id = request.GET.get('farmland') or ''
@@ -279,12 +323,13 @@ def dashboard(request: HttpRequest) -> HttpResponse:
         'selected_years': selected_years,
         'farmland_id': farmland_id,
         'active_page': 'modis',
+        **_country_context(country),
     })
 
 
 def raster_dashboard(request: HttpRequest) -> HttpResponse:
     """Detailed raster analysis page — Sentinel-2 / Landsat."""
-    regions = Region.objects.only('id', 'name', 'code', 'subject_code')
+    regions = _regions_for_select()
     region_id = request.GET.get('region')
     district_id = request.GET.get('district')
     selected_years = _parse_selected_years(request.GET.get('year'))
@@ -310,9 +355,10 @@ def raster_dashboard(request: HttpRequest) -> HttpResponse:
 
 
 def report_region(request: HttpRequest) -> HttpResponse:
-    """Unified MODIS NDVI report page (region or district level)."""
-    regions = Region.objects.only('id', 'name', 'code', 'subject_code')
+    """Unified MODIS NDVI report page (country, region or district level)."""
     region_id = request.GET.get('region')
+    country = _resolve_country(request, region_id)
+    regions = _regions_for_select(country.code)
     district_id = request.GET.get('district')
     year = request.GET.get('year')
 
@@ -330,6 +376,7 @@ def report_region(request: HttpRequest) -> HttpResponse:
         'year': year or str(current_year),
         'years': years,
         'active_page': 'report_region',
+        **_country_context(country),
     })
 
 
@@ -362,7 +409,7 @@ def report_screening(request: HttpRequest) -> HttpResponse:
     (детальный мониторинг S2/L8/fused). Data comes from
     ``/agrocosmos/api/report/screening/``.
     """
-    regions = Region.objects.only('id', 'name', 'code', 'subject_code')
+    regions = _regions_for_select()
     region_id = request.GET.get('region')
     district_id = request.GET.get('district')
     year = request.GET.get('year')
@@ -407,7 +454,7 @@ def report_region_detailed(request: HttpRequest) -> HttpResponse:
     ``/agrocosmos/api/report/region-detailed/`` и
     ``/agrocosmos/api/report/district-detailed/``.
     """
-    regions = Region.objects.only('id', 'name', 'code', 'subject_code')
+    regions = _regions_for_select()
     region_id = request.GET.get('region')
     district_id = request.GET.get('district')
     year = request.GET.get('year')
@@ -435,7 +482,7 @@ def report_unused(request: HttpRequest) -> HttpResponse:
     Сверка заявленного факта использования (is_used) со спутниковыми
     сигналами сезона. Data comes from ``/agrocosmos/api/report/unused/``.
     """
-    regions = Region.objects.only('id', 'name', 'code', 'subject_code')
+    regions = _regions_for_select()
     region_id = request.GET.get('region')
     district_id = request.GET.get('district')
     year = request.GET.get('year')

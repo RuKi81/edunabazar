@@ -9,6 +9,7 @@ from django.http import HttpRequest, HttpResponse, HttpResponseNotModified, Json
 
 from ..models import Region, District, Farmland, VegetationIndex
 from ..services import districts_status_geojson
+from ..services.countries import DEFAULT_COUNTRY, get_country
 from ..services.districts_status_geojson import _SimplifyPreserveTopology
 from ._helpers import _satellite_filter, rate_limit
 
@@ -30,6 +31,22 @@ _GEOJSON_CACHE_TTL   = 60 * 60 * 24 * 7  # 1 week — these geometries do not ch
 _REGION_SIMPLIFY_TOL   = 0.002
 _DISTRICT_SIMPLIFY_TOL = 0.001
 _GEOJSON_PRECISION     = 4
+
+
+def _regions_cache_key(country: str) -> str:
+    """Per-country cache key; Russia keeps the bare (pre-country) key."""
+    if country == DEFAULT_COUNTRY:
+        return _REGIONS_CACHE_KEY
+    return f'{_REGIONS_CACHE_KEY}:{country}'
+
+
+def _region_country(region_id: int, fallback: str) -> str:
+    """Country of a region id (a foreign region may be requested by id
+    alone, without ``?country=``); unknown id → ``fallback``."""
+    return (
+        Region.objects.filter(pk=region_id)
+        .values_list('country', flat=True).first()
+    ) or fallback
 
 
 def _conditional_json(
@@ -57,11 +74,8 @@ def _conditional_json(
     return resp
 
 
-def _build_regions_payload(region_id: int | None) -> dict:
-    qs = Region.objects.all()
-    if region_id is not None:
-        qs = qs.filter(pk=region_id)
-    rows = qs.annotate(
+def _build_regions_payload(country: str) -> dict:
+    rows = Region.objects.filter(country=country).annotate(
         geojson=AsGeoJSON(
             _SimplifyPreserveTopology('geom', _REGION_SIMPLIFY_TOL),
             precision=_GEOJSON_PRECISION,
@@ -79,8 +93,25 @@ def _build_regions_payload(region_id: int | None) -> dict:
     return {'type': 'FeatureCollection', 'features': features}
 
 
+def _regions_payload(country: str) -> dict:
+    """All regions of a country, from the week-long cache."""
+    cache_key = _regions_cache_key(country)
+    payload = cache.get(cache_key)
+    if payload is None:
+        overall_t = time.time()
+        payload = _build_regions_payload(country)
+        cache.set(cache_key, payload, _GEOJSON_CACHE_TTL)
+        logger.info(
+            'api_regions: cold rebuild  country=%s features=%d  %.2fs',
+            country, len(payload['features']), time.time() - overall_t,
+        )
+    return payload
+
+
 def api_regions(request: HttpRequest) -> JsonResponse:
     """GeoJSON FeatureCollection of regions (topology-simplified).
+
+    ``?country=<ISO code>`` picks the country (Russia by default).
 
     Previously this endpoint claimed to return simplified geometry but
     only trimmed coordinate precision (``AsGeoJSON(precision=5)``),
@@ -101,23 +132,14 @@ def api_regions(request: HttpRequest) -> JsonResponse:
         except (TypeError, ValueError):
             region_id = None
 
-    overall_t = time.time()
+    country = get_country(request.GET.get('country')).code
     if region_id is None:
-        payload = cache.get(_REGIONS_CACHE_KEY)
-        if payload is None:
-            payload = _build_regions_payload(None)
-            cache.set(_REGIONS_CACHE_KEY, payload, _GEOJSON_CACHE_TTL)
-            logger.info(
-                'api_regions: cold rebuild  features=%d  %.2fs',
-                len(payload['features']), time.time() - overall_t,
-            )
+        payload = _regions_payload(country)
     else:
         # Single-region fetches are rare and tiny; serve them out of the
         # cached full payload to avoid a separate cache entry per id.
-        full = cache.get(_REGIONS_CACHE_KEY)
-        if full is None:
-            full = _build_regions_payload(None)
-            cache.set(_REGIONS_CACHE_KEY, full, _GEOJSON_CACHE_TTL)
+        country = _region_country(region_id, country)
+        full = _regions_payload(country)
         payload = {
             'type': 'FeatureCollection',
             'features': [
@@ -130,7 +152,7 @@ def api_regions(request: HttpRequest) -> JsonResponse:
     # tied to the Redis cache key version + filter so it auto-rotates
     # whenever simplification settings change.
     etag = 'W/"{key}-{rg}-{n}"'.format(
-        key=_REGIONS_CACHE_KEY,
+        key=_regions_cache_key(country),
         rg=region_id if region_id is not None else 'all',
         n=len(payload.get('features', [])),
     )
@@ -272,7 +294,9 @@ def api_districts_status_timeline(request: HttpRequest) -> JsonResponse:
 
 @rate_limit('20/m')
 def api_districts_status(request: HttpRequest) -> JsonResponse:
-    """All-Russia FeatureCollection of districts with current NDVI vs baseline.
+    """Country-wide FeatureCollection of districts with current NDVI vs
+    baseline — all-Russia by default, ``?country=<ISO code>`` for another
+    country, ``?region=<id>`` for one subject.
 
     The heavy GeoJSON build (district geometries + simplification +
     serialisation, ~20 s) is cached eternally in Redis under a dedicated
@@ -304,8 +328,9 @@ def api_districts_status(request: HttpRequest) -> JsonResponse:
     # Cache invariant: ``refresh_cache`` always writes both the dict
     # and this pre-encoded blob atomically, so the ETag in the blob
     # is in sync with the data the slow path would compute.
+    country = get_country(request.GET.get('country')).code
     if r_id is None:
-        etag, body = districts_status_geojson.get_fast_blob()
+        etag, body = districts_status_geojson.get_fast_blob(country)
         if request.headers.get('If-None-Match') == etag:
             resp = HttpResponseNotModified()
         else:
@@ -322,7 +347,9 @@ def api_districts_status(request: HttpRequest) -> JsonResponse:
     # memory (~2300 dict checks, microseconds), encode the slice. Per-
     # region requests are rare enough that pre-encoding 86 separate
     # blobs would waste Redis memory for little benefit.
-    payload = districts_status_geojson.get_or_build()
+    payload = districts_status_geojson.get_or_build(
+        _region_country(r_id, country),
+    )
     features = [
         f for f in payload.get('features', [])
         if (f.get('properties') or {}).get('region_id') == r_id
