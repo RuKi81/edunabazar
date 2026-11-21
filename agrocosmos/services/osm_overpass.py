@@ -1,12 +1,14 @@
 """
 OSM bulk boundary fetcher for Region / District import.
 
-Uses two services, both free & public:
+Uses free & public services:
   * Overpass API (https://overpass-api.de/api/interpreter) to list all
     OSM relation ids with a given admin_level inside a country.
   * https://polygons.openstreetmap.fr/get_geojson.py — returns a ready
     multipolygon GeoJSON for any single OSM relation id, which avoids
     reimplementing OSM's multipolygon-assembly rules from ways+nodes.
+  * https://nominatim.openstreetmap.org/lookup — fallback polygon source
+    for when polygons.openstreetmap.fr is down.
 
 No extra Python dependencies required — just ``requests``.
 
@@ -29,18 +31,32 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# Allow switching to mirrors (e.g. https://overpass.kumi.systems/api/interpreter
-# or https://lz4.overpass-api.de/api/interpreter) without a redeploy.
+# Overpass endpoints, tried in turn: the public instances go down or hang
+# independently of each other (502 from the main one, timeouts on a
+# mirror), and one healthy mirror is enough for our tag-only queries.
+# ``OVERPASS_URL`` in the environment puts a preferred endpoint first
+# without a redeploy.
 OVERPASS_URL = os.environ.get(
     'OVERPASS_URL',
     'https://overpass-api.de/api/interpreter',
 )
+OVERPASS_MIRRORS = (
+    'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter',
+    'https://overpass.private.coffee/api/interpreter',
+)
 POLYGONS_URL = 'https://polygons.openstreetmap.fr/get_geojson.py'
+# Second source of relation polygons, used when polygons.osm.fr is down or
+# cannot build one. Usage policy: at most 1 request per second — the
+# importers already pause longer than that between relations.
+NOMINATIM_LOOKUP_URL = 'https://nominatim.openstreetmap.org/lookup'
 
-# Overpass QL's own timeout (seconds). The HTTP timeout we use for the
-# request is a bit bigger so we get a clean QL timeout error back rather
-# than a connection reset.
+# Overpass QL's own timeout (seconds).
 OVERPASS_QL_TIMEOUT = 900
+# HTTP (connect, read) timeout of one attempt. Our queries return tags
+# only and finish in seconds; a mirror silent for 2 minutes is hung, and
+# waiting out the full QL timeout on it would stall the import.
+_OVERPASS_HTTP_TIMEOUT = (20, 120)
 
 # Both Overpass and polygons.osm.fr reject requests without a sensible
 # User-Agent (Overpass returns 406 Not Acceptable for the default
@@ -53,21 +69,29 @@ _HEADERS = {'User-Agent': _UA, 'Accept': 'application/json'}
 _RETRY_STATUSES = (429, 500, 502, 503, 504)
 
 
-def _overpass_post(query: str, *, retries: int = 3) -> dict:
-    """POST a QL query to ``OVERPASS_URL`` with retry/backoff on 5xx/timeouts.
+def _overpass_endpoints() -> list[str]:
+    return [OVERPASS_URL] + [u for u in OVERPASS_MIRRORS if u != OVERPASS_URL]
 
-    Why: public Overpass mirrors (kumi.systems, lz4, main) intermittently
-    return 504/502 for a few seconds when they're under load. A single
-    retry loop here avoids skipping entire regions in the bulk importers.
+
+def _overpass_post(query: str, *, retries: int = 8) -> dict:
+    """POST a QL query to Overpass with retry/backoff on 5xx/timeouts,
+    moving to the next endpoint of ``_overpass_endpoints()`` each attempt
+    (two passes over the list by default).
+
+    Why: public Overpass instances (main, kumi.systems, …) intermittently
+    return 504/502 or hang when they're under load. Rotating endpoints
+    in the retry loop avoids skipping entire regions in the bulk importers.
     """
+    endpoints = _overpass_endpoints()
     last_exc: Exception | None = None
     for attempt in range(1, retries + 1):
+        url = endpoints[(attempt - 1) % len(endpoints)]
         try:
             resp = requests.post(
-                OVERPASS_URL,
+                url,
                 data={'data': query},
                 headers=_HEADERS,
-                timeout=OVERPASS_QL_TIMEOUT + 60,
+                timeout=_OVERPASS_HTTP_TIMEOUT,
             )
             if resp.status_code in _RETRY_STATUSES:
                 raise requests.HTTPError(
@@ -81,8 +105,8 @@ def _overpass_post(query: str, *, retries: int = 3) -> dict:
                 break
             sleep_s = min(30, 2 ** attempt)  # 2s, 4s, 8s, ... capped at 30s
             logger.warning(
-                'Overpass %s (attempt %d/%d); retrying in %ds…',
-                exc, attempt, retries, sleep_s,
+                'Overpass %s at %s (attempt %d/%d); retrying in %ds…',
+                exc, url, attempt, retries, sleep_s,
             )
             time.sleep(sleep_s)
     assert last_exc is not None
@@ -187,19 +211,25 @@ def fetch_country_admin_relations(country_code: str, admin_level: int) -> list[d
     return out
 
 
-def fetch_polygon_geojson(osm_id: int, retries: int = 3,
-                          delay: float = 3.0) -> dict | None:
-    """
-    Fetch a multipolygon GeoJSON for a single OSM relation id.
+# polygons.osm.fr outage breaker: after this many relations in a row that
+# got a 5xx / network error we stop asking it for the rest of the process
+# and go straight to Nominatim.
+_POLYGONS_DOWN_AFTER = 3
+_polygons_failures = 0
 
-    Returns a dict like ``{"type": "MultiPolygon", "coordinates": [...]}``
-    on success, or ``None`` if the service can't build the polygon
-    (invalid boundary, tags missing, etc.).
 
-    polygons.openstreetmap.fr sometimes returns the literal string "None"
-    when a polygon is still being built on their side — we treat that as
-    a transient failure and retry with exponential-ish backoff.
+def _fetch_polygon_polygons_fr(osm_id: int, retries: int,
+                               delay: float) -> dict | None:
+    """polygons.openstreetmap.fr — the primary polygon source.
+
+    It sometimes returns the literal string "None" when a polygon is
+    still being built on their side — we treat that as a transient
+    failure and retry with exponential-ish backoff. A 5xx or a network
+    error means the service itself is down: no point in retrying.
     """
+    global _polygons_failures
+    if _polygons_failures >= _POLYGONS_DOWN_AFTER:
+        return None
     for attempt in range(retries):
         try:
             resp = requests.get(
@@ -208,14 +238,66 @@ def fetch_polygon_geojson(osm_id: int, retries: int = 3,
                 headers=_HEADERS,
                 timeout=120,
             )
-            body = resp.text.strip()
-            if resp.status_code == 200 and body and body.lower() != 'none':
-                try:
-                    return json.loads(body)
-                except json.JSONDecodeError:
-                    pass  # transient — fall through to retry
         except requests.RequestException as exc:
             logger.warning('polygons.osm.fr request failed for %s: %s',
                            osm_id, exc)
+            _polygons_failures += 1
+            return None
+        if resp.status_code >= 500:
+            logger.warning('polygons.osm.fr returned %s for %s',
+                           resp.status_code, osm_id)
+            _polygons_failures += 1
+            return None
+        _polygons_failures = 0
+        body = resp.text.strip()
+        if resp.status_code == 200 and body and body.lower() != 'none':
+            try:
+                return json.loads(body)
+            except json.JSONDecodeError:
+                pass  # transient — fall through to retry
         time.sleep(delay * (attempt + 1))
     return None
+
+
+def _fetch_polygon_nominatim(osm_id: int) -> dict | None:
+    """Nominatim ``lookup`` with ``polygon_geojson`` — the fallback source."""
+    try:
+        resp = requests.get(
+            NOMINATIM_LOOKUP_URL,
+            params={
+                'osm_ids': f'R{osm_id}',
+                'format': 'geojson',
+                'polygon_geojson': 1,
+            },
+            headers=_HEADERS,
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        logger.warning('Nominatim lookup failed for %s: %s', osm_id, exc)
+        return None
+    for feature in data.get('features') or []:
+        geometry = feature.get('geometry') or {}
+        # A relation Nominatim has no area for comes back as a Point.
+        if geometry.get('type') in ('Polygon', 'MultiPolygon'):
+            return geometry
+    return None
+
+
+def fetch_polygon_geojson(osm_id: int, retries: int = 3,
+                          delay: float = 3.0) -> dict | None:
+    """
+    Fetch a multipolygon GeoJSON for a single OSM relation id.
+
+    Returns a dict like ``{"type": "MultiPolygon", "coordinates": [...]}``
+    on success, or ``None`` if neither source can build the polygon
+    (invalid boundary, tags missing, etc.).
+
+    polygons.openstreetmap.fr is asked first; if it is down or has no
+    polygon, the same relation is looked up in Nominatim.
+    """
+    return (
+        _fetch_polygon_polygons_fr(osm_id, retries, delay)
+        or _fetch_polygon_nominatim(osm_id)
+    )
