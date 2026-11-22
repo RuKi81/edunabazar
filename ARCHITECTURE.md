@@ -242,6 +242,11 @@ $DC exec -T web python manage.py run_baseline_ndvi --country KZ \
 
 Для стран без районов шаги 2 и 4 пропускаются, шаг 3 — без `--by-district`.
 
+Архивный расчёт (`run_archive_pipeline`) сам пересобирает предагрегат
+`agro_district_ndvi_series` по своему региону за всё окно архива. Вручную —
+`recompute_district_ndvi_series --range … --country KZ` (или `--region-id`):
+без фильтра команда пересобирает строки всех стран.
+
 ### 5.3 `my_fields` — Личные угодья пользователя («Мои поля»)
 
 | Модель | Таблица | Описание |

@@ -13,6 +13,13 @@ Usage::
 
     # Deploy-time full rebuild (slow, ~minutes):
     python manage.py recompute_district_ndvi_series --rebuild
+
+    # One country / one region only (archive backfill of a new region —
+    # everybody else's rows stay untouched):
+    python manage.py recompute_district_ndvi_series \\
+        --range 2020-01-01:2025-12-31 --country KZ
+    python manage.py recompute_district_ndvi_series \\
+        --range 2026-01-01:2026-12-31 --region-id 95
 """
 from __future__ import annotations
 
@@ -45,12 +52,34 @@ class Command(BaseCommand):
             '--source', type=str, default='modis',
             choices=('modis', 'raster', 'fused'),
         )
+        parser.add_argument(
+            '--country', type=str, default='',
+            help='Limit the refresh to the districts of one country '
+                 '(ISO 3166-1 alpha-2 code). Default: all countries.',
+        )
+        parser.add_argument(
+            '--region-id', type=int, default=None,
+            help='Limit the refresh to the districts of one region.',
+        )
 
     def handle(self, *args, **opts):
         from agrocosmos.services import district_ndvi_series
+        from agrocosmos.services.countries import normalize_country
 
         source = opts['source']
+        country = None
+        if opts['country']:
+            country = normalize_country(opts['country'])
+            if country is None:
+                raise CommandError(f'unknown country: {opts["country"]!r}')
+        scope = {'country': country, 'region_id': opts['region_id']}
+        if country and opts['region_id'] is not None:
+            raise CommandError('pass either --country or --region-id')
         if opts['rebuild']:
+            if country or opts['region_id'] is not None:
+                raise CommandError(
+                    '--rebuild is a full rebuild; use --range with '
+                    '--country/--region-id')
             res = district_ndvi_series.rebuild(source=source)
         elif opts['range']:
             raw = opts['range']
@@ -60,10 +89,12 @@ class Command(BaseCommand):
                 d_to = _date.fromisoformat(b.strip())
             except ValueError as e:
                 raise CommandError(f'invalid --range {raw!r}: {e}') from e
-            res = district_ndvi_series.refresh_range(d_from, d_to, source=source)
+            res = district_ndvi_series.refresh_range(
+                d_from, d_to, source=source, **scope)
         else:
             days = max(1, int(opts['days']))
-            res = district_ndvi_series.refresh_recent(days=days, source=source)
+            res = district_ndvi_series.refresh_recent(
+                days=days, source=source, **scope)
 
         self.stdout.write(self.style.SUCCESS(
             f'{source} {res["date_from"]}..{res["date_to"]}: '

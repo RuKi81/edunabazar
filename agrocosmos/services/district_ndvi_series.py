@@ -36,11 +36,32 @@ _SOURCE_SATELLITES: dict[str, tuple[str, ...]] = {
 }
 
 
-def _upsert_sql(source: str) -> tuple[str, list]:
+def _scope_sql(column: str, country: str | None,
+               region_id: int | None) -> tuple[str, list]:
+    """``(sql, params)`` limiting a district-id ``column`` to one region or
+    one country; empty for the unscoped (all districts) refresh."""
+    if region_id is not None:
+        return (
+            f' AND {column} IN ('
+            'SELECT id FROM agro_district WHERE region_id = %s)',
+            [region_id],
+        )
+    if country:
+        return (
+            f' AND {column} IN ('
+            'SELECT d.id FROM agro_district d '
+            'JOIN agro_region r ON r.id = d.region_id WHERE r.country = %s)',
+            [country],
+        )
+    return '', []
+
+
+def _upsert_sql(source: str, scope_sql: str = '') -> tuple[str, list]:
     """Return ``(sql, params)`` for upserting series rows in a date range.
 
-    ``%s`` placeholders bind ``date_from`` (inclusive), ``date_to``
-    (inclusive), and each satellite code — in that order.
+    ``params`` holds the source and each satellite code; the caller
+    appends ``date_from`` (inclusive), ``date_to`` (inclusive) and the
+    parameters of ``scope_sql`` — in that order.
     """
     sats = _SOURCE_SATELLITES[source]
     placeholders = ', '.join(['%s'] * len(sats))
@@ -67,7 +88,7 @@ def _upsert_sql(source: str) -> tuple[str, list]:
       AND s.satellite IN ({placeholders})
       AND f.district_id IS NOT NULL
       AND vi.acquired_date >= %s
-      AND vi.acquired_date <= %s
+      AND vi.acquired_date <= %s{scope_sql}
     GROUP BY f.district_id, vi.acquired_date, f.crop_type
     ON CONFLICT (district_id, acquired_date, crop_type, source) DO UPDATE
         SET sum_ndvi_area = EXCLUDED.sum_ndvi_area,
@@ -79,16 +100,18 @@ def _upsert_sql(source: str) -> tuple[str, list]:
     return sql, params
 
 
-def _delete_in_range_sql(source: str) -> str:
+def _delete_in_range_sql(source: str, scope_sql: str = '') -> str:
     return (
         "DELETE FROM agro_district_ndvi_series "
         "WHERE source = %s AND acquired_date >= %s AND acquired_date <= %s"
+        + scope_sql
     )
 
 
 @transaction.atomic
 def refresh_range(
-    date_from: date, date_to: date, source: str = 'modis',
+    date_from: date, date_to: date, source: str = 'modis', *,
+    country: str | None = None, region_id: int | None = None,
 ) -> dict:
     """Rebuild the series rows for one date range end-to-end.
 
@@ -96,6 +119,10 @@ def refresh_range(
     ``crop_type`` changed, farmlands deleted, etc.), then re-inserts.
     The two statements share a transaction so readers never see a
     half-empty range.
+
+    ``region_id`` or ``country`` limits both statements to the districts
+    of one region / one country: backfilling the archive of a newly
+    added region must not rebuild years of every other region's rows.
     """
     if source not in _SOURCE_SATELLITES:
         raise ValueError(f'unknown source: {source}')
@@ -104,16 +131,22 @@ def refresh_range(
 
     t0 = time.time()
     with connection.cursor() as cur:
-        cur.execute(_delete_in_range_sql(source), [source, date_from, date_to])
+        scope_sql, scope_params = _scope_sql('district_id', country, region_id)
+        cur.execute(
+            _delete_in_range_sql(source, scope_sql),
+            [source, date_from, date_to, *scope_params],
+        )
         deleted = cur.rowcount
-        sql, params = _upsert_sql(source)
-        cur.execute(sql, params + [date_from, date_to])
+        scope_sql, scope_params = _scope_sql('f.district_id', country, region_id)
+        sql, params = _upsert_sql(source, scope_sql)
+        cur.execute(sql, params + [date_from, date_to, *scope_params])
         inserted = cur.rowcount
     elapsed = time.time() - t0
     logger.info(
-        'district_ndvi_series.refresh_range source=%s %s..%s '
-        'deleted=%d inserted=%d in %.1fs',
-        source, date_from, date_to, deleted, inserted, elapsed,
+        'district_ndvi_series.refresh_range source=%s %s..%s region=%s '
+        'country=%s deleted=%d inserted=%d in %.1fs',
+        source, date_from, date_to, region_id, country,
+        deleted, inserted, elapsed,
     )
     return {
         'source': source,
@@ -125,7 +158,9 @@ def refresh_range(
     }
 
 
-def refresh_recent(days: int = 60, source: str = 'modis') -> dict:
+def refresh_recent(days: int = 60, source: str = 'modis', *,
+                   country: str | None = None,
+                   region_id: int | None = None) -> dict:
     """Incremental refresh — the last ``days`` days of MODIS composites.
 
     Called by ``recompute_district_ndvi_status`` (daily cron) right
@@ -133,7 +168,10 @@ def refresh_recent(days: int = 60, source: str = 'modis') -> dict:
     choropleth.
     """
     today = date.today()
-    return refresh_range(today - timedelta(days=days), today, source=source)
+    return refresh_range(
+        today - timedelta(days=days), today, source=source,
+        country=country, region_id=region_id,
+    )
 
 
 def rebuild(source: str = 'modis') -> dict:

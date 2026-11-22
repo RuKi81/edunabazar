@@ -13,6 +13,7 @@ from django.test import TestCase
 from agrocosmos.models import PipelineRun, Region
 
 MOD = 'agrocosmos.management.commands.run_archive_pipeline'
+SERIES = 'agrocosmos.services.district_ndvi_series'
 
 
 def _square(x, y, size=0.5):
@@ -33,9 +34,12 @@ class RunArchivePipelineTests(TestCase):
             status=PipelineRun.Status.QUEUED,
         )
 
-    def _run(self, inner=None, region_id=None, **kwargs):
+    def _run(self, inner=None, region_id=None, series=None, **kwargs):
         out, err = io.StringIO(), io.StringIO()
-        with mock.patch(f'{MOD}.call_command', side_effect=inner) as mock_cc:
+        series_res = {'inserted': 0, 'deleted': 0, 'elapsed_s': 0.1}
+        with mock.patch(f'{MOD}.call_command', side_effect=inner) as mock_cc, \
+             mock.patch(f'{SERIES}.refresh_range', side_effect=series,
+                        return_value=series_res) as self.mock_series:
             call_command(
                 'run_archive_pipeline',
                 run_id=self.run.pk,
@@ -78,6 +82,30 @@ class RunArchivePipelineTests(TestCase):
         self.assertEqual(kw['date_from'], '2020-01-01')
         self.assertEqual(kw['date_to'], '2022-12-31')
         self.assertEqual(kw['min_valid_ratio'], 0.5)
+
+    def test_series_rebuilt_for_region_and_whole_window(self):
+        """Сводка по районам пересчитывается за всё окно архива и только
+        по своему региону — иначе графики начинаются с последних 70 дней."""
+        self._run(year_from=2020, year_to=2022, skip_baseline=True)
+        self.mock_series.assert_called_once_with(
+            date(2020, 1, 1), date(2022, 12, 31),
+            source='modis', region_id=self.region.pk,
+        )
+
+    def test_series_failure_is_not_fatal(self):
+        _, _, mock_cc = self._run(
+            series=RuntimeError('series boom'), year_from=2020, year_to=2021)
+        self.run.refresh_from_db()
+        self.assertEqual(self.run.status, PipelineRun.Status.COMPLETED)
+        self.assertIn('series boom', self.run.log)
+        # Baseline после сбоя сводки всё равно считается.
+        names = [c.args[0] for c in mock_cc.call_args_list]
+        self.assertEqual(names, ['modis_ndvi', 'calc_ndvi_baseline'])
+
+    def test_series_not_rebuilt_when_download_fails(self):
+        with self.assertRaises(RuntimeError):
+            self._run(inner=RuntimeError('boom'), year_from=2020, year_to=2021)
+        self.mock_series.assert_not_called()
 
     def test_skip_baseline(self):
         _, _, mock_cc = self._run(

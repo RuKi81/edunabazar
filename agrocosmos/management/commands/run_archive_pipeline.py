@@ -10,7 +10,11 @@ Stages:
     1. ``modis_ndvi --region-id R --date-from Y1-01-01 --date-to Y2-12-31``
        — downloads 2-weekly composites across multiple years and writes
        raw per-farmland VegetationIndex rows.
-    2. ``calc_ndvi_baseline --region-id R`` (optional, enabled by default)
+    2. District pre-aggregate (``agro_district_ndvi_series``) for this
+       region across the whole archive window. ``modis_ndvi`` itself only
+       refreshes the last 70 days of it, so without this stage the charts
+       and reports of a freshly backfilled region start in the autumn.
+    3. ``calc_ndvi_baseline --region-id R`` (optional, enabled by default)
        — aggregates the raw series into agro_ndvi_baseline so the
        dashboard's grey dashed baseline line lights up.
 
@@ -239,6 +243,30 @@ class Command(BaseCommand):
         self._flush_log_to_db()
         return records
 
+    def _stage_series(self, *, region_id: int, year_from: int,
+                      year_to: int) -> None:
+        """Rebuild the region's district pre-aggregate for the window.
+
+        Non-fatal: the raw VI rows are already saved, and the series can
+        be rebuilt later with ``recompute_district_ndvi_series --range …
+        --region-id …`` — a failed aggregate must not discard hours of
+        downloads by marking the run failed.
+        """
+        from agrocosmos.services import district_ndvi_series
+
+        self._log(f'─── stage: district series region={region_id} '
+                  f'{year_from}..{year_to} ───')
+        try:
+            res = district_ndvi_series.refresh_range(
+                date(year_from, 1, 1), date(year_to, 12, 31),
+                source='modis', region_id=region_id,
+            )
+            self._log(f'─── series done: inserted={res["inserted"]} '
+                      f'deleted={res["deleted"]} in {res["elapsed_s"]}s ───')
+        except Exception as exc:
+            self._log(f'!!! district series refresh failed (non-fatal): {exc}')
+        self._flush_log_to_db()
+
     def _stage_baseline(self, *, region_id: int) -> None:
         self._log(f'─── stage: calc_ndvi_baseline region={region_id} ───')
         self._run_subcommand('calc_ndvi_baseline', region_id=region_id)
@@ -280,6 +308,10 @@ class Command(BaseCommand):
             self._total_records = self._stage_modis(
                 region_id=region_id, year_from=year_from, year_to=year_to,
                 min_valid=min_valid, overwrite=overwrite,
+            )
+
+            self._stage_series(
+                region_id=region_id, year_from=year_from, year_to=year_to,
             )
 
             if not skip_baseline:
