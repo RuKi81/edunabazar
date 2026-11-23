@@ -644,6 +644,29 @@
     var COUNTRY_BOUNDS = L.latLngBounds({{ country_bounds }});
     map.fitBounds(COUNTRY_BOUNDS, { padding: [10, 10] });
 
+    map.createPane('countryOutlinesPane');
+    map.getPane('countryOutlinesPane').style.zIndex = 650;
+    map.getPane('countryOutlinesPane').style.pointerEvents = 'none';
+    if (['ALL', 'KZ', 'BY'].indexOf(COUNTRY) >= 0) {
+      fetch('{% static "agrocosmos/country_outlines.geojson" %}')
+        .then(function (response) {
+          if (!response.ok) throw new Error('Country outlines: ' + response.status);
+          return response.json();
+        })
+        .then(function (data) {
+          L.geoJSON(data, {
+            pane: 'countryOutlinesPane',
+            renderer: L.svg({ pane: 'countryOutlinesPane' }),
+            interactive: false,
+            filter: function (feature) {
+              return COUNTRY === 'ALL' || feature.properties.country === COUNTRY;
+            },
+            style: { color: '#d32f2f', weight: 3, opacity: 1, fill: false }
+          }).addTo(map);
+        })
+        .catch(function (error) { console.error('Country outlines:', error); });
+    }
+
     // Custom pane for basemap tiles — always below vectors
     map.createPane('basemapPane');
     map.getPane('basemapPane').style.zIndex = 150;

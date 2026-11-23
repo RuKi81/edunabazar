@@ -6,10 +6,12 @@
 страновой отчёт, ни в автопостановку на мониторинг.
 """
 import io
+import json
+from pathlib import Path
 from datetime import date
 from unittest import mock
 
-from django.contrib.gis.geos import MultiPolygon, Polygon
+from django.contrib.gis.geos import GEOSGeometry, MultiPolygon, Point, Polygon
 from django.core.management import call_command
 from django.test import SimpleTestCase, TestCase, override_settings
 
@@ -40,6 +42,22 @@ def _square(x, y, size=0.5):
 
 
 class CountryRegistryTests(SimpleTestCase):
+    def test_downloaded_country_outlines(self):
+        path = (Path(__file__).resolve().parents[1] / 'static'
+                / 'agrocosmos' / 'country_outlines.geojson')
+        payload = json.loads(path.read_text(encoding='utf-8'))
+        self.assertEqual(payload['type'], 'FeatureCollection')
+        features = payload['features']
+        self.assertEqual([f['properties']['country'] for f in features],
+                         ['KZ', 'BY'])
+        capitals = {'KZ': Point(71.43, 51.13), 'BY': Point(27.56, 53.9)}
+        for feature in features:
+            geom = GEOSGeometry(json.dumps(feature['geometry']))
+            self.assertIn(geom.geom_type, ('Polygon', 'MultiPolygon'))
+            self.assertTrue(geom.valid)
+            self.assertFalse(geom.empty)
+            self.assertTrue(geom.contains(capitals[feature['properties']['country']]))
+
     def test_normalize(self):
         self.assertEqual(normalize_country('kz'), 'KZ')
         self.assertEqual(normalize_country(' BY '), 'BY')
