@@ -11,7 +11,8 @@ from django.urls import reverse
 
 from ..models import Region, District, Farmland, VegetationIndex, SatelliteScene
 from ..services.countries import (
-    COUNTRIES, DEFAULT_COUNTRY, Country, get_country, normalize_country,
+    ALL_COUNTRIES, COUNTRIES, DEFAULT_COUNTRY, Country, get_country,
+    normalize_country,
 )
 from ._helpers import MODIS_SATELLITES, RASTER_SATELLITES
 
@@ -156,14 +157,19 @@ def _to_int_or_none(raw) -> int | None:
 
 
 def _regions_for_select(country: str = DEFAULT_COUNTRY):
-    """Regions of one country for the <select> (Russia unless told otherwise).
+    """Regions for the <select>: one country, or every loaded country
+    for the «Все страны» pseudo-code (grouped by country).
 
     Only ``id``/``name``/``code``/``subject_code`` are used by the
     <select>; skip the heavy ``geom`` MultiPolygon to avoid tens of MB of
     GeoDjango deserialization on every page render.
     """
-    return (Region.objects.filter(country=country)
-            .only('id', 'name', 'code', 'subject_code'))
+    qs = Region.objects.all()
+    if country != ALL_COUNTRIES:
+        qs = qs.filter(country=country)
+    else:
+        qs = qs.order_by('country', 'name')
+    return qs.only('id', 'name', 'code', 'subject_code')
 
 
 def _resolve_country(request: HttpRequest, region_id) -> Country:
@@ -189,8 +195,11 @@ def _country_context(country: Country) -> dict:
         Region.objects.order_by().values_list('country', flat=True).distinct()
     )
     loaded.update((DEFAULT_COUNTRY, country.code))
+    countries = [c for c in COUNTRIES if c.code in loaded]
+    if len(loaded - {ALL_COUNTRIES}) > 1:
+        countries.insert(0, get_country(ALL_COUNTRIES))
     return {
-        'countries': [c for c in COUNTRIES if c.code in loaded],
+        'countries': countries,
         'country': country,
         # JSON, not a template float: l10n would print «43,0».
         'country_bounds': json.dumps(country.bounds),

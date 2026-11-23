@@ -17,7 +17,9 @@ from ..models import (
 # ``ndvi_assessment`` реэкспортируется под историческим именем: хелпер
 # вынесен в сервис-слой, но импортируется извне через agrocosmos.views
 # (см. views/__init__.py и tests/test_ndvi_assessment.py).
-from ..services.countries import DEFAULT_COUNTRY, get_country
+from ..services.countries import (
+    ALL_COUNTRIES, DEFAULT_COUNTRY, get_country,
+)
 from ..services.ndvi_stats import (
     compute_z_score, doy_to_date, modis_last_period_end,
     ndvi_assessment as _ndvi_assessment, weighted_mean,
@@ -259,13 +261,15 @@ def _country_category(z_score):
 
 def _country_series_accumulators(year, country=DEFAULT_COUNTRY):
     """(region, date) aggregation done DB-side: ~73 regions × ~25 dates."""
+    qs = DistrictNdviSeries.objects.filter(
+        source=DistrictNdviSeries.Source.MODIS,
+        acquired_date__year=year,
+        sum_area__gt=0,
+    )
+    if country != ALL_COUNTRIES:
+        qs = qs.filter(district__region__country=country)
     series_rows = (
-        DistrictNdviSeries.objects.filter(
-            source=DistrictNdviSeries.Source.MODIS,
-            acquired_date__year=year,
-            sum_area__gt=0,
-            district__region__country=country,
-        )
+        qs
         .values('district__region_id', 'acquired_date')
         .annotate(s_ndvi_area=Sum('sum_ndvi_area'), s_area=Sum('sum_area'))
     )
@@ -293,10 +297,11 @@ def _region_baseline_lookups(country=DEFAULT_COUNTRY):
     (district baselines averaged per DOY, same trick as api_report_region),
     plus country-wide accumulator per DOY.
     """
+    bl_qs = NdviBaseline.objects.filter(crop_type='')
+    if country != ALL_COUNTRIES:
+        bl_qs = bl_qs.filter(district__region__country=country)
     region_bl_qs = (
-        NdviBaseline.objects.filter(
-            crop_type='', district__region__country=country,
-        )
+        bl_qs
         .values('district__region_id', 'day_of_year')
         .annotate(avg_mean=Avg('mean_ndvi'), avg_std=Avg('std_ndvi'))
     )
@@ -349,11 +354,11 @@ def _country_farmland_shares(region_names, country):
     cache_key = f'{_COUNTRY_SHARES_CACHE_KEY}:{country.code}'
     rows = cache.get(cache_key)
     if rows is None:
+        fl_filter = {'crop_type__in': FARMLAND_TYPE_ORDER}
+        if country.code != ALL_COUNTRIES:
+            fl_filter[f'{region_fk}__country'] = country.code
         rows = list(
-            Farmland.objects.filter(**{
-                'crop_type__in': FARMLAND_TYPE_ORDER,
-                f'{region_fk}__country': country.code,
-            })
+            Farmland.objects.filter(**fl_filter)
             .values_list(f'{region_fk}_id', 'crop_type')
             .annotate(s_area=Sum('area_ha'))
             .order_by()
@@ -420,10 +425,10 @@ def api_report_country(request: HttpRequest) -> JsonResponse:
         return JsonResponse({'ok': False, 'error': 'invalid params'}, status=400)
     country = get_country(request.GET.get('country'))
 
-    regions = (
-        Region.objects.filter(country=country.code)
-        .only('id', 'name').order_by('name')
-    )
+    regions_qs = Region.objects.all()
+    if country.code != ALL_COUNTRIES:
+        regions_qs = regions_qs.filter(country=country.code)
+    regions = regions_qs.only('id', 'name').order_by('name')
     region_names = {r.pk: r.name for r in regions}
 
     per_region_date, per_country_date = _country_series_accumulators(

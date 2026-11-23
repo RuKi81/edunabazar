@@ -31,7 +31,7 @@ from django.core.cache import cache
 from django.db.models import F, Func, Value
 
 from ..models import District
-from .countries import DEFAULT_COUNTRY
+from .countries import ALL_COUNTRIES, DEFAULT_COUNTRY
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +84,11 @@ def build_geojson_payload(country: str = DEFAULT_COUNTRY) -> dict:
     so it does not itself touch the 25M-row vegetation index table.
     """
     overall_t = time.time()
+    qs = District.objects.all()
+    if country != ALL_COUNTRIES:
+        qs = qs.filter(region__country=country)
     rows = (
-        District.objects.filter(region__country=country)
+        qs
         # Tolerance 0.003° ≈ 300 m — fine enough that district outlines
         # look smooth even on a desktop overview of European Russia (one
         # screen pixel ≈ 5-10 km at zoom 5). The previous 0.01° (~1 km)
@@ -214,6 +217,7 @@ def refresh_cache(country: str | None = None) -> dict:
     )
     for code in others:
         _refresh_country(code)
+    _refresh_country(ALL_COUNTRIES)
     return _refresh_country(DEFAULT_COUNTRY)
 
 

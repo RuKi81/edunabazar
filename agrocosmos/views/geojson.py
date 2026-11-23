@@ -9,7 +9,7 @@ from django.http import HttpRequest, HttpResponse, HttpResponseNotModified, Json
 
 from ..models import Region, District, Farmland, VegetationIndex
 from ..services import districts_status_geojson
-from ..services.countries import DEFAULT_COUNTRY, get_country
+from ..services.countries import ALL_COUNTRIES, DEFAULT_COUNTRY, get_country
 from ..services.districts_status_geojson import _SimplifyPreserveTopology
 from ._helpers import _satellite_filter, rate_limit
 
@@ -48,7 +48,9 @@ def invalidate_regions_cache(country: str) -> None:
     the import caches an empty or partial list. Called by the region
     importer when it finishes.
     """
-    cache.delete(_regions_cache_key(country))
+    cache.delete_many([
+        _regions_cache_key(country), _regions_cache_key(ALL_COUNTRIES),
+    ])
 
 
 def invalidate_districts_cache(country: str) -> None:
@@ -65,6 +67,9 @@ def invalidate_districts_cache(country: str) -> None:
         .values_list('pk', flat=True)
     ])
     districts_status_geojson.refresh_cache(country)
+    # The «Все страны» choropleth merges every country's districts, so
+    # importing boundaries of one country changes it too.
+    districts_status_geojson.refresh_cache(ALL_COUNTRIES)
 
 
 def _region_country(region_id: int, fallback: str) -> str:
@@ -102,7 +107,10 @@ def _conditional_json(
 
 
 def _build_regions_payload(country: str) -> dict:
-    rows = Region.objects.filter(country=country).annotate(
+    qs = Region.objects.all()
+    if country != ALL_COUNTRIES:
+        qs = qs.filter(country=country)
+    rows = qs.annotate(
         geojson=AsGeoJSON(
             _SimplifyPreserveTopology('geom', _REGION_SIMPLIFY_TOL),
             precision=_GEOJSON_PRECISION,

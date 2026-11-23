@@ -48,13 +48,33 @@ _BY_CODE = {c.code: c for c in COUNTRIES}
 COUNTRY_CHOICES = [(c.code, c.name) for c in COUNTRIES]
 MONITORED_COUNTRIES = tuple(c.code for c in COUNTRIES if c.monitored)
 
+# Псевдокод пункта «Все страны» в селекте. Резолвится в Country, чей
+# экстент покрывает все страны реестра; API и фильтры трактуют его как
+# «без ограничения по стране» — выводят данные всех стран, где они есть.
+ALL_COUNTRIES = 'ALL'
+
+
+def _all_bounds() -> tuple[tuple[float, float], tuple[float, float]]:
+    south = min(c.bounds[0][0] for c in COUNTRIES)
+    west = min(c.bounds[0][1] for c in COUNTRIES)
+    north = max(c.bounds[1][0] for c in COUNTRIES)
+    east = max(c.bounds[1][1] for c in COUNTRIES)
+    return ((south, west), (north, east))
+
+
+_ALL_COUNTRY = Country(
+    ALL_COUNTRIES, 'Все страны', 'Все страны', 'всех стран',
+    None, True, _all_bounds(),
+)
+
 
 def normalize_country(raw) -> str | None:
     """``'kz'`` → ``'KZ'``; пусто или неизвестный код → ``None``."""
     code = (raw or '').strip().upper()
-    return code if code in _BY_CODE else None
+    return code if code in _BY_CODE or code == ALL_COUNTRIES else None
 
 
 def get_country(raw=None) -> Country:
     """Страна по коду; пусто или неизвестный код → Россия."""
-    return _BY_CODE[normalize_country(raw) or DEFAULT_COUNTRY]
+    code = normalize_country(raw) or DEFAULT_COUNTRY
+    return _ALL_COUNTRY if code == ALL_COUNTRIES else _BY_CODE[code]

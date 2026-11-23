@@ -43,6 +43,7 @@ class CountryRegistryTests(SimpleTestCase):
     def test_normalize(self):
         self.assertEqual(normalize_country('kz'), 'KZ')
         self.assertEqual(normalize_country(' BY '), 'BY')
+        self.assertEqual(normalize_country('all'), 'ALL')
         self.assertIsNone(normalize_country('XX'))
         self.assertIsNone(normalize_country(''))
         self.assertIsNone(normalize_country(None))
@@ -51,6 +52,19 @@ class CountryRegistryTests(SimpleTestCase):
         self.assertEqual(get_country(None).code, 'RU')
         self.assertEqual(get_country('nope').code, 'RU')
         self.assertEqual(get_country('in').code, 'IN')
+
+    def test_all_countries_pseudo(self):
+        """«Все страны» — псевдокод с экстентом, покрывающим реестр."""
+        c = get_country('ALL')
+        self.assertEqual(c.code, 'ALL')
+        self.assertEqual(c.name, 'Все страны')
+        (south, west), (north, east) = c.bounds
+        for other in COUNTRIES:
+            (os_, ow), (on, oe) = other.bounds
+            self.assertLessEqual(south, os_)
+            self.assertLessEqual(west, ow)
+            self.assertGreaterEqual(north, on)
+            self.assertGreaterEqual(east, oe)
 
     def test_registry(self):
         self.assertEqual(
@@ -127,15 +141,23 @@ class CountryPagesTests(_CountriesData):
     def test_select_offers_only_loaded_countries(self):
         resp = self.client.get('/agrocosmos/')
         self.assertEqual(
-            [c.code for c in resp.context['countries']], ['RU', 'KZ', 'IN'],
+            [c.code for c in resp.context['countries']],
+            ['ALL', 'RU', 'KZ', 'IN'],
         )
         # Страна без загруженных субъектов видна, только пока она открыта.
         resp = self.client.get('/agrocosmos/', {'country': 'BR'})
         self.assertEqual(
             [c.code for c in resp.context['countries']],
-            ['RU', 'KZ', 'IN', 'BR'],
+            ['ALL', 'RU', 'KZ', 'IN', 'BR'],
         )
         self.assertEqual(list(resp.context['regions']), [])
+
+    def test_dashboard_all_countries(self):
+        """«Все страны»: все загруженные субъекты и объединённый экстент."""
+        resp, names = self._region_names('/agrocosmos/', country='ALL')
+        self.assertEqual(resp.context['country'].code, 'ALL')
+        self.assertEqual(sorted(names), ['Область КЗ', 'Регион РФ', 'Штат'])
+        self.assertContains(resp, "var COUNTRY = 'ALL';")
 
     def test_dashboard_country_from_region(self):
         """Ссылка только с ``?region=<id>`` открывает страну региона."""
@@ -210,6 +232,20 @@ class CountryReportApiTests(_CountriesData):
             [(self.ind.pk, 500.0)],
         )
 
+    def test_all_countries_report(self):
+        """Отчёт по «Все страны» агрегирует ряды и доли угодий всех стран."""
+        resp = self._get(country='ALL')
+        self.assertEqual(resp['country']['code'], 'ALL')
+        self.assertEqual(
+            sorted(r['region_name'] for r in resp['regions']),
+            ['Область КЗ', 'Регион РФ'],
+        )
+        # 0.6·100 га РФ + 0.4·100 га КЗ → средневзвешенное 0.5.
+        self.assertAlmostEqual(
+            resp['country_overall_series'][0]['mean_ndvi'], 0.5, places=3,
+        )
+        self.assertEqual(resp['farmland_shares']['total_area_ha'], 900.0)
+
     def test_rf_total_area_excludes_other_countries(self):
         Farmland.objects.create(
             region=None, district=None, crop_type='arable', area_ha=7,
@@ -237,6 +273,10 @@ class CountryGeojsonApiTests(_CountriesData):
         self.assertEqual(self._names(url), ['Регион РФ'])
         self.assertEqual(self._names(url, country='KZ'), ['Область КЗ'])
         self.assertEqual(self._names(url, country='BR'), [])
+        self.assertEqual(
+            self._names(url, country='ALL'),
+            ['Область КЗ', 'Регион РФ', 'Штат'],
+        )
 
     def test_region_by_id_ignores_country(self):
         """``?id=`` зарубежного региона работает и без ``?country=``."""
@@ -251,6 +291,9 @@ class CountryGeojsonApiTests(_CountriesData):
         self.assertEqual(self._names(url, country='IN'), [])
         self.assertEqual(self._names(url, region=self.kz.pk), ['Район КЗ'])
         self.assertEqual(self._names(url, region=self.ru.pk), ['Район РФ'])
+        self.assertEqual(
+            self._names(url, country='ALL'), ['Район КЗ', 'Район РФ'],
+        )
 
     def test_districts_status_etag_differs_by_country(self):
         url = '/agrocosmos/api/districts/status/'
@@ -273,6 +316,7 @@ class CountryGeojsonApiTests(_CountriesData):
             # Оба кэша тёплые — запросы обходятся без пересборки.
             districts_status_geojson.get_fast_blob()
             districts_status_geojson.get_or_build('KZ')
+            districts_status_geojson.get_fast_blob('ALL')
             build.assert_not_called()
 
 
