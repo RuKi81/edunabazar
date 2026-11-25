@@ -35,6 +35,12 @@ Usage::
 Prerequisite: populate ``Region.osm_id`` first via
 ``import_russia_regions --refresh-osm-ids`` (fast, one Overpass call).
 
+Countries with ``Country.region_as_district`` (Egypt — OSM has no
+sub-governorate boundaries) get one district equal to each subject, with
+no Overpass queries::
+
+    python manage.py import_russia_districts --country EG
+
 Another country — subjects without districts of their own (cities of
 republican significance) get one district equal to the subject::
 
@@ -127,6 +133,11 @@ class Command(BaseCommand):
         total_failed = total_regions_skipped = 0
 
         for ri, region in enumerate(regions, 1):
+            if get_country(region.country).region_as_district:
+                # Границ районов в OSM нет — район равен субъекту,
+                # Overpass не спрашиваем.
+                total_created += self._ensure_fallback_district(region)
+                continue
             relations = self._fetch_region_relations(
                 region, manual_parent, ri, len(regions), opts,
             )

@@ -343,13 +343,13 @@ def _country_farmland_shares(region_names, country):
 
     Виды — ``FARMLAND_TYPE_ORDER`` (без «иных» и «прочих»), субъект — по
     району угодья, как в отчёте по субъекту. В странах без районов
-    (``district_admin_level is None``) угодья привязаны только к субъекту —
+    (``Country.has_districts`` ложно) угодья привязаны только к субъекту —
     там группируем по ``Farmland.region``. ``GROUP BY`` по всей таблице
     угодий тяжёлый (миллионы строк) и не зависит от года, поэтому строки
     агрегата кэшируются на час отдельно от ``cache_page`` отчёта.
     """
     region_fk = (
-        'district__region' if country.district_admin_level else 'region'
+        'district__region' if country.has_districts else 'region'
     )
     cache_key = f'{_COUNTRY_SHARES_CACHE_KEY}:{country.code}'
     rows = cache.get(cache_key)

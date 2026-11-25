@@ -647,7 +647,7 @@
     map.createPane('countryOutlinesPane');
     map.getPane('countryOutlinesPane').style.zIndex = 650;
     map.getPane('countryOutlinesPane').style.pointerEvents = 'none';
-    if (['ALL', 'KZ', 'BY'].indexOf(COUNTRY) >= 0) {
+    if (['ALL', 'KZ', 'BY', 'TR', 'IR', 'EG'].indexOf(COUNTRY) >= 0) {
       fetch('{% static "agrocosmos/country_outlines.geojson" %}')
         .then(function (response) {
           if (!response.ok) throw new Error('Country outlines: ' + response.status);

@@ -49,8 +49,12 @@ class CountryRegistryTests(SimpleTestCase):
         self.assertEqual(payload['type'], 'FeatureCollection')
         features = payload['features']
         self.assertEqual([f['properties']['country'] for f in features],
-                         ['KZ', 'BY'])
-        capitals = {'KZ': Point(71.43, 51.13), 'BY': Point(27.56, 53.9)}
+                         ['KZ', 'BY', 'TR', 'IR', 'EG'])
+        capitals = {
+            'KZ': Point(71.43, 51.13), 'BY': Point(27.56, 53.9),
+            'TR': Point(32.85, 39.93), 'IR': Point(51.39, 35.69),
+            'EG': Point(31.24, 30.04),
+        }
         for feature in features:
             geom = GEOSGeometry(json.dumps(feature['geometry']))
             self.assertIn(geom.geom_type, ('Polygon', 'MultiPolygon'))
@@ -86,12 +90,24 @@ class CountryRegistryTests(SimpleTestCase):
 
     def test_registry(self):
         self.assertEqual(
-            [c.code for c in COUNTRIES], ['RU', 'KZ', 'BY', 'IN', 'CN', 'BR'],
+            [c.code for c in COUNTRIES],
+            ['RU', 'KZ', 'BY', 'TR', 'IR', 'EG', 'IN', 'CN', 'BR'],
         )
-        self.assertEqual(MONITORED_COUNTRIES, ('RU', 'KZ', 'BY'))
-        # Районы грузим только там, где страна стоит на мониторинге.
+        self.assertEqual(
+            MONITORED_COUNTRIES, ('RU', 'KZ', 'BY', 'TR', 'IR', 'EG'))
+        # Районы есть только там, где страна стоит на мониторинге.
         for c in COUNTRIES:
-            self.assertEqual(bool(c.district_admin_level), c.monitored)
+            self.assertEqual(c.has_districts, c.monitored)
+
+    def test_region_as_district(self):
+        """Египет: районов в OSM нет — район равен субъекту."""
+        eg = get_country('EG')
+        self.assertTrue(eg.region_as_district)
+        self.assertIsNone(eg.district_admin_level)
+        self.assertTrue(eg.has_districts)
+        self.assertEqual(get_country('IR').district_admin_level, 5)
+        self.assertEqual(get_country('TR').district_admin_level, 6)
+        self.assertFalse(get_country('IN').has_districts)
 
 
 class _CountriesData(TestCase):

@@ -61,6 +61,31 @@ class HelperTests(TestCase):
             _coerce_multipolygon({'type': 'Point', 'coordinates': [0, 0]})
 
 
+class DisplayNameTests(TestCase):
+    """Название объекта OSM для русского интерфейса."""
+
+    def test_prefers_russian(self):
+        from agrocosmos.services.osm_overpass import display_name
+        self.assertEqual(
+            display_name({'name': 'Kozaklı', 'name:ru': 'Козаклы'}), 'Козаклы')
+
+    def test_readable_native_name_kept(self):
+        from agrocosmos.services.osm_overpass import display_name
+        self.assertEqual(
+            display_name({'name': 'Kozaklı', 'name:en': 'Kozakli'}), 'Kozaklı')
+        self.assertEqual(
+            display_name({'name': 'Тульская область'}), 'Тульская область')
+
+    def test_non_readable_script_falls_back_to_english(self):
+        from agrocosmos.services.osm_overpass import display_name
+        self.assertEqual(
+            display_name({'name': 'شهرستان ایوان', 'name:en': 'Eyvan County'}),
+            'Eyvan County')
+        # Английского нет — остаётся местное, пустым название не делаем.
+        self.assertEqual(display_name({'name': 'مديرية'}), 'مديرية')
+        self.assertEqual(display_name({}), '')
+
+
 class ImportRussiaRegionsTests(TestCase):
     def _run(self, *args, relations=None, polygon=POLY_GEOJSON):
         out, err = io.StringIO(), io.StringIO()
@@ -302,6 +327,33 @@ class ImportOtherCountryTests(TestCase):
         # Повторный запуск второй район не создаёт.
         self._run_districts('--country', 'KZ', '--region-fallback')
         self.assertEqual(District.objects.filter(region=city).count(), 1)
+
+    def test_region_as_district_country_skips_overpass(self):
+        """Египет: границ районов в OSM нет — район равен мухафазе."""
+        aswan = Region.objects.create(
+            name='Асуан', code='EG-ASN', country='EG', geom=_mpoly(),
+            osm_id=3061757)
+        out, _, mock_rel = self._run_districts('--country', 'EG')
+        mock_rel.assert_not_called()
+        d = District.objects.get(region=aswan)
+        self.assertEqual((d.name, d.code), ('Асуан', 'region:EG-ASN'))
+        self.assertTrue(d.geom.equals(aswan.geom))
+        self.assertIn('1 created', out)
+        # Идемпотентно.
+        self._run_districts('--country', 'EG')
+        self.assertEqual(District.objects.filter(region=aswan).count(), 1)
+
+    def test_districts_level_of_iran_and_turkey(self):
+        Region.objects.create(
+            name='Илам', code='IR-16', country='IR', geom=_mpoly(),
+            osm_id=229766)
+        Region.objects.create(
+            name='Невшехир', code='TR-50', country='TR', geom=_mpoly(),
+            osm_id=154449)
+        _, _, mock_rel = self._run_districts('--country', 'IR')
+        mock_rel.assert_called_once_with(229766, 5)   # шахрестаны
+        _, _, mock_rel = self._run_districts('--country', 'TR')
+        mock_rel.assert_called_once_with(154449, 6)   # ильче
 
     def test_no_fallback_when_region_has_districts(self):
         Region.objects.create(

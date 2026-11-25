@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import time
+import unicodedata
 
 import requests
 
@@ -113,6 +114,32 @@ def _overpass_post(query: str, *, retries: int = 8) -> dict:
     raise last_exc
 
 
+def _is_readable(name: str) -> bool:
+    """Название написано кириллицей или латиницей (а не вязью и т.п.)."""
+    letters = [ch for ch in name if ch.isalpha()]
+    return bool(letters) and all(
+        'LATIN' in unicodedata.name(ch, '')
+        or 'CYRILLIC' in unicodedata.name(ch, '')
+        for ch in letters
+    )
+
+
+def display_name(tags: dict) -> str:
+    """Название объекта OSM для русского интерфейса.
+
+    ``name:ru``; если его нет — местное ``name``, когда оно читается
+    (кириллица/латиница: турецкие ильче), иначе ``name:en`` (иранские
+    шахрестаны подписаны только по-персидски и по-английски).
+    """
+    name_ru = (tags.get('name:ru') or '').strip()
+    if name_ru:
+        return name_ru
+    name = (tags.get('name') or '').strip()
+    if name and _is_readable(name):
+        return name
+    return (tags.get('name:en') or '').strip() or name
+
+
 def fetch_admin_relations_in(parent_osm_id: int, admin_level: int) -> list[dict]:
     """
     Return OSM admin_level=N relations inside a given parent relation.
@@ -147,7 +174,7 @@ def fetch_admin_relations_in(parent_osm_id: int, admin_level: int) -> list[dict]
         if el.get('type') != 'relation':
             continue
         tags = el.get('tags', {})
-        name = tags.get('name:ru') or tags.get('name') or ''
+        name = display_name(tags)
         out.append({
             'osm_id': el['id'],
             'name': name.strip(),
@@ -201,7 +228,7 @@ def fetch_country_admin_relations(country_code: str, admin_level: int) -> list[d
         if el.get('type') != 'relation':
             continue
         tags = el.get('tags', {})
-        name = tags.get('name:ru') or tags.get('name') or ''
+        name = display_name(tags)
         out.append({
             'osm_id': el['id'],
             'name': name.strip(),

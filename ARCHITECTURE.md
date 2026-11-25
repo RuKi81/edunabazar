@@ -206,14 +206,17 @@ edunabazar/
 #### Страны
 
 Реестр стран — `agrocosmos/services/countries.py` (`COUNTRIES`): Россия,
-Казахстан, Белоруссия, Индия, Китай, Бразилия. Для каждой заданы уровень
-районов в OSM и флаг `monitored`. Всё, что не получает страну явно
+Казахстан, Белоруссия, Турция, Иран, Египет, Индия, Китай, Бразилия. Для
+каждой заданы уровень районов в OSM и флаг `monitored`. Всё, что не получает страну явно
 (селекты регионов, хороплет, страновой отчёт, кэши), работает по России.
 
 | Страна | Субъекты | Районы | Угодья | MODIS-мониторинг |
 |---|---|---|---|---|
 | RU | OSM / ЗСН | да | Росреестр ЗСН (+ WorldCover) | да |
 | KZ, BY | OSM | да (`admin_level=6`) | ESA WorldCover, нарезка по районам | да |
+| TR | OSM (илы) | да (`admin_level=6`, ильче) | ESA WorldCover, нарезка по районам | да |
+| IR | OSM (останы) | да (`admin_level=5`, шахрестаны) | ESA WorldCover, нарезка по районам | да |
+| EG | OSM (мухафазы) | район = мухафаза (`region_as_district`) | ESA WorldCover, нарезка по районам | да |
 | IN, CN, BR | OSM | нет | ESA WorldCover, по субъекту | нет |
 
 `ensure_all_regions_monitored` (каждый деплой) и
@@ -221,6 +224,19 @@ edunabazar/
 `monitored=True`. Селект «Страна» есть на карте MODIS (`/agrocosmos/`) и
 в отчёте MODIS (`/agrocosmos/report/region/`); в нём показываются только
 страны, у которых уже загружены субъекты.
+
+Названия берутся из `name:ru`; если его нет — местное `name`, когда оно
+написано латиницей или кириллицей, иначе `name:en` (`display_name` в
+`services/osm_overpass.py`): субъекты всех стран подписаны по-русски,
+районы Турции — частично по-турецки, районы Ирана — по-английски.
+
+В Египте границ районов (марказов) в OSM нет, поэтому районом считается
+сама мухафаза: `import_russia_districts --country EG` создаёт по одному
+району на субъект без запросов к Overpass.
+
+Внешние границы зарубежных стран под мониторингом рисуются на карте из
+`static/agrocosmos/country_outlines.geojson`; файл собирает
+`import_country_outlines` (локально, результат коммитится).
 
 Загрузка новой страны (VM1, `DC="docker compose -f docker-compose.prod.yml"`,
 команды идемпотентны — при обрыве перезапускаются как есть):
@@ -238,9 +254,12 @@ $DC exec -T worker python manage.py import_gee_croplands --country KZ --by-distr
 $DC exec -T web python manage.py ensure_all_regions_monitored
 $DC exec -T web python manage.py run_baseline_ndvi --country KZ \
     --year-from 2026 --year-to 2026 --skip-baseline --no-monitor
+# 5. Baseline: архив MODIS за прошлые годы + расчёт базовой линии
+$DC exec -T web python manage.py run_baseline_ndvi --country KZ \
+    --year-from 2020 --year-to 2025 --no-monitor
 ```
 
-Для стран без районов шаги 2 и 4 пропускаются, шаг 3 — без `--by-district`.
+Для стран без районов шаги 2, 4 и 5 пропускаются, шаг 3 — без `--by-district`.
 
 Архивный расчёт (`run_archive_pipeline`) сам пересобирает предагрегат
 `agro_district_ndvi_series` по своему региону за всё окно архива. Вручную —
