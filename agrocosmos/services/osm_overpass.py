@@ -74,7 +74,11 @@ def _overpass_endpoints() -> list[str]:
     return [OVERPASS_URL] + [u for u in OVERPASS_MIRRORS if u != OVERPASS_URL]
 
 
-def _overpass_post(query: str, *, retries: int = 8) -> dict:
+class OverpassBadAnswer(requests.RequestException):
+    """HTTP 200 от Overpass, которому нельзя верить (см. ``_overpass_post``)."""
+
+
+def _overpass_post(query: str, *, retries: int = 8, validate=None) -> dict:
     """POST a QL query to Overpass with retry/backoff on 5xx/timeouts,
     moving to the next endpoint of ``_overpass_endpoints()`` each attempt
     (two passes over the list by default).
@@ -82,6 +86,13 @@ def _overpass_post(query: str, *, retries: int = 8) -> dict:
     Why: public Overpass instances (main, kumi.systems, …) intermittently
     return 504/502 or hang when they're under load. Rotating endpoints
     in the retry loop avoids skipping entire regions in the bulk importers.
+
+    A 200 is not always an answer. Overpass reports a query that ran out
+    of time or memory as 200 with a ``remark``; and a mirror without the
+    area database answers an area-scoped query with an empty list.
+    ``validate(data)`` returns an error string for such a payload — it is
+    then retried on the next endpoint like any other failure, instead of
+    being taken for "nothing found".
     """
     endpoints = _overpass_endpoints()
     last_exc: Exception | None = None
@@ -99,8 +110,16 @@ def _overpass_post(query: str, *, retries: int = 8) -> dict:
                     f'{resp.status_code} {resp.reason}', response=resp,
                 )
             resp.raise_for_status()
-            return resp.json()
-        except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as exc:
+            data = resp.json()
+            remark = data.get('remark') or ''
+            if 'error' in remark.lower():
+                raise OverpassBadAnswer(f'remark: {remark[:120]}')
+            problem = validate(data) if validate else None
+            if problem:
+                raise OverpassBadAnswer(problem)
+            return data
+        except (requests.Timeout, requests.ConnectionError, requests.HTTPError,
+                OverpassBadAnswer, ValueError) as exc:
             last_exc = exc
             if attempt >= retries:
                 break
@@ -157,6 +176,7 @@ def fetch_admin_relations_in(parent_osm_id: int, admin_level: int) -> list[dict]
     query = f"""
     [out:json][timeout:{OVERPASS_QL_TIMEOUT}];
     area({area_id})->.parent;
+    .parent out ids;
     relation
       ["boundary"="administrative"]
       ["admin_level"="{admin_level}"]
@@ -167,7 +187,16 @@ def fetch_admin_relations_in(parent_osm_id: int, admin_level: int) -> list[dict]
         'Overpass: fetching admin_level=%d relations inside parent rel %d…',
         admin_level, parent_osm_id,
     )
-    data = _overpass_post(query)
+
+    def _area_resolved(payload: dict) -> str | None:
+        # Сервер обязан вернуть саму область родителя. Зеркало без базы
+        # областей её не находит и отдаёт пустой список — «районов нет»
+        # от него означает «не знаю», а не «в субъекте нет районов».
+        if any(el.get('type') == 'area' for el in payload.get('elements', [])):
+            return None
+        return f'area {area_id} not resolved by this endpoint'
+
+    data = _overpass_post(query, validate=_area_resolved)
 
     out: list[dict] = []
     for el in data.get('elements', []):

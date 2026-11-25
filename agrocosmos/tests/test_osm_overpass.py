@@ -139,3 +139,56 @@ class OverpassMirrorTests(SimpleTestCase):
         result, urls = self._post(_resp(403), _resp(payload={'elements': []}))
         self.assertEqual(result, {'elements': []})
         self.assertEqual(urls, osm._overpass_endpoints()[:2])
+
+
+class OverpassBadAnswerTests(SimpleTestCase):
+    """HTTP 200, которому нельзя верить: ``remark`` и неразрешённая область."""
+
+    def setUp(self):
+        patcher = mock.patch.object(osm.time, 'sleep')
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    AREA = {'type': 'area', 'id': 3600223474}
+    REL = {'type': 'relation', 'id': 301,
+           'tags': {'name': 'Kadıköy', 'name:ru': 'Кадыкёй'}}
+
+    def _districts(self, *responses):
+        with mock.patch.object(osm.requests, 'post',
+                               side_effect=list(responses)) as post:
+            try:
+                result = osm.fetch_admin_relations_in(223474, 6)
+            except Exception as exc:
+                result = exc
+        return result, post.call_count
+
+    def test_timeout_remark_is_retried(self):
+        """Запрос, оборванный по времени, — не «ничего не найдено»."""
+        result, calls = self._districts(
+            _resp(payload={'elements': [], 'remark':
+                           'runtime error: Query timed out in "query" at line 3'}),
+            _resp(payload={'elements': [self.AREA, self.REL]}),
+        )
+        self.assertEqual([r['name'] for r in result], ['Кадыкёй'])
+        self.assertEqual(calls, 2)
+
+    def test_unresolved_area_is_retried(self):
+        """Зеркало без базы областей отвечает пустым списком."""
+        result, calls = self._districts(
+            _resp(payload={'elements': []}),
+            _resp(payload={'elements': [self.AREA, self.REL]}),
+        )
+        self.assertEqual([r['osm_id'] for r in result], [301])
+        self.assertEqual(calls, 2)
+
+    def test_resolved_area_without_districts_is_a_real_empty(self):
+        """Область найдена, районов нет — честный пустой ответ."""
+        result, calls = self._districts(_resp(payload={'elements': [self.AREA]}))
+        self.assertEqual(result, [])
+        self.assertEqual(calls, 1)
+
+    def test_never_resolved_area_raises(self):
+        """Ни одно зеркало не знает область — ошибка, а не «районов нет»."""
+        result, calls = self._districts(*[_resp(payload={'elements': []})] * 8)
+        self.assertIsInstance(result, osm.OverpassBadAnswer)
+        self.assertEqual(calls, 8)

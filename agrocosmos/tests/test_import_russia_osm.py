@@ -355,6 +355,40 @@ class ImportOtherCountryTests(TestCase):
         _, _, mock_rel = self._run_districts('--country', 'TR')
         mock_rel.assert_called_once_with(154449, 6)   # ильче
 
+    def test_stale_fallback_removed_when_real_districts_arrive(self):
+        """Заглушка от ошибочного «районов нет» не остаётся рядом с
+        настоящими районами (иначе угодья нарежутся дважды)."""
+        il = Region.objects.create(
+            name='Стамбул', code='TR-34', country='TR', geom=_mpoly(),
+            osm_id=223474)
+        self._run_districts('--country', 'TR', '--region-fallback')
+        self.assertEqual(
+            list(District.objects.values_list('code', flat=True)),
+            ['region:TR-34'])
+        out, _, _ = self._run_districts(
+            '--country', 'TR', '--region-fallback',
+            relations=[_rel(301, 'Кадыкёй')])
+        self.assertEqual(
+            list(District.objects.filter(region=il)
+                 .values_list('name', flat=True)), ['Кадыкёй'])
+        self.assertIn('fallback district removed', out)
+
+    def test_fallback_with_farmlands_is_kept(self):
+        from agrocosmos.models import Farmland
+        il = Region.objects.create(
+            name='Стамбул', code='TR-34', country='TR', geom=_mpoly(),
+            osm_id=223474)
+        self._run_districts('--country', 'TR', '--region-fallback')
+        stub = District.objects.get(region=il)
+        Farmland.objects.create(
+            region=il, district=stub, crop_type=Farmland.CropType.ARABLE,
+            area_ha=1, geom=_mpoly())
+        _, err, _ = self._run_districts(
+            '--country', 'TR', '--region-fallback',
+            relations=[_rel(301, 'Кадыкёй')])
+        self.assertTrue(District.objects.filter(pk=stub.pk).exists())
+        self.assertIn('fallback district has farmlands', err)
+
     def test_no_fallback_when_region_has_districts(self):
         Region.objects.create(
             name='Область', code='KZ-11', country='KZ', geom=_mpoly(),

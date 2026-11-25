@@ -148,6 +148,7 @@ class Command(BaseCommand):
             c, u, s, f = self._process_region(
                 region, relations, opts['skip_existing'], opts['sleep'],
             )
+            self._drop_stale_fallback(region)
             if opts['region_fallback']:
                 c += self._ensure_fallback_district(region)
             total_created += c
@@ -244,6 +245,34 @@ class Command(BaseCommand):
             return region_geom.contains(geom.point_on_surface)
         except Exception:
             return True
+
+    def _drop_stale_fallback(self, region) -> None:
+        """Убрать район-заглушку, если у субъекта появились свои районы.
+
+        Заглушка «район = субъект» могла остаться от прогона, в котором
+        Overpass ошибочно ответил «районов нет». Рядом с настоящими
+        районами она накрывает их целиком, и угодья субъекта нарезались
+        бы дважды. Заглушку с уже привязанными угодьями не трогаем —
+        это решение человека.
+        """
+        stub = District.objects.filter(
+            region=region, code=f'region:{region.code}'[:150], osm_id=None,
+        ).first()
+        if stub is None:
+            return
+        if not District.objects.filter(region=region).exclude(pk=stub.pk).exists():
+            return
+        if stub.farmlands.exists():
+            self.stderr.write(
+                f'    ! {region.name}: fallback district has farmlands — '
+                'left in place next to the real districts, check manually'
+            )
+            return
+        stub.delete()
+        self.stdout.write(
+            f'    {region.name}: real districts imported — '
+            'fallback district removed'
+        )
 
     def _ensure_fallback_district(self, region) -> int:
         """Region without districts → one district equal to the region."""
