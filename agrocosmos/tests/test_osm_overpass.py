@@ -181,11 +181,37 @@ class OverpassBadAnswerTests(SimpleTestCase):
         self.assertEqual([r['osm_id'] for r in result], [301])
         self.assertEqual(calls, 2)
 
-    def test_resolved_area_without_districts_is_a_real_empty(self):
-        """Область найдена, районов нет — честный пустой ответ."""
-        result, calls = self._districts(_resp(payload={'elements': [self.AREA]}))
+    def test_empty_answer_needs_a_second_endpoint(self):
+        """Область найдена, районов нет — верим, только когда это
+        подтвердил второй, другой сервер."""
+        empty = _resp(payload={'elements': [self.AREA]})
+        with mock.patch.object(osm.requests, 'post',
+                               side_effect=[empty, empty]) as post:
+            result = osm.fetch_admin_relations_in(223474, 6)
         self.assertEqual(result, [])
-        self.assertEqual(calls, 1)
+        urls = [c.args[0] for c in post.call_args_list]
+        self.assertEqual(len(set(urls)), 2)
+
+    def test_stale_mirror_empty_answer_is_overruled(self):
+        """Зеркало с неполной базой: область есть, районов «нет». Ответ
+        другого сервера с районами побеждает сразу."""
+        result, calls = self._districts(
+            _resp(payload={'elements': [self.AREA]}),
+            _resp(payload={'elements': [self.AREA, self.REL]}),
+        )
+        self.assertEqual([r['osm_id'] for r in result], [301])
+        self.assertEqual(calls, 2)
+
+    def test_unconfirmed_empty_answer_raises(self):
+        """Один сервер говорит «пусто», остальные лежат — это «не знаю»."""
+        empty = _resp(payload={'elements': [self.AREA]})
+        n = len(osm._overpass_endpoints())
+        # Пустой ответ только от первого сервера, на обоих проходах.
+        responses = [empty if i % n == 0 else _resp(502) for i in range(8)]
+        result, calls = self._districts(*responses)
+        # Падает последней ошибкой перебора — главное, что не «пусто».
+        self.assertIsInstance(result, requests.RequestException)
+        self.assertEqual(calls, 8)
 
     def test_never_resolved_area_raises(self):
         """Ни одно зеркало не знает область — ошибка, а не «районов нет»."""

@@ -78,7 +78,8 @@ class OverpassBadAnswer(requests.RequestException):
     """HTTP 200 от Overpass, которому нельзя верить (см. ``_overpass_post``)."""
 
 
-def _overpass_post(query: str, *, retries: int = 8, validate=None) -> dict:
+def _overpass_post(query: str, *, retries: int = 8, validate=None,
+                   is_empty=None) -> dict:
     """POST a QL query to Overpass with retry/backoff on 5xx/timeouts,
     moving to the next endpoint of ``_overpass_endpoints()`` each attempt
     (two passes over the list by default).
@@ -93,9 +94,18 @@ def _overpass_post(query: str, *, retries: int = 8, validate=None) -> dict:
     ``validate(data)`` returns an error string for such a payload — it is
     then retried on the next endpoint like any other failure, instead of
     being taken for "nothing found".
+
+    Nor is a valid-looking empty answer always true: a mirror with a
+    stale or half-loaded database resolves the area and still returns no
+    relations inside it. So when ``is_empty(data)`` holds, the answer is
+    accepted only after a SECOND, different endpoint returns an empty
+    answer too; a non-empty answer from any endpoint wins at once. If
+    nobody confirms it within ``retries``, the call fails — "unknown" is
+    safer for the importers than a false "nothing there".
     """
     endpoints = _overpass_endpoints()
     last_exc: Exception | None = None
+    empty_from: set[str] = set()
     for attempt in range(1, retries + 1):
         url = endpoints[(attempt - 1) % len(endpoints)]
         try:
@@ -117,6 +127,11 @@ def _overpass_post(query: str, *, retries: int = 8, validate=None) -> dict:
             problem = validate(data) if validate else None
             if problem:
                 raise OverpassBadAnswer(problem)
+            if is_empty is not None and is_empty(data):
+                empty_from.add(url)
+                if len(empty_from) < 2:
+                    raise OverpassBadAnswer(
+                        'empty answer, not yet confirmed by a second endpoint')
             return data
         except (requests.Timeout, requests.ConnectionError, requests.HTTPError,
                 OverpassBadAnswer, ValueError) as exc:
@@ -196,7 +211,14 @@ def fetch_admin_relations_in(parent_osm_id: int, admin_level: int) -> list[dict]
             return None
         return f'area {area_id} not resolved by this endpoint'
 
-    data = _overpass_post(query, validate=_area_resolved)
+    def _no_relations(payload: dict) -> bool:
+        return not any(
+            el.get('type') == 'relation' for el in payload.get('elements', [])
+        )
+
+    data = _overpass_post(
+        query, validate=_area_resolved, is_empty=_no_relations,
+    )
 
     out: list[dict] = []
     for el in data.get('elements', []):
