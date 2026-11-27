@@ -96,6 +96,14 @@ services:
     # Give the worker a generous grace period for SIGTERM so the inner
     # pipeline has time to flip its PipelineRun row to 'failed' cleanly.
     stop_grace_period: 30s
+    # Number of worker containers. Each one claims queued PipelineRuns
+    # independently (the claim is an atomic UPDATE), so replicas simply
+    # drain the queue in parallel. Set here rather than with
+    # `--scale worker=N`: the deploy runs a plain `up -d`, which would
+    # drop any extra replicas started by hand. Override per host with
+    # WORKER_REPLICAS in .env.
+    deploy:
+      replicas: ${WORKER_REPLICAS:-2}
 
   nginx:
     image: nginx:1.27-alpine
